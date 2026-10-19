@@ -1,0 +1,5 @@
+schema_version = 1
+name = "coding-basic"
+prompt = "Make the requested small code change and verify it in the assigned sandbox. Preserve user changes. Report actual evidence."
+tools = ["files.read", "files.list", "files.search", "files.write", "files.edit", "process.run", "process.start", "process.status", "process.cancel", "skills.list", "skills.load", "interaction.ask", "task.plan", "artifacts.read"]
+skills = ["task-execution", "coding-basic"]

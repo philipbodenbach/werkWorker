@@ -1,0 +1,37 @@
+name: worker
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  linux-real-sandbox:
+    runs-on: ubuntu-24.04
+    env:
+      REQUIRE_SANDBOX: "1"
+      WERK_WORKER_BWRAP: /usr/bin/bwrap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Prepare real namespace backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets -- --nocapture
+      - run: cargo run --locked --example eval
+      - run: cargo run --locked --example coding
+      - run: cargo run --locked --example automation
+      - run: cargo package --locked --allow-dirty
+      - name: Install from package in a fresh directory
+        run: |
+          mkdir -p /tmp/worker-package /tmp/worker-workspace
+          tar -xzf target/package/werk-worker-0.1.0.crate -C /tmp/worker-package
+          cargo install --locked --path /tmp/worker-package/werk-worker-0.1.0 --root /tmp/worker-install
+          cd /tmp/worker-workspace
+          /tmp/worker-install/bin/werk-worker --store /tmp/worker-installed.sqlite run --demo "package smoke"
+          /tmp/worker-install/bin/werk-worker profiles inspect coding-basic
+          /tmp/worker-install/bin/werk-worker skills inspect ticket-drafting
+          /tmp/worker-install/bin/ww --store /tmp/worker-short.sqlite run --demo "short command smoke"

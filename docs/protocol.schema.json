@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "werkWorker control request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "method"],
+  "properties": {
+    "id": {},
+    "method": {
+      "enum": ["initialize", "session.create", "session.open", "session.list", "session.fork", "run.submit", "run.status", "run.cancel", "run.steer", "run.resume", "session.followup", "approval.respond", "interaction.respond", "events.subscribe", "session.export", "shutdown"]
+    },
+    "params": {}
+  }
+}

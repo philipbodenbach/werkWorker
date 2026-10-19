@@ -1,0 +1,18 @@
+{
+  "base_url": "http://127.0.0.1:11434",
+  "model": "REPLACE_WITH_INSTALLED_MODEL",
+  "deployment": null,
+  "capabilities": {
+    "tool_calling": "unknown",
+    "streaming": "unknown",
+    "parallel_tools": "unknown",
+    "structured_output": "unknown",
+    "images": "unsupported",
+    "reasoning": "unknown",
+    "context_tokens": null
+  },
+  "stream": true,
+  "timeout_ms": 120000,
+  "max_body_bytes": 8388608,
+  "options": {}
+}

@@ -1,0 +1,11 @@
+{
+  "mode": "ask",
+  "grants": [
+    {"tool":"files.read","version":"1","resource":".","arguments_hash":null,"expires_at_ms":null,"preapproved":false},
+    {"tool":"files.list","version":"1","resource":".","arguments_hash":null,"expires_at_ms":null,"preapproved":false},
+    {"tool":"files.search","version":"1","resource":".","arguments_hash":null,"expires_at_ms":null,"preapproved":false}
+  ],
+  "hard_denied_tools": [],
+  "allow_similar": false,
+  "workspace_writable": false
+}

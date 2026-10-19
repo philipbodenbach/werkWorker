@@ -1,0 +1,27 @@
+/TASKS
+/target
+/models
+/releases/*
+!/releases/.gitkeep
+
+.agents
+.codex
+.venv
+__pycache__/
+*.py[cod]
+.DS_Store
+
+.webui*
+api-keys.toml
+.api-keys.toml
+/:memory:.ses
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
+
+# Local Worker runtime data and independent SDK-consumer build output.
+.werk-worker/
+/examples/sdk-consumer/target/

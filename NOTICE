@@ -1,0 +1,10 @@
+werkWorker
+Copyright (c) 2026 Philip Bodenbach and contributors.
+
+werkWorker is provided under the Elastic License 2.0; see LICENSE.
+The license text is identical to the text distributed by werk1112.
+The product name and this copyright notice identify werkWorker.
+
+Reference projects were studied for architectural concepts and protocol
+interoperability. No reference application source is vendored or linked.
+Dependency licenses remain those of their respective authors.

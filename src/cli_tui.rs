@@ -12,11 +12,11 @@ use std::{io::IsTerminal, pin::Pin, time::Duration};
 use werk_worker::*;
 
 // Exact werk1112 top/terminal palette; attribution in NOTICE.
-const BG: Color = Color::Rgb(9, 13, 23);
+pub(crate) const BG: Color = Color::Rgb(9, 13, 23);
 const PANEL: Color = Color::Rgb(15, 21, 35);
-const TEXT: Color = Color::Rgb(224, 230, 248);
-const MUTED: Color = Color::Rgb(129, 143, 174);
-const BRAND: [Color; 5] = [
+pub(crate) const TEXT: Color = Color::Rgb(224, 230, 248);
+pub(crate) const MUTED: Color = Color::Rgb(129, 143, 174);
+pub(crate) const BRAND: [Color; 5] = [
     Color::Rgb(0, 220, 255),
     Color::Rgb(59, 130, 246),
     Color::Rgb(99, 102, 241),
@@ -38,14 +38,15 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r"\____/ "];
-const COMMANDS: [(&str, &str); 5] = [
+const COMMANDS: [(&str, &str); 6] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
     ("/quit", "Close werkWorker"),
     ("/agents", "Show subagents and inference capacity"),
+    ("/setup", "Configure server, model and credentials"),
 ];
-fn banner() -> Vec<Line<'static>> {
+pub(crate) fn banner() -> Vec<Line<'static>> {
     let glyphs = [W, E, R, K, W, O, R, K, E, R];
     let mut lines = Vec::new();
     for row in 0..5 {
@@ -72,13 +73,13 @@ fn banner() -> Vec<Line<'static>> {
     lines
 }
 
-struct Restore;
+pub(crate) struct Restore;
 impl Drop for Restore {
     fn drop(&mut self) {
         ratatui::restore();
     }
 }
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     text.chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect()
@@ -183,7 +184,7 @@ impl View {
         }
     }
 }
-fn panel(title: &str, color: Color) -> Block<'_> {
+pub(crate) fn panel(title: &str, color: Color) -> Block<'_> {
     Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -447,7 +448,8 @@ pub async fn show(
     session: Option<SessionHandle>,
     initial: Option<String>,
     resume: Option<RunHandle>,
-) -> Result<()> {
+    limits: Limits,
+) -> Result<bool> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(WorkerError::new(
             "terminal_required",
@@ -486,7 +488,7 @@ pub async fn show(
             view.append(&format!("you › {input}\n"));
             active = Some(
                 session
-                    .submit(input, &id("tui"), Limits::default(), None)
+                    .submit(input, &id("tui"), limits.clone(), None)
                     .await?,
             );
         }
@@ -505,6 +507,7 @@ pub async fn show(
     let mut dirty = true;
     let mut agents_tick = tokio::time::interval(Duration::from_millis(250));
     let mut addressed: Option<RunHandle> = None;
+    let mut configure = false;
     loop {
         tokio::select! {
             _ = agents_tick.tick() => {
@@ -546,6 +549,13 @@ pub async fn show(
                     }
                 }
                 if key.code == KeyCode::Enter && view.interaction.is_none() && view.input == "/quit" { break; }
+                if key.code == KeyCode::Enter && view.interaction.is_none() && view.input == "/setup" {
+                    if let Some(run)=&active && !run.status().await?.status.terminal() {
+                        view.error="Cancel or finish the current run before changing the connection.".into();
+                        continue;
+                    }
+                    configure=true; break;
+                }
                 let result: Result<()> = async {
                     if ctrl && key.code == KeyCode::Char('c') {
                         if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI Ctrl-C", &id("cancel")).await?; }
@@ -585,7 +595,7 @@ pub async fn show(
                                 if let Some(run) = &active && !run.status().await?.status.terminal() {
                                     run.steer(&input, &id("steer")).await?;
                                 } else {
-                                    active = Some(session.submit(&input, &id("tui"), Limits::default(), None).await?);
+                                    active = Some(session.submit(&input, &id("tui"), limits.clone(), None).await?);
                                 }
                             } else { return Err(WorkerError::new("provider_required", "Connect Werk or start ww tui --demo")); }
                             view.append(&format!("\n\nyou › {input}\n")); view.input.clear(); view.edited_input(); view.scroll = 0;
@@ -604,7 +614,7 @@ pub async fn show(
         run.cancel("TUI closed", &id("cancel")).await?;
         run.wait().await?;
     }
-    Ok(())
+    Ok(configure)
 }
 
 #[cfg(test)]
@@ -616,7 +626,7 @@ mod tests {
             input: "/".into(),
             ..Default::default()
         };
-        assert_eq!(view.commands().len(), 5);
+        assert_eq!(view.commands().len(), 6);
         view.input = "/ca".into();
         assert_eq!(view.commands()[0].0, "/cancel");
         view.commands_dismissed = true;

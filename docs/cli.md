@@ -23,6 +23,8 @@ Commands:
   help      Print this message or the help of the given subcommand(s)
 
 Options:
+      --setup
+          Open the interactive connection setup, even with an explicit configuration
       --store <STORE>
 
       --workspace <WORKSPACE>

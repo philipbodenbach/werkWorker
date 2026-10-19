@@ -460,6 +460,10 @@ impl WerkClient {
             .await?;
         let status = response.status();
         let headers = response.headers().clone();
+        // Authentication middleware may reject before producing a Werk envelope.
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(http_error(status.as_u16()));
+        }
         let bytes = bounded_body(response, self.max_body).await?;
         let value: Value = serde_json::from_str(&self.redact(&String::from_utf8_lossy(&bytes)))?;
         if value["protocol"] != json!({"major":1,"minor":0}) {

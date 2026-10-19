@@ -1,8 +1,10 @@
 # Interactive agent terminal
 
 `ww` (or `werk-worker`) opens the terminal UI. `ww --werk-config config.json`
-connects to Werk using the same explicit provider setup as the SDK. Without a
-provider, the UI shows setup instructions and never silently uses a demo model.
+seeds the [interactive connection wizard](setup.md). Without configuration, the
+UI asks for the server, credentials, model and agent settings. It never silently
+uses a demo model. Saved global settings and [project rules/preferences](project-configuration.md)
+are loaded for review on subsequent starts.
 `ww tui --demo "Hello"` explicitly uses one scripted response. `ww run ...` is
 the headless path; `ww rpc` continues to emit JSONL only.
 
@@ -30,13 +32,14 @@ these directly. See NOTICE for attribution.
 | Alt-Up / Alt-Down | Scroll full approval details, question or session information |
 
 Slash commands: `/help` shows commands and shortcuts, `/clear` clears only the
-visible conversation, `/cancel` cancels the active run, `/agents` shows child statuses and inference capacity, and `/quit` closes the
+visible conversation, `/cancel` cancels the active run, `/agents` shows child statuses and inference capacity, `/setup` reconnects through the configuration wizard when no run is active, and `/quit` closes the
 session with the same cleanup as Ctrl-Q. Commands work without a connected model.
 While answering a pending question, slash-prefixed input is treated as an answer.
 
 The conversation streams attempt text and tool states. Failed attempts remain
 visibly interrupted. The side panel shows the concrete prepared approval details
-including file differences and actual process rights; the UI adds no grants.
+including file differences and actual process rights. The setup explicitly selects
+session grants; the chat cannot enlarge them through a model response.
 Questions are answered through their durable request IDs. Typing another message
 after completion starts a new run in the same session. Display history is bounded;
 full committed events remain in SQLite. Untrusted text cannot emit terminal control

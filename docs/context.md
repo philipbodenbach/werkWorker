@@ -100,3 +100,14 @@ Werk chat can benefit from server caching; only observed usage is reported.
 See [recorded validation](benchmarks/2026-10-19-subagents/README.md) for the
 long-run compaction, oversized-constraint, context-reduction and truncated-tool
 regressions. No live-model token-limit experiment is claimed.
+
+## Interactive budgets and project rules
+
+The connection wizard defaults to 4,096 output tokens including reasoning. It
+checks the effective per-request context and requires an output reserve no larger
+than one quarter of it before opening the session. Headless/direct CLI paths keep
+`Limits::default()` (2,048 output tokens). Setup applies its selected limits to
+each new TUI run; existing recovered runs retain their original persisted limits.
+Project instructions are immutable profile constraints in the request, counted
+by the existing estimator and retained during compaction. See [setup](setup.md)
+and [project rules](project-configuration.md) for configuration and size bounds.

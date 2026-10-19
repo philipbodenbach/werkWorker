@@ -343,3 +343,18 @@ async fn smaller_server_context_is_learned_and_rebuilt_without_identical_retry()
     );
     engine.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn bare_auth_rejection_is_reported_without_protocol_or_body_leaks() {
+    let server = Server::start(|_| Response {
+        status: 401,
+        headers: vec![],
+        body: b"secret supplied by auth middleware".to_vec(),
+    })
+    .await;
+    let client =
+        WerkClient::new(&config(&server.origin, false), Some("test-secret".into())).unwrap();
+    let error = client.control("/werk/v1/info").await.unwrap_err();
+    assert_eq!(error.code, "auth_error");
+    assert!(!error.to_string().contains("secret"));
+}

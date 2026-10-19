@@ -95,3 +95,18 @@ reusable approvals are not inherited. Child results are untrusted data. Active
 children, nesting and total tree model requests are bounded. A child cannot
 address another root through the delegation tools. `read_only` restricts workspace
 writes, not independently granted network-write brokers. See [subagents](subagents.md).
+
+## Interactive setup and project metadata
+
+Global connection files contain no API-key values; typed keys remain in memory,
+while an environment **name** can be remembered. The project format cannot select
+a server origin or credential source. Project/model profiles and instruction files
+are lower-trust context and never become grants or sandbox settings. Test commands
+are suggestions, not startup hooks. TUI access choices are explicit, session-only
+and still require per-action approval; existing `--grants` takes precedence.
+
+Project metadata reads use the pinned workspace reader, reject symlinks and path
+traversal, and are bounded. They currently require Linux when files exist; other
+platforms fail closed. Sources/hashes/text are frozen into each CLI session;
+subagents inherit them without gaining authority. See [setup](setup.md) and
+[project configuration](project-configuration.md) for scope and platform limits.

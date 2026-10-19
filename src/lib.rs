@@ -6,6 +6,7 @@ pub mod core;
 pub mod parallel;
 pub mod policy;
 pub mod profiles;
+pub mod project;
 pub mod providers;
 pub mod runtime;
 pub mod sessions;

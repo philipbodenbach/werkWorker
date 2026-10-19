@@ -39,11 +39,19 @@ scripted replies. Process tools require Linux user namespaces, a usable
 Bubblewrap installation and the kernel interfaces described in
 [the sandbox matrix](docs/security.md). Missing isolation fails closed.
 
-With no arguments, `ww` opens the TUI setup screen. Use `ww --werk-config config.json`
-to open a connected session. Enter sends a message or steers an active run;
-Ctrl-Y/Ctrl-N approve once/deny, Ctrl-C cancels and Ctrl-Q closes the session.
-See [interactive terminal controls](docs/tui.md). `ww run ...` remains available
-for headless use and `ww rpc` for JSONL clients.
+With no arguments, `ww` opens an interactive setup: choose a Werk server, enter
+its API key in a masked field, discover models, and select token budgets,
+profile and workspace access. Settings can be saved globally in
+`~/.config/werkworker/config.json` or as project preferences in
+`.werkworker/config.json`. Keys are session-only; reusable credentials use an
+environment-variable reference. `/setup` reconfigures after a run finishes.
+See [setup and authentication](docs/setup.md) and [terminal controls](docs/tui.md).
+
+Project rules use `.werkworker.md` / `WERKWORKER.md`, with `AGENTS.override.md`,
+`AGENTS.md` and `CLAUDE.md` as ordered alternatives. Named profiles, tool/skill
+selection and suggested test commands remain separate from permissions.
+See [project configuration, priority and scope](docs/project-configuration.md).
+`ww run ...` remains available for headless use and `ww rpc` for JSONL clients.
 
 Use `ww --help` for all commands. During development, use
 `cargo run --bin ww -- run --demo "Hello"` without installing. The longer
@@ -63,7 +71,13 @@ Do not put it in a profile or workspace. Plain HTTP is accepted only for literal
 loopback addresses; remote Werk origins require HTTPS. See
 [the Werk reuse matrix](docs/reuse-matrix.md).
 
-Default policy is **ask**, with **no external resource grants**. The example
+For a running local Qwen 27B server, see the [copyable agent example with hidden
+API-key entry](docs/local-werk-example.md) and its
+[connection configuration](examples/werk-qwen27b.json).
+
+SDK/headless default policy is **ask**, with **no external resource grants**.
+The TUI explicitly offers workspace reads and lets you select broader session
+access; each operation still asks. Project files never grant access. The example
 grant file explicitly allocates workspace reads; each read still asks. A grant
 allows the engine to consider an action; an approval authorizes its prepared
 arguments. Full access and exact-argument reusable approvals require explicit

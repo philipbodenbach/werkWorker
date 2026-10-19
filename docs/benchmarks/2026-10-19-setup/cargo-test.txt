@@ -1,0 +1,188 @@
+   Compiling werk-worker v0.1.0 (/home/philipbodenbach/werkWorker)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.60s
+     Running unittests src/lib.rs (target/debug/deps/werk_worker-fa1e1de188d7e22f)
+
+running 2 tests
+test parallel::tests::overlapping_workspaces_share_reads_and_exclude_writers_until_last_lease_drops ... ok
+test api::concurrency_regressions::cancellation_poll_does_not_block_a_paused_mutex_waiter ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running unittests src/main.rs (target/debug/deps/werk_worker-5ba5125613c3fed3)
+
+running 3 tests
+test cli_setup::tests::credentials_are_masked_and_never_serialized ... ok
+test cli_tui::tests::command_preview_filters_and_preserves_question_answers ... ok
+test cli_tui::tests::palette_layout_and_untrusted_text_are_safe ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/bin/ww.rs (target/debug/deps/ww-22f349fb749dd47b)
+
+running 3 tests
+test cli_setup::tests::credentials_are_masked_and_never_serialized ... ok
+test cli_tui::tests::command_preview_filters_and_preserves_question_answers ... ok
+test cli_tui::tests::palette_layout_and_untrusted_text_are_safe ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/context_policy.rs (target/debug/deps/context_policy-2970e268db521662)
+
+running 7 tests
+test model_compaction_is_budgeted_preserves_user_constraints_and_raw_history ... ok
+test oversized_constraints_fail_before_provider_and_output_reserve_is_clamped ... ok
+test revocation_and_cross_run_approval_cannot_start_action ... ok
+test large_output_has_owned_artifact_and_context_excerpt ... ok
+test same_scope_approval_is_exact_explicit_and_does_not_cross_session ... ok
+test automatic_compaction_keeps_long_tool_runs_inside_provider_context ... ok
+test separate_sessions_run_independently_including_shared_workspace ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/contracts.rs (target/debug/deps/contracts-8820c029e611e2f4)
+
+running 2 tests
+test control_store_cannot_be_mounted_as_agent_workspace ... ok
+test bundled_profile_tool_skill_references_and_cli_help_are_consistent ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/engine.rs (target/debug/deps/engine-06ccb4704ddb2703)
+
+running 12 tests
+test identical_actions_reused_provider_ids_are_not_deduplicated ... ok
+test text_submit_dedupe_and_command_conflict ... ok
+test event_replay_and_fork_have_independent_identity_and_policy ... ok
+test tool_batch_validation_and_pairs_are_deterministic ... ok
+test cancellation_while_streaming_and_approval_does_not_continue ... ok
+test patch_approval_binds_base_and_conflict_preserves_user_change ... ok
+test ask_denial_has_no_write_and_valid_next_history ... ok
+test interaction_steering_followup_and_busy ... ok
+test paused_event_subscriber_in_select_cannot_hold_session_lock ... ok
+test truncated_attempt_never_dispatches_and_retry_has_new_identity ... ok
+test sqlite_ownership_future_version_corruption_and_resume_approval ... ok
+test budgets_include_retries_and_output_correction ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
+     Running tests/isolation.rs (target/debug/deps/isolation-ad19a18b8e7899f5)
+
+running 8 tests
+test public_network_filter_covers_metadata_private_mapped_and_transition_ranges ... ok
+test skills_are_data_and_schema_refs_cannot_fetch ... ok
+test file_descriptor_root_stays_confined_under_path_swap ... ok
+test filesystem_traversal_symlinks_and_special_files_are_denied ... ok
+test missing_sandbox_fails_closed ... ok
+test artifacts_are_bounded_owned_and_hash_verified ... ok
+test default_ask_scopes_expiry_and_full_access_hard_denies ... ok
+test real_sandbox_host_sentinel_network_limits_and_descendant_cleanup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.02s
+
+     Running tests/platform.rs (target/debug/deps/platform-490205d776190e9f)
+
+running 1 test
+test workspace_can_be_opened_on_the_native_platform ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/project.rs (target/debug/deps/project-c0374738af2a6400)
+
+running 4 tests
+test rejects_symlinks_oversize_traversal_and_host_configuration ... ok
+test save_detects_conflicts_and_never_grants_authority ... ok
+test custom_profiles_tools_skills_and_explicit_access_are_separate ... ok
+test priority_scope_and_immutable_session_snapshot ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running tests/recovery.rs (target/debug/deps/recovery-e88671b0c6726733)
+
+running 3 tests
+test crash_after_external_effect_before_receipt_blocks_second_post ... ok
+test crash_after_receipt_and_final_response_replays_without_post_or_model ... ok
+test connector_posts_once_only_after_addressed_approval_and_denial_never_posts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/rpc.rs (target/debug/deps/rpc-a433d7e0e7f1c89c)
+
+running 4 tests
+test rpc_negotiation_dedupe_malformed_input_and_sdk_loop ... ok
+test cli_rpc_stdout_is_json_only_and_bad_message_does_not_exit ... ok
+test rpc_subagents_are_scoped_and_can_be_listed_steered_and_cancelled ... ok
+test pending_interaction_survives_actual_process_kill_and_reconnect ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/streaming.rs (target/debug/deps/streaming-0a4953320f5aa9e1)
+
+running 4 tests
+test incomplete_and_duplicate_calls_are_not_executable ... ok
+test server_output_limit_never_retries_or_executes_truncated_tools ... ok
+test credentials_are_redacted_even_across_text_and_tool_fragments ... ok
+test sse_arbitrary_byte_boundaries_utf8_tools_usage_and_nonstream_equivalence ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/subagents.rs (target/debug/deps/subagents-37b2d475c3ab3002)
+
+running 10 tests
+test child_scope_and_identity_are_not_model_controlled ... ok
+test cancellation_cleans_children_and_releases_capacity ... ok
+test total_tree_request_budget_is_enforced ... ok
+test nested_children_obey_depth_and_cancel_with_root ... ok
+test delegation_is_idempotent_and_global_capacity_is_bounded ... ok
+test concurrent_writers_detect_stale_hash_instead_of_overwriting ... ok
+test unknown_capacity_serializes_inference_without_blocking_delegation ... ok
+test children_overlap_context_isolated_and_results_are_joined ... ok
+test durable_child_links_survive_reopen_and_cannot_bypass_admission_by_resubmit ... ok
+test revoking_parent_grants_denies_child_writes ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running tests/werk.rs (target/debug/deps/werk-7b407a5069524f64)
+
+running 9 tests
+test bare_auth_rejection_is_reported_without_protocol_or_body_leaks ... ok
+test generic_fetch_blocks_private_targets_and_redirects ... ok
+test envelope_version_header_request_id_redirect_auth_and_limits ... ok
+test server_context_discovery_uses_per_request_minimum_and_requires_evidence ... ok
+test protocol_observability_accepts_fresh_slots_not_stale_or_other_models ... ok
+test concurrency_discovery_matches_alias_and_falls_back_gracefully ... ok
+test streaming_wire_usage_and_native_allowlist_are_separate_from_grants ... ok
+test smaller_server_context_is_learned_and_rebuilt_without_identical_retry ... ok
+test native_discovery_then_chat_and_correct_tool_pairs ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running unittests examples/automation.rs (target/debug/examples/automation-dbe47d41f0d56e5c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/coding.rs (target/debug/examples/coding-d50e85268707a430)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/eval.rs (target/debug/examples/eval-deb6959229d2de9d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/parallel_benchmark.rs (target/debug/examples/parallel_benchmark-4d2975aa67f91f85)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/sdk_consumer.rs (target/debug/examples/sdk_consumer-34d56e6e131fad60)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

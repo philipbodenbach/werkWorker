@@ -1,10 +1,11 @@
+#[path = "cli_setup.rs"]
+mod cli_setup;
 #[path = "cli_tui.rs"]
 mod cli_tui;
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use std::{io::IsTerminal, path::PathBuf, sync::Arc};
 use werk_worker::{
-    policy::HostPolicy,
     profiles::AgentProfile,
     providers::{
         EnvironmentSecrets, ModelProvider, ScriptedProvider, ScriptedTurn, SecretResolver,
@@ -16,13 +17,16 @@ use werk_worker::{
     *,
 };
 
-#[derive(Parser)]
+#[derive(Clone, Parser)]
 #[command(
     name = env!("CARGO_BIN_NAME"),
     version,
     about = "werkWorker general-purpose local agent engine"
 )]
 struct Cli {
+    /// Open the interactive connection setup, even with an explicit configuration.
+    #[arg(long)]
+    setup: bool,
     #[arg(long)]
     store: Option<PathBuf>,
     #[arg(long, default_value = ".")]
@@ -45,7 +49,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 }
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 enum Command {
     /// Interactive agent UI (the default when no command is supplied).
     Tui {
@@ -93,22 +97,22 @@ enum Command {
     Diagnose,
     Rpc,
 }
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 enum SessionCommand {
     List,
     Inspect { id: String },
     Export { id: String },
 }
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 enum ListCommand {
     List,
 }
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 enum InspectCommand {
     List,
     Inspect { name: String },
 }
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 enum DoctorCommand {
     Doctor,
 }
@@ -128,7 +132,26 @@ async fn main() {
         );
     }
 }
-async fn execute(cli: Cli) -> Result<()> {
+async fn execute(mut cli: Cli) -> Result<()> {
+    loop {
+        if !execute_once(cli.clone()).await? {
+            return Ok(());
+        }
+        cli.setup = true;
+        if let Some(Command::Tui {
+            input,
+            session,
+            run_id,
+            ..
+        }) = &mut cli.command
+        {
+            *input = None;
+            *session = None;
+            *run_id = None;
+        }
+    }
+}
+async fn execute_once(cli: Cli) -> Result<bool> {
     let command = cli.command.unwrap_or(Command::Tui {
         input: None,
         profile: "general-readonly".into(),
@@ -152,14 +175,14 @@ async fn execute(cli: Cli) -> Result<()> {
                 serde_json::to_string_pretty(&AgentProfile::bundled(name)?)?
             ),
         }
-        return Ok(());
+        return Ok(false);
     }
     if let Command::Tools { .. } = &command {
         println!(
             "{}",
             serde_json::to_string_pretty(&tools::ToolRegistry::builtins()?.definitions())?
         );
-        return Ok(());
+        return Ok(false);
     }
     if let Command::Skills { action } = &command {
         let skills = skills::SkillRegistry::bundled()?;
@@ -169,7 +192,13 @@ async fn execute(cli: Cli) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(skills.get(name)?)?)
             }
         }
-        return Ok(());
+        return Ok(false);
+    }
+    if cli.setup && !matches!(&command, Command::Tui { .. }) {
+        return Err(WorkerError::new(
+            "setup_requires_tui",
+            "--setup requires the interactive TUI",
+        ));
     }
     let sandbox = Sandbox {
         bubblewrap: cli.bubblewrap,
@@ -177,7 +206,7 @@ async fn execute(cli: Cli) -> Result<()> {
     };
     if matches!(&command, Command::Sandbox { .. }) {
         println!("{}", sandbox.doctor().await?);
-        return Ok(());
+        return Ok(false);
     }
     let execution = if let Some(path) = &cli.execution_config {
         serde_json::from_slice::<parallel::ExecutionConfig>(&tokio::fs::read(path).await?)?
@@ -185,7 +214,44 @@ async fn execute(cli: Cli) -> Result<()> {
         parallel::ExecutionConfig::default()
     };
     execution.validate()?;
-    let provider: Arc<dyn ModelProvider> = if let Some(path) = &cli.werk_config {
+    let mut setup_limits = Limits::default();
+    let mut setup_profile = None;
+    let mut setup_access = project::Access::None;
+    let project = if matches!(&command, Command::Tui { .. } | Command::Run { .. }) {
+        project::Project::load(&cli.workspace).await?
+    } else {
+        project::Project::default()
+    };
+    let explicit_profile = match &command {
+        Command::Tui { profile, .. } if profile != "general-readonly" => Some(profile.as_str()),
+        _ => None,
+    };
+    let use_setup = matches!(&command, Command::Tui { demo: false, .. })
+        && cli.script.is_none()
+        && (cli.setup || cli.werk_config.is_none() || cli.secret_env.is_none());
+    let provider: Arc<dyn ModelProvider> = if cli.setup || use_setup {
+        let seed = if let Some(path) = &cli.werk_config {
+            Some(serde_json::from_slice(&tokio::fs::read(path).await?)?)
+        } else {
+            None
+        };
+        let Some(connected) = cli_setup::show(
+            seed,
+            cli.secret_env.clone(),
+            cli.grants.is_some(),
+            &cli.workspace,
+            &project,
+            explicit_profile,
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        setup_limits = connected.limits;
+        setup_profile = Some(connected.profile);
+        setup_access = connected.access;
+        connected.provider
+    } else if let Some(path) = &cli.werk_config {
         let config: WerkConfig = serde_json::from_slice(&tokio::fs::read(path).await?)?;
         let secret = cli
             .secret_env
@@ -199,7 +265,7 @@ async fn execute(cli: Cli) -> Result<()> {
                 "{}",
                 serde_json::json!({"runtime_capabilities":provider.runtime_capabilities,"discovery":provider.discovery,"context_tokens":provider.capabilities().context_tokens,"context_limit_source":provider.context_limit_source,"inference_concurrency":provider.inference_concurrency,"effective_model_requests":execution.effective_requests(&provider.inference_concurrency),"execution":execution})
             );
-            return Ok(());
+            return Ok(false);
         }
         Arc::new(provider)
     } else if let Some(path) = &cli.script {
@@ -216,7 +282,7 @@ async fn execute(cli: Cli) -> Result<()> {
     } else if matches!(&command, Command::Sessions { .. }) {
         Arc::new(ScriptedProvider::default())
     } else if matches!(&command, Command::Tui { .. }) {
-        return cli_tui::show(None, None, None).await;
+        return cli_tui::show(None, None, None, Limits::default()).await;
     } else {
         return Err(WorkerError::new(
             "provider_required",
@@ -226,7 +292,7 @@ async fn execute(cli: Cli) -> Result<()> {
     let policy = if let Some(path) = cli.grants {
         serde_json::from_slice(&tokio::fs::read(path).await?)?
     } else {
-        HostPolicy::default()
+        setup_access.policy()
     };
     let store_path = match cli.store {
         Some(path) => path,
@@ -247,6 +313,7 @@ async fn execute(cli: Cli) -> Result<()> {
         .artifacts(artifacts)
         .build()
         .await?;
+    let mut configure = false;
     let result = match command {
         Command::Tui {
             input,
@@ -263,16 +330,41 @@ async fn execute(cli: Cli) -> Result<()> {
                 (
                     engine
                         .create_session(
-                            AgentProfile::bundled(&profile)?,
+                            match setup_profile {
+                                Some(profile) => profile,
+                                None => {
+                                    project
+                                        .profile(
+                                            if profile == "general-readonly" {
+                                                project
+                                                    .config
+                                                    .profile
+                                                    .as_deref()
+                                                    .unwrap_or(&profile)
+                                            } else {
+                                                &profile
+                                            },
+                                            &cli.workspace,
+                                            cli_setup::settings_path()?
+                                                .parent()
+                                                .expect("config parent"),
+                                        )
+                                        .await?
+                                }
+                            },
                             cli.workspace,
                             policy,
-                            serde_json::Value::Null,
+                            project.metadata(),
                         )
                         .await?,
                     None,
                 )
             };
-            cli_tui::show(Some(session), input, resume).await
+            cli_tui::show(Some(session), input, resume, setup_limits)
+                .await
+                .map(|again| {
+                    configure = again;
+                })
         }
         Command::Rpc => {
             RpcHost::new(engine.clone(), cli.workspace, policy)
@@ -285,10 +377,20 @@ async fn execute(cli: Cli) -> Result<()> {
         Command::Run { input, profile, .. } => {
             let session = engine
                 .create_session(
-                    AgentProfile::bundled(&profile)?,
+                    project
+                        .profile(
+                            if profile == "general-readonly" {
+                                project.config.profile.as_deref().unwrap_or(&profile)
+                            } else {
+                                &profile
+                            },
+                            &cli.workspace,
+                            cli_setup::settings_path()?.parent().expect("config parent"),
+                        )
+                        .await?,
                     cli.workspace,
                     policy,
-                    serde_json::Value::Null,
+                    project.metadata(),
                 )
                 .await?;
             let run = session
@@ -316,7 +418,8 @@ async fn execute(cli: Cli) -> Result<()> {
         _ => Ok(()),
     };
     engine.close().await?;
-    result
+    result?;
+    Ok(configure)
 }
 async fn display(run: &RunHandle) -> Result<()> {
     eprintln!("run {}", run.id);

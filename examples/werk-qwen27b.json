@@ -1,0 +1,18 @@
+{
+  "base_url": "http://127.0.0.1:11434",
+  "model": "qwen3.8-27b-ud-q4_k_xl",
+  "deployment": null,
+  "capabilities": {
+    "tool_calling": "supported",
+    "streaming": "supported",
+    "parallel_tools": "unknown",
+    "structured_output": "unknown",
+    "images": "unsupported",
+    "reasoning": "unknown",
+    "context_tokens": 32768
+  },
+  "stream": true,
+  "timeout_ms": 120000,
+  "max_body_bytes": 8388608,
+  "options": {}
+}

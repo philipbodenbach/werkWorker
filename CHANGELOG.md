@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Interactive TUI server/authentication/model setup, masked key entry, persistent
+  global settings, project save destination and `/setup` reconnection.
+- Project instruction snapshots with werkWorker/AGENTS/CLAUDE priority, scoped
+  directory chains, custom named profiles and separate tool/skill/test preferences.
+- Session-only workspace access choices, display-only project permission requests,
+  configurable TUI output reservation and clearer bare HTTP 401/403 errors.
+- Real PTY setup regression in CI and documented configuration/security experiments.
+
 - Parallel child agents with isolated conversations, scoped tools, nesting limits,
   shared request budgets, cancellation and durable parent/child records.
 - Conservative inference admission from Werk deployment diagnostics or

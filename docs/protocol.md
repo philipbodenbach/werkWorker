@@ -42,6 +42,11 @@ does not mean completion. Events are notifications:
 | approval.respond | session_id, run_id, request_id, decision, command_id |
 | interaction.respond | session_id, run_id, request_id, answer, command_id |
 | events.subscribe | session_id, optional after_cursor (exclusive) |
+| execution.status | none; configured/effective limits, discovery source and free slots |
+| agents.delegate | parent session_id, run_id, tasks, command_id |
+| agents.list | parent session_id, run_id |
+| agents.cancel | parent session_id, run_id, child_session_id, command_id |
+| agents.message | parent session_id, run_id, child_session_id, input, command_id |
 | shutdown | none |
 
 Approval decisions serialize as `allow_once`, `deny`, `allow_same_arguments`.
@@ -57,3 +62,16 @@ and revocation are intentionally not exposed to model-generated data.
 
 See `src/transport.rs::METHODS` and the CLI/RPC integration tests for executable
 contract consistency. `examples/jsonl_client.py` is a complete local client.
+
+`agents.delegate.tasks` uses `{goal, context?, tools?, read_only?}` entries from
+[the delegation contract](subagents.md). List/delegate return direct children
+with session IDs, goals and optional Run snapshots. Model tools use
+`session_id` for a target child; host RPC uses `child_session_id` to distinguish
+it from the parent session. Only directly owned children are accepted.
+
+To approve a child, the trusted host opens its session, subscribes to its events
+and sends `approval.respond` with that child's session/run/request IDs. The same
+rule applies to `interaction.respond`; no parent approval substitutes for it.
+`run.cancel` on the parent cancels descendants. The new methods are additive to
+protocol 1. Discovery uses WerkProtocol on the server; Worker JSONL remains its
+own local protocol.

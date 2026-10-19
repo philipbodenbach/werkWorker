@@ -38,11 +38,12 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r"\____/ "];
-const COMMANDS: [(&str, &str); 4] = [
+const COMMANDS: [(&str, &str); 5] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
     ("/quit", "Close werkWorker"),
+    ("/agents", "Show subagents and inference capacity"),
 ];
 fn banner() -> Vec<Line<'static>> {
     let glyphs = [W, E, R, K, W, O, R, K, E, R];
@@ -100,6 +101,10 @@ struct View {
     command_selected: usize,
     commands_dismissed: bool,
     quit_armed: bool,
+    agents: String,
+    capacity: String,
+    request_owner: String,
+    context_status: String,
 }
 impl View {
     fn commands(&self) -> Vec<(&'static str, &'static str)> {
@@ -132,6 +137,22 @@ impl View {
         }
         match event.event {
             EventKind::TextDelta { text, .. } => self.append(&text),
+            EventKind::Subagent { goal, status, .. } => {
+                self.append(&format!("\n  agent · {status:?} · {goal}\n"))
+            }
+            EventKind::ContextPlanned { snapshot } => {
+                self.context_status = format!(
+                    "Context estimate: {} · omitted: {}",
+                    snapshot.estimated_tokens,
+                    snapshot.omitted_messages.len()
+                );
+                if !snapshot.omitted_messages.is_empty() {
+                    self.append(&format!(
+                        "\n  compaction · {} messages represented by bounded excerpts/summary\n",
+                        snapshot.omitted_messages.len()
+                    ));
+                }
+            }
             EventKind::ModelRequest { .. } => {
                 self.model_requests += 1;
                 self.append("\n\nwerk › ");
@@ -148,17 +169,8 @@ impl View {
                 result.status,
                 result.error_code.unwrap_or_default()
             )),
-            EventKind::ApprovalRequested { request } => {
-                self.approval = Some(request);
-                self.detail_scroll = 0;
-            }
-            EventKind::ApprovalResolved { .. } => self.approval = None,
-            EventKind::InteractionRequested { request } => {
-                self.interaction = Some(request);
-                self.input.clear();
-                self.detail_scroll = 0;
-            }
-            EventKind::InteractionAnswered { .. } => self.interaction = None,
+            // Pending requests and their addressed run are refreshed together from
+            // snapshots. Root events must not replace a displayed child request.
             EventKind::RunState { status } => {
                 self.status = format!("{status:?}");
                 if status.terminal() {
@@ -229,12 +241,21 @@ fn draw(frame: &mut Frame, view: &View) {
     let (title, details) = if let Some(request) = &view.approval {
         (
             " Approval · Ctrl-Y allow / Ctrl-N deny ",
-            serde_json::to_string_pretty(&request.description).unwrap_or_default(),
+            format!(
+                "{}\n{}",
+                view.request_owner,
+                serde_json::to_string_pretty(&request.description).unwrap_or_default()
+            ),
         )
     } else if let Some(request) = &view.interaction {
         (
             " Question · answer below ",
-            format!("{}\n\n{}", request.question, request.choices.join("\n")),
+            format!(
+                "{}\n{}\n\n{}",
+                view.request_owner,
+                request.question,
+                request.choices.join("\n")
+            ),
         )
     } else {
         (
@@ -243,7 +264,10 @@ fn draw(frame: &mut Frame, view: &View) {
                 "Status: {}\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nEnter: send / steer\n/: commands\nCtrl-C: cancel; twice: quit\nCtrl-Q: close session\nPgUp/PgDn: scroll\nAlt-Up/Down: details\n\n{}",
                 view.status,
                 view.session_id,
-                view.run_id,
+                format_args!(
+                    "{}\n\n{}\n{}\n{}",
+                    view.run_id, view.capacity, view.context_status, view.agents
+                ),
                 view.model_requests,
                 view.tools,
                 if view.configured {
@@ -340,6 +364,85 @@ fn draw(frame: &mut Frame, view: &View) {
     }
 }
 
+// Surface the first pending addressed request across the bounded agent tree.
+// Approval keys remain attached to the child run; no parent approval is reused.
+async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunHandle>> {
+    let mut pending = vec![(root.clone(), "Main agent".to_owned(), 0usize)];
+    let mut lines = Vec::new();
+    let mut addressed = None;
+    let mut approval = None;
+    let mut interaction = None;
+    let mut owner = String::new();
+    while let Some((run, goal, depth)) = pending.pop() {
+        let state = run.status().await?;
+        if depth > 0 {
+            lines.push(format!(
+                "{}{:?} · {}",
+                "  ".repeat(depth - 1),
+                state.status,
+                clean(&goal).chars().take(80).collect::<String>()
+            ));
+        }
+        if addressed.is_none() && !state.status.terminal() {
+            for invocation in &state.invocations {
+                if invocation.result.is_some() {
+                    continue;
+                }
+                if let Some(a) = invocation
+                    .approval
+                    .as_ref()
+                    .filter(|a| a.decision.is_none())
+                {
+                    approval = Some(a.clone());
+                    addressed = Some(run.clone());
+                    owner = goal.clone();
+                    break;
+                }
+                if let Some(q) = invocation
+                    .interaction
+                    .as_ref()
+                    .filter(|q| q.answer.is_none())
+                {
+                    interaction = Some(q.clone());
+                    addressed = Some(run.clone());
+                    owner = goal.clone();
+                    break;
+                }
+            }
+        }
+        for child in run.subagents().await?.into_iter().rev() {
+            if child.run.is_some() {
+                pending.push((
+                    run.subagent(&child.session_id).await?,
+                    child.goal,
+                    depth + 1,
+                ));
+            } else {
+                lines.push(format!("Interrupted · {}", child.goal));
+            }
+        }
+    }
+    view.agents = if lines.is_empty() {
+        "Subagents: none".into()
+    } else {
+        format!("Subagents:\n{}", lines.join("\n"))
+    };
+    let changed = view.approval.as_ref().map(|a| &a.request_id)
+        != approval.as_ref().map(|a| &a.request_id)
+        || view.interaction.as_ref().map(|q| &q.request_id)
+            != interaction.as_ref().map(|q| &q.request_id);
+    if changed {
+        view.detail_scroll = 0;
+        if interaction.is_some() {
+            view.input.clear();
+        }
+    }
+    view.approval = approval;
+    view.interaction = interaction;
+    view.request_owner = owner;
+    Ok(addressed)
+}
+
 pub async fn show(
     session: Option<SessionHandle>,
     initial: Option<String>,
@@ -356,6 +459,14 @@ pub async fn show(
         status: "Ready".into(),
         ..Default::default()
     };
+    if let Some(session) = &session {
+        let execution = session.execution_status();
+        view.capacity = format!(
+            "Inference slots: {}\n{}",
+            execution["effective_model_requests"],
+            execution["inference"]["detail"].as_str().unwrap_or("")
+        );
+    }
     let mut active = resume;
     if let Some(session) = &session {
         let data = session.snapshot().await?;
@@ -392,8 +503,17 @@ pub async fn show(
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut dirty = true;
+    let mut agents_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut addressed: Option<RunHandle> = None;
     loop {
         tokio::select! {
+            _ = agents_tick.tick() => {
+                if let Some(run) = &active {
+                    let previous = (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()));
+                    addressed = refresh_agents(run, &mut view).await?;
+                    dirty |= previous != (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()));
+                }
+            },
             _ = tick.tick() => { if dirty { terminal.draw(|frame| draw(frame, &view))?; dirty = false; } },
             event = events.next() => match event {
                 Some(Ok(event)) => { view.event(event); dirty = true; },
@@ -430,7 +550,7 @@ pub async fn show(
                     if ctrl && key.code == KeyCode::Char('c') {
                         if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI Ctrl-C", &id("cancel")).await?; }
                     } else if ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('n')) {
-                        if let (Some(run), Some(request)) = (&active, &view.approval) {
+                        if let (Some(run), Some(request)) = (addressed.as_ref().or(active.as_ref()), &view.approval) {
                             run.respond_to_approval(&request.request_id, if key.code == KeyCode::Char('y') { ApprovalDecision::AllowOnce } else { ApprovalDecision::Deny }, &id("approval")).await?;
                             view.approval = None;
                         }
@@ -451,13 +571,14 @@ pub async fn show(
                                         view.append("↑/↓ select · Tab complete · Enter run · Esc close\nCtrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · PgUp/PgDn scroll\nAlt-Up/Down scroll details\n");
                                     },
                                     "/clear" => view.transcript.clear(),
+                                    "/agents" => { view.append(&format!("\n\n{}\n{}\n", view.capacity, view.agents)); },
                                     "/cancel" => { if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI /cancel", &id("cancel")).await?; } },
                                     _ => return Err(WorkerError::new("unknown_command", "Unknown command. Type / for suggestions or /help.")),
                                 }
                                 view.input.clear(); view.edited_input(); view.scroll = 0;
                                 return Ok(());
                             }
-                            if let (Some(run), Some(request)) = (&active, &view.interaction) {
+                            if let (Some(run), Some(request)) = (addressed.as_ref().or(active.as_ref()), &view.interaction) {
                                 run.respond_to_interaction(&request.request_id, &input, &id("answer")).await?;
                                 view.interaction = None;
                             } else if let Some(session) = &session {
@@ -495,7 +616,7 @@ mod tests {
             input: "/".into(),
             ..Default::default()
         };
-        assert_eq!(view.commands().len(), 4);
+        assert_eq!(view.commands().len(), 5);
         view.input = "/ca".into();
         assert_eq!(view.commands()[0].0, "/cancel");
         view.commands_dismissed = true;

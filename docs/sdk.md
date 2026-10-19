@@ -6,7 +6,7 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | Operation | Result and meaning |
 |---|---|
 | `WorkerEngine::builder(Arc<dyn ModelProvider>)` | Explicit composition, no import-time effects |
-| `.store(...).tools(...).skills(...).sandbox(...).artifacts(...).context(...).principal(...).build().await` | Open a host with chosen components |
+| `.store(...).tools(...).skills(...).sandbox(...).artifacts(...).context(...).execution(...).principal(...).build().await` | Open a host with chosen components |
 | `engine.create_session(profile, workspace, policy, metadata).await` | Pinned profile/skills, workspace identity, host principal |
 | `engine.open_session(id).await` | Recover durable state; no automatic external dispatch |
 | `engine.list_sessions().await` | Stored session IDs |
@@ -21,11 +21,15 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | `run.cancel(reason, command_id).await` | Signal cancellation; use `wait` for cleanup completion |
 | `run.respond_to_approval(request_id, decision, command_id).await` | Address one exact durable request |
 | `run.respond_to_interaction(request_id, answer, command_id).await` | Supply one durable answer |
-| `engine.resume_run(session_id, run_id).await` | Explicitly resume interrupted safe work |
+| `engine.resume_run(session_id, run_id).await` | Explicitly resume interrupted safe root work; children require new delegation |
 | `session.reconcile_invocation(run_id, invocation_id, confirmed_result, command_id).await` | Host records external evidence, never replays the action |
 | `session.revoke_tool(name, command_id).await` | Remove grants and hard-deny new starts |
 | `session.snapshot()/export().await` | Versioned canonical data, no provider/broker credentials |
 | `session.fork(explicit_new_policy).await` | Independent identities/history at a completed boundary |
+| `engine.execution_status()` / `session.execution_status()` | Capacity source, configured/effective limits and free slots |
+| `run.delegate(Vec<agents::DelegateTask>, command_id).await` | Create owned children; same complete command/payload deduplicates |
+| `run.subagents().await` | Direct child IDs, goals and optional full run snapshots |
+| `run.subagent(child_session_id).await` | Owned child RunHandle; existing steer/cancel/approval/interaction APIs apply |
 | `engine.close().await` | Cancel active work, await managed cleanup, flush and close store |
 
 `ApprovalDecision` is `AllowOnce`, `Deny` or `AllowSameArguments`. Reusable
@@ -61,3 +65,11 @@ into host commands.
 
 Library-only consumers can set `default-features = false` to omit the optional
 ratatui/crossterm client dependencies. Default installs include both CLI commands.
+
+Configure `parallel::ExecutionConfig` on the builder before `build`. Provider
+implementations can report `providers::InferenceConcurrency` through the defaulted
+`ModelProvider::concurrency()` method. Unknown capacity serializes inference.
+The tree shares the root's total `Limits.max_model_requests`; each run retains
+its own metrics. `Run.children`, `Run.tree_model_requests`, `SessionData.parent`
+and `EventKind::Subagent` expose durable orchestration state. See
+[subagent semantics and examples](subagents.md) before implementing a host UI.

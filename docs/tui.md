@@ -30,7 +30,7 @@ these directly. See NOTICE for attribution.
 | Alt-Up / Alt-Down | Scroll full approval details, question or session information |
 
 Slash commands: `/help` shows commands and shortcuts, `/clear` clears only the
-visible conversation, `/cancel` cancels the active run, and `/quit` closes the
+visible conversation, `/cancel` cancels the active run, `/agents` shows child statuses and inference capacity, and `/quit` closes the
 session with the same cleanup as Ctrl-Q. Commands work without a connected model.
 While answering a pending question, slash-prefixed input is treated as an answer.
 
@@ -53,3 +53,13 @@ still requires host reconciliation; the UI cannot authorize an automatic retry.
 Both stdin and stdout must be terminals. Startup errors and panics restore raw
 mode/alternate screen before returning to the shell. No model/network call is
 made just to open the unconfigured setup screen.
+
+Subagent status is refreshed from durable snapshots every 250 ms while a run is
+active. The first pending request across the tree is shown with its owning goal;
+approval/answer controls address that child's RunHandle. Subsequent pending
+requests appear after resolution. The ordinary transcript streams parent events;
+full child transcripts remain in child sessions. Ctrl-C and closing the terminal
+cancel descendants and wait for cleanup. See [subagents](subagents.md).
+
+Context planning also reports its conservative token estimate and compaction
+notices. These are estimates, not server usage; see [context handling](context.md).

@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-19",
+  "worker_base_commit": "b981732a7dec8af977315e950d8bf43a123c5e8a",
+  "source_state": "local uncommitted changes; source hashes supplied separately",
+  "werk_reference_commit": "9b195c9b1f60838a538fdde8002e87500e565610",
+  "system": "Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "build_profile": "dev/test, unoptimized with debuginfo",
+  "benchmark_store": "in-memory default engine store",
+  "live_werk_ports_11434_11435": "no listeners (outside outer sandbox)",
+  "sandbox_binary": "/tmp/werk-worker-study/bubblewrap/usr/bin/bwrap",
+  "sandbox_version": "0.6.1",
+  "native_platforms_executed": [
+    "Linux x86_64 / WSL2"
+  ]
+}

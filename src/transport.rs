@@ -14,6 +14,11 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const METHODS: &[&str] = &[
     "initialize",
+    "execution.status",
+    "agents.delegate",
+    "agents.list",
+    "agents.cancel",
+    "agents.message",
     "session.create",
     "session.open",
     "session.list",
@@ -82,6 +87,7 @@ impl RpcHost {
             return Err(WorkerError::new("not_initialized", "Send initialize first"));
         }
         match request.method.as_str() {
+            "execution.status" => Ok(self.engine.execution_status()),
             "session.create" => {
                 let profile =
                     AgentProfile::bundled(p["profile"].as_str().unwrap_or("general-readonly"))?;
@@ -149,6 +155,26 @@ impl RpcHost {
                     _ => {
                         let run = session.run(text(p, "run_id")?).await?;
                         match method {
+                            "agents.delegate" => Ok(json!(
+                                run.delegate(
+                                    serde_json::from_value(p["tasks"].clone())?,
+                                    text(p, "command_id")?
+                                )
+                                .await?
+                            )),
+                            "agents.list" => Ok(json!(run.subagents().await?)),
+                            "agents.cancel" => Ok(json!(
+                                run.subagent(text(p, "child_session_id")?)
+                                    .await?
+                                    .cancel("Host cancelled child", text(p, "command_id")?)
+                                    .await?
+                            )),
+                            "agents.message" => Ok(json!(
+                                run.subagent(text(p, "child_session_id")?)
+                                    .await?
+                                    .steer(text(p, "input")?, text(p, "command_id")?)
+                                    .await?
+                            )),
                             "run.status" => Ok(json!(run.status().await?)),
                             "run.cancel" => Ok(json!(
                                 run.cancel(

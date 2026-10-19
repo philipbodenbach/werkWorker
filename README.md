@@ -8,7 +8,7 @@ Cargo and expose the same CLI. It is licensed under [Elastic License 2.0](LICENS
 
 The SDK runs an asynchronous model/tool loop with streamed events, explicit
 resource grants and approvals, SQLite sessions, cancellation, steering,
-follow-ups and crash recovery. Coding and document/ticket automation use the
+follow-ups, crash recovery and parallel subagents with separate conversations. Coding and document/ticket automation use the
 same engine. Four bundled Agent Skills and three profiles are embedded in the
 package; they do not require a repository checkout at runtime.
 
@@ -68,6 +68,36 @@ grant file explicitly allocates workspace reads; each read still asks. A grant
 allows the engine to consider an action; an approval authorizes its prepared
 arguments. Full access and exact-argument reusable approvals require explicit
 host configuration and cannot expand the sandbox or override a hard denial.
+
+## Parallel subagents
+
+The agent can delegate independent tasks with `delegate_task`, continue its own
+work, and collect the child results. In the TUI, `/agents` shows the tree; child
+approvals and questions are addressed individually. Cancellation cleans up the
+whole tree. All three bundled profiles include the orchestration tools.
+
+```sh
+ww --werk-config examples/werk-config.json \
+  --execution-config examples/execution-config.json diagnose
+ww --werk-config examples/werk-config.json \
+  --execution-config examples/execution-config.json \
+  --grants examples/readonly-grants.json tui --profile general-readonly \
+  "Delegate architecture and documentation reviews in parallel, then summarize both."
+```
+
+Defaults allow four active subagents and up to four concurrent model requests.
+Werk deployment diagnostics or WerkProtocol observability must establish server
+capacity; unknown concurrency gracefully limits inference to one request. Children
+still run as independent tasks. Shared-workspace writes are serialized and
+checked for stale edits. See [configuration and safety boundaries](docs/subagents.md),
+[SDK](docs/sdk.md), [protocol](docs/protocol.md) and
+[experiments, raw data and benchmark results](docs/benchmarks/2026-10-19-subagents/README.md).
+
+Context and output reservations respect the provider limit before every request.
+Automatic rolling compaction keeps long tool runs within that budget while
+preserving user constraints and complete tool pairs. If Werk cannot report its
+context size, set `capabilities.context_tokens` explicitly in the connection JSON.
+See [server limits and compaction](docs/context.md).
 
 ## Minimal SDK
 

@@ -34,7 +34,7 @@ struct Active {
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
-struct EngineInner {
+pub(crate) struct EngineInner {
     provider: Arc<dyn ModelProvider>,
     store: Arc<dyn SessionStore>,
     tools: ToolRegistry,
@@ -49,23 +49,30 @@ struct EngineInner {
     admission: Mutex<()>,
     closed: AtomicBool,
     fatal: Mutex<BTreeMap<String, WorkerError>>,
+    pub(crate) execution: crate::parallel::ExecutionConfig,
+    model_slots: tokio::sync::Semaphore,
+    pub(crate) child_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) child_permits: Mutex<BTreeMap<String, tokio::sync::OwnedSemaphorePermit>>,
+    pub(crate) delegation: Mutex<()>,
+    workspace_access: Arc<crate::parallel::WorkspaceAccess>,
 }
 #[derive(Clone)]
 pub struct WorkerEngine {
-    inner: Arc<EngineInner>,
+    pub(crate) inner: Arc<EngineInner>,
 }
 #[derive(Clone)]
 pub struct SessionHandle {
-    engine: WorkerEngine,
+    pub(crate) engine: WorkerEngine,
     runtime: Arc<SessionRuntime>,
 }
 #[derive(Clone)]
 pub struct RunHandle {
-    session: SessionHandle,
+    pub(crate) session: SessionHandle,
     pub id: String,
     pub receipt: CommandReceipt,
 }
 pub struct EngineBuilder {
+    execution: crate::parallel::ExecutionConfig,
     provider: Arc<dyn ModelProvider>,
     store: Arc<dyn SessionStore>,
     tools: Option<ToolRegistry>,
@@ -76,6 +83,11 @@ pub struct EngineBuilder {
     principal: String,
 }
 impl EngineBuilder {
+    pub fn execution(mut self, config: crate::parallel::ExecutionConfig) -> Self {
+        self.execution = config;
+        self
+    }
+
     pub fn store(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.store = store;
         self
@@ -106,8 +118,18 @@ impl EngineBuilder {
     }
     pub async fn build(self) -> Result<WorkerEngine> {
         validate_id(&self.principal)?;
+        self.execution.validate()?;
+        let slots = self
+            .execution
+            .effective_requests(&self.provider.concurrency());
         Ok(WorkerEngine {
             inner: Arc::new(EngineInner {
+                model_slots: tokio::sync::Semaphore::new(slots),
+                child_slots: Arc::new(tokio::sync::Semaphore::new(self.execution.max_subagents)),
+                child_permits: Mutex::new(BTreeMap::new()),
+                delegation: Mutex::new(()),
+                workspace_access: Arc::new(crate::parallel::WorkspaceAccess::default()),
+                execution: self.execution,
                 provider: self.provider,
                 store: self.store,
                 tools: self.tools.unwrap_or(ToolRegistry::builtins()?),
@@ -129,6 +151,7 @@ impl EngineBuilder {
 impl WorkerEngine {
     pub fn builder(provider: Arc<dyn ModelProvider>) -> EngineBuilder {
         EngineBuilder {
+            execution: Default::default(),
             provider,
             store: Arc::new(InMemoryStore::default()),
             tools: None,
@@ -139,7 +162,7 @@ impl WorkerEngine {
             principal: "local-host".into(),
         }
     }
-    fn ensure_open(&self) -> Result<()> {
+    pub(crate) fn ensure_open(&self) -> Result<()> {
         if self.inner.closed.load(Ordering::Acquire) {
             Err(WorkerError::new("closed", "Engine is closed"))
         } else {
@@ -170,6 +193,10 @@ impl WorkerEngine {
         }
         Ok(())
     }
+    pub fn execution_status(&self) -> Value {
+        let info = self.inner.provider.concurrency();
+        json!({"config":self.inner.execution,"inference":info,"context_tokens":self.inner.provider.capabilities().context_tokens,"effective_model_requests":self.inner.execution.effective_requests(&info),"free_model_slots":self.inner.model_slots.available_permits(),"free_subagent_slots":self.inner.child_slots.available_permits()})
+    }
     pub fn tools(&self) -> Vec<ToolDefinition> {
         self.inner.tools.definitions()
     }
@@ -198,6 +225,7 @@ impl WorkerEngine {
         self.validate_workspace(&workspace)?;
         let mut data = SessionData {
             schema_version: 1,
+            parent: None,
             id: id("session"),
             revision: 0,
             workspace: workspace.path.clone(),
@@ -319,6 +347,12 @@ impl WorkerEngine {
         let _admission = self.inner.admission.lock().await;
         let data = session.snapshot().await?;
         let run = data.run(run_id)?;
+        if data.parent.is_some() {
+            return Err(WorkerError::new(
+                "agent_recovery",
+                "Child runs are one-shot; reconcile outcomes and delegate a new task from an active parent",
+            ));
+        }
         if run.status != RunStatus::Interrupted {
             return Err(WorkerError::new(
                 "not_interrupted",
@@ -338,7 +372,7 @@ impl WorkerEngine {
                 "Reconcile unknown actions before starting new work; automatic resume is blocked",
             ));
         }
-        self.reserve_workspace(&session, &data.id).await?;
+
         session
             .update(|d| {
                 d.run_mut(run_id)?.status = RunStatus::Queued;
@@ -356,23 +390,6 @@ impl WorkerEngine {
                 run_id: Some(run_id.into()),
             },
         })
-    }
-    async fn reserve_workspace(&self, session: &SessionHandle, session_id: &str) -> Result<()> {
-        let active = self.inner.active.lock().await;
-        let sessions = self.inner.sessions.lock().await;
-        for (id, task) in active.iter() {
-            if id != session_id
-                && !task.task.is_finished()
-                && let Some(other) = sessions.get(id)
-                && other.workspace.identity == session.runtime.workspace.identity
-            {
-                return Err(WorkerError::new(
-                    "workspace_busy",
-                    "Another session is using this workspace",
-                ));
-            }
-        }
-        Ok(())
     }
     async fn spawn_actor(&self, session: SessionHandle, run_id: String) {
         let session_id = session.runtime.data.lock().await.id.clone();
@@ -485,7 +502,10 @@ impl SessionHandle {
             d.emit(Some(run_id),EventKind::Diagnostic{code:format!("host_reconciled:{invocation_id}")});Ok(receipt)
         }).await
     }
-    async fn update<T>(&self, op: impl FnOnce(&mut SessionData) -> Result<T>) -> Result<T> {
+    pub(crate) async fn update<T>(
+        &self,
+        op: impl FnOnce(&mut SessionData) -> Result<T>,
+    ) -> Result<T> {
         let mut locked = self.runtime.data.clone().lock_owned().await;
         let mut next = locked.clone();
         let result = op(&mut next)?;
@@ -567,6 +587,13 @@ impl SessionHandle {
                 },
             });
         }
+        if data.parent.is_some() && !data.runs.is_empty() {
+            return Err(WorkerError::new(
+                "agent_one_shot",
+                "Child sessions accept one run; steer the active child or delegate a new task",
+            ));
+        }
+
         if data.runs.iter().any(|r| {
             r.invocations.iter().any(|i| {
                 i.result
@@ -595,9 +622,7 @@ impl SessionHandle {
         {
             return Err(WorkerError::new("queue_limit", "Follow-up queue is full"));
         }
-        if !busy {
-            self.engine.reserve_workspace(self, &data.id).await?;
-        }
+
         let run_id = id("run");
         let receipt = self
             .update(|d| {
@@ -621,6 +646,8 @@ impl SessionHandle {
                     plan: Value::Null,
                     similar_grants: vec![],
                     repaired_output: false,
+                    children: vec![],
+                    tree_model_requests: 0,
                 });
                 d.emit(
                     Some(&run_id),
@@ -740,77 +767,90 @@ impl SessionHandle {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
-    async fn drive(&self, mut run_id: String, shutdown: CancellationToken) {
-        loop {
-            let result = self.execute_run(&run_id, &shutdown).await;
-            let cleanup = self.engine.inner.jobs.cleanup(&run_id).await;
-            let result = result.and(cleanup);
-            let settled = self
-                .update(|d| {
-                    let run = d.run_mut(&run_id)?;
-                    let cancelled =
-                        matches!(run.status, RunStatus::Cancelling | RunStatus::Cancelled)
-                            || shutdown.is_cancelled();
-                    // Complete every accepted call exactly once before any future turn.
-                    for i in &mut run.invocations {
-                        if i.result.is_none() {
-                            i.result = Some(ToolResult::error(
-                                if i.status == InvocationStatus::Running {
-                                    Outcome::OutcomeUnknown
-                                } else {
-                                    Outcome::CancelledBeforeStart
-                                },
-                                if i.status == InvocationStatus::Running {
-                                    "outcome_unknown"
-                                } else {
-                                    "cancelled_before_start"
-                                },
-                            ));
-                            i.status = InvocationStatus::Finished;
+    fn drive(
+        &self,
+        mut run_id: String,
+        shutdown: CancellationToken,
+    ) -> futures_util::future::BoxFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                let result = self.execute_run(&run_id, &shutdown).await;
+                let children = self.finish_children(&run_id).await;
+                let cleanup = self.engine.inner.jobs.cleanup(&run_id).await.and(children);
+                let result = result.and(cleanup);
+                let settled = self
+                    .update(|d| {
+                        let run = d.run_mut(&run_id)?;
+                        let cancelled =
+                            matches!(run.status, RunStatus::Cancelling | RunStatus::Cancelled)
+                                || shutdown.is_cancelled();
+                        // Complete every accepted call exactly once before any future turn.
+                        for i in &mut run.invocations {
+                            if i.result.is_none() {
+                                i.result = Some(ToolResult::error(
+                                    if i.status == InvocationStatus::Running {
+                                        Outcome::OutcomeUnknown
+                                    } else {
+                                        Outcome::CancelledBeforeStart
+                                    },
+                                    if i.status == InvocationStatus::Running {
+                                        "outcome_unknown"
+                                    } else {
+                                        "cancelled_before_start"
+                                    },
+                                ));
+                                i.status = InvocationStatus::Finished;
+                            }
                         }
-                    }
-                    run.status = if cancelled {
-                        RunStatus::Cancelled
-                    } else if result.as_ref().is_err_and(|e| e.code == "outcome_unknown") {
-                        RunStatus::Interrupted
-                    } else if result.is_err() {
-                        RunStatus::Failed
-                    } else {
-                        RunStatus::Completed
-                    };
-                    run.error = result.clone().err();
-                    run.metrics.total_ms = Some(now_ms().saturating_sub(run.started_at_ms));
-                    let status = run.status;
-                    project_pending(d, &run_id)?;
-                    d.emit(Some(&run_id), EventKind::RunState { status });
-                    Ok(())
-                })
-                .await;
-            if let Err(error) = settled {
-                self.engine
-                    .inner
-                    .fatal
-                    .lock()
-                    .await
-                    .insert(self.id().await, error);
-                self.runtime.changed.send_replace(u64::MAX);
-                return;
+                        run.status = if cancelled {
+                            RunStatus::Cancelled
+                        } else if result.as_ref().is_err_and(|e| e.code == "outcome_unknown") {
+                            RunStatus::Interrupted
+                        } else if result.is_err() {
+                            RunStatus::Failed
+                        } else {
+                            RunStatus::Completed
+                        };
+                        run.error = result.clone().err();
+                        run.metrics.total_ms = Some(now_ms().saturating_sub(run.started_at_ms));
+                        let status = run.status;
+                        project_pending(d, &run_id)?;
+                        d.emit(Some(&run_id), EventKind::RunState { status });
+                        Ok(())
+                    })
+                    .await;
+                if let Err(error) = settled {
+                    self.engine
+                        .inner
+                        .fatal
+                        .lock()
+                        .await
+                        .insert(self.id().await, error);
+                    self.runtime.changed.send_replace(u64::MAX);
+                    return;
+                }
+                // Serialize final admission decision with submit/follow_up to avoid a lost queue.
+                let _admission = self.engine.inner.admission.lock().await;
+                let data = self.snapshot().await.unwrap();
+                let next = data
+                    .runs
+                    .iter()
+                    .find(|r| r.status == RunStatus::Queued)
+                    .map(|r| r.id.clone());
+                if let Some(next) = next {
+                    run_id = next;
+                } else {
+                    self.engine.inner.active.lock().await.remove(&data.id);
+                    self.engine
+                        .inner
+                        .child_permits
+                        .lock()
+                        .await
+                        .remove(&data.id);
+                    break;
+                }
             }
-            // Serialize final admission decision with submit/follow_up to avoid a lost queue.
-            let _admission = self.engine.inner.admission.lock().await;
-            let data = self.snapshot().await.unwrap();
-            let next = data
-                .runs
-                .iter()
-                .find(|r| r.status == RunStatus::Queued)
-                .map(|r| r.id.clone());
-            if let Some(next) = next {
-                run_id = next;
-            } else {
-                self.engine.inner.active.lock().await.remove(&data.id);
-                break;
-            }
-        }
+        })
     }
     async fn execute_run(&self, run_id: &str, shutdown: &CancellationToken) -> Result<()> {
         if self.snapshot().await?.run(run_id)?.status == RunStatus::Cancelled {
@@ -846,12 +886,15 @@ impl SessionHandle {
         {
             self.compact_history(run_id, shutdown).await?;
         }
-        loop {
+        'steps: loop {
             self.check_running(run_id, shutdown).await?;
             // A committed final model response is sufficient after process loss.
             // Never ask the provider to reproduce already persisted text.
             let recovered = self.snapshot().await?;
             let saved = recovered.run(run_id)?;
+            if saved.final_text.is_some() && self.deliver_children(run_id, shutdown).await? {
+                continue;
+            }
             if let Some(text) = &saved.final_text
                 && saved.steering.is_empty()
                 && saved.invocations.iter().all(|i| i.result.is_some())
@@ -885,7 +928,12 @@ impl SessionHandle {
             })
             .await?;
             let data = self.snapshot().await?;
-            let run = data.run(run_id)?;
+            let mut effective_run = data.run(run_id)?.clone();
+            effective_run.limits = crate::context::effective_limits(
+                &effective_run.limits,
+                self.engine.inner.provider.capabilities().context_tokens,
+            )?;
+            let run = &effective_run;
             if run.metrics.steps >= run.limits.max_steps {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
             }
@@ -970,6 +1018,11 @@ impl SessionHandle {
                             Ok(())
                         })
                         .await?;
+                        if error.code == "context_limit_updated" {
+                            // Rebuild/compact against the smaller server limit, never
+                            // resend the identical rejected request. Steps/tree budget bound retries.
+                            continue 'steps;
+                        }
                         let max_retries = self.snapshot().await?.run(run_id)?.limits.max_retries;
                         if !error.retryable || retries >= max_retries {
                             return Err(error);
@@ -1079,6 +1132,9 @@ impl SessionHandle {
                         continue;
                     }
                 }
+                if self.deliver_children(run_id, shutdown).await? {
+                    continue;
+                }
                 if !run.steering.is_empty() {
                     self.update(|d| {
                         d.run_mut(run_id)?.final_text = None;
@@ -1091,7 +1147,11 @@ impl SessionHandle {
             }
         }
     }
-    async fn check_running(&self, run_id: &str, shutdown: &CancellationToken) -> Result<()> {
+    pub(crate) async fn check_running(
+        &self,
+        run_id: &str,
+        shutdown: &CancellationToken,
+    ) -> Result<()> {
         let data = self.runtime.data.lock().await;
         let run = data.run(run_id)?;
         if shutdown.is_cancelled() || run.status == RunStatus::Cancelling {
@@ -1105,10 +1165,35 @@ impl SessionHandle {
         }
         Ok(())
     }
+    // A select! sibling may own a queued session-mutex permit. Never await
+    // the same mutex from the timer branch while that sibling is unpolled.
+    fn check_running_without_wait(&self, run_id: &str, shutdown: &CancellationToken) -> Result<()> {
+        if shutdown.is_cancelled() {
+            return Err(WorkerError::new("cancelled", "Run was cancelled"));
+        }
+        if let Ok(data) = self.runtime.data.try_lock() {
+            let run = data.run(run_id)?;
+            if run.status == RunStatus::Cancelling {
+                return Err(WorkerError::new("cancelled", "Run was cancelled"));
+            }
+            if run.deadline_ms > 0 && now_ms() >= run.deadline_ms {
+                return Err(WorkerError::new(
+                    "wall_budget",
+                    "Run wall-time budget reached",
+                ));
+            }
+        }
+        Ok(())
+    }
     async fn compact_history(&self, run_id: &str, shutdown: &CancellationToken) -> Result<()> {
         self.check_running(run_id, shutdown).await?;
         let data = self.snapshot().await?;
-        let run = data.run(run_id)?;
+        let mut effective_run = data.run(run_id)?.clone();
+        effective_run.limits = crate::context::effective_limits(
+            &effective_run.limits,
+            self.engine.inner.provider.capabilities().context_tokens,
+        )?;
+        let run = &effective_run;
         let mut indices = Vec::new();
         let mut source = Vec::new();
         let mut index = 0;
@@ -1247,7 +1332,7 @@ impl SessionHandle {
         }
         Ok(())
     }
-    async fn cooperative_delay(
+    pub(crate) async fn cooperative_delay(
         &self,
         run_id: &str,
         shutdown: &CancellationToken,
@@ -1268,6 +1353,31 @@ impl SessionHandle {
         shutdown: &CancellationToken,
     ) -> Result<(Message, Option<Usage>, Value)> {
         let operation = async {
+            let data = self.snapshot().await?;
+            let limits = crate::context::effective_limits(
+                &data.run(run_id)?.limits,
+                self.engine.inner.provider.capabilities().context_tokens,
+            )?;
+            if request.max_output_tokens == 0
+                || request.max_output_tokens > limits.reserve_output_tokens
+                || crate::context::estimate_request(&request)
+                    .saturating_add(request.max_output_tokens)
+                    .saturating_add(512)
+                    > limits.context_tokens
+            {
+                return Err(WorkerError::new(
+                    "context_overflow",
+                    "Request exceeds effective context/output budget before dispatch",
+                ));
+            }
+            let _slot = self
+                .engine
+                .inner
+                .model_slots
+                .acquire()
+                .await
+                .map_err(|_| WorkerError::new("closed", "Inference scheduler closed"))?;
+            self.charge_tree_request(run_id).await?;
             let mut stream = self.engine.inner.provider.stream(request).await?;
             let mut assembler = ResponseAssembler::default();
             let limit = self.snapshot().await?.run(run_id)?.limits.max_output_bytes;
@@ -1317,7 +1427,7 @@ impl SessionHandle {
         };
         tokio::pin!(operation);
         loop {
-            tokio::select! {result=&mut operation=>return result,_=tokio::time::sleep(Duration::from_millis(20))=>self.check_running(run_id,shutdown).await?,_=shutdown.cancelled()=>return Err(WorkerError::new("cancelled","Model request cancelled"))}
+            tokio::select! {result=&mut operation=>return result,_=tokio::time::sleep(Duration::from_millis(20))=>self.check_running_without_wait(run_id,shutdown)?,_=shutdown.cancelled()=>return Err(WorkerError::new("cancelled","Model request cancelled"))}
         }
     }
     async fn context_for(
@@ -1358,6 +1468,7 @@ impl SessionHandle {
                 .filter_map(|r| r.data["result"]["id"].as_str().map(str::to_owned))
                 .collect(),
             skills: data.skill_snapshots,
+            workspace_lease: None,
         })
     }
     async fn outcome(
@@ -1447,17 +1558,20 @@ impl SessionHandle {
             ));
         }
         let cancel = CancellationToken::new();
-        let context = self
+        let mut context = self
             .context_for(run_id, invocation_id, cancel.clone())
             .await?;
         // Check the host capability before preparation reads; connectors reveal only
         // their host-fixed origin during preparation, never perform I/O there.
         let preliminary = self.snapshot().await?;
         if matches!(def.effect, Effect::Read | Effect::Write | Effect::Process)
-            && preliminary
+            && (preliminary
                 .policy
                 .evaluate(def, &invocation.call.arguments, &[])
                 == PolicyDecision::Deny
+                || !self
+                    .ancestors_allow(def, &invocation.call.arguments)
+                    .await?)
         {
             return self
                 .outcome(
@@ -1466,6 +1580,28 @@ impl SessionHandle {
                     ToolResult::error(Outcome::Denied, "capability_denied"),
                 )
                 .await;
+        }
+        // Hold the lease through preparation, approval and execution. Background
+        // processes receive a cloned lease lasting through their actual cleanup.
+        if matches!(def.effect, Effect::Read | Effect::Write | Effect::Process)
+            && !matches!(def.name.as_str(), "process.status" | "process.cancel")
+        {
+            let write = def.effect == Effect::Write
+                || (def.effect == Effect::Process && context.writable)
+                || !def.concurrency_safe && def.effect == Effect::Read;
+            loop {
+                self.check_running(run_id, shutdown).await?;
+                if let Some(lease) = self
+                    .engine
+                    .inner
+                    .workspace_access
+                    .try_acquire(&context.workspace.path, write)
+                {
+                    context.workspace_lease = Some(lease);
+                    break;
+                }
+                self.cooperative_delay(run_id, shutdown, 20).await?;
+            }
         }
         let prepared = if invocation.prepared.is_null() {
             match tool
@@ -1512,6 +1648,15 @@ impl SessionHandle {
                 "repetition_limit",
                 "Repeated identical calls exceeded the run limit",
             ));
+        }
+        if !self.ancestors_allow(def, &prepared).await? {
+            return self
+                .outcome(
+                    run_id,
+                    invocation_id,
+                    ToolResult::error(Outcome::Denied, "ancestor_denied"),
+                )
+                .await;
         }
         let decision = data.policy.evaluate(def, &prepared, &run.similar_grants);
         if decision == PolicyDecision::Deny {
@@ -1657,6 +1802,15 @@ impl SessionHandle {
                 )
                 .await;
         }
+        if !self.ancestors_allow(def, &prepared).await? {
+            return self
+                .outcome(
+                    run_id,
+                    invocation_id,
+                    ToolResult::error(Outcome::Denied, "ancestor_denied"),
+                )
+                .await;
+        }
         self.update(|d| {
             if d.policy
                 .evaluate(def, &prepared, &d.run(run_id)?.similar_grants)
@@ -1689,19 +1843,26 @@ impl SessionHandle {
             Ok(())
         })
         .await?;
-        let future = tool.execute(prepared.clone(), &context);
+        let future = async {
+            if crate::agents::is_agent_tool(&def.name) {
+                self.agent_tool(run_id, invocation_id, &def.name, prepared.clone(), shutdown)
+                    .await
+            } else {
+                tool.execute(prepared.clone(), &context).await
+            }
+        };
         tokio::pin!(future);
         let start = tokio::time::Instant::now();
         let result = loop {
             tokio::select! {
                 result=&mut future=>break result,
                 _=tokio::time::sleep(Duration::from_millis(20))=>{
-                    let interrupted=self.check_running(run_id,shutdown).await.is_err()||start.elapsed().as_millis()>def.timeout_ms as u128;
+                    let interrupted=self.check_running_without_wait(run_id,shutdown).is_err()||start.elapsed().as_millis()>def.timeout_ms as u128;
                     if interrupted{
                         cancel.cancel();
                         // Bounded local writes and managed processes must finish cleanup;
                         // external requests have uncertain outcomes and are not retried.
-                        if matches!(def.effect,Effect::Write|Effect::Process){break future.await;}
+                        if matches!(def.effect,Effect::Write|Effect::Process) || crate::agents::is_agent_tool(&def.name) {break future.await;}
                         break Err(WorkerError::new(if def.effect==Effect::ExternalWrite{"outcome_unknown"}else{"cancelled"},"Tool interrupted"));
                     }
                 }
@@ -1986,5 +2147,45 @@ impl RunHandle {
                 Ok(receipt)
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod concurrency_regressions {
+    use super::*;
+    #[tokio::test]
+    async fn cancellation_poll_does_not_block_a_paused_mutex_waiter() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WorkerEngine::builder(Arc::new(crate::providers::ScriptedProvider::default()))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile::bundled("general-readonly").unwrap(),
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let held = session.runtime.data.lock().await;
+        let waiting = session.snapshot();
+        tokio::pin!(waiting);
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        drop(held);
+        assert!(
+            session.runtime.data.try_lock().is_err(),
+            "queued sibling owns next permit"
+        );
+        // This is exactly the timer branch while its select sibling is paused.
+        session
+            .check_running_without_wait("not_needed_while_locked", &CancellationToken::new())
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        engine.close().await.unwrap();
     }
 }

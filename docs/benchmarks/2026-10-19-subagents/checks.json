@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-19",
+  "tests": {
+    "exit_code": 0,
+    "passed": 65,
+    "failed": 0,
+    "ignored": 0,
+    "require_sandbox": true
+  },
+  "clippy_all_targets": {
+    "exit_code": 0,
+    "warnings_denied": true
+  },
+  "fmt_check": {
+    "exit_code": 0
+  },
+  "cli_reference_check": {
+    "exit_code": 0
+  },
+  "library_without_default_features": {
+    "exit_code": 0
+  },
+  "pty_smoke": {
+    "exit_code": 0
+  },
+  "evals": {
+    "exit_code": 0,
+    "passed": 8
+  },
+  "post_fix_scheduler": {
+    "series": 3,
+    "cases": 60,
+    "requests": 480,
+    "completed": true
+  },
+  "aborted_earlier_series": {
+    "exit_code": 143,
+    "timing_data": null
+  },
+  "live_werk_inference": "not run: no listener on checked local ports",
+  "native_windows_macos": "not run in this environment"
+}

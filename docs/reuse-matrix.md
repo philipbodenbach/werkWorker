@@ -20,3 +20,24 @@ is not the authoritative revision for this integration.
 The lightweight client could later be extracted jointly with Werk. No private
 module imports or changes to werk1112 are needed. Conformance is tested using
 local HTTP fixtures; a real model connection is a separate opt-in check.
+
+## Parallelism and context follow-up
+
+For this additive work the inspected local Werk reference was
+`9b195c9b1f60838a538fdde8002e87500e565610`. This is a separate, explicitly
+identified source from the original wire reference above; it was not modified.
+Relevant files in that revision:
+
+- `src/api/deployments.rs`, `src/deployments.rs`: ordinary-JSON deployment
+  diagnostics, ID/alias routing, configured `parallel` and `context`, runtime.
+- `src/api/observability.rs`, `src/observability.rs`,
+  `src/backend/llama_server/telemetry.rs`: WerkProtocol envelope, timestamps,
+  available backend/model identity, native slots and aggregate context gauges.
+- `src/api/generation.rs`, `src/openai.rs`: `context_length_exceeded`, flattened
+  numeric `context_length` details and output-token reservation.
+- `src/api/chat.rs`: `/v1/models` does not advertise a per-request context limit.
+
+These contracts are covered by HTTP fixtures. No dependency on Werk's private
+Rust types was added. Multi-slot aggregate context telemetry is deliberately not
+used as a per-request minimum. See [context limits](context.md) and
+[parallel execution](subagents.md) for fallback behavior and source limits.

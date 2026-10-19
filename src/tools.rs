@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct ToolContext {
+    pub workspace_lease: Option<Arc<crate::parallel::WorkspaceLease>>,
     pub session_id: String,
     pub run_id: String,
     pub invocation_id: String,
@@ -78,6 +79,9 @@ impl ToolRegistry {
             "artifacts.read",
         ] {
             registry.register(Arc::new(Builtin { name: name.into() }))?;
+        }
+        for name in crate::agents::AGENT_TOOLS {
+            registry.register(Arc::new(crate::agents::AgentTool((*name).into())))?;
         }
         Ok(registry)
     }
@@ -319,7 +323,7 @@ impl Tool for Builtin {
             },
             "process.run"|"process.start"=>{
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
-                if self.name=="process.start"{json!({"job_id":ctx.jobs.start(&ctx.run_id,ctx.sandbox.clone(),ctx.workspace.clone(),ctx.writable,argv,cwd.into()).await?})}
+                if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
                 else{serde_json::to_value(ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?)?}
             },
             "process.status"|"process.cancel"=>ctx.jobs.status(&ctx.run_id,field(&args,"job_id")?,self.name=="process.cancel").await?,

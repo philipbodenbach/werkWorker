@@ -14,7 +14,8 @@ One serialized transactional state per session, concurrent I/O outside its
 lock, CAS revisions in stores, and an exclusive SQLite store owner provide
 ordering. Persist model messages and intents before dispatch; persist outcomes
 before continuation. A started invocation without an outcome is unknown after
-recovery, never silently retried. Mutable workspaces are exclusively reserved.
+recovery, never silently retried. Workspace operation leases allow concurrent reads/inference and serialize writes
+and writable processes, including overlapping directory scopes.
 
 SQLite snapshots and their durable events commit together. This simple v0.1
 representation favors auditability over high-volume database efficiency.
@@ -29,3 +30,17 @@ JSON Schema validation is delegated to jsonschema; rusqlite bundles SQLite for
 installation portability. No inference or reference-agent runtime is linked.
 The optional `tui` feature supplies the ratatui/crossterm CLI client; library-only
 consumers can disable default features.
+
+## Parallel orchestration
+
+`parallel` owns validated host limits and workspace leases; `agents` owns durable
+child identities, delegation, tree budgets and result collection. `providers`
+reports evidence for inference capacity; `api` enforces the shared stream
+semaphore. Unknown capacity permits one request. Active-child capacity is
+reserved without blocking to avoid nested admission deadlocks. Each session
+retains its own ordered model/tool loop and transaction lock.
+
+Parent/child links commit before child dispatch. Completion waits for descendants
+and managed jobs; automatic result delivery and its message commit together.
+TUI/RPC use the same SDK and addressed child requests. See [subagents](subagents.md)
+for the contract, partial-creation recovery boundary and resource limits.

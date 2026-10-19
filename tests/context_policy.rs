@@ -192,7 +192,7 @@ async fn revocation_and_cross_run_approval_cannot_start_action() {
     engine.close().await.unwrap();
 }
 #[tokio::test]
-async fn separate_sessions_run_independently_shared_workspace_conflicts() {
+async fn separate_sessions_run_independently_including_shared_workspace() {
     let first_dir = tempfile::tempdir().unwrap();
     let second_dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(ScriptedProvider::new(vec![
@@ -204,6 +204,7 @@ async fn separate_sessions_run_independently_shared_workspace_conflicts() {
             delay_ms: 150,
             ..ScriptedTurn::text("two")
         },
+        ScriptedTurn::text("three"),
     ]));
     let engine = WorkerEngine::builder(provider).build().await.unwrap();
     let first = engine
@@ -237,21 +238,20 @@ async fn separate_sessions_run_independently_shared_workspace_conflicts() {
         .submit("first", "c", Limits::default(), None)
         .await
         .unwrap();
-    assert_eq!(
-        shared
-            .submit("collision", "x", Limits::default(), None)
-            .await
-            .err()
-            .unwrap()
-            .code,
-        "workspace_busy"
-    );
+    let shared_run = shared
+        .submit("shared", "x", Limits::default(), None)
+        .await
+        .unwrap();
     let other = second
         .submit("second", "c", Limits::default(), None)
         .await
         .unwrap();
     assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
     assert_eq!(other.wait().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(
+        shared_run.wait().await.unwrap().status,
+        RunStatus::Completed
+    );
     assert!(
         !second
             .snapshot()
@@ -294,4 +294,131 @@ async fn large_output_has_owned_artifact_and_context_excerpt() {
     assert_eq!(result.artifacts.len(), 1);
     assert!(result.data.to_string().len() < 9000);
     engine.close().await.unwrap();
+}
+
+struct BoundedProvider {
+    inner: Arc<ScriptedProvider>,
+    limit: usize,
+}
+#[async_trait::async_trait]
+impl ModelProvider for BoundedProvider {
+    fn identity(&self) -> String {
+        "bounded-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            context_tokens: Some(self.limit),
+            ..self.inner.capabilities()
+        }
+    }
+    async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        assert!(
+            werk_worker::context::estimate_request(&request) + request.max_output_tokens + 512
+                <= self.limit
+        );
+        self.inner.stream(request).await
+    }
+}
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn automatic_compaction_keeps_long_tool_runs_inside_provider_context() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("evidence"), "Evidence 世界. ".repeat(130)).unwrap();
+    let mut turns = (0..10).map(|_| read("evidence")).collect::<Vec<_>>();
+    turns.push(ScriptedTurn::text("done"));
+    let scripted = Arc::new(ScriptedProvider::new(turns));
+    let provider = Arc::new(BoundedProvider {
+        inner: scripted.clone(),
+        limit: 8192,
+    });
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let mut granted = policy(false);
+    granted.grants[0].preapproved = true;
+    let session = engine
+        .create_session(profile(&["files.read"]), dir.path(), granted, Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Never alter customer identifiers",
+            "long",
+            Limits {
+                max_repeated_calls: 20,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    let state = run.status().await.unwrap();
+    assert!(
+        state
+            .contexts
+            .iter()
+            .any(|c| !c.omitted_messages.is_empty() && c.summary.is_some())
+    );
+    assert_eq!(
+        session
+            .snapshot()
+            .await
+            .unwrap()
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .count(),
+        10
+    );
+    for request in scripted.requests() {
+        werk_worker::context::validate_messages(&request.messages).unwrap();
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|m| m.content == "Never alter customer identifiers")
+        );
+        assert!(request.max_output_tokens <= 2048);
+    }
+    engine.close().await.unwrap();
+}
+#[tokio::test]
+async fn oversized_constraints_fail_before_provider_and_output_reserve_is_clamped() {
+    let dir = tempfile::tempdir().unwrap();
+    let scripted = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("ok")]));
+    let engine = WorkerEngine::builder(Arc::new(BoundedProvider {
+        inner: scripted.clone(),
+        limit: 4096,
+    }))
+    .build()
+    .await
+    .unwrap();
+    let session = engine
+        .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit("hello", "small", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(scripted.requests()[0].max_output_tokens, 1024);
+    let run = session
+        .submit("約束".repeat(2000), "large", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        run.wait().await.unwrap().error.unwrap().code,
+        "context_overflow"
+    );
+    assert_eq!(scripted.requests().len(), 1);
+    engine.close().await.unwrap();
+    assert!(
+        Limits {
+            reserve_output_tokens: usize::MAX,
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
 }

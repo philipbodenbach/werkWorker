@@ -179,7 +179,8 @@ impl Limits {
             || self.max_wall_ms == 0
             || self.max_wall_ms > 86_400_000
             || !(256..=1_048_576).contains(&self.max_output_bytes)
-            || self.context_tokens <= self.reserve_output_tokens + 512
+            || self.reserve_output_tokens == 0
+            || self.context_tokens <= self.reserve_output_tokens.saturating_add(512)
             || self.context_tokens > 2_000_000
             || self.max_retries > 8
         {
@@ -354,6 +355,10 @@ pub struct ModelAttempt {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
+    #[serde(default)]
+    pub tree_model_requests: u32,
+    #[serde(default)]
+    pub children: Vec<crate::agents::ChildRecord>,
     pub id: String,
     pub status: RunStatus,
     pub input: String,
@@ -406,6 +411,11 @@ pub struct StoredCommand {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventKind {
     SessionCreated,
+    Subagent {
+        session_id: String,
+        goal: String,
+        status: RunStatus,
+    },
     SessionResumed,
     SessionForked {
         parent: String,
@@ -496,6 +506,8 @@ pub struct WorkerEvent {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
+    #[serde(default)]
+    pub parent: Option<crate::agents::ParentLink>,
     pub schema_version: u32,
     pub id: String,
     pub revision: u64,

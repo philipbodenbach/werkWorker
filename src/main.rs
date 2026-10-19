@@ -29,6 +29,9 @@ struct Cli {
     workspace: PathBuf,
     #[arg(long)]
     grants: Option<PathBuf>,
+    /// Host-owned inference and subagent limits JSON.
+    #[arg(long)]
+    execution_config: Option<PathBuf>,
     #[arg(long, default_value = "/usr/bin/bwrap")]
     bubblewrap: PathBuf,
     /// Explicit Werk transport/model configuration JSON; no credentials inside.
@@ -176,6 +179,12 @@ async fn execute(cli: Cli) -> Result<()> {
         println!("{}", sandbox.doctor().await?);
         return Ok(());
     }
+    let execution = if let Some(path) = &cli.execution_config {
+        serde_json::from_slice::<parallel::ExecutionConfig>(&tokio::fs::read(path).await?)?
+    } else {
+        parallel::ExecutionConfig::default()
+    };
+    execution.validate()?;
     let provider: Arc<dyn ModelProvider> = if let Some(path) = &cli.werk_config {
         let config: WerkConfig = serde_json::from_slice(&tokio::fs::read(path).await?)?;
         let secret = cli
@@ -188,7 +197,7 @@ async fn execute(cli: Cli) -> Result<()> {
         if matches!(command, Command::Diagnose) {
             println!(
                 "{}",
-                serde_json::json!({"runtime_capabilities":provider.runtime_capabilities,"discovery":provider.discovery})
+                serde_json::json!({"runtime_capabilities":provider.runtime_capabilities,"discovery":provider.discovery,"context_tokens":provider.capabilities().context_tokens,"context_limit_source":provider.context_limit_source,"inference_concurrency":provider.inference_concurrency,"effective_model_requests":execution.effective_requests(&provider.inference_concurrency),"execution":execution})
             );
             return Ok(());
         }
@@ -232,6 +241,7 @@ async fn execute(cli: Cli) -> Result<()> {
     )
     .await?;
     let engine = WorkerEngine::builder(provider)
+        .execution(execution)
         .store(store)
         .sandbox(sandbox)
         .artifacts(artifacts)

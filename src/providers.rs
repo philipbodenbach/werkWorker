@@ -64,8 +64,28 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    /// Verified server capacity, independent of parallel tool-call support.
+    fn concurrency(&self) -> InferenceConcurrency {
+        InferenceConcurrency::default()
+    }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceConcurrency {
+    pub max_requests: Option<usize>,
+    pub source: String,
+    pub detail: String,
+}
+impl Default for InferenceConcurrency {
+    fn default() -> Self {
+        Self {
+            max_requests: None,
+            source: "unknown".into(),
+            detail: "No verified model request capacity; using one inference slot".into(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ResponseAssembler {
     text: String,
@@ -131,6 +151,12 @@ impl ResponseAssembler {
         Ok(())
     }
     pub fn finish(self) -> Result<(Message, Option<Usage>, Value)> {
+        if self.finish.as_deref() == Some("length") {
+            return Err(WorkerError::new(
+                "model_output_limit",
+                "Server stopped at its output token limit; incomplete output is not executable",
+            ));
+        }
         if !self.done || !matches!(self.finish.as_deref(), Some("stop" | "tool_calls")) {
             return Err(WorkerError::transient("interrupted_stream"));
         }
@@ -231,6 +257,14 @@ impl ScriptedProvider {
 }
 #[async_trait]
 impl ModelProvider for ScriptedProvider {
+    fn concurrency(&self) -> InferenceConcurrency {
+        InferenceConcurrency {
+            max_requests: Some(64),
+            source: "scripted".into(),
+            detail: "Offline fixture; no inference hardware measurement".into(),
+        }
+    }
+
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             tool_calling: Support::Supported,
@@ -536,6 +570,9 @@ pub struct WerkProvider {
     config: WerkConfig,
     pub runtime_capabilities: Vec<RuntimeCapability>,
     pub discovery: Value,
+    pub inference_concurrency: InferenceConcurrency,
+    context_limit: std::sync::atomic::AtomicUsize,
+    pub context_limit_source: String,
 }
 impl WerkProvider {
     pub async fn connect(config: WerkConfig, secret: Option<String>) -> Result<Self> {
@@ -571,9 +608,68 @@ impl WerkProvider {
                 ));
             }
         }
+        // This deployed Werk route returns ordinary JSON, not a Protocol envelope.
+        // Optional discovery must never make older/read-restricted servers unusable.
+        let diagnostics = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.json(reqwest::Method::GET, "/werk/v1/deployments", None),
+        )
+        .await;
+        let deployment_limit = diagnostics
+            .as_ref()
+            .ok()
+            .and_then(|v| v.as_ref().ok())
+            .and_then(|v| deployment_context(v, &config.model));
+        let mut context_limit = match (config.capabilities.context_tokens, deployment_limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mut context_limit_source = if deployment_limit.is_some() {
+            "deployment_and_host_minimum"
+        } else if context_limit.is_some() {
+            "host_config"
+        } else {
+            "unknown"
+        }
+        .to_owned();
+        let mut inference_concurrency = match diagnostics {
+            Ok(Ok(value)) => deployment_concurrency(&value, &config.model),
+            Ok(Err(error)) => InferenceConcurrency {
+                detail: format!(
+                    "Optional deployment discovery: {}; using one inference slot",
+                    error.code
+                ),
+                ..Default::default()
+            },
+            Err(_) => InferenceConcurrency {
+                detail: "Deployment discovery timed out; using one inference slot".into(),
+                ..Default::default()
+            },
+        };
+        if (inference_concurrency.max_requests.is_none() || context_limit.is_none())
+            && let Ok(Ok(snapshot)) = tokio::time::timeout(
+                Duration::from_secs(2),
+                client.control("/werk/v1/observability"),
+            )
+            .await
+            && let Some(capacity) = observability_concurrency(&snapshot, &config.model)
+        {
+            if inference_concurrency.max_requests.is_none() {
+                inference_concurrency = capacity;
+            }
+            // An aggregate divided by N is an average, not a safe minimum.
+            // Only a single-slot snapshot establishes an individual context size.
+            if let Some(limit) = observability_context(&snapshot, &config.model) {
+                context_limit = Some(context_limit.map_or(limit, |n| n.min(limit)));
+                context_limit_source = "observability_and_host_minimum".into();
+            }
+        }
         Ok(Self {
             client,
             config,
+            inference_concurrency,
+            context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
+            context_limit_source,
             runtime_capabilities,
             discovery: json!({"info":info,"capabilities":caps,"models":models,"parameters":parameters}),
         })
@@ -591,13 +687,31 @@ pub fn wire_message(message: &Message) -> Value {
 }
 #[async_trait]
 impl ModelProvider for WerkProvider {
+    fn concurrency(&self) -> InferenceConcurrency {
+        self.inference_concurrency.clone()
+    }
     fn capabilities(&self) -> ModelCapabilities {
-        self.config.capabilities.clone()
+        let mut caps = self.config.capabilities.clone();
+        let limit = self.context_limit.load(std::sync::atomic::Ordering::SeqCst);
+        caps.context_tokens = (limit > 0).then_some(limit);
+        caps
     }
     fn identity(&self) -> String {
         format!("werk:{}", self.config.model)
     }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        let limit = self.capabilities().context_tokens.ok_or_else(|| WorkerError::new("context_limit_unknown", "Set capabilities.context_tokens to the server's per-request context limit; discovery could not establish it"))?;
+        if request.max_output_tokens == 0
+            || crate::context::estimate_request(&request)
+                .saturating_add(request.max_output_tokens)
+                .saturating_add(512)
+                > limit
+        {
+            return Err(WorkerError::new(
+                "context_overflow",
+                "Request exceeds the known server context limit",
+            ));
+        }
         if !request.tools.is_empty() && self.config.capabilities.tool_calling != Support::Supported
         {
             return Err(WorkerError::new(
@@ -647,6 +761,34 @@ impl ModelProvider for WerkProvider {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(|s| s.saturating_mul(1000).min(30_000));
+            if response.status().as_u16() == 400 {
+                let bytes = bounded_body(response, self.config.max_body_bytes.min(65536)).await?;
+                if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                    && value["error"]["code"] == "context_length_exceeded"
+                {
+                    let reported = value["error"]["context_length"]
+                        .as_u64()
+                        .or_else(|| value["error"]["details"]["context_length"].as_u64());
+                    if let Some(next) = reported
+                        .filter(|n| *n > 512 && *n <= 2_000_000)
+                        .map(|n| n as usize)
+                    {
+                        let previous = self
+                            .context_limit
+                            .fetch_min(next, std::sync::atomic::Ordering::SeqCst);
+                        if next < previous {
+                            return Err(WorkerError::new(
+                                "context_limit_updated",
+                                "Server context limit decreased; rebuild required",
+                            ));
+                        }
+                    }
+                    return Err(WorkerError::new(
+                        "context_overflow",
+                        "Server rejected the context; no smaller verified limit was supplied",
+                    ));
+                }
+            }
             return Err(e);
         }
         let client = self.client.clone();
@@ -906,4 +1048,116 @@ impl SseDecoder {
         }
         Ok(())
     }
+}
+
+/// Match the chat routing alias/exact ID, never sum unrelated models or free slots.
+fn deployment_concurrency(value: &Value, model: &str) -> InferenceConcurrency {
+    let Some(profiles) = value
+        .pointer("/deployments/profiles")
+        .and_then(Value::as_array)
+    else {
+        return InferenceConcurrency::default();
+    };
+    let mut total = 0usize;
+    let mut ids = BTreeSet::new();
+    for entry in profiles {
+        let profile = &entry["plan"]["profile"];
+        if profile["id"].as_str() != Some(model) && profile["alias"].as_str() != Some(model) {
+            continue;
+        }
+        let Some(id) = profile["id"].as_str() else {
+            return InferenceConcurrency::default();
+        };
+        let Some(slots) = profile["parallel"]
+            .as_u64()
+            .filter(|n| (1..=65536).contains(n))
+        else {
+            return InferenceConcurrency::default();
+        };
+        if !ids.insert(id) {
+            return InferenceConcurrency::default();
+        }
+        total = total.saturating_add(slots as usize);
+    }
+    if total == 0 {
+        return InferenceConcurrency::default();
+    }
+    InferenceConcurrency {
+        max_requests: Some(total),
+        source: "werk_deployment_diagnostics".into(),
+        detail: format!(
+            "{total} configured slots across {} matching deployment(s); other clients may consume capacity",
+            ids.len()
+        ),
+    }
+}
+
+/// Protocol-validated native slot telemetry for ordinary (non-deployment) servers.
+/// Use the minimum across matching workers: telemetry is not a routing guarantee.
+fn observability_concurrency(value: &Value, model: &str) -> Option<InferenceConcurrency> {
+    if value["schema_version"] != 1 {
+        return None;
+    }
+    let observed = value["observed_at_ms"].as_u64()?;
+    let sampled = value["backend_observed_at_ms"].as_u64()?;
+    if observed.abs_diff(sampled) > 10_000 {
+        return None;
+    }
+    let mut capacity = None;
+    for worker in value["backends"].as_array()? {
+        if worker["model"].as_str() != Some(model) {
+            continue;
+        }
+        if worker["available"] != true || !worker["backend"].as_str()?.starts_with("llama.cpp / ") {
+            return None;
+        }
+        let slots = worker["gauges"]["slots_total"].as_f64()?;
+        if !(1.0..=65536.0).contains(&slots) || slots.fract() != 0.0 {
+            return None;
+        }
+        capacity = Some(capacity.map_or(slots as usize, |n: usize| n.min(slots as usize)));
+    }
+    capacity.map(|slots| InferenceConcurrency { max_requests:Some(slots), source:"werk_protocol_observability".into(), detail:format!("{slots} native slots from matching live llama.cpp telemetry; reconnect after server capacity changes") })
+}
+
+fn deployment_context(value: &Value, model: &str) -> Option<usize> {
+    let mut limit: Option<usize> = None;
+    for entry in value.pointer("/deployments/profiles")?.as_array()? {
+        let p = &entry["plan"]["profile"];
+        if p["id"].as_str() != Some(model) && p["alias"].as_str() != Some(model) {
+            continue;
+        }
+        let total = p["context"]
+            .as_u64()
+            .filter(|n| *n > 512 && *n <= 2_000_000)? as usize;
+        let slots = p["parallel"].as_u64().filter(|n| *n > 0 && *n <= 65536)? as usize;
+        let per_request = match p["runtime"].as_str()? {
+            "vllm_cuda" => total,
+            "llama_cuda" | "llama_cuda_offload" => total / slots,
+            _ => return None,
+        };
+        if per_request <= 512 {
+            return None;
+        }
+        limit = Some(limit.map_or(per_request, |n| n.min(per_request)));
+    }
+    limit
+}
+fn observability_context(value: &Value, model: &str) -> Option<usize> {
+    observability_concurrency(value, model)?;
+    let mut limit: Option<usize> = None;
+    for b in value["backends"].as_array()? {
+        if b["model"].as_str() != Some(model) {
+            continue;
+        }
+        if b["gauges"]["slots_total"].as_f64()? != 1.0 {
+            return None;
+        }
+        let tokens = b["gauges"]["context_capacity_tokens"].as_f64()?;
+        if !(513.0..=2_000_000.0).contains(&tokens) || tokens.fract() != 0.0 {
+            return None;
+        }
+        limit = Some(limit.map_or(tokens as usize, |n| n.min(tokens as usize)));
+    }
+    limit
 }

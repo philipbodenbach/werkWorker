@@ -12,6 +12,7 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
         base_url: origin.into(),
         stream,
         capabilities: ModelCapabilities {
+            context_tokens: Some(32768),
             tool_calling: Support::Supported,
             streaming: Support::Supported,
             ..Default::default()
@@ -181,4 +182,164 @@ async fn generic_fetch_blocks_private_targets_and_redirects() {
         "redirect_denied"
     );
     assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn concurrency_discovery_matches_alias_and_falls_back_gracefully() {
+    for (case, expected) in [
+        ("verified", Some(5)),
+        ("missing", None),
+        ("denied", None),
+        ("malformed", None),
+    ] {
+        let server=Server::start(move |request| {
+            if request.path == "/werk/v1/deployments" {
+                match case {
+                    "verified" => Response::json(json!({"deployments":{"profiles":[
+                        {"plan":{"profile":{"id":"a","alias":"fixture-model","parallel":2}},"available_slots":0},
+                        {"plan":{"profile":{"id":"b","alias":"fixture-model","parallel":3}},"available_slots":1},
+                        {"plan":{"profile":{"id":"c","alias":"different","parallel":50}}}
+                    ]}})),
+                    "denied" => Response{status:403,headers:vec![],body:b"{}".to_vec()},
+                    "malformed" => Response::json(json!({"deployments":{"profiles":[{"plan":{"profile":{"id":"a","alias":"fixture-model","parallel":0}}}]}})),
+                    _ => werk(request),
+                }
+            } else {werk(request)}
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap();
+        assert_eq!(provider.concurrency().max_requests, expected, "{case}");
+        let mut stream = provider
+            .stream(ModelRequest {
+                messages: vec![Message::text(Role::User, "hi")],
+                tools: vec![],
+                max_output_tokens: 64,
+                output_schema: None,
+            })
+            .await
+            .unwrap();
+        while let Some(delta) = stream.next().await {
+            delta.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn protocol_observability_accepts_fresh_slots_not_stale_or_other_models() {
+    for (case, expected) in [
+        ("fresh", Some(4)),
+        ("stale", None),
+        ("other", None),
+        ("fractional", None),
+    ] {
+        let server=Server::start(move |request| {
+            if request.path == "/werk/v1/observability" {
+                control(json!({"schema_version":1,"observed_at_ms":20_000,"backend_observed_at_ms":if case=="stale" {1} else {20_000},"backends":[{"model":if case=="other" {"unrelated"} else {"fixture-model"},"backend":"llama.cpp / CPU","available":true,"gauges":{"slots_total":if case=="fractional" {4.5} else {4.0}}}]}))
+            } else {werk(request)}
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap();
+        assert_eq!(provider.concurrency().max_requests, expected, "{case}");
+        if expected.is_some() {
+            assert_eq!(provider.concurrency().source, "werk_protocol_observability");
+        }
+    }
+}
+
+#[tokio::test]
+async fn server_context_discovery_uses_per_request_minimum_and_requires_evidence() {
+    for (runtime, expected) in [("llama_cuda", 4096), ("vllm_cuda", 8192)] {
+        let server = Server::start(move |r| {
+            if r.path == "/werk/v1/deployments" {
+                Response::json(json!({"deployments":{"profiles":[{"plan":{"profile":{"id":"a","alias":"fixture-model","parallel":4,"context":16384,"runtime":runtime}}},{"plan":{"profile":{"id":"b","alias":"fixture-model","parallel":2,"context":8192,"runtime":runtime}}}]}}))
+            } else { werk(r) }
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap();
+        assert_eq!(provider.capabilities().context_tokens, Some(expected));
+    }
+    let server = Server::start(werk).await;
+    let mut cfg = config(&server.origin, false);
+    cfg.capabilities.context_tokens = None;
+    let provider = WerkProvider::connect(cfg, None).await.unwrap();
+    let result = provider
+        .stream(ModelRequest {
+            messages: vec![Message::text(Role::User, "hi")],
+            tools: vec![],
+            max_output_tokens: 64,
+            output_schema: None,
+        })
+        .await;
+    assert_eq!(result.err().unwrap().code, "context_limit_unknown");
+    assert!(
+        !server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path == "/v1/chat/completions")
+    );
+}
+#[tokio::test]
+async fn smaller_server_context_is_learned_and_rebuilt_without_identical_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let server = Server::start(move |r| {
+        if r.path == "/v1/chat/completions" && counter.fetch_add(1,Ordering::SeqCst) == 0 {
+            let mut response = Response::json(json!({"error":{"code":"context_length_exceeded","context_length":4096,"message":"private backend message"}}));
+            response.status=400; response
+        } else {werk(r)}
+    }).await;
+    let provider = Arc::new(
+        WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap(),
+    );
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                schema_version: 1,
+                name: "test".into(),
+                prompt: "test".into(),
+                tools: vec![],
+                skills: vec![],
+            },
+            dir.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("hello", "run", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(provider.capabilities().context_tokens, Some(4096));
+    let requests = server.requests.lock().unwrap().clone();
+    let chats = requests
+        .iter()
+        .filter(|r| r.path == "/v1/chat/completions")
+        .collect::<Vec<_>>();
+    assert_eq!(chats.len(), 2);
+    assert_eq!(chats[0].body["max_completion_tokens"], 2048);
+    assert_eq!(chats[1].body["max_completion_tokens"], 1024);
+    assert!(
+        !session
+            .export()
+            .await
+            .unwrap()
+            .to_string()
+            .contains("private backend message")
+    );
+    engine.close().await.unwrap();
 }

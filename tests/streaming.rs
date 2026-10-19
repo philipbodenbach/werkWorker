@@ -105,3 +105,31 @@ fn credentials_are_redacted_even_across_text_and_tool_fragments() {
     assert_eq!(message.tool_calls[0].arguments["value"], "[redacted]");
     assert!(!visible.contains("SECRET-123"));
 }
+
+#[test]
+fn server_output_limit_never_retries_or_executes_truncated_tools() {
+    let mut assembler = ResponseAssembler::default();
+    assembler
+        .push(
+            &ModelDelta::Tool {
+                index: 0,
+                id: "call".into(),
+                name: "files.write".into(),
+                arguments: "{\"path\":".into(),
+            },
+            65536,
+        )
+        .unwrap();
+    assembler
+        .push(
+            &ModelDelta::Finish {
+                reason: "length".into(),
+            },
+            65536,
+        )
+        .unwrap();
+    assembler.push(&ModelDelta::Done, 65536).unwrap();
+    let error = assembler.finish().unwrap_err();
+    assert_eq!(error.code, "model_output_limit");
+    assert!(!error.retryable);
+}

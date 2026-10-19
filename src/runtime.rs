@@ -610,6 +610,14 @@ struct Job {
     output: Arc<Mutex<Option<Result<ProcessOutput>>>>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
+pub struct ProcessJob {
+    pub sandbox: Sandbox,
+    pub workspace: Workspace,
+    pub writable: bool,
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub lease: Option<Arc<crate::parallel::WorkspaceLease>>,
+}
 #[derive(Default)]
 pub struct JobManager {
     jobs: Mutex<BTreeMap<String, Job>>,
@@ -624,6 +632,28 @@ impl JobManager {
         argv: Vec<String>,
         cwd: String,
     ) -> Result<String> {
+        self.start_managed(
+            run_id,
+            ProcessJob {
+                sandbox,
+                workspace,
+                writable,
+                argv,
+                cwd,
+                lease: None,
+            },
+        )
+        .await
+    }
+    pub async fn start_managed(&self, run_id: &str, job: ProcessJob) -> Result<String> {
+        let ProcessJob {
+            sandbox,
+            workspace,
+            writable,
+            argv,
+            cwd,
+            lease,
+        } = job;
         let mut jobs = self.jobs.lock().await;
         if jobs.len() >= 16 {
             return Err(WorkerError::new("job_limit", "Too many managed jobs"));
@@ -634,6 +664,7 @@ impl JobManager {
         let output = Arc::new(Mutex::new(None));
         let sink = output.clone();
         let task = tokio::spawn(async move {
+            let _lease = lease;
             let result = sandbox
                 .run(&workspace, writable, &argv, &cwd, child_cancel)
                 .await;

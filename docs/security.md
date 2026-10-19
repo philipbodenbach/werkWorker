@@ -26,7 +26,9 @@ Files use `openat2` with `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`.
 Relative paths only; no traversal, symlinks, special files or foreign mounts.
 File and process tools see the same allocated workspace. Edits compare the
 observed hash and atomically rename in a pinned parent. Worker-owned mutations
-are serialized and active shared workspaces are rejected across sessions.
+and writable processes hold exclusive operation leases across overlapping
+workspaces in one engine; reads and inference can overlap across sessions.
+Background processes retain their lease until actual cleanup.
 External writers are not filesystem transactions: an external process modifying
 the same inode at the instant after comparison can race an edit. Use an isolated
 staged workspace where concurrent untrusted writers are possible.
@@ -83,3 +85,13 @@ session ownership, hash, seven-day retention and size. Quotas: 4 MiB/artifact,
 1,024 artifacts/store. Expired data is denied, not silently re-exposed. Operator
 cleanup/export is explicit; secure erasure and automatic garbage collection are
 not claimed.
+
+## Delegated workers
+
+Children inherit grants and may only narrow tools/workspace write access. Fresh
+conversations are context separation, not separate filesystem containers. Parent
+revocation, cancellation and expiry remain effective for new child tool starts;
+reusable approvals are not inherited. Child results are untrusted data. Active
+children, nesting and total tree model requests are bounded. A child cannot
+address another root through the delegation tools. `read_only` restricts workspace
+writes, not independently granted network-write brokers. See [subagents](subagents.md).

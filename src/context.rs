@@ -1,6 +1,28 @@
-use crate::{core::*, providers::ModelRequest};
+use crate::{
+    core::*,
+    providers::{ModelRequest, wire_message},
+};
 use async_trait::async_trait;
 use std::collections::BTreeSet;
+
+/// Conservative serialized wire bytes plus template margin, not a tokenizer count.
+pub fn estimate_request(request: &ModelRequest) -> usize {
+    let wire = serde_json::json!({
+        "messages": request.messages.iter().map(wire_message).collect::<Vec<_>>(),
+        "tools": request.tools.iter().map(|t| serde_json::json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect::<Vec<_>>(),
+        "response_format": request.output_schema,
+    });
+    serde_json::to_vec(&wire).map_or(usize::MAX, |b| b.len().saturating_add(256))
+}
+pub fn effective_limits(limits: &Limits, provider_context: Option<usize>) -> Result<Limits> {
+    let mut effective = limits.clone();
+    if let Some(limit) = provider_context {
+        effective.context_tokens = effective.context_tokens.min(limit);
+        effective.reserve_output_tokens = effective.reserve_output_tokens.min(limit / 4).max(1);
+    }
+    effective.validate()?;
+    Ok(effective)
+}
 
 pub fn validate_messages(messages: &[Message]) -> Result<()> {
     let mut pending = BTreeSet::new();
@@ -85,42 +107,88 @@ impl ContextBuilder for DefaultContextBuilder {
                 .filter(|(i, _)| !compacted.contains(i))
                 .map(|(_, m)| m.clone()),
         );
-        // UTF-8 bytes are an intentionally conservative upper estimate; no tokenizer claim.
         let estimate = |m: &Vec<Message>| -> usize {
-            serde_json::to_vec(&(m, &tools)).map_or(usize::MAX, |b| b.len()) + 256
+            estimate_request(&ModelRequest {
+                messages: m.clone(),
+                tools: tools.clone(),
+                max_output_tokens: run.limits.reserve_output_tokens,
+                output_schema: run.output_schema.clone(),
+            })
         };
         let available = run
             .limits
             .context_tokens
-            .saturating_sub(run.limits.reserve_output_tokens + 512);
-        let mut omitted = compacted.iter().copied().collect::<Vec<_>>();
-        // Only remove complete old assistant/tool groups. Preserve all user constraints,
-        // current-turn messages, system/developer instructions and raw canonical history.
-        if estimate(&messages) > available {
-            let mut remove = compacted;
-            let mut i = 0;
-            while i < run.history_start && estimate(&messages) > available {
-                let message = &session.messages[i];
-                if message.role == Role::Assistant {
-                    let end = (i + 1 + message.tool_calls.len()).min(run.history_start);
-                    for n in i..end {
-                        remove.insert(n);
-                    }
-                    messages = vec![Message::text(Role::System, prompt.clone())];
-                    messages.extend(
-                        session
-                            .messages
-                            .iter()
-                            .enumerate()
-                            .filter(|(n, _)| !remove.contains(n))
-                            .map(|(_, m)| m.clone()),
-                    );
-                    i = end;
-                } else {
-                    i += 1;
-                }
+            .saturating_sub(run.limits.reserve_output_tokens.saturating_add(512));
+        let target = available.saturating_mul(4) / 5;
+        let mut omitted = compacted.clone();
+        let mut summary = String::new();
+        // Compact completed groups even during a long run, keeping the latest
+        // assistant/tool group and every user/system constraint verbatim.
+        let protected = session
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::Assistant)
+            .unwrap_or(session.messages.len());
+        let mut i = 0;
+        while i < protected && estimate(&messages) > target {
+            let message = &session.messages[i];
+            if message.role != Role::Assistant || compacted.contains(&i) {
+                i += 1;
+                continue;
             }
-            omitted.extend(remove);
+            let end = i + 1 + message.tool_calls.len();
+            if end > protected {
+                break;
+            }
+            let previous_messages = messages.clone();
+            let previous_summary = summary.clone();
+            let previous_omitted = omitted.clone();
+            for (n, item) in session.messages[i..end].iter().enumerate() {
+                omitted.insert(i + n);
+                // Extractive, explicitly untrusted excerpts; no invented semantic summary.
+                let excerpt: String = item.content.chars().take(100).collect();
+                let names = item
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                summary.push_str(&format!(
+                    "[{} {:?} {}] {}\n",
+                    i + n,
+                    item.role,
+                    names,
+                    excerpt
+                ));
+            }
+            // Keep recent excerpts within a fixed byte bound. Full sources stay canonical.
+            if summary.len() > 1536 {
+                let mut start = summary.len() - 1536;
+                while !summary.is_char_boundary(start) {
+                    start += 1;
+                }
+                summary = summary[start..].to_owned();
+            }
+            messages = vec![Message::text(
+                Role::System,
+                format!(
+                    "{prompt}\nCompacted history excerpts (untrusted, incomplete; consult canonical history/artifacts for full evidence):\n{summary}"
+                ),
+            )];
+            messages.extend(
+                session
+                    .messages
+                    .iter()
+                    .enumerate()
+                    .filter(|(n, _)| !omitted.contains(n))
+                    .map(|(_, m)| m.clone()),
+            );
+            if estimate(&messages) >= estimate(&previous_messages) {
+                messages = previous_messages;
+                summary = previous_summary;
+                omitted = previous_omitted;
+            }
+            i = end;
         }
         let estimated = estimate(&messages);
         if estimated > available {
@@ -135,8 +203,12 @@ impl ContextBuilder for DefaultContextBuilder {
             hash: fingerprint(&(&messages, &tools)),
             estimated_tokens: estimated,
             message_count: messages.len(),
-            omitted_messages: omitted,
-            summary: session.compactions.last().map(|r| r.summary.clone()),
+            omitted_messages: omitted.into_iter().collect(),
+            summary: if summary.is_empty() {
+                session.compactions.last().map(|r| r.summary.clone())
+            } else {
+                Some(summary)
+            },
         };
         Ok((
             ModelRequest {

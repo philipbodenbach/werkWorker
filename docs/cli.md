@@ -11,27 +11,38 @@ Usage: werk-worker [OPTIONS] [COMMAND]
 
 Commands:
   tui       Interactive agent UI (the default when no command is supplied)
-  run       
-  resume    
-  sessions  
-  tools     
-  skills    
-  profiles  
-  sandbox   
-  diagnose  
-  rpc       
+  run
+  resume
+  sessions
+  tools
+  skills
+  profiles
+  sandbox
+  diagnose
+  rpc
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-      --store <STORE>              
-      --workspace <WORKSPACE>      [default: .]
-      --grants <GRANTS>            
-      --bubblewrap <BUBBLEWRAP>    [default: /usr/bin/bwrap]
-      --werk-config <WERK_CONFIG>  Explicit Werk transport/model configuration JSON; no credentials inside
-      --secret-env <SECRET_ENV>    
-      --script <SCRIPT>            Explicit deterministic offline responses, never a provider fallback
-  -h, --help                       Print help
-  -V, --version                    Print version
+      --store <STORE>
+
+      --workspace <WORKSPACE>
+          [default: .]
+      --grants <GRANTS>
+
+      --execution-config <EXECUTION_CONFIG>
+          Host-owned inference and subagent limits JSON
+      --bubblewrap <BUBBLEWRAP>
+          [default: /usr/bin/bwrap]
+      --werk-config <WERK_CONFIG>
+          Explicit Werk transport/model configuration JSON; no credentials inside
+      --secret-env <SECRET_ENV>
+
+      --script <SCRIPT>
+          Explicit deterministic offline responses, never a provider fallback
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ## run
@@ -40,11 +51,11 @@ Options:
 Usage: werk-worker run [OPTIONS] <INPUT>
 
 Arguments:
-  <INPUT>  
+  <INPUT>
 
 Options:
       --profile <PROFILE>  [default: general-readonly]
-      --demo               
+      --demo
   -h, --help               Print help
 ```
 
@@ -56,13 +67,13 @@ Interactive agent UI (the default when no command is supplied)
 Usage: werk-worker tui [OPTIONS] [INPUT]
 
 Arguments:
-  [INPUT]  
+  [INPUT]
 
 Options:
       --profile <PROFILE>  [default: general-readonly]
-      --demo               
-      --session <SESSION>  
-      --run-id <RUN_ID>    
+      --demo
+      --session <SESSION>
+      --run-id <RUN_ID>
   -h, --help               Print help
 ```
 
@@ -72,8 +83,8 @@ Options:
 Usage: werk-worker resume <SESSION_ID> <RUN_ID>
 
 Arguments:
-  <SESSION_ID>  
-  <RUN_ID>      
+  <SESSION_ID>
+  <RUN_ID>
 
 Options:
   -h, --help  Print help
@@ -85,9 +96,9 @@ Options:
 Usage: werk-worker sessions <COMMAND>
 
 Commands:
-  list     
-  inspect  
-  export   
+  list
+  inspect
+  export
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -100,8 +111,8 @@ Options:
 Usage: werk-worker skills <COMMAND>
 
 Commands:
-  list     
-  inspect  
+  list
+  inspect
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -114,8 +125,8 @@ Options:
 Usage: werk-worker profiles <COMMAND>
 
 Commands:
-  list     
-  inspect  
+  list
+  inspect
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -128,7 +139,7 @@ Options:
 Usage: werk-worker sandbox <COMMAND>
 
 Commands:
-  doctor  
+  doctor
   help    Print this message or the help of the given subcommand(s)
 
 Options:

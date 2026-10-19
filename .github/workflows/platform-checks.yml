@@ -1,0 +1,62 @@
+name: Platform build checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            suffix: linux-x86_64.tar.gz
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            suffix: linux-aarch64.tar.gz
+          - os: windows-2022
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            suffix: windows-x86_64.zip
+          - os: macos-14
+            platform: macos
+            target: aarch64-apple-darwin
+            suffix: macos-aarch64.tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: MSVC x64 environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - run: python -m unittest discover -s scripts/tests
+      - run: cargo test --locked --test platform
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: ./scripts/package-release.sh "$PLATFORM"
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: ./scripts/package-release.ps1
+      - name: Install archive and smoke both commands
+        shell: bash
+        env:
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          python scripts/smoke-install.py "releases/werkWorker-v$version-$SUFFIX"

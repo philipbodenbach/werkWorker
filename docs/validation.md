@@ -86,3 +86,29 @@ serial tool execution; bounded nonrecursive search; no automatic expired-artifac
 garbage collector; conservative token estimates; and no proof of external
 exactly-once execution after an unknown outcome. See [security](security.md),
 [recovery](recovery.md) and [context](context.md) for their precise boundaries.
+
+
+## Release tooling and terminal follow-up — 2026-10-19
+
+The following later work supersedes the initial CLI/platform description:
+
+- 41 integration tests and the TUI rendering test for each binary passed with
+  real Linux sandbox tests enabled (43 test executions).
+- Nine release/installer tests passed: initial release bootstrap/retry, version
+  synchronization, commit inference, conflicting tags, archive checksum failure,
+  traversal/symlink rejection, and preservation of existing session files.
+- `actionlint` 1.7.12 accepted all workflows. Windows PowerShell parsed all three
+  native Windows scripts successfully.
+- The real PTY test drove streamed output, a file write approved with Ctrl-Y,
+  an interaction answer, cancellation, and terminal attribute restoration.
+- A native Linux release archive was built with `scripts/package-release.sh`,
+  verified by its installer, and both installed commands ran from a temporary
+  directory outside the checkout. No user-wide installation was changed.
+
+The release action follows the explicitly requested Werk preparation-PR/merge/
+tag/draft lifecycle, with manual platform assets. It was not dispatched and
+no PR, commit, tag or release was created during this work. Windows x86_64,
+Linux ARM64 and macOS Apple Silicon native builds are configured in platform CI;
+this WSL environment has neither native MSVC nor a macOS SDK, so those builds
+have not been locally demonstrated. The process/filesystem sandbox remains
+Linux-only. Native packaging does not remove that boundary.

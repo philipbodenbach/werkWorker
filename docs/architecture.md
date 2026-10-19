@@ -26,4 +26,6 @@ tools, explicit workspace, empty environment and no network. File access uses
 descriptor-relative Linux openat2 with no symlinks or mount crossings. There is
 no host-shell fallback. HTTP and authenticated connectors are trusted brokers.
 JSON Schema validation is delegated to jsonschema; rusqlite bundles SQLite for
-installation portability. No inference, UI or reference-agent runtime is linked.
+installation portability. No inference or reference-agent runtime is linked.
+The optional `tui` feature supplies the ratatui/crossterm CLI client; library-only
+consumers can disable default features.

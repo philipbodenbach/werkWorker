@@ -1,6 +1,8 @@
+#[path = "cli_tui.rs"]
+mod cli_tui;
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use std::{path::PathBuf, sync::Arc};
+use std::{io::IsTerminal, path::PathBuf, sync::Arc};
 use werk_worker::{
     policy::HostPolicy,
     profiles::AgentProfile,
@@ -38,10 +40,22 @@ struct Cli {
     #[arg(long)]
     script: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Interactive agent UI (the default when no command is supplied).
+    Tui {
+        input: Option<String>,
+        #[arg(long, default_value = "general-readonly")]
+        profile: String,
+        #[arg(long)]
+        demo: bool,
+        #[arg(long, requires = "run_id")]
+        session: Option<String>,
+        #[arg(long, requires = "session")]
+        run_id: Option<String>,
+    },
     Run {
         input: String,
         #[arg(long, default_value = "general-readonly")]
@@ -112,7 +126,22 @@ async fn main() {
     }
 }
 async fn execute(cli: Cli) -> Result<()> {
-    if let Command::Profiles { action } = &cli.command {
+    let command = cli.command.unwrap_or(Command::Tui {
+        input: None,
+        profile: "general-readonly".into(),
+        demo: false,
+        session: None,
+        run_id: None,
+    });
+    if matches!(&command, Command::Tui { .. })
+        && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
+    {
+        return Err(WorkerError::new(
+            "terminal_required",
+            "TUI requires an interactive terminal; use run or rpc for pipes",
+        ));
+    }
+    if let Command::Profiles { action } = &command {
         match action {
             InspectCommand::List => println!("{}", serde_json::to_string(&AgentProfile::names())?),
             InspectCommand::Inspect { name } => println!(
@@ -122,14 +151,14 @@ async fn execute(cli: Cli) -> Result<()> {
         }
         return Ok(());
     }
-    if let Command::Tools { .. } = &cli.command {
+    if let Command::Tools { .. } = &command {
         println!(
             "{}",
             serde_json::to_string_pretty(&tools::ToolRegistry::builtins()?.definitions())?
         );
         return Ok(());
     }
-    if let Command::Skills { action } = &cli.command {
+    if let Command::Skills { action } = &command {
         let skills = skills::SkillRegistry::bundled()?;
         match action {
             InspectCommand::List => println!("{}", serde_json::to_string_pretty(&skills.list())?),
@@ -143,7 +172,7 @@ async fn execute(cli: Cli) -> Result<()> {
         bubblewrap: cli.bubblewrap,
         ..Default::default()
     };
-    if matches!(&cli.command, Command::Sandbox { .. }) {
+    if matches!(&command, Command::Sandbox { .. }) {
         println!("{}", sandbox.doctor().await?);
         return Ok(());
     }
@@ -156,7 +185,7 @@ async fn execute(cli: Cli) -> Result<()> {
             .transpose()?
             .flatten();
         let provider = WerkProvider::connect(config, secret).await?;
-        if matches!(cli.command, Command::Diagnose) {
+        if matches!(command, Command::Diagnose) {
             println!(
                 "{}",
                 serde_json::json!({"runtime_capabilities":provider.runtime_capabilities,"discovery":provider.discovery})
@@ -168,12 +197,17 @@ async fn execute(cli: Cli) -> Result<()> {
         Arc::new(ScriptedProvider::new(serde_json::from_slice(
             &tokio::fs::read(path).await?,
         )?))
-    } else if matches!(&cli.command, Command::Run { demo: true, .. }) {
+    } else if matches!(
+        &command,
+        Command::Run { demo: true, .. } | Command::Tui { demo: true, .. }
+    ) {
         Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text(
             "werkWorker offline demo completed. This is a scripted infrastructure check, not a model response.",
         )]))
-    } else if matches!(&cli.command, Command::Sessions { .. }) {
+    } else if matches!(&command, Command::Sessions { .. }) {
         Arc::new(ScriptedProvider::default())
+    } else if matches!(&command, Command::Tui { .. }) {
+        return cli_tui::show(None, None, None).await;
     } else {
         return Err(WorkerError::new(
             "provider_required",
@@ -185,14 +219,10 @@ async fn execute(cli: Cli) -> Result<()> {
     } else {
         HostPolicy::default()
     };
-    let store_path = cli.store.unwrap_or_else(|| {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
-            })
-            .join("werk-worker/sessions.sqlite")
-    });
+    let store_path = match cli.store {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
     let store = Arc::new(SqliteStore::open(&store_path).await?);
     let artifacts = ArtifactStore::open(
         store_path
@@ -207,7 +237,33 @@ async fn execute(cli: Cli) -> Result<()> {
         .artifacts(artifacts)
         .build()
         .await?;
-    let result = match cli.command {
+    let result = match command {
+        Command::Tui {
+            input,
+            profile,
+            session: session_id,
+            run_id,
+            ..
+        } => {
+            let (session, resume) = if let (Some(session_id), Some(run_id)) = (session_id, run_id) {
+                let session = engine.open_session(&session_id).await?;
+                let run = engine.resume_run(&session_id, &run_id).await?;
+                (session, Some(run))
+            } else {
+                (
+                    engine
+                        .create_session(
+                            AgentProfile::bundled(&profile)?,
+                            cli.workspace,
+                            policy,
+                            serde_json::Value::Null,
+                        )
+                        .await?,
+                    None,
+                )
+            };
+            cli_tui::show(Some(session), input, resume).await
+        }
         Command::Rpc => {
             RpcHost::new(engine.clone(), cli.workspace, policy)
                 .serve(
@@ -284,4 +340,20 @@ async fn display(run: &RunHandle) -> Result<()> {
         return Err(error);
     }
     Ok(())
+}
+
+fn default_store_path() -> Result<PathBuf> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
+    base.map(|base| base.join("werk-worker/sessions.sqlite"))
+        .ok_or_else(|| {
+            WorkerError::new(
+                "invalid_store",
+                "Set --store or configure the user's state directory",
+            )
+        })
 }

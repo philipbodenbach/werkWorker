@@ -68,13 +68,6 @@ fn open_beneath(root: &File, path: &str, flags: i32, mode: u32) -> Result<File> 
     // SAFETY: successful syscall returns a newly owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd as i32) })
 }
-#[cfg(not(target_os = "linux"))]
-fn open_beneath(_: &File, _: &str, _: i32, _: u32) -> Result<File> {
-    Err(WorkerError::new(
-        "sandbox_unavailable",
-        "Secure filesystem access requires Linux openat2",
-    ))
-}
 
 impl Workspace {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -87,6 +80,12 @@ impl Workspace {
             {
                 use std::os::unix::fs::OpenOptionsExt;
                 opts.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // FILE_FLAG_BACKUP_SEMANTICS permits opening a directory handle.
+                opts.custom_flags(0x02000000);
             }
             let root = opts.open(&path)?;
             let metadata = root.metadata()?;
@@ -122,6 +121,7 @@ impl Workspace {
         }
         Ok(())
     }
+    #[cfg(target_os = "linux")]
     pub async fn read(&self, path: &str, max: usize) -> Result<Vec<u8>> {
         let root = self.root.clone();
         let path = path.to_owned();
@@ -141,6 +141,7 @@ impl Workspace {
         .await
         .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
     }
+    #[cfg(target_os = "linux")]
     pub async fn list(&self, path: &str, max: usize) -> Result<Vec<String>> {
         let root = self.root.clone();
         let path = path.to_owned();
@@ -181,6 +182,7 @@ impl Workspace {
         .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
     }
     /// Atomic replacement in a pinned parent directory. expected=None is create-only.
+    #[cfg(target_os = "linux")]
     pub async fn write(&self, path: &str, bytes: Vec<u8>, expected: Option<String>) -> Result<()> {
         relative_path(path)?;
         let root = self.root.clone();
@@ -280,6 +282,27 @@ impl Workspace {
         })
         .await
         .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub async fn read(&self, _: &str, _: usize) -> Result<Vec<u8>> {
+        Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Secure filesystem tools require Linux openat2",
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub async fn list(&self, _: &str, _: usize) -> Result<Vec<String>> {
+        Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Secure filesystem tools require Linux openat2",
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub async fn write(&self, _: &str, _: Vec<u8>, _: Option<String>) -> Result<()> {
+        Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Secure filesystem tools require Linux openat2",
+        ))
     }
 }
 

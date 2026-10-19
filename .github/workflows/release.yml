@@ -1,0 +1,215 @@
+# Adapted from werk1112 (Elastic-2.0); see NOTICE.
+name: Release
+run-name: Release (${{ inputs.bump }})${{ inputs.draft && ' — draft' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version increment (auto uses commit messages or a prepared version)
+        type: choice
+        required: true
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      draft:
+        description: Keep release as a draft until manual artifacts are uploaded
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: werk-worker-product-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target/cli-reference-neutral
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Require the default branch
+        env:
+          SELECTED_REF: ${{ github.ref }}
+        run: |
+          if [[ "$SELECTED_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Run this workflow on the default branch: $DEFAULT_BRANCH"
+            exit 1
+          fi
+
+      # Use the current branch tip on retries, including an already pushed release commit.
+      - name: Check out the default branch and all release tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Test release preparation
+        run: python -m unittest discover -s scripts/tests -p 'test*release*.py'
+
+      - name: Install stable Rust for CLI reference generation
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Prepare versions, README, documentation and release notes
+        id: prepare
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: python scripts/prepare-release.py "$BUMP" --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Build and refresh the CLI reference
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          # Build after the version bump so the reference carries the release version.
+          cargo +stable build --locked --bin werk-worker
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            # Retrying an existing release must never rewrite its tagged documentation.
+            python scripts/generate-cli-reference.py target/cli-reference-neutral/debug/werk-worker --check
+          else
+            python scripts/generate-cli-reference.py target/cli-reference-neutral/debug/werk-worker
+            python scripts/generate-cli-reference.py target/cli-reference-neutral/debug/werk-worker --check
+          fi
+
+      - name: Create the release preparation PR
+        id: release-pr
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --check
+          git add --update
+          if ! git diff --cached --quiet; then
+            base_sha=$(git rev-parse HEAD)
+            branch="release/auto-$RELEASE_TAG-${base_sha:0:12}"
+            remote_ref=$(git ls-remote --heads origin "refs/heads/$branch")
+            if [[ -n "$remote_ref" ]]; then
+              git fetch origin "refs/heads/$branch"
+              if [[ "$(git write-tree)" != "$(git rev-parse 'FETCH_HEAD^{tree}')" ]]; then
+                echo "::error::Existing release branch differs from this preparation: $branch"
+                exit 1
+              fi
+              release_sha=$(git rev-parse FETCH_HEAD)
+              git reset --hard "$release_sha"
+            else
+              # Only generated release metadata skips duplicate PR CI. The
+              # release tests, CLI reference build and validation still run.
+              git commit -m "release(): $RELEASE_TAG [skip ci]"
+              release_sha=$(git rev-parse HEAD)
+              git push origin "HEAD:refs/heads/$branch"
+            fi
+            pr=$(gh pr list --head "$branch" --base "$DEFAULT_BRANCH" --state open \
+              --json number --jq '.[0].number // empty')
+            if [[ -z "$pr" ]]; then
+              cat > "$RUNNER_TEMP/release-pr.md" <<'BODY'
+          Automatically synchronize product versions, changelog, README and current
+          documentation for this release, including the generated CLI reference
+          from a fresh build. Platform artifacts are built and uploaded manually
+          after the tag is available. Release preparation tests passed.
+          This generated metadata commit skips duplicate PR CI; product changes
+          must pass their normal CI before starting Release.
+          BODY
+              pr=$(gh pr create --head "$branch" --base "$DEFAULT_BRANCH" \
+                --title "release(): $RELEASE_TAG" --body-file "$RUNNER_TEMP/release-pr.md")
+            fi
+            pr=$(gh pr view "$pr" --json number --jq '.number')
+            {
+              echo "number=$pr"
+              echo "head=$release_sha"
+              echo "base=$base_sha"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge the release preparation PR
+        if: steps.release-pr.outputs.number != ''
+        env:
+          RELEASE_PR: ${{ steps.release-pr.outputs.number }}
+          RELEASE_SHA: ${{ steps.release-pr.outputs.head }}
+          BASE_SHA: ${{ steps.release-pr.outputs.base }}
+        run: |
+          # Honor branch protection and reject a changed base; never use --admin.
+          remote_head=$(git ls-remote --heads origin "refs/heads/$DEFAULT_BRANCH")
+          if [[ "${remote_head%%[[:space:]]*}" != "$BASE_SHA" ]]; then
+            echo "::error::Default branch advanced during preparation. Restart Release from the latest branch."
+            exit 1
+          fi
+          gh pr merge "$RELEASE_PR" --merge --match-head-commit "$RELEASE_SHA"
+          merged_sha=$(gh pr view "$RELEASE_PR" --json mergeCommit --jq '.mergeCommit.oid')
+          test -n "$merged_sha" && test "$merged_sha" != null
+          git fetch origin "$DEFAULT_BRANCH"
+          git checkout --detach "$merged_sha"
+          # Catch a base update racing the merge request before tagging anything.
+          test "$(git rev-parse HEAD^1)" = "$BASE_SHA"
+          test "$(git rev-parse HEAD^2)" = "$RELEASE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "$RELEASE_SHA^{tree}")"
+
+      - name: Validate a previously prepared release on retry
+        if: steps.release-pr.outputs.number == ''
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          # Reusing an existing tag does not create or modify a release commit.
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            exit 0
+          fi
+          prepared_sha=$(git rev-parse HEAD)
+          pr=$(gh api "repos/$GH_REPO/commits/$prepared_sha/pulls" --paginate \
+            --jq '.[] | select(.merged_at != null) | @json' \
+            | jq -rs --arg sha "$prepared_sha" --arg base "$DEFAULT_BRANCH" \
+              '[.[] | select(.merge_commit_sha == $sha and .base.ref == $base)][0]')
+          if [[ "$pr" == null ]]; then
+            echo "::error::Untagged prepared version has no merged preparation PR. Prepare it through a PR first."
+            exit 1
+          fi
+
+      - name: Validate and tag the merged release
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          python scripts/generate-cli-reference.py target/cli-reference-neutral/debug/werk-worker --check
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          else
+            python scripts/prepare-release.py check --notes-file "$RUNNER_TEMP/release-notes.md"
+            git tag -a "$RELEASE_TAG" -m "werkWorker $RELEASE_TAG"
+          fi
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Create GitHub release
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          args=(--verify-tag --title "werkWorker $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md")
+          if [[ "$DRAFT" == "true" ]]; then
+            args+=(--draft)
+          fi
+          if gh release view "$RELEASE_TAG" --json url --jq .url; then
+            echo "Release already exists; keeping its assets, notes and publication state."
+          else
+            gh release create "$RELEASE_TAG" "${args[@]}"
+          fi
+          {
+            echo "### werkWorker $RELEASE_TAG"
+            echo
+            gh release view "$RELEASE_TAG" --json url,isDraft \
+              --jq '"Release: " + .url + " (draft: " + (.isDraft | tostring) + ")"'
+            echo "Build from tag \`$RELEASE_TAG\`."
+            echo "Upload platform archives and their .sha256 files manually."
+            echo "See docs/releases.md for the release checklist."
+          } >> "$GITHUB_STEP_SUMMARY"

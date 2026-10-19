@@ -9,7 +9,7 @@ jobs:
       REQUIRE_SANDBOX: "1"
       WERK_WORKER_BWRAP: /usr/bin/bwrap
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -21,15 +21,18 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets -- --nocapture
+      - run: python3 -m unittest discover -s scripts/tests
+      - run: python3 scripts/tests/tui_smoke.py target/debug/ww
       - run: cargo run --locked --example eval
       - run: cargo run --locked --example coding
       - run: cargo run --locked --example automation
       - run: cargo package --locked --allow-dirty
       - name: Install from package in a fresh directory
         run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           mkdir -p /tmp/worker-package /tmp/worker-workspace
-          tar -xzf target/package/werk-worker-0.1.0.crate -C /tmp/worker-package
-          cargo install --locked --path /tmp/worker-package/werk-worker-0.1.0 --root /tmp/worker-install
+          tar -xzf target/package/werk-worker-$version.crate -C /tmp/worker-package
+          cargo install --locked --path /tmp/worker-package/werk-worker-$version --root /tmp/worker-install
           cd /tmp/worker-workspace
           /tmp/worker-install/bin/werk-worker --store /tmp/worker-installed.sqlite run --demo "package smoke"
           /tmp/worker-install/bin/werk-worker profiles inspect coding-basic

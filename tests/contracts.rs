@@ -41,7 +41,7 @@ fn bundled_profile_tool_skill_references_and_cli_help_are_consistent() {
     );
     let text = String::from_utf8(help.stdout).unwrap();
     for command in [
-        "run", "resume", "sessions", "tools", "skills", "profiles", "sandbox", "rpc",
+        "tui", "run", "resume", "sessions", "tools", "skills", "profiles", "sandbox", "rpc",
     ] {
         assert!(text.contains(command));
     }

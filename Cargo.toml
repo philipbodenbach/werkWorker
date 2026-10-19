@@ -7,7 +7,11 @@ rust-version = "1.88"
 description = "Local general-purpose agent engine with durable sessions and scoped tool execution"
 license = "Elastic-2.0"
 repository = "https://github.com/philipbodenbach/werkWorker"
-include = ["src/**", "skills/**", "profiles/**", "examples/**", "docs/**", "evals/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "NOTICE"]
+include = ["src/**", "scripts/*.py", "scripts/*.sh", "scripts/*.ps1", "scripts/tests/*.py", ".cargo/config.toml", "CHANGELOG.md", "skills/**", "profiles/**", "examples/**", "docs/**", "evals/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "NOTICE"]
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm"]
 
 [lib]
 name = "werk_worker"
@@ -15,14 +19,18 @@ name = "werk_worker"
 [[bin]]
 name = "werk-worker"
 path = "src/main.rs"
+required-features = ["tui"]
 
 [[bin]]
 name = "ww"
 path = "src/bin/ww.rs"
+required-features = ["tui"]
 
 [dependencies]
 async-trait = "0.1"
 async-stream = "0.3"
+ratatui = { optional = true, version = "0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = { optional = true, version = "0.29", features = ["event-stream"] }
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
 futures-util = "0.3"

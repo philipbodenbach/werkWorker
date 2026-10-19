@@ -148,7 +148,9 @@ impl WorkerEngine {
     }
     fn validate_workspace(&self, workspace: &Workspace) -> Result<()> {
         let unsafe_root = workspace.path.parent().is_none()
-            || std::env::var_os("HOME").is_some_and(|home| workspace.path == home)
+            || std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .is_some_and(|home| workspace.path == home)
             || self
                 .inner
                 .store

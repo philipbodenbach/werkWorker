@@ -6,5 +6,8 @@ The license text is identical to the text distributed by werk1112.
 The product name and this copyright notice identify werkWorker.
 
 Reference projects were studied for architectural concepts and protocol
-interoperability. No reference application source is vendored or linked.
+interoperability. The release/installer scripts are adapted from werk1112, revision
+78254d7f709586576ec14d06a7f362a8185c2f36, Copyright Philip Bodenbach,
+under Elastic License 2.0. TUI colors and ASCII letterforms follow werk1112 top/terminal/banner.
+No inference runtime is vendored or linked.
 Dependency licenses remain those of their respective authors.

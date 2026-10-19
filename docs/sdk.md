@@ -58,3 +58,6 @@ then answer existing request IDs. A session ID is an identifier, not an
 authentication credential. A future remote transport must add authorization
 outside this local stdio protocol. Do not turn model text or process stdout
 into host commands.
+
+Library-only consumers can set `default-features = false` to omit the optional
+ratatui/crossterm client dependencies. Default installs include both CLI commands.

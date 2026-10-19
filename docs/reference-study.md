@@ -1,7 +1,8 @@
 # Reference study — 2026-10-19
 
 References inspected before implementation, using GitHub's public content API
-at the following exact remote HEAD revisions. No source code copied.
+at the following exact remote HEAD revisions. The original engine copied no source; subsequent release/installer scripts
+are adapted from Werk with attribution in NOTICE.
 
 | Upstream | Revision | Examined entry points | Decision |
 |---|---|---|---|

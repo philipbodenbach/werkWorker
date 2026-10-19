@@ -54,7 +54,7 @@ example `/bin/sh -c ...`) and is fully visible in its concrete approval.
 | Linux CI runner | Required isolation job installs Bubblewrap and fails on any skip |
 | Outer restricted sandbox without namespace/netlink permissions | Fails closed; tests explicitly report unavailable |
 | Docker Desktop in this development WSL | Unavailable; no Docker fallback implemented |
-| macOS/Windows process/filesystem isolation | Not implemented or claimed; this release targets Linux |
+| macOS/Windows native SDK/TUI packages | Native packaging and CI checks configured; file/process isolation unavailable and fails closed |
 
 ## Brokers and credentials
 
@@ -76,7 +76,8 @@ universal DLP system.
 
 Stores/artifacts are local private files. Session creation and reopening reject workspaces
 containing configured SQLite/artifact storage, host root and host home. The CLI
-defaults to XDG_STATE_HOME/werk-worker (or ~/.local/state/werk-worker). Custom
+defaults to XDG_STATE_HOME/werk-worker (or ~/.local/state/werk-worker),
+and LOCALAPPDATA/werk-worker on Windows. Custom
 store wrappers must preserve `SessionStore::protected_paths`. Artifact IDs are not host paths; access checks
 session ownership, hash, seven-day retention and size. Quotas: 4 MiB/artifact,
 1,024 artifacts/store. Expired data is denied, not silently re-exposed. Operator

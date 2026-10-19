@@ -1,6 +1,7 @@
 # werkWorker
 
 werkWorker is a local, general-purpose Rust agent engine with its own harness.
+The default `ww` command opens an interactive terminal in the werk top palette.
 The package is `werk-worker`, the Rust import is `werk_worker`, and the binary is
 `werk-worker`, with `ww` as its short command. Both commands are installed by
 Cargo and expose the same CLI. It is licensed under [Elastic License 2.0](LICENSE).
@@ -13,18 +14,21 @@ package; they do not require a repository checkout at runtime.
 
 Werk1112 supplies inference and model/runtime management. werkWorker supplies
 agent orchestration. Future werkCoder and werkStation clients consume this SDK
-or the JSONL protocol. There is no GPU runtime, TUI, Jira implementation or
+or the JSONL protocol. There is no GPU runtime, Jira implementation or
 autonomous package installer here. Scripted tests measure the harness, not model
 intelligence.
 
 ## Install and try
 
-Rust 1.88 or newer; Linux is the currently tested platform. Build from this
+Rust 1.88 or newer. Native packages target Linux x86_64/ARM64, Windows x86_64
+and macOS Apple Silicon; file/process isolation currently requires Linux.
+See [install scripts and release workflow](docs/releases.md). Build from this
 checkout (nothing is published by these commands):
 
 ```sh
 cargo install --path . --locked
-ww --store /tmp/worker-demo.sqlite run --demo "Hello"
+ww tui --demo "Hello"
+ww --help
 ww profiles list
 ww skills inspect ticket-drafting
 ww sandbox doctor
@@ -34,6 +38,12 @@ The demo is explicitly offline. A missing model connection never falls back to
 scripted replies. Process tools require Linux user namespaces, a usable
 Bubblewrap installation and the kernel interfaces described in
 [the sandbox matrix](docs/security.md). Missing isolation fails closed.
+
+With no arguments, `ww` opens the TUI setup screen. Use `ww --werk-config config.json`
+to open a connected session. Enter sends a message or steers an active run;
+Ctrl-Y/Ctrl-N approve once/deny, Ctrl-C cancels and Ctrl-Q closes the session.
+See [interactive terminal controls](docs/tui.md). `ww run ...` remains available
+for headless use and `ww rpc` for JSONL clients.
 
 Use `ww --help` for all commands. During development, use
 `cargo run --bin ww -- run --demo "Hello"` without installing. The longer
@@ -45,7 +55,7 @@ set its model and only capabilities you have confirmed for that model, then:
 ```sh
 werk-worker --werk-config examples/werk-config.json \
   --grants examples/readonly-grants.json --workspace /path/to/approved/workspace \
-  run --profile general-readonly "Summarize the supplied notes with citations"
+  tui --profile general-readonly "Summarize the supplied notes with citations"
 ```
 
 `--secret-env WERK_API_KEY` resolves an optional credential in the trusted host.
@@ -127,3 +137,11 @@ serially (concurrency bound one); independent sessions may run concurrently.
 Filesystem search is bounded and nonrecursive. Sandbox resource limits are
 Linux rlimits, not aggregate cgroup quotas. These limitations are explicit in
 the security documentation. No live-model quality or benchmark parity is claimed.
+
+## What’s new in v0.1.0
+
+werkWorker SDK and both CLI commands share release version **0.1.0**.
+
+- Initial agent engine, native packaging and interactive terminal.
+
+See [build, install and release](docs/releases.md).

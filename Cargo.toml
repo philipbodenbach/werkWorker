@@ -7,7 +7,7 @@ rust-version = "1.88"
 description = "Local general-purpose agent engine with durable sessions and scoped tool execution"
 license = "Elastic-2.0"
 repository = "https://github.com/philipbodenbach/werkWorker"
-include = ["src/**", "scripts/*.py", "scripts/*.sh", "scripts/*.ps1", "scripts/tests/*.py", ".cargo/config.toml", "CHANGELOG.md", "skills/**", "profiles/**", "examples/**", "docs/**", "evals/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "NOTICE"]
+include = ["src/**", "scripts/*.py", "scripts/*.sh", "scripts/*.ps1", "scripts/tests/*.py", ".cargo/config.toml", "CHANGELOG.md", "CONTRIBUTING.md", "skills/**", "profiles/**", "examples/**", "docs/**", "evals/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "NOTICE"]
 
 [features]
 default = ["tui"]

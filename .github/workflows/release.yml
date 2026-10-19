@@ -23,6 +23,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: werk-worker-product-release
@@ -31,7 +32,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: target/cli-reference-neutral
       GH_TOKEN: ${{ github.token }}
@@ -107,9 +108,7 @@ jobs:
               release_sha=$(git rev-parse FETCH_HEAD)
               git reset --hard "$release_sha"
             else
-              # Only generated release metadata skips duplicate PR CI. The
-              # release tests, CLI reference build and validation still run.
-              git commit -m "release(): $RELEASE_TAG [skip ci]"
+              git commit -m "release(): $RELEASE_TAG"
               release_sha=$(git rev-parse HEAD)
               git push origin "HEAD:refs/heads/$branch"
             fi
@@ -121,8 +120,8 @@ jobs:
           documentation for this release, including the generated CLI reference
           from a fresh build. Platform artifacts are built and uploaded manually
           after the tag is available. Release preparation tests passed.
-          This generated metadata commit skips duplicate PR CI; product changes
-          must pass their normal CI before starting Release.
+          The preparation branch must pass the same required checks as feature
+          branches before this PR can merge into protected main.
           BODY
               pr=$(gh pr create --head "$branch" --base "$DEFAULT_BRANCH" \
                 --title "release(): $RELEASE_TAG" --body-file "$RUNNER_TEMP/release-pr.md")
@@ -132,8 +131,38 @@ jobs:
               echo "number=$pr"
               echo "head=$release_sha"
               echo "base=$base_sha"
+              echo "branch=$branch"
             } >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Run required checks on the release preparation branch
+        if: steps.release-pr.outputs.number != ''
+        env:
+          RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
+          RELEASE_SHA: ${{ steps.release-pr.outputs.head }}
+        run: |
+          # GITHUB_TOKEN-created pushes/PRs do not automatically run ordinary CI.
+          # Explicit workflow_dispatch does, without a bypass or a separate PAT.
+          started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          for workflow in ci.yml platform-checks.yml; do
+            gh workflow run "$workflow" --ref "$RELEASE_BRANCH"
+          done
+          for workflow in ci.yml platform-checks.yml; do
+            run_id=""
+            for attempt in {1..30}; do
+              run_id=$(gh api --method GET "repos/$GH_REPO/actions/workflows/$workflow/runs" \
+                -f branch="$RELEASE_BRANCH" -f event=workflow_dispatch \
+                -f head_sha="$RELEASE_SHA" -f per_page=100 \
+                --jq "[.workflow_runs[] | select(.created_at >= \"$started_at\") | .id] | max // empty")
+              if [[ -n "$run_id" ]]; then break; fi
+              sleep 2
+            done
+            if [[ -z "$run_id" ]]; then
+              echo "::error::No dispatched $workflow run appeared for $RELEASE_SHA"
+              exit 1
+            fi
+            gh run watch "$run_id" --exit-status
+          done
 
       - name: Merge the release preparation PR
         if: steps.release-pr.outputs.number != ''

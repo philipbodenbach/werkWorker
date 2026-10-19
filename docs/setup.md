@@ -61,9 +61,21 @@ Windows replacement removes the old file first and is not atomic.
 
 Directly entered keys exist only in the process for the connection/session.
 They are masked on screen and are absent from settings, prompts, tool arguments
-and session exports. You must enter them again after reconnect/restart. There is
-no OS keychain integration. Environment authentication is the supported reusable
-credential reference. Do not put keys in a project file, profile or chat prompt.
+and session exports. You must enter them again after reconnect/restart unless
+you configure a reusable credential. There is no OS keychain integration.
+Environment authentication supports reusable credential references.
+
+For a local project connection, place a WerkConfig in
+`.werkworker/werk-config.json`. Bare `ww` automatically reads it from the current
+directory (or from `--workspace`). Optionally add `.werkworker/secrets.json` with
+`{"api_key":"your-token"}` to preload the masked API-key field. Keep this secret
+file gitignored and mode `0600` on Unix; it is stored as plaintext. The wizard
+never writes or copies this token to global/project settings. Local credentials
+are used only with the automatically discovered local connection; `--werk-config`
+bypasses both files, and `--secret-env` overrides the local token. A different
+local server URL clears inherited global authentication. The connection is still
+reviewed in setup before any request. Do not put keys in rule files, profiles or
+chat prompts.
 
 **Project model/profile/budgets** writes `.werkworker/config.json` in the selected
 workspace, retaining its other project preferences. It does not save the server

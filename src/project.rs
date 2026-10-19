@@ -4,6 +4,20 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
 pub const CONFIG: &str = ".werkworker/config.json";
+pub const CONNECTION_CONFIG: &str = ".werkworker/werk-config.json";
+pub const CONNECTION_SECRETS: &str = ".werkworker/secrets.json";
+
+/// Host-only connection defaults. Never included in project metadata or prompts.
+pub struct ConnectionDefaults {
+    pub werk: crate::providers::WerkConfig,
+    pub api_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionSecrets {
+    api_key: String,
+}
 pub const RULE_NAMES: &[&str] = &[
     ".werkworker.md",
     "WERKWORKER.md",
@@ -201,6 +215,38 @@ fn profile_name(name: &str) -> Result<()> {
     Ok(())
 }
 impl Project {
+    /// Read optional connection defaults for interactive host review. This does
+    /// not connect or change project/session authority. Local credentials stay
+    /// separate from the preferences and instruction snapshot.
+    pub async fn connection_config(root: &Path) -> Result<Option<ConnectionDefaults>> {
+        let workspace = Workspace::open(root).await?;
+        let Some(bytes) = optional(&workspace, CONNECTION_CONFIG, 65_536).await? else {
+            return Ok(None);
+        };
+        let werk = serde_json::from_slice(&bytes).map_err(|_| {
+            WorkerError::new("project_connection", "Invalid .werkworker/werk-config.json")
+        })?;
+        let api_key = match optional(&workspace, CONNECTION_SECRETS, 8192).await? {
+            Some(bytes) => {
+                let secrets: ConnectionSecrets = serde_json::from_slice(&bytes).map_err(|_| {
+                    WorkerError::new("project_credentials", "Invalid .werkworker/secrets.json")
+                })?;
+                if secrets.api_key.is_empty()
+                    || secrets.api_key.len() > 4096
+                    || secrets.api_key.chars().any(char::is_control)
+                {
+                    return Err(WorkerError::new(
+                        "project_credentials",
+                        "Invalid API key in .werkworker/secrets.json",
+                    ));
+                }
+                Some(secrets.api_key)
+            }
+            None => None,
+        };
+        Ok(Some(ConnectionDefaults { werk, api_key }))
+    }
+
     pub async fn load(root: &Path) -> Result<Self> {
         let workspace = Workspace::open(root).await?;
         let original = optional(&workspace, CONFIG, 65_536).await?;

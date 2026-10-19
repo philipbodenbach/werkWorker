@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Automatically load interactive connection defaults and optional local API keys
+  from the selected workspace's `.werkworker/werk-config.json` and `secrets.json`.
 - Interactive TUI server/authentication/model setup, masked key entry, persistent
   global settings, project save destination and `/setup` reconnection.
 - Project instruction snapshots with werkWorker/AGENTS/CLAUDE priority, scoped

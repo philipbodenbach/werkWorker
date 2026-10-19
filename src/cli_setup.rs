@@ -483,29 +483,26 @@ fn error_message(error: &WorkerError) -> String {
         ),
     }
 }
-pub async fn show(
+async fn resolve_settings(
+    mut settings: Settings,
     seed: Option<WerkConfig>,
     secret_env: Option<String>,
-    custom_policy: bool,
     workspace: &Path,
     project: &Project,
     explicit_profile: Option<&str>,
-) -> Result<Option<Connected>> {
-    let path = settings_path()?;
-    let (mut settings, load_error) = match read_settings(&path).await {
-        Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
-            Ok(s) if s.version == 1 => (s, String::new()),
-            _ => (
-                Settings::default(),
-                "Saved connection is invalid. Review settings before saving a replacement.".into(),
-            ),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Settings::default(), String::new()),
-        Err(_) => (
-            Settings::default(),
-            "Saved connection could not be read. Review settings.".into(),
-        ),
-    };
+) -> Result<(Settings, Option<String>)> {
+    let mut api_key = None;
+    // An explicit transport bypasses local discovery, including invalid local files.
+    if seed.is_none()
+        && let Some(connection) = Project::connection_config(workspace).await?
+    {
+        if settings.werk.base_url != connection.werk.base_url || connection.api_key.is_some() {
+            settings.secret_env = None;
+            settings.no_auth = false;
+        }
+        settings.werk = connection.werk;
+        api_key = connection.api_key;
+    }
     if let Some(model) = &project.config.model {
         settings.werk.model = model.clone();
     }
@@ -526,8 +523,45 @@ pub async fn show(
     }
     if let Some(name) = secret_env {
         settings.secret_env = Some(name);
+        api_key = None;
     }
+    Ok((settings, api_key))
+}
+
+pub async fn show(
+    seed: Option<WerkConfig>,
+    secret_env: Option<String>,
+    custom_policy: bool,
+    workspace: &Path,
+    project: &Project,
+    explicit_profile: Option<&str>,
+) -> Result<Option<Connected>> {
+    let path = settings_path()?;
+    let (settings, load_error) = match read_settings(&path).await {
+        Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
+            Ok(s) if s.version == 1 => (s, String::new()),
+            _ => (
+                Settings::default(),
+                "Saved connection is invalid. Review settings before saving a replacement.".into(),
+            ),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Settings::default(), String::new()),
+        Err(_) => (
+            Settings::default(),
+            "Saved connection could not be read. Review settings.".into(),
+        ),
+    };
+    let (settings, api_key) = resolve_settings(
+        settings,
+        seed,
+        secret_env,
+        workspace,
+        project,
+        explicit_profile,
+    )
+    .await?;
     let mut form = Form::new(settings, custom_policy);
+    form.key = api_key.unwrap_or_default();
     form.error = load_error;
     form.workspace = workspace.display().to_string();
     if project.config_hash.is_some() {
@@ -659,6 +693,93 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_connection_credentials_and_explicit_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = dir.path().join(".werkworker");
+        std::fs::create_dir(&metadata).unwrap();
+        let mut local = WerkConfig::local("local-model");
+        local.base_url = "http://127.0.0.1:12345".into();
+        std::fs::write(
+            metadata.join("werk-config.json"),
+            serde_json::to_vec(&local).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            metadata.join("secrets.json"),
+            r#"{"api_key":"local-fixture-key"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            metadata.join("config.json"),
+            r#"{"model":"project-model","output_tokens":3072}"#,
+        )
+        .unwrap();
+        let project = Project::load(dir.path()).await.unwrap();
+        let global = Settings {
+            secret_env: Some("GLOBAL_KEY".into()),
+            ..Default::default()
+        };
+        let (settings, key) =
+            resolve_settings(global.clone(), None, None, dir.path(), &project, None)
+                .await
+                .unwrap();
+        assert_eq!(settings.werk.base_url, local.base_url);
+        assert_eq!(settings.werk.model, "project-model");
+        assert_eq!(settings.limits.reserve_output_tokens, 3072);
+        assert!(settings.secret_env.is_none());
+        assert_eq!(key.as_deref(), Some("local-fixture-key"));
+        assert!(
+            !serde_json::to_string(&settings)
+                .unwrap()
+                .contains("local-fixture-key")
+        );
+        assert!(!project.metadata().to_string().contains("local-fixture-key"));
+
+        let (settings, key) = resolve_settings(
+            global.clone(),
+            None,
+            Some("EXPLICIT_KEY".into()),
+            dir.path(),
+            &project,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(settings.secret_env.as_deref(), Some("EXPLICIT_KEY"));
+        assert!(key.is_none());
+
+        // A different local endpoint must not inherit the global credential.
+        std::fs::remove_file(metadata.join("secrets.json")).unwrap();
+        let (settings, _) =
+            resolve_settings(global.clone(), None, None, dir.path(), &project, None)
+                .await
+                .unwrap();
+        assert!(settings.secret_env.is_none());
+
+        // Explicit transport overrides also bypass malformed project connection files.
+        std::fs::write(metadata.join("werk-config.json"), "invalid json").unwrap();
+        assert!(
+            resolve_settings(global.clone(), None, None, dir.path(), &project, None)
+                .await
+                .is_err()
+        );
+        let (settings, key) = resolve_settings(
+            global,
+            Some(WerkConfig::local("explicit-model")),
+            None,
+            dir.path(),
+            &project,
+            Some("coding-basic"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(settings.werk.model, "explicit-model");
+        assert_eq!(settings.profile, "coding-basic");
+        assert!(key.is_none());
+    }
+
     #[test]
     fn credentials_are_masked_and_never_serialized() {
         let mut form = Form::new(Settings::default(), false);

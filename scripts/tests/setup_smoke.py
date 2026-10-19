@@ -91,8 +91,11 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
     screen = Screen()
     proc = None
 
-    def start():
-        return subprocess.Popen([str(binary), '--workspace', str(workspace), '--store', str(root / 'state.sqlite')],
+    def start(*extra, cwd=None):
+        args = [str(binary), '--store', str(root / 'state.sqlite')]
+        if cwd is None:
+            args += ['--workspace', str(workspace)]
+        return subprocess.Popen(args + list(extra), cwd=cwd,
                                 stdin=slave, stdout=slave, stderr=slave, env=env)
 
     def wait_for(token, timeout=15):
@@ -209,7 +212,46 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert len(requests) == 2, 'Setup and suggested test commands must not run inference/processes'
         assert termios.tcgetattr(slave) == before
         assert KEY.encode() not in capture and KEY not in json.dumps(sessions)
+        # Bare ww discovers connection + credentials in its current workspace.
+        local_connection = project_dir / 'werk-config.json'
+        local_connection.write_text(json.dumps(settings['werk']))
+        local_secrets = project_dir / 'secrets.json'
+        local_secrets.write_text(json.dumps({'api_key': KEY}))
+        local_secrets.chmod(0o600)
+        settings['werk']['base_url'] = 'http://127.0.0.1:1'
+        settings['secret_env'] = 'MISSING_GLOBAL_FIXTURE_KEY'
+        config.write_text(json.dumps(settings))
+        global_before = config.read_bytes()
+        screen = Screen()
+        proc = start(cwd=workspace)
+        wait_for('Choose how to connect')
+        send('\r')
+        wait_for(origin)
+        wait_for('********')
+        send('\t' * 3 + '\r')
+        wait_for('Model and agent settings')
+        wait_for('fixture-model')
+        send('\t' * 8 + '\r')
+        wait_for('Ready')
+        send('\x11')
+        assert proc.wait(timeout=10) == 0
+        assert config.read_bytes() == global_before
+        assert KEY not in project_file.read_text()
+        assert KEY.encode() not in capture
+        assert KEY.encode() not in (root / 'state.sqlite').read_bytes()
+        assert len(requests) == 2
+        assert termios.tcgetattr(slave) == before
+        # --workspace has the same discovery behavior as the working directory.
+        screen = Screen()
+        proc = start()
+        wait_for('Choose how to connect')
+        send('\r')
+        wait_for(origin)
+        wait_for('********')
+        send('\x11')
+        assert proc.wait(timeout=10) == 0
         print('PASS: PTY setup, masked key paste, auth retry, model discovery, budgets, authenticated chat and approval, saved global/project configs (0600), project rules and permission separation, reconnect, environment reference, double Ctrl-C and terminal restoration.')
+        print('PASS: automatic workspace connection and masked local credentials for bare ww and --workspace; no token in settings, terminal capture or sessions.')
     finally:
         if proc is not None and proc.poll() is None:
             proc.kill()

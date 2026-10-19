@@ -15,6 +15,67 @@ fn write(root: &Path, path: &str, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 #[tokio::test]
+async fn connection_defaults_stay_within_workspace_and_reject_unsafe_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let child = dir.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    let config = werk_worker::providers::WerkConfig::local("fixture-model");
+    write(
+        dir.path(),
+        CONNECTION_CONFIG,
+        &serde_json::to_string(&config).unwrap(),
+    );
+    assert!(Project::connection_config(&child).await.unwrap().is_none());
+    assert_eq!(
+        Project::connection_config(dir.path())
+            .await
+            .unwrap()
+            .unwrap()
+            .werk
+            .model,
+        "fixture-model"
+    );
+    write(
+        dir.path(),
+        CONNECTION_SECRETS,
+        r#"{"api_key":"fixture-key","unknown":true}"#,
+    );
+    let error = Project::connection_config(dir.path()).await.err().unwrap();
+    assert_eq!(error.code, "project_credentials");
+    assert!(!error.to_string().contains("fixture-key"));
+    std::fs::remove_file(dir.path().join(CONNECTION_SECRETS)).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(
+        outside.path(),
+        "secret.json",
+        r#"{"api_key":"outside-key"}"#,
+    );
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.json"),
+        dir.path().join(CONNECTION_SECRETS),
+    )
+    .unwrap();
+    assert_eq!(
+        Project::connection_config(dir.path())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "project_path"
+    );
+    std::fs::remove_file(dir.path().join(CONNECTION_SECRETS)).unwrap();
+    write(dir.path(), CONNECTION_CONFIG, &"x".repeat(65_537));
+    assert_eq!(
+        Project::connection_config(dir.path())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "file_limit"
+    );
+}
+
+#[tokio::test]
 async fn priority_scope_and_immutable_session_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let global = tempfile::tempdir().unwrap();

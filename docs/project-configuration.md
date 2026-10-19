@@ -9,6 +9,8 @@ the filenames and behavior below are werkWorker's own contract.
 |---|---|
 | `~/.config/werkworker/config.json` | Global connection, authentication reference, model and budgets; see platform paths in [setup](setup.md) |
 | `.werkworker/config.json` in `--workspace` | Project model/profile, tool/skill selection, suggested test commands, additional rule directories |
+| `.werkworker/werk-config.json` in `--workspace` | Automatically loaded connection defaults for interactive setup |
+| `.werkworker/secrets.json` in `--workspace` | Optional local API key for that connection; keep private and gitignored |
 | `.werkworker.md` or `WERKWORKER.md` | werkWorker-specific instructions |
 | `AGENTS.override.md` | Personal replacement for the directory's shared AGENTS rules; normally gitignored |
 | `AGENTS.md` | Portable project conventions, architecture and build/test guidance |
@@ -73,19 +75,30 @@ tools and bundled skills; arbitrary scripts/plugins are not loaded automatically
 A test command is an argv array included as a **suggestion** in the prompt. Merely
 opening the project never executes it. There are no startup hooks.
 
-Interactive precedence: built-in defaults → global connection → project
+Interactive precedence: built-in defaults → global connection → local
+`.werkworker/werk-config.json` → project
 model/profile/budgets → explicit `--werk-config` transport values and a non-default
 CLI `--profile` → choices made in the wizard. Project model/context/output values
 are TUI defaults; headless `run` still uses its explicitly provided WerkConfig and
 default run limits. Both paths apply project rules, tool/skill selection and
 profile defaults. Recovery retains the original session's profile snapshot.
 
-Project files cannot set the server URL, credentials, environment references,
+Project preference and rule files cannot set the server URL, credentials, environment references,
 external mounts, network access, executable paths or host grants. Unknown fields
 are rejected. `requested_access` is only a displayed request (`none`, `read`,
 `write`, `process`); it never changes permissions. Select access in the TUI or
 supply a host-owned `--grants` file. Process access still uses the existing sandbox
 without new mounts or network rights. Each action requires its normal approval.
+
+The separate connection file uses the same WerkConfig format as `--werk-config`.
+It only seeds interactive setup; the wizard still requires the connection step.
+An explicit `--werk-config` bypasses automatic connection and secret discovery.
+Local credentials use `{"api_key":"your-token"}` in `.werkworker/secrets.json`;
+`--secret-env` overrides them. Credentials are masked in the wizard and excluded
+from project metadata, saved settings and session exports. A local URL change
+clears inherited global authentication. Files are read only in the selected
+workspace, with bounded sizes and no symlinks; parent directories are not searched.
+Headless and explicit offline paths do not automatically read these files.
 
 The TUI can save model/profile/budgets back to this file while retaining lists,
 commands and other preferences. It checks the original file hash to reject

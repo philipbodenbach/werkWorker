@@ -1,4 +1,4 @@
-# werkWorker
+![werkWorker](docs/assets/werkworker-banner.svg)
 
 werkWorker is a local, general-purpose Rust agent engine with its own harness.
 The default `ww` command opens an interactive terminal in the werk top palette.

@@ -124,6 +124,7 @@ links only the public library.
 
 ## References and limits
 
+- [Contributing and feature-branch workflow](CONTRIBUTING.md)
 - [Architecture](docs/architecture.md), [reference study](docs/reference-study.md)
 - [SDK and events](docs/sdk.md), [JSONL protocol](docs/protocol.md)
 - [Tool, skill and profile authoring](docs/authoring.md)

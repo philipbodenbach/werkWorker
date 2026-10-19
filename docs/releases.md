@@ -19,14 +19,24 @@ precedence over generated commit-subject notes. Versions in Cargo.toml, both
 Cargo lockfiles, README and this page are updated together. The CLI reference
 is regenerated from the versioned binary before the preparation PR.
 
-Enable Actions' repository setting allowing creation of pull requests.
-The workflow requires contents/pull-requests write permissions and honors branch
-protection; it does not use `--admin`. If protection requires checks that a
-GITHUB_TOKEN-created PR cannot trigger, provide a repository-approved bot/App
-workflow token or finish the reviewed PR before retrying. Base/head/tree checks
+Actions' repository setting allows creation of pull requests. The workflow
+requires contents/pull-requests/actions write permissions and honors branch
+protection; it does not use `--admin`. Because GITHUB_TOKEN-created pushes and
+PRs do not automatically run ordinary CI, Release explicitly dispatches `worker` and
+`Platform build checks` on its preparation branch and waits for both to succeed
+before merging. The generated commit does not skip CI. No separate PAT is needed.
+GitHub can additionally request maintainer approval for PR-triggered workflow
+runs; approve those in the PR if requested. See
+[GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+Keep merge commits enabled for the release PR's two-parent verification.
+Base/head/tree checks
 reject races. Retries preserve existing releases/assets and never move a tag.
 The first release needs no previous tag. No local script commits, tags or pushes.
 Only the explicitly started GitHub release workflow performs those operations.
+
+Development follows [short-lived feature branches into protected main](../CONTRIBUTING.md).
+Main advances continuously; a tagged release remains an explicit action, with
+platform assets attached to the draft before publication.
 
 ## Native platform builds
 

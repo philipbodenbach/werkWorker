@@ -20,6 +20,69 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
         ..WerkConfig::local("fixture-model")
     }
 }
+
+#[tokio::test]
+async fn backend_error_messages_are_preserved_and_credentials_redacted() {
+    for streaming in [false, true] {
+        let server = Server::start(move |request| {
+            if request.path != "/v1/chat/completions" {
+                return werk(request);
+            }
+            let error = json!({"error": {
+                "message": "invalid tool-call arguments: test-secret",
+                "type": "server_error",
+                "code": null
+            }});
+            if streaming {
+                let fragment = json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                    "index":0,"id":"partial",
+                    "function":{"name":"files.write","arguments":"{"}
+                }]}}]});
+                Response {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/event-stream".into())],
+                    body: format!("data: {fragment}\n\ndata: {error}\n\n").into_bytes(),
+                }
+            } else {
+                Response::json(error)
+            }
+        })
+        .await;
+        let provider = WerkProvider::connect(
+            config(&server.origin, streaming),
+            Some("test-secret".into()),
+        )
+        .await
+        .unwrap();
+        let response = provider
+            .stream(ModelRequest {
+                messages: vec![Message::text(Role::User, "write a file")],
+                tools: vec![],
+                max_output_tokens: 64,
+                output_schema: None,
+            })
+            .await;
+        let error = match response {
+            Err(error) => error,
+            Ok(mut stream) => loop {
+                match stream
+                    .next()
+                    .await
+                    .expect("stream must report the backend failure")
+                {
+                    Err(error) => break error,
+                    Ok(ModelDelta::Done | ModelDelta::Finish { .. }) => {
+                        panic!("failed tool call must not complete")
+                    }
+                    Ok(_) => {}
+                }
+            },
+        };
+        assert_eq!(error.code, "provider_error");
+        assert_eq!(error.message, "invalid tool-call arguments: [redacted]");
+        assert!(!error.retryable);
+    }
+}
 #[tokio::test]
 async fn discovery_accepts_capabilities_without_operations() {
     let server = Server::start(|request| {

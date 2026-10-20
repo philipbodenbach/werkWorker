@@ -154,7 +154,7 @@ impl ResponseAssembler {
         if self.finish.as_deref() == Some("length") {
             return Err(WorkerError::new(
                 "model_output_limit",
-                "Server stopped at its output token limit; incomplete output is not executable",
+                "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
             ));
         }
         if !self.done || !matches!(self.finish.as_deref(), Some("stop" | "tool_calls")) {
@@ -804,7 +804,11 @@ impl ModelProvider for WerkProvider {
             let mut redactor=StreamRedactor::new(client.secret.as_ref().map(|s|s.as_str().to_owned()));
             while let Some(chunk)=bytes.next().await {
                 let chunk=chunk.map_err(|_|WorkerError::transient("interrupted_stream"))?;
-                for delta in parser.push(&chunk)? {for clean in redactor.push(delta) {yield clean;}}
+                let deltas = parser.push(&chunk).map_err(|mut error| {
+                    error.message = client.redact(&error.message);
+                    error
+                })?;
+                for delta in deltas {for clean in redactor.push(delta) {yield clean;}}
             }
             parser.finish()?;
         }))
@@ -913,7 +917,20 @@ fn usage(v: &Value) -> Option<Usage> {
         })
     }
 }
+fn check_provider_error(v: &Value) -> Result<()> {
+    if let Some(error) = v.get("error").filter(|error| !error.is_null()) {
+        let message = error["message"]
+            .as_str()
+            .or_else(|| error.as_str())
+            .unwrap_or("Backend returned an error without a message");
+        // Do not let an upstream code trigger local recovery or retry policies.
+        return Err(WorkerError::new("provider_error", message));
+    }
+    Ok(())
+}
+
 pub fn decode_completion(v: &Value) -> Result<Vec<ModelDelta>> {
+    check_provider_error(v)?;
     if v["choices"].as_array().is_none_or(|c| c.len() != 1) {
         return Err(WorkerError::new(
             "invalid_response",
@@ -998,6 +1015,7 @@ impl SseDecoder {
             return Ok(vec![ModelDelta::Done]);
         }
         let v: Value = serde_json::from_str(data)?;
+        check_provider_error(&v)?;
         let mut out = Vec::new();
         if let Some(usage) = usage(&v["usage"]) {
             out.push(ModelDelta::Usage { usage });

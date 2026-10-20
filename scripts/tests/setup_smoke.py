@@ -103,10 +103,10 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         return subprocess.Popen(args + list(extra), cwd=cwd,
                                 stdin=slave, stdout=slave, stderr=slave, env=env)
 
-    def wait_for(token, timeout=15):
+    def wait_for(token, timeout=15, present=True):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if token.encode() in screen.text():
+            if (token.encode() in screen.text()) == present:
                 return
             if select.select([master], [], [], .1)[0]:
                 data = os.read(master, 65536)
@@ -224,7 +224,9 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         with closing(sqlite3.connect(root / 'state.sqlite')) as db:
             sessions = [json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')]
         assert len(sessions) == 3
-        assert all(not data['policy']['workspace_writable'] for data in sessions)
+        assert all(data['policy']['request_approvals'] for data in sessions)
+        assert all(data['policy']['workspace_writable'] for data in sessions)
+        assert all('process.run' in data['profile']['tools'] and 'files.write' in data['profile']['tools'] for data in sessions)
         assert all(all(not g['preapproved'] and g['tool'].startswith('files.') for g in data['policy']['grants']) for data in sessions)
         assert all('fixture project instruction' in data['profile']['prompt'] for data in sessions)
         assert len(requests) == 2, 'Setup and suggested test commands must not run inference/processes'
@@ -369,6 +371,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\x1b[B\r')
         wait_for('Resume interrupted run')
         send('\r')
+        wait_for('Approval ·')
         wait_for('Allow once')
         assert len(requests) == 4, 'Resume must not replay the already committed model tool call'
         send('\x19')
@@ -404,12 +407,18 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
                 wait_for('New / Previous sessions')
                 send('\r')
             wait_for('Ready')
+            # A PTY read can end after the new chat header but before the old
+            # setup body is erased. Do not mistake that stale body for the
+            # subsequent /setup screen and send its Enter to the old screen.
+            wait_for('Choose how to connect', present=False)
             send('/setup\r')
             wait_for('Choose how to connect')
+            wait_for('Ready', present=False)
             send('\r')
             wait_for('Server and credentials')
             send('\x1b')
             wait_for('Choose how to connect')
+            wait_for('Server and credentials', present=False)
         send('\x11')
         assert exited() == 0
         assert KEY.encode() not in capture

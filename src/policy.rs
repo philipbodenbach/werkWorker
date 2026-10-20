@@ -32,6 +32,9 @@ pub struct HostPolicy {
     pub hard_denied_tools: Vec<String>,
     pub allow_similar: bool,
     pub workspace_writable: bool,
+    /// Trusted host opt-in: valid tool actions may request explicit approval
+    /// without a preconfigured grant. Never skips approval, including FullAccess.
+    pub request_approvals: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyDecision {
@@ -97,6 +100,9 @@ impl HostPolicy {
         let Ok(target) = resource(def, args) else {
             return PolicyDecision::Deny;
         };
+        if self.request_approvals {
+            return PolicyDecision::Ask;
+        }
         let granted = self.grants.iter().find(|g| {
             g.tool == def.name
                 && g.version == def.version

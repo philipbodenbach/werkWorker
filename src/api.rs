@@ -454,6 +454,66 @@ impl SessionHandle {
     pub async fn export(&self) -> Result<Value> {
         Ok(serde_json::to_value(self.snapshot().await?)?)
     }
+    /// Explicit trusted-host action, never exposed as a model tool. Makes the
+    /// registered catalogue available in this root session; every external
+    /// action still needs a prepared, addressed approval. Existing hard denies
+    /// and the workspace/sandbox boundary remain authoritative.
+    pub async fn enable_tool_approvals(&self, command_id: &str) -> Result<CommandReceipt> {
+        // Do not race child creation or silently change an existing child's
+        // deliberately narrowed tool scope. New children inherit the new mode.
+        let _delegation = self.engine.inner.delegation.lock().await;
+        let mut data = self.snapshot().await?;
+        if data.parent.is_some() {
+            return Err(WorkerError::new(
+                "root_required",
+                "Change permissions in the root session",
+            ));
+        }
+        let tools: Vec<_> = self.engine.tools().into_iter().map(|t| t.name).collect();
+        let skills = self.engine.skills();
+        let payload = json!({"method":"enable_tool_approvals","tools":tools,"skills":skills.iter().map(|s| (&s.name, &s.hash)).collect::<Vec<_>>()});
+        if data.commands.contains_key(command_id) {
+            return data.command(command_id, &payload, None);
+        }
+        for run in &data.runs {
+            if self
+                .children(&run.id)
+                .await?
+                .iter()
+                .any(|c| c.run.as_ref().is_none_or(|r| !r.status.terminal()))
+            {
+                return Err(WorkerError::new(
+                    "agents_active",
+                    "Cancel or finish active subagents before changing access; then continue in this session.",
+                ));
+            }
+        }
+        self.update(|d| {
+            let receipt = d.command(command_id, &payload, None)?;
+            if matches!(receipt.status, ReceiptStatus::Duplicate) {
+                return Ok(receipt);
+            }
+            d.profile.tools = tools.clone();
+            for skill in &skills {
+                // Preserve already recorded skill versions in this conversation.
+                d.skill_snapshots
+                    .entry(skill.name.clone())
+                    .or_insert_with(|| skill.clone());
+            }
+            d.profile.skills = d.skill_snapshots.keys().cloned().collect();
+            d.profile_hash = fingerprint(&d.profile);
+            d.policy.request_approvals = true;
+            d.policy.workspace_writable = true;
+            d.emit(
+                None,
+                EventKind::Diagnostic {
+                    code: "tool_approval_requests_enabled".into(),
+                },
+            );
+            Ok(receipt)
+        })
+        .await
+    }
     /// Trusted host revocation. This cannot add grants or change isolation.
     pub async fn revoke_tool(&self, tool: &str, command_id: &str) -> Result<CommandReceipt> {
         self.update(|d| {

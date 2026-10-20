@@ -333,8 +333,17 @@ pub struct Sandbox {
 }
 impl Default for Sandbox {
     fn default() -> Self {
+        let system = PathBuf::from("/usr/bin/bwrap");
+        let local = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
+            .map(|p| p.join("werk-worker/tools/bubblewrap/usr/bin/bwrap"));
         Self {
-            bubblewrap: PathBuf::from("/usr/bin/bwrap"),
+            bubblewrap: if system.is_file() {
+                system
+            } else {
+                local.filter(|p| p.is_file()).unwrap_or(system)
+            },
             limits: ProcessLimits::default(),
         }
     }

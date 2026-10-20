@@ -82,13 +82,23 @@ impl ContextBuilder for DefaultContextBuilder {
         for skill in session.skill_snapshots.values() {
             prompt.push_str(&format!("{}: {}\n", skill.name, skill.description));
         }
-        prompt.push_str(&format!(
+        if session.policy.request_approvals {
+            prompt.push_str("\nTools are available on explicit host approval. Call the actual file/process/network tool needed for the task: the engine pauses it and asks the user to approve the concrete action. Do not use interaction.ask to request permissions or tell the user to change profiles. Never claim execution before a successful tool result. Workspace writes are ");
+            prompt.push_str(if session.policy.workspace_writable {
+                "requestable.\n"
+            } else {
+                "disabled for this read-only worker.\n"
+            });
+        } else {
+            prompt.push_str(&format!(
             "\nWorkspace writes enabled: {}. Host-granted tools (scoped, possibly requiring approval): {}. Hard-denied tools: {}.\n",
             session.policy.workspace_writable,
             session.policy.grants.iter().map(|g| g.tool.as_str()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "),
             session.policy.hard_denied_tools.join(", "),
-        ));
-        prompt.push_str("If the task needs unavailable tools or rights, explain the blocker immediately; asking a question or delegating cannot grant rights. For implementation tasks, use the permitted file/process tools to make and verify changes. Code shown in chat is only a proposal, not a file change. Report tests as executed only when tool results prove they ran.\n");
+            ));
+            prompt.push_str("If tools or rights are missing, explain the blocker and direct the user to /permissions. An ordinary interaction.ask answer cannot change host policy.\n");
+        }
+        prompt.push_str("For implementation tasks, use the permitted file/process tools to make and verify changes. Code shown in chat is only a proposal, not a file change. Report tests as executed only when tool results prove they ran.\n");
         if let Some(schema) = &run.output_schema {
             prompt.push_str(&format!(
                 "\nFinal output must be JSON satisfying this schema: {schema}\n"

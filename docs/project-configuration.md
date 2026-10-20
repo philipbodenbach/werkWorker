@@ -86,7 +86,7 @@ profile defaults. Recovery retains the original session's profile snapshot.
 Project preference and rule files cannot set the server URL, credentials, environment references,
 external mounts, network access, executable paths or host grants. Unknown fields
 are rejected. `requested_access` is only a displayed request (`none`, `read`,
-`write`, `process`); it never changes permissions. Select access in the TUI or
+`write`, `process`, `ask`); it never changes permissions. Select access in the TUI or
 supply a host-owned `--grants` file. Process access still uses the existing sandbox
 without new mounts or network rights. Each action requires its normal approval.
 

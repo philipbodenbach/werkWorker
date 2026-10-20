@@ -82,8 +82,6 @@ with tempfile.TemporaryDirectory(prefix='ww-child-ui-') as temporary:
     config.update(base_url=f'http://127.0.0.1:{server.server_port}', model='fixture', stream=False)
     config['capabilities'].update(context_tokens=32768, tool_calling='supported')
     (root / 'connection.json').write_text(json.dumps(config))
-    (root / 'grants.json').write_text(json.dumps({'workspace_writable': True, 'grants': [
-        {'tool': 'files.write', 'version': '1', 'resource': '.', 'preapproved': False}]}))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 36, 130, 0, 0))
     before = termios.tcgetattr(slave)
@@ -91,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='ww-child-ui-') as temporary:
     screen = Screen()
     proc = subprocess.Popen([str(binary), '--workspace', str(workspace), '--store', str(root / 'state.sqlite'),
         '--werk-config', str(root / 'connection.json'), '--secret-env', 'WW_CHILD_FIXTURE_KEY',
-        '--grants', str(root / 'grants.json'), 'tui', 'Run both fixture tasks', '--profile', 'coding-basic'],
+        'tui', 'Run both fixture tasks'],
         stdin=slave, stdout=slave, stderr=slave, env=env)
 
     def send(value):
@@ -141,7 +139,7 @@ with tempfile.TemporaryDirectory(prefix='ww-child-ui-') as temporary:
             name = 'alpha' if 'Agent: alpha' in text else 'beta'
             if 'Approval ·' in text:
                 seen.add((name, 'approval'))
-                send('\x19')
+                send('ja\r')
             else:
                 seen.add((name, 'question'))
                 send('/permissions\r')
@@ -183,11 +181,13 @@ with tempfile.TemporaryDirectory(prefix='ww-child-ui-') as temporary:
             children = [json.loads(row[0]) for row in db.execute('SELECT data FROM sessions') if json.loads(row[0]).get('parent')]
         assert len(children) == 2
         for child in children:
+            assert child['policy']['request_approvals']
+            assert child['policy']['grants'] == []
             run = child['runs'][0]
             assert run['status'] == 'completed'
             assert [i['approval']['decision'] for i in run['invocations'] if i.get('approval')] == ['allow_once']
             assert [i['interaction']['answer'] for i in run['invocations'] if i.get('interaction')] == ['team']
-        print('PASS: two-child inspector, live details, addressed approvals/questions, permission view, completed results and terminal restoration.')
+        print('PASS: default all-tool availability, inherited child approval requests, typed ja executes real child writes, inspector, completed results and terminal restoration.')
     finally:
         if proc.poll() is None:
             proc.kill()

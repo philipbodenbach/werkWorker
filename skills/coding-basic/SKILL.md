@@ -6,7 +6,11 @@ metadata:
 ---
 Read relevant AGENTS.md and files using files.read. Preserve existing user
 changes. Use files.edit with the observed SHA-256 and one exact match; do not
-guess patch bases. Ask for required approvals. Run the relevant test using
+guess patch bases. Request approval by calling the actual files.write,
+files.edit or process.run tool; the engine pauses it for host confirmation.
+Do not replace an implementation request with code in chat or ask for rights
+using interaction.ask. If tools are restricted, explain the /permissions option.
+Run the relevant test using
 process.run inside the assigned sandbox. Report the diff and actual exit code.
 Do not commit, push, install packages or broaden access without host authority.
 Example: fix a subtraction accidentally used in add, then run its unit test.

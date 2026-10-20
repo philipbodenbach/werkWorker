@@ -40,8 +40,9 @@ struct Cli {
     /// Host-owned inference and subagent limits JSON.
     #[arg(long)]
     execution_config: Option<PathBuf>,
-    #[arg(long, default_value = "/usr/bin/bwrap")]
-    bubblewrap: PathBuf,
+    /// Bubblewrap executable; defaults to the system or per-user installation.
+    #[arg(long)]
+    bubblewrap: Option<PathBuf>,
     /// Explicit Werk transport/model configuration JSON; no credentials inside.
     #[arg(long)]
     werk_config: Option<PathBuf>,
@@ -206,7 +207,9 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         ));
     }
     let sandbox = Sandbox {
-        bubblewrap: cli.bubblewrap,
+        bubblewrap: cli
+            .bubblewrap
+            .unwrap_or_else(|| Sandbox::default().bubblewrap),
         ..Default::default()
     };
     if matches!(&command, Command::Sandbox { .. }) {
@@ -221,7 +224,11 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     execution.validate()?;
     let mut setup_limits = Limits::default();
     let mut setup_profile = None;
-    let mut setup_access = project::Access::None;
+    let mut setup_access = if matches!(&command, Command::Tui { .. }) {
+        project::Access::Ask
+    } else {
+        project::Access::None
+    };
     let project = if matches!(&command, Command::Tui { .. } | Command::Run { .. }) {
         project::Project::load(&cli.workspace).await?
     } else {
@@ -330,7 +337,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             run_id,
             ..
         } => {
-            let profile = match setup_profile {
+            let mut profile = match setup_profile {
                 Some(profile) => profile,
                 None => {
                     project
@@ -346,6 +353,10 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                         .await?
                 }
             };
+            if policy.request_approvals {
+                profile.tools = engine.tools().into_iter().map(|t| t.name).collect();
+                profile.skills = engine.skills().into_iter().map(|s| s.name).collect();
+            }
             let mut choice = match session_id {
                 Some(id) => cli_start::SessionChoice::Previous(id),
                 None if input.is_none() && !cli.setup => {

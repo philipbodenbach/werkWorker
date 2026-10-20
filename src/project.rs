@@ -34,18 +34,33 @@ pub enum Access {
     Read,
     Write,
     Process,
+    Ask,
 }
 impl Access {
-    pub const ALL: [Self; 4] = [Self::None, Self::Read, Self::Write, Self::Process];
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Read,
+        Self::Write,
+        Self::Process,
+        Self::Ask,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "No file/process access",
             Self::Read => "Read only; ask each time",
             Self::Write => "Read/write; ask each time",
             Self::Process => "Read/write + sandbox processes; ask each time",
+            Self::Ask => "All tools; explicit approval for each action",
         }
     }
     pub fn policy(self) -> HostPolicy {
+        if self == Self::Ask {
+            return HostPolicy {
+                request_approvals: true,
+                workspace_writable: true,
+                ..Default::default()
+            };
+        }
         let mut tools = vec![];
         if self != Self::None {
             tools.extend(["files.read", "files.list", "files.search"]);

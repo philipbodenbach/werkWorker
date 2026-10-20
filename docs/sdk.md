@@ -24,6 +24,7 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | `engine.resume_run(session_id, run_id).await` | Explicitly resume interrupted safe root work; children require new delegation |
 | `session.reconcile_invocation(run_id, invocation_id, confirmed_result, command_id).await` | Host records external evidence, never replays the action |
 | `session.revoke_tool(name, command_id).await` | Remove grants and hard-deny new starts |
+| `session.enable_tool_approvals(command_id).await` | Explicit host opt-in to all registered tools/skills and per-action approvals in this root session; active children must finish first |
 | `session.snapshot()/export().await` | Versioned canonical data, no provider/broker credentials |
 | `session.fork(explicit_new_policy).await` | Independent identities/history at a completed boundary |
 | `engine.execution_status()` / `session.execution_status()` | Capacity source, configured/effective limits and free slots |
@@ -37,6 +38,10 @@ approval requires `HostPolicy.allow_similar=true`. Its deterministic scope is
 the same tool name/version and identical prepared JSON in the same run,
 including file base/diff or process sandbox descriptor. It never covers another
 run. `FullAccess` is a host-selected approval mode within existing grants.
+`HostPolicy.request_approvals=true` instead asks for every non-internal action,
+including actions without a static grant. It never bypasses hard denies or
+read-only workspaces, and does not use reusable approvals to skip confirmation.
+SDK/headless defaults remain unchanged.
 
 Every event carries schema version, opaque event/session/run IDs, monotonic
 session cursor and Unix-millisecond timestamp. `EventKind` is a typed Serde

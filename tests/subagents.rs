@@ -437,6 +437,10 @@ async fn revoking_parent_grants_denies_child_writes() {
         true,
     )
     .await;
+    session
+        .enable_tool_approvals("enable-requests")
+        .await
+        .unwrap();
     let run = session
         .submit("go", "submit", Limits::default(), None)
         .await

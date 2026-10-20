@@ -43,7 +43,7 @@ Indentation is retained; an unfinished code fence is styled while streaming.
 | Ctrl-U | Clear a draft answer to use the selection again |
 | F4 / `/view` | Choose and remember Compact or Cockpit |
 | `/sessions` | Choose a new chat or a previous conversation in this workspace |
-| F2 / `/permissions` | Inspect the current profile, grants and instructions for changing access |
+| F2 / `/permissions` | Inspect tools/skills/grants; Enter opens confirmation to enable approval requests |
 | F3 / `/agents` | Open the subagent inspector; Up/Down selects a child, Page Up/Down scrolls its details, Esc returns |
 | Ctrl-C | Cancel the active run; press again consecutively to quit (any other key resets this) |
 | Ctrl-Q | Cancel/clean up managed work, close the session and restore the terminal |
@@ -73,23 +73,29 @@ choice. Questions and submitted answers remain in the visible chat history.
 Approval cards offer **Allow once** and **Deny** (initial selection); use Up/Down
 and Enter or Ctrl-Y/Ctrl-N. Approval details include file differences and actual
 process rights; Alt-Up/Down scrolls them independently of the choice list.
-Typing a chat message does not approve a prepared action. Inspectors do not accept approval keystrokes
+On an approval card, typing **ja/yes/y/allow/erlauben** and Enter allows that
+prepared action once; **nein/no/n/deny/ablehnen** rejects it. Other chat text is
+not an approval. Inspectors do not accept approval keystrokes
 for hidden requests: return with Esc to review and answer the displayed request.
 The Cockpit sidebar summarizes the profile and host access; F2 exposes these
-details in either layout. Read-only sessions also show a persistent footer notice:
-chat code does not create files. The model receives the host write restriction
-and granted tool names, with instructions to report blocked execution rather
-than fabricate file changes or test results.
+details in either layout. The footer indicates either approval-request mode or
+restricted access. The model and the bundled task/coding skills direct permission
+requests through the actual tool, so the host can show a real action approval.
 
-The setup explicitly selects session grants; a reply such as "yes" to an agent
-question cannot enlarge them. To create files and run `cargo test`, select both
-the `coding-basic` profile and `Read/write + sandbox processes` workspace access.
-If the current run has insufficient rights, use `/cancel`, then `/setup`, choose
-the profile/access, and resubmit the task in the new session. Access is not
+New interactive setups default to **All tools; explicit approval for each action**,
+exposing all registered tools and skills, including the bundled coding skill.
+To upgrade an existing restricted chat, open **F2**, press **Enter**, select
+**Enable all tools; ask before actions** with Up, and confirm with Enter.
+The default choice keeps current permissions. Enabling requests itself executes
+nothing; the actual file change or sandbox command still requires approval.
+The conversation, pending ordinary question and session ID are preserved.
+Finish/cancel active subagents before changing access, then continue in the same
+session; new children inherit the mode and ask for their own actions.
+Access is not
 changed when reopening an existing session: it retains its stored profile and
 policy. **Continue previous** shows and reuses the access selected in the last
 saved setup for this workspace when creating a new session. **Connect new** starts
-with read-only access. An explicit `--grants` file controls newly created sessions;
+with all tools and explicit approvals. An explicit `--grants` file controls newly created sessions;
 opening an old session retains that session's stored grants.
 Questions are answered through their durable request IDs. Typing another message
 after completion starts a new run in the same session. Display history is bounded;

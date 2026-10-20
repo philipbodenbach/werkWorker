@@ -11,6 +11,17 @@ capabilities, and approval of a prepared invocation. A denial or unavailable
 sandbox is never retried through a host shell. Internal questions/plans/allowed
 skill metadata require no extra external permission.
 
+The interactive host may opt into `HostPolicy.request_approvals`. This exposes
+valid registered actions for approval even without prewritten resource grants.
+Every non-internal action returns **Ask** in this mode, even with FullAccess or
+a previously reusable scope. Hard denies, path validation and read-only child
+restrictions are checked first. This is host authority, not a model instruction:
+`interaction.ask` answers cannot enable it. The TUI confirmation invokes the
+trusted `session.enable_tool_approvals` API, records the host command, expands
+registered tool/skill availability and persists the policy in the same session.
+Existing skill snapshots are retained; newly available skills are snapshotted.
+No action executes merely because this mode was enabled.
+
 ## Linux backend
 
 Bubblewrap creates user, mount, PID, network, IPC and UTS namespaces with

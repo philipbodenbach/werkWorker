@@ -109,21 +109,32 @@ config selects project saving by default; otherwise global saving is selected.
 Concurrent project-config edits cause a conflict instead of an overwrite.
 See [project configuration and profiles](project-configuration.md).
 
-The default interactive workspace access is read-only with an approval for each
-operation. You can explicitly choose no access, read/write, or read/write plus
-sandboxed processes. Saved setups remember this explicit selection for the current
+The default interactive access is **All tools; explicit approval for each action**.
+Every registered tool and skill is available, independent of the selected profile's
+original catalogue. File, process and network actions pause for approval of their
+prepared arguments; the profile still supplies instructions. You can instead
+choose restricted no-access, read-only, write or process scopes.
+Saved setups remember this explicit selection for the current
 workspace and show it next to **Continue previous**. Choosing Continue reuses it
-for new chats; **Connect new** defaults to read-only. Each operation still needs
+for new chats; **Connect new** defaults to all tools with explicit approvals. Each operation still needs
 approval; native sandbox support is still required. An explicit `--grants` file
 takes precedence for new sessions. Existing sessions retain their stored policy.
 Project access requests are displayed but never select a broader policy for you.
 
-For code changes and `cargo test`, choose both **Agent profile: coding-basic**
-and **Workspace access: Read/write + sandbox processes** using Left/Right on each
-field. The profile supplies tools; workspace access grants host permission.
-Choosing only one is insufficient. In chat, F2 or `/permissions` shows both
-settings and how to start a new session with different access. Replying "yes"
-to an agent question cannot change either setting.
+For an existing restricted session, open **F2 / `/permissions`**, press Enter,
+and select **Enable all tools; ask before actions**. This updates and saves the
+same session, including its registered skills, without reconnecting or discarding
+the conversation. Finish/cancel active subagents before this change; new children
+inherit it. Enabling requests executes nothing. On the actual approval card,
+choose **Allow once**, press Ctrl-Y or type **ja/yes**; **Deny**, Ctrl-N and
+**nein/no** reject the action. Ordinary agent questions do not change permissions.
+Hard-denied tools, path boundaries and the process sandbox remain enforced.
+
+Process execution requires Bubblewrap. The CLI finds `/usr/bin/bwrap`, then a
+per-user installation at
+`$XDG_DATA_HOME/werk-worker/tools/bubblewrap/usr/bin/bwrap`
+(`~/.local/share` when unset). `--bubblewrap PATH` overrides detection.
+The worker never substitutes an unrestricted host shell when the backend is absent.
 
 ## Existing CLI paths
 

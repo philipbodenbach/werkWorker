@@ -79,8 +79,10 @@ API-key entry](docs/local-werk-example.md) and its
 [connection configuration](examples/werk-qwen27b.json).
 
 SDK/headless default policy is **ask**, with **no external resource grants**.
-The TUI explicitly offers workspace reads and lets you select broader session
-access; each operation still asks. Project files never grant access. The example
+New TUI setups offer all registered tools/skills with explicit approval for each
+file/process/network action. F2 → Enter enables this mode in an existing restricted
+chat without reconnecting. Type `ja`/`yes` on an action approval to allow it once.
+Project files never grant access. The example
 grant file explicitly allocates workspace reads; each read still asks. A grant
 allows the engine to consider an action; an approval authorizes its prepared
 arguments. Full access and exact-argument reusable approvals require explicit
@@ -160,7 +162,8 @@ cargo fmt --check
 Use `WERK_WORKER_BWRAP=/absolute/path/to/bwrap` for the examples/tests if the
 binary is not installed at `/usr/bin/bwrap`. `REQUIRE_SANDBOX=1` makes a missing
 backend fail the isolation test and coding eval. The dedicated CI job sets it.
-The CLI uses its explicit `--bubblewrap` option.
+The CLI supports `--bubblewrap`; otherwise it detects the system binary or the
+per-user installation described in [setup](docs/setup.md).
 
 [Coding example](examples/coding.rs) edits a broken fixture and checks its actual
 sandbox exit code. [Automation example](examples/automation.rs) reads meeting

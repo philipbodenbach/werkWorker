@@ -215,7 +215,7 @@ impl Form {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
-            access: Access::Read,
+            access: Access::Ask,
             project_notice: String::new(),
         }
     }
@@ -358,7 +358,7 @@ impl Form {
                     .iter()
                     .position(|v| *v == self.access)
                     .unwrap_or(1);
-                self.access = Access::ALL[next(i, 4)];
+                self.access = Access::ALL[next(i, Access::ALL.len())];
             }
             (2, 5) => {
                 self.settings.werk.capabilities.tool_calling =
@@ -469,7 +469,7 @@ fn draw(frame: &mut ratatui::Frame, form: &Form) {
         form.error.clone()
     } else {
         if form.stage == 2 && matches!(form.field, 3 | 4) {
-            "For code changes and cargo test: select coding-basic AND Read/write + sandbox processes.\nProfile selects tools; workspace access grants rights. Both are required.\nLeft/Right: change selection · Tab: next field · Enter: next / action\nAccess is session-only; an answer in chat cannot grant permissions.".into()
+            "All tools: file changes, sandbox processes and network requests require explicit approval.\nOther access modes restrict the profile's tools to the selected grants.\nLeft/Right: change selection · Tab: next field · Enter: next / action\nExisting sessions: /permissions changes access without reconnecting.".into()
         } else {
             "Tab / Shift-Tab or Up / Down: field · Left / Right: select\nEnter: next / action · Ctrl-U: clear field · Esc: back\nCtrl-Q: exit · Ctrl-C twice: exit · API keys are masked.".into()
         }

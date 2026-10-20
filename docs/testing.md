@@ -78,3 +78,9 @@ constraints/tool pairs, server-sized reserves, oversized input rejection before
 dispatch, learned smaller limits and nonretryable truncated tool output.
 The TUI PTY test also checks keyboard/mouse scrolling, code-block colors, visible
 run errors and follow-ups after failure without creating another session.
+Permission regressions cover upgrading a restricted chat while awaiting an answer,
+loading the bundled coding skill, writes only after addressed approval, denial,
+stale approvals, persistence/restart, hard denies, read-only scopes and actual
+Bubblewrap process execution (`REQUIRE_SANDBOX=1` makes missing isolation fatal).
+The PTY tests exercise F2 confirmation and typed `ja`, including real writes by
+two subagents without preconfigured grants or a coding profile.

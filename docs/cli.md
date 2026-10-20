@@ -34,7 +34,7 @@ Options:
       --execution-config <EXECUTION_CONFIG>
           Host-owned inference and subagent limits JSON
       --bubblewrap <BUBBLEWRAP>
-          [default: /usr/bin/bwrap]
+          Bubblewrap executable; defaults to the system or per-user installation
       --werk-config <WERK_CONFIG>
           Explicit Werk transport/model configuration JSON; no credentials inside
       --secret-env <SECRET_ENV>

@@ -65,10 +65,22 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x19')  # Inspector cannot approve a hidden request.
         time.sleep(.3)
         assert not (workspace/'approved.txt').exists()
-        os.write(master,b'\x1b')
+        os.write(master,b'\r')
+        wait_for(b'Enable tool approval requests in this session?')
+        wait_for('› Keep current permissions'.encode())
+        os.write(master,b'\r')  # Default is to retain the existing scope.
+        wait_for(b'Inspector ',present=False)
+        assert not (workspace/'approved.txt').exists()
+        os.write(master,b'/permissions\r')
+        wait_for(b'Host grants:')
+        os.write(master,b'\r')
+        wait_for(b'Enable tool approval requests in this session?')
+        os.write(master,b'\x1b[A\r')  # Explicitly enable requests, not execution.
+        wait_for(b'Permissions updated:')
         wait_for(b'Inspector ',present=False)
         wait_for(b'Approval')
-        os.write(master,b'\x1b[A\r')  # Move from Deny to Allow once and confirm.
+        assert not (workspace/'approved.txt').exists()
+        os.write(master,b'ja\r')  # The typed approval must execute the prepared write.
         wait_for(b'Which audience?')
         assert (workspace/'approved.txt').read_text()=='approved'
         os.write(master,b'/agents\r')  # Commands also work while answering a child/root question.
@@ -151,6 +163,8 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         answers=[i['interaction']['answer'] for s in sessions for r in s['runs'] for i in r['invocations'] if i.get('interaction')]
         assert answers==['team','public'],answers
         assert len(sessions)==1, 'Follow-up created a different session'
+        assert sessions[0]['policy']['request_approvals']
+        assert 'http.fetch' in sessions[0]['profile']['tools']
         assert [r['status'] for r in sessions[0]['runs']]==['completed','failed','completed','cancelled']
         screen=Screen()
         proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'restart.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)

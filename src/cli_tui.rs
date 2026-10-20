@@ -116,6 +116,7 @@ enum Screen {
     Conversation,
     Agents,
     Permissions,
+    PermissionConsent,
     Appearance,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -195,11 +196,21 @@ struct View {
     permissions: String,
     access_summary: String,
     access_hint: String,
+    permission_selected: usize,
     layout: LayoutMode,
     layout_selected: usize,
     choice_selected: usize,
 }
 impl View {
+    fn refresh_permissions(&mut self, data: &SessionData) {
+        (self.access_summary, self.permissions) = permission_details(data);
+        self.access_hint = if data.policy.request_approvals {
+            " All tools can request approval · ja/yes or Allow once executes the displayed action · F2 permissions".into()
+        } else {
+            " Restricted tool access · F2 then Enter: enable approval requests without reconnecting"
+                .into()
+        };
+    }
     fn scroll_chat(&mut self, up: bool, rows: usize) {
         let position = self.scroll.unwrap_or(self.chat_max_scroll);
         let next = if up {
@@ -325,13 +336,17 @@ fn permission_details(data: &SessionData) -> (String, String) {
     let summary = format!(
         "Profile: {}\nWorkspace writes: {}\nProcess tool: {}",
         data.profile.name,
-        if data.policy.workspace_writable {
+        if data.policy.request_approvals && data.policy.workspace_writable {
+            "explicit approval required"
+        } else if data.policy.workspace_writable {
             "enabled (within grants)"
         } else {
             "disabled"
         },
         if data.profile.tools.iter().any(|t| t == "process.run") {
-            if data.policy.grants.iter().any(|g| g.tool == "process.run") {
+            if data.policy.request_approvals {
+                "sandboxed; explicit approval required"
+            } else if data.policy.grants.iter().any(|g| g.tool == "process.run") {
                 "granted; see /permissions"
             } else {
                 "not granted"
@@ -367,7 +382,7 @@ fn permission_details(data: &SessionData) -> (String, String) {
         .collect::<Vec<_>>()
         .join("\n");
     let details = format!(
-        "{summary}\nWorkspace: {}\n\nAvailable profile tools:\n{}\n\nHost grants:\n{}\n\nHard-denied tools: {}\n\nChange access:\n1. /cancel the current run (including subagents), if running.\n2. /setup opens a new session.\n3. For editing and cargo test: choose coding-basic and\n   Workspace access: Read/write + sandbox processes.\n4. Submit the task again.\n\nAn answer to an agent question does not grant permissions.\nCtrl-Y approves only the displayed prepared action within existing grants.\nSubagents inherit these limits; they cannot add tools or rights.",
+        "Enter: review enabling all tools with explicit approval\n\n{summary}\nWorkspace: {}\n\nAvailable profile tools:\n{}\n\nHost grants:\n{}\n\nHard-denied tools: {}\n\nAvailable skills: {}\n\nApproval requests expose the actual tool, file diff or command before execution.\nChoose Allow once, Ctrl-Y, or type ja/yes to approve that action; Deny, Ctrl-N or nein/no rejects it.\nA normal agent question is not an action approval.\nNew subagents inherit access and ask for their own addressed approvals.\nFinish or cancel existing subagents before changing this session's access.",
         data.workspace.display(),
         data.profile.tools.join(", "),
         if grants.is_empty() { "None" } else { &grants },
@@ -376,6 +391,7 @@ fn permission_details(data: &SessionData) -> (String, String) {
         } else {
             data.policy.hard_denied_tools.join(", ")
         },
+        data.profile.skills.join(", "),
     );
     (summary, details)
 }
@@ -462,7 +478,7 @@ fn draw_request(frame: &mut Frame, view: &View, area: Rect) {
         (
             " Approval ",
             format!(
-                "Agent: {}\nTool: {}\n{}\n\nAllows only this prepared action; existing permissions still apply.",
+                "Agent: {}\nTool: {}\n{}\n\nApproves only this action. Sandbox and hard denies still apply.",
                 view.request_owner,
                 request.description["tool"].as_str().unwrap_or("unknown"),
                 serde_json::to_string_pretty(&request.description).unwrap_or_default()
@@ -756,6 +772,49 @@ fn draw(frame: &mut Frame, view: &mut View) {
                 rows[1],
             );
         }
+        Screen::PermissionConsent => {
+            let mut lines = vec![
+                Line::from("Enable tool approval requests in this session?"),
+                Line::from(""),
+                Line::from("Make all registered tools and skills available to the agent."),
+                Line::from("File changes, sandbox commands and network actions each need"),
+                Line::from("your explicit approval of the actual action before execution."),
+                Line::from("The workspace and hard-denied tools remain unchanged."),
+                Line::from("New subagents inherit this mode and ask for their own actions."),
+                Line::from("This setting is saved with the session; it executes nothing."),
+                Line::from(""),
+            ];
+            for (i, label) in [
+                "Enable all tools; ask before actions",
+                "Keep current permissions",
+            ]
+            .iter()
+            .enumerate()
+            {
+                lines.push(Line::styled(
+                    format!(
+                        "{} {label}",
+                        if i == view.permission_selected {
+                            "›"
+                        } else {
+                            " "
+                        }
+                    ),
+                    if i == view.permission_selected {
+                        Style::default().fg(BG).bg(BRAND[4]).bold()
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
+                ));
+            }
+            lines.push(Line::from("\n↑/↓ select · Enter confirm · Esc cancel"));
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(panel(" Permissions · confirmation ", BRAND[4])),
+                rows[1],
+            );
+        }
         Screen::Appearance => {
             let labels = [
                 "Compact — one chat column, inline questions and answers",
@@ -798,7 +857,7 @@ fn draw(frame: &mut Frame, view: &mut View) {
     let input_title = if !matches!(view.screen, Screen::Conversation) {
         " Inspector · Esc returns to chat / pending request "
     } else if view.approval.is_some() {
-        " Approval · ↑↓ choose · Enter confirm "
+        " Approval · ↑↓ choose or type ja/yes / nein/no · Enter "
     } else if view.interaction.is_some() {
         if view
             .interaction
@@ -1013,6 +1072,39 @@ async fn answer_question(view: &mut View, run: &RunHandle, answer: &str) -> Resu
     Ok(())
 }
 
+fn approval_answer(input: &str) -> Option<bool> {
+    match input.trim().to_lowercase().as_str() {
+        "ja" | "j" | "yes" | "y" | "allow" | "erlauben" => Some(true),
+        "nein" | "n" | "no" | "deny" | "ablehnen" => Some(false),
+        _ => None,
+    }
+}
+
+async fn approve_action(view: &mut View, run: &RunHandle, allow: bool) -> Result<()> {
+    if let Some(request) = view.approval.clone() {
+        run.respond_to_approval(
+            &request.request_id,
+            if allow {
+                ApprovalDecision::AllowOnce
+            } else {
+                ApprovalDecision::Deny
+            },
+            &id("approval"),
+        )
+        .await?;
+        let tool = request.description["tool"].as_str().unwrap_or("action");
+        view.append(&format!(
+            "\n\n{} · {tool}: {}\n",
+            view.request_owner,
+            if allow { "Allowed once" } else { "Denied" }
+        ));
+        view.approval = None;
+        view.input.clear();
+        view.edited_input();
+    }
+    Ok(())
+}
+
 pub enum Exit {
     Quit,
     Setup,
@@ -1125,16 +1217,7 @@ pub async fn show(
         let data = session.snapshot().await?;
         cursor = data.events.last().map_or(0, |e| e.cursor);
         restore_history(&mut view, &data);
-        (view.access_summary, view.permissions) = permission_details(&data);
-        if !data.policy.workspace_writable
-            || !data
-                .profile
-                .tools
-                .iter()
-                .any(|t| t == "files.write" || t == "files.edit")
-        {
-            view.access_hint = " Read-only session: no file changes. /setup: coding-basic + Read/write + sandbox processes for coding.".into();
-        }
+        view.refresh_permissions(&data);
         view.session_id = data.id;
         // refresh_agents exposes saved requests only once recovery has returned
         // the owning run to WaitingApproval/WaitingInput, not while still queued.
@@ -1234,6 +1317,30 @@ pub async fn show(
                 if !matches!(view.screen, Screen::Conversation) && !(ctrl && key.code == KeyCode::Char('c')) {
                     match key.code {
                         KeyCode::Esc => { view.screen = Screen::Conversation; view.detail_scroll = 0; },
+                        KeyCode::Enter if matches!(view.screen, Screen::Permissions) => {
+                            view.permission_selected = 1;
+                            view.screen = Screen::PermissionConsent;
+                        },
+                        KeyCode::Up | KeyCode::Down if matches!(view.screen, Screen::PermissionConsent) => {
+                            view.permission_selected = 1 - view.permission_selected;
+                        },
+                        KeyCode::Enter if matches!(view.screen, Screen::PermissionConsent) => {
+                            if view.permission_selected == 0 {
+                                if let Some(session) = &session {
+                                    match session.enable_tool_approvals(&id("permissions")).await {
+                                        Ok(_) => {
+                                            view.refresh_permissions(&session.snapshot().await?);
+                                            view.append("\nPermissions updated: all tools can request explicit approval. No action has been executed.\n");
+                                            view.error.clear();
+                                            view.screen = Screen::Conversation;
+                                        },
+                                        Err(error) => view.error = error.to_string(),
+                                    }
+                                }
+                            } else {
+                                view.screen = Screen::Conversation;
+                            }
+                        },
                         KeyCode::Up | KeyCode::Down if matches!(view.screen, Screen::Appearance) => {
                             view.layout_selected = 1 - view.layout_selected;
                         },
@@ -1290,12 +1397,9 @@ pub async fn show(
                         if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI Ctrl-C", &id("cancel")).await?; }
                     } else if (ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('n')))
                         || (key.code == KeyCode::Enter && view.input.is_empty() && view.approval.is_some()) {
-                        if let (Some(run), Some(request)) = (addressed.as_ref().or(active.as_ref()), &view.approval) {
+                        if let Some(run) = addressed.as_ref().or(active.as_ref()) {
                             let allow = if ctrl { key.code == KeyCode::Char('y') } else { view.choice_selected == 0 };
-                            run.respond_to_approval(&request.request_id, if allow { ApprovalDecision::AllowOnce } else { ApprovalDecision::Deny }, &id("approval")).await?;
-                            let tool = request.description["tool"].as_str().unwrap_or("action").to_owned();
-                            view.append(&format!("\n\n{} · {tool}: {}\n", view.request_owner, if allow { "Allowed once" } else { "Denied" }));
-                            view.approval = None;
+                            approve_action(&mut view, run, allow).await?;
                         }
                     } else if ctrl && key.code == KeyCode::Char('u') {
                         view.input.clear(); view.edited_input();
@@ -1333,7 +1437,11 @@ pub async fn show(
                                 return Ok(());
                             }
                             if view.approval.is_some() {
-                                return Err(WorkerError::new("approval_pending", "Use Ctrl-Y to allow this action or Ctrl-N to deny. F2 shows permissions."));
+                                let allow = approval_answer(&input).ok_or_else(|| WorkerError::new("approval_pending", "Type ja/yes or nein/no, choose Allow once/Deny, or use Ctrl-Y/Ctrl-N."))?;
+                                if let Some(run) = addressed.as_ref().or(active.as_ref()) {
+                                    approve_action(&mut view, run, allow).await?;
+                                }
+                                return Ok(());
                             }
                             if let Some(run) = addressed.as_ref().or(active.as_ref()) && view.interaction.is_some() {
                                 answer_question(&mut view, run, &input).await?;
@@ -1516,6 +1624,7 @@ mod tests {
             Screen::Conversation,
             Screen::Agents,
             Screen::Permissions,
+            Screen::PermissionConsent,
             Screen::Appearance,
         ] {
             view.screen = screen;
@@ -1536,6 +1645,7 @@ mod tests {
                         Screen::Conversation => "Can I write?",
                         Screen::Agents => "Pending approval",
                         Screen::Permissions => "Workspace writes: disabled",
+                        Screen::PermissionConsent => "Enable tool approval requests",
                         Screen::Appearance => "Choose your layout",
                     }));
                 }

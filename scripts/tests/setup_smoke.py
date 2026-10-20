@@ -23,6 +23,7 @@ from tui_support import Screen
 
 KEY = 'setup-fixture-sensitive-key'
 requests = []
+discovery_requests = []
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -43,6 +44,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        discovery_requests.append(self.path)
         if self.headers.get('Authorization') != 'Bearer ' + KEY:
             self.respond({'error': 'unauthorized'}, 401)
             return
@@ -394,12 +396,29 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         wait_for('Connect new')
         send('\x1b[B\r')
         wait_for('Choose how to connect')
+        # Exercise CI's failed chat -> setup -> connection transition repeatedly.
+        # No sleeps or retry keystrokes mask a lost Enter after /setup.
+        for transition in range(20):
+            send('\x1b[C\x1b[C\r')  # Explicit offline demo; no server is needed.
+            if transition == 0:
+                wait_for('New / Previous sessions')
+                send('\r')
+            wait_for('Ready')
+            send('/setup\r')
+            wait_for('Choose how to connect')
+            send('\r')
+            wait_for('Server and credentials')
+            send('\x1b')
+            wait_for('Choose how to connect')
         send('\x11')
         assert exited() == 0
         assert KEY.encode() not in capture
         remembered = list((root / 'config/werkworker/connections').glob('*.json'))
         assert len(remembered) == 1
         assert all(KEY not in p.read_text() and p.stat().st_mode & 0o777 == 0o600 for p in remembered)
+        assert '/v1/capabilities' not in discovery_requests
+        assert not any(path.startswith('/v1/parameters') for path in discovery_requests)
+        print('PASS: fast discovery omits global backend probes; 20 immediate chat/setup/connection transitions retain keyboard input.')
         print('PASS: remembered connection and capabilities, workspace-filtered sessions, same-session follow-up with model history, --session without run-id, interrupted approval recovery, retry/connect-new after failure; no replay or leaked credentials.')
         print('PASS: PTY setup, masked key paste, auth retry, model discovery, budgets, authenticated chat and approval, saved global/project configs (0600), project rules and permission separation, reconnect, environment reference, double Ctrl-C and terminal restoration.')
         print('PASS: automatic workspace connection and masked local credentials for bare ww and --workspace; no token in settings, terminal capture or sessions.')

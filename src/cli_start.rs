@@ -1,6 +1,6 @@
 //! Keyboard-operated connection and durable session selection.
 use crate::cli_tui::{BG, BRAND, MUTED, Restore, TEXT, clean, panel};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use ratatui::{
     layout::{Constraint, Layout},
@@ -13,7 +13,7 @@ use werk_worker::{sessions::SessionStore, *};
 pub async fn choose(title: &str, detail: &str, options: &[String]) -> Result<Option<usize>> {
     let mut terminal = ratatui::try_init()?;
     let _restore = Restore;
-    let mut keys = EventStream::new();
+    let mut keys = crate::cli_tui::input().await;
     let mut state = ListState::default().with_selected(Some(0));
     loop {
         terminal.draw(|frame| {
@@ -101,7 +101,7 @@ pub async fn connecting<T>(
             frame.area(),
         );
     })?;
-    let mut keys = EventStream::new();
+    let mut keys = crate::cli_tui::input().await;
     let pending = tokio::time::timeout(std::time::Duration::from_secs(20), future);
     tokio::pin!(pending);
     loop {

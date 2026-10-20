@@ -1,8 +1,7 @@
 //! Interactive host setup. Credentials are deliberately separate from saved settings.
 use crate::cli_tui::{BG, BRAND, MUTED, Restore, TEXT, banner, clean, panel};
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEventKind,
-    KeyModifiers,
+    DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use futures_util::StreamExt;
 use ratatui::{
@@ -725,7 +724,7 @@ pub async fn show(
     let _restore = Restore;
     crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
     let _paste = PasteGuard;
-    let mut keys = EventStream::new();
+    let mut keys = crate::cli_tui::input().await;
     let mut pending = Pending(None);
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut result = None;

@@ -589,22 +589,15 @@ impl WerkProvider {
                 "Endpoint is not Werk Protocol 1.0",
             ));
         }
-        let envelope = client.control("/werk/v1/capabilities").await?;
+        // The general /v1/capabilities catalogue probes every installed model
+        // and backend. Chat setup needs only protocol capabilities and model IDs;
+        // media tools perform their own task discovery when explicitly configured.
+        let (envelope, models) = tokio::try_join!(
+            client.control("/werk/v1/capabilities"),
+            client.json(reqwest::Method::GET, "/v1/models", None),
+        )?;
         let runtime_capabilities: Vec<RuntimeCapability> =
             serde_json::from_value(envelope["capabilities"].clone())?;
-        let caps = client
-            .json(reqwest::Method::GET, "/v1/capabilities", None)
-            .await?;
-        let models = client
-            .json(reqwest::Method::GET, "/v1/models", None)
-            .await?;
-        let parameters = client
-            .json(
-                reqwest::Method::GET,
-                "/v1/parameters?task=text-generation",
-                None,
-            )
-            .await?;
         for key in config.options.keys() {
             if !matches!(key.as_str(), "temperature" | "top_p" | "seed" | "stop") {
                 return Err(WorkerError::new(
@@ -676,7 +669,7 @@ impl WerkProvider {
             context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
             context_limit_source,
             runtime_capabilities,
-            discovery: json!({"info":info,"capabilities":caps,"models":models,"parameters":parameters}),
+            discovery: json!({"info":info,"models":models}),
         })
     }
 }

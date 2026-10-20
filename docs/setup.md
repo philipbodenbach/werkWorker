@@ -7,6 +7,13 @@ checks and reconnects to the saved service, while **Connect new** opens the wiza
 No inference is made until you submit a chat message or explicitly resume an
 interrupted run.
 
+Connecting checks WerkProtocol identity, runtime capabilities and `/v1/models`.
+Runtime capabilities and the model list are fetched concurrently. The worker
+does not request the general `/v1/capabilities` catalogue or `/v1/parameters`
+during chat setup: the catalogue probes installed models/backends and can be
+slow on a cold server. Explicit media tools discover their own task support.
+Bounded deployment/observability checks still establish context and concurrency.
+
 1. Choose a local Werk server, a remote Werk server, or the explicit offline demo.
 2. Enter the server origin (local default `http://127.0.0.1:11434`). Remote
    servers require HTTPS. URL credentials, queries and non-root paths are rejected.

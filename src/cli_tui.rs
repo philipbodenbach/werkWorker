@@ -82,6 +82,17 @@ pub(crate) fn banner() -> Vec<Line<'static>> {
 }
 
 pub(crate) struct Restore;
+/// Crossterm's background reader is process-global and its stream Drop wakes
+/// but does not join the polling thread. Recreating streams during a screen
+/// transition can leave the new screen waiting on the old thread's wakeup.
+/// Keep one stream for the interactive process; screens borrow it exclusively.
+pub(crate) async fn input() -> tokio::sync::MutexGuard<'static, EventStream> {
+    static INPUT: std::sync::OnceLock<tokio::sync::Mutex<EventStream>> = std::sync::OnceLock::new();
+    INPUT
+        .get_or_init(|| tokio::sync::Mutex::new(EventStream::new()))
+        .lock()
+        .await
+}
 impl Drop for Restore {
     fn drop(&mut self) {
         ratatui::restore();
@@ -1068,7 +1079,7 @@ pub async fn show(
     };
     let mut terminal = ratatui::try_init()?;
     let _restore = Restore;
-    let mut keys = EventStream::new();
+    let mut keys = input().await;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut dirty = true;
     let mut agents_tick = tokio::time::interval(Duration::from_millis(250));

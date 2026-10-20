@@ -57,6 +57,38 @@ async fn discovery_accepts_capabilities_without_operations() {
 }
 
 #[tokio::test]
+async fn chat_connect_does_not_depend_on_the_full_task_catalogue() {
+    let server = Server::start(|request| {
+        if request.path == "/v1/capabilities" || request.path.starts_with("/v1/parameters") {
+            return Response {
+                status: 503,
+                headers: vec![],
+                body: b"catalogue probe unavailable".to_vec(),
+            };
+        }
+        werk(request)
+    })
+    .await;
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        provider.discovery["models"]["data"][0]["id"],
+        "fixture-model"
+    );
+    assert!(!provider.runtime_capabilities.is_empty());
+    assert!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| { r.path != "/v1/capabilities" && !r.path.starts_with("/v1/parameters") }),
+        "Connecting must not start a global backend probe, even in the background"
+    );
+}
+
+#[tokio::test]
 async fn native_discovery_then_chat_and_correct_tool_pairs() {
     let server=Server::start(|request|{
         if request.path=="/v1/chat/completions"&&!request.body["messages"].as_array().unwrap().iter().any(|m|m["role"]=="tool"){
@@ -93,7 +125,12 @@ async fn native_discovery_then_chat_and_correct_tool_pairs() {
     assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
     let requests = server.requests.lock().unwrap().clone();
     assert_eq!(requests[0].path, "/werk/v1/info");
-    assert_eq!(requests[1].path, "/werk/v1/capabilities");
+    assert!(
+        requests[1..3]
+            .iter()
+            .any(|r| r.path == "/werk/v1/capabilities")
+    );
+    assert!(requests[1..3].iter().any(|r| r.path == "/v1/models"));
     let chats: Vec<_> = requests
         .iter()
         .filter(|r| r.path == "/v1/chat/completions")

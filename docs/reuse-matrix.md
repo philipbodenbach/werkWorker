@@ -9,7 +9,7 @@ is not the authoritative revision for this integration.
 |---|---|---|---|
 | Control discovery | WerkProtocolClient; /werk/v1/info, /capabilities | Public synchronous HTTP-only client | Thin async TLS-capable wire adapter; avoid inference dependency graph; validate envelope/version/request ID |
 | Tool chat | /v1/chat/completions | Public HTTP | Native documented chat/SSE contract; no invented /werk/v1/chat |
-| Task/model schemas | /v1/capabilities, /models, /parameters | Public HTTP | Keep model, runtime capability and grant separate |
+| Task/model schemas | /v1/models for chat startup; /v1/capabilities for explicit media-tool discovery | Public HTTP | Keep model, runtime capability and grant separate; avoid global backend probes on connect |
 | Native task execution | /v1/tools, /v1/tools/call | Public HTTP | Explicit allowlist; preserve server function schema and job receipt |
 | Job lifecycle | /v1/jobs/{id}, /v1/outputs/{id} | Public HTTP | Preserve IDs and principal, bounded authenticated reads/cancellation |
 | Token count | /v1/messages/count_tokens | Anthropic message contract | Not semantically identical to full OpenAI tool history; conservative labeled local estimate, no fake exact count |

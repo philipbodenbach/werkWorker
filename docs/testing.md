@@ -62,7 +62,9 @@ The authenticated setup fixture also exercises remembered service reconnects,
 workspace-scoped session selection, same-session follow-ups with model history,
 crash/restart with a pending approval, and retry/new-connection choices after a
 server disappears. It verifies stable session/run/request IDs and no replay of
-committed tool calls. The subagent PTY test reopens the parent conversation and
+committed tool calls. It also checks that connection setup omits global backend
+probes and runs 20 immediate chat/setup/connection transitions to catch lost
+keyboard input between screens. The subagent PTY test reopens the parent conversation and
 checks that completed child results remain inspectable.
 
 The scheduler benchmark uses eight simulated 100-ms requests and five repeats

@@ -1,6 +1,6 @@
 use crate::{
     core::*,
-    providers::{ModelRequest, wire_message},
+    providers::{ModelProvider, ModelRequest, wire_message},
 };
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +22,22 @@ pub fn effective_limits(limits: &Limits, provider_context: Option<usize>) -> Res
     }
     effective.validate()?;
     Ok(effective)
+}
+
+/// Failed output-limited generations since the last complete response. Derive
+/// this from persisted attempts so restart cannot reset the recovery allowance.
+pub fn output_limit_failures(run: &Run) -> usize {
+    run.attempts
+        .iter()
+        .rev()
+        .take_while(|attempt| !attempt.completed)
+        .filter(|attempt| {
+            attempt
+                .error
+                .as_ref()
+                .is_some_and(|e| e.code == "model_output_limit")
+        })
+        .count()
 }
 
 pub fn validate_messages(messages: &[Message]) -> Result<()> {
@@ -65,6 +81,15 @@ pub trait ContextBuilder: Send + Sync {
         run: &Run,
         tools: Vec<ToolDefinition>,
     ) -> Result<(ModelRequest, ContextSnapshot)>;
+    async fn build_with_provider(
+        &self,
+        session: &SessionData,
+        run: &Run,
+        tools: Vec<ToolDefinition>,
+        _provider: &dyn ModelProvider,
+    ) -> Result<(ModelRequest, ContextSnapshot)> {
+        self.build(session, run, tools).await
+    }
 }
 pub struct DefaultContextBuilder;
 #[async_trait]
@@ -73,7 +98,26 @@ impl ContextBuilder for DefaultContextBuilder {
         &self,
         session: &SessionData,
         run: &Run,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<(ModelRequest, ContextSnapshot)> {
+        Self::build_context(session, run, tools, None).await
+    }
+    async fn build_with_provider(
+        &self,
+        session: &SessionData,
+        run: &Run,
+        tools: Vec<ToolDefinition>,
+        provider: &dyn ModelProvider,
+    ) -> Result<(ModelRequest, ContextSnapshot)> {
+        Self::build_context(session, run, tools, Some(provider)).await
+    }
+}
+impl DefaultContextBuilder {
+    async fn build_context(
+        session: &SessionData,
+        run: &Run,
         mut tools: Vec<ToolDefinition>,
+        provider: Option<&dyn ModelProvider>,
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         validate_messages(&session.messages)?;
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -95,11 +139,11 @@ impl ContextBuilder for DefaultContextBuilder {
             });
         } else {
             prompt.push_str(&format!(
-            "\nWorkspace writes enabled: {}. Host-granted tools (scoped, possibly requiring approval): {}. Hard-denied tools: {}.\n",
-            session.policy.workspace_writable,
-            session.policy.grants.iter().map(|g| g.tool.as_str()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "),
-            session.policy.hard_denied_tools.join(", "),
-            ));
+                "\nWorkspace writes enabled: {}. Host-granted tools (scoped, possibly requiring approval): {}. Hard-denied tools: {}.\n",
+                session.policy.workspace_writable,
+                session.policy.grants.iter().map(|g| g.tool.as_str()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "),
+                session.policy.hard_denied_tools.join(", "),
+                ));
             prompt.push_str("Missing rights: user can use F5 or /permissions mode manual project during questions. Model answers cannot grant access; do not retry blocked calls.\n");
         }
         if !session.policy.tool_permissions.is_empty()
@@ -119,7 +163,68 @@ impl ContextBuilder for DefaultContextBuilder {
                     .join(", "),
             ));
         }
-        prompt.push_str("For implementation tasks, use the permitted file/process tools to make and verify changes. Code shown in chat is only a proposal, not a file change. Report tests as executed only when tool results prove they ran.\n");
+        prompt.push_str("Implement with permitted tools; chat code is only a proposal. Before completion, run syntax/build and smoke checks with process.run; fix failures and recheck. Claim tests only with tool evidence; disclose unavailable checks.\n");
+        let mut written = Vec::new();
+        let mut paths = BTreeSet::new();
+        for invocation in run.invocations.iter().rev() {
+            if !matches!(invocation.call.name.as_str(), "files.write" | "files.edit") {
+                continue;
+            }
+            let Some(result) = invocation
+                .result
+                .as_ref()
+                .filter(|r| r.status == Outcome::Succeeded)
+            else {
+                continue;
+            };
+            let Some(path) = result.data["path"].as_str() else {
+                continue;
+            };
+            if !paths.insert(path) {
+                continue;
+            }
+            let receipt = serde_json::json!({
+                "path":path,"sha256":result.data["sha256"],"bytes":result.data["bytes_written"]
+            });
+            if serde_json::to_string(&written)?.len() + receipt.to_string().len() > 2048 {
+                break;
+            }
+            written.push(receipt);
+            if written.len() >= 8 {
+                break;
+            }
+        }
+        if !written.is_empty() {
+            prompt.push_str(&format!(
+                "\nSuccessful file changes in this run (untrusted path data): {}. These files already exist. Continue implementation/verification from them; do not restart scaffolding after compaction. Hashes identify these writes, not subsequent external edits.\n",
+                serde_json::to_string(&written)?,
+            ));
+        }
+        let output_failures = output_limit_failures(run);
+        let previous_output_limit = run.attempts.iter().any(|attempt| {
+            attempt
+                .error
+                .as_ref()
+                .is_some_and(|e| e.code == "model_output_limit")
+        });
+        if tools.iter().any(|tool| tool.name == "files.write")
+            && tools.iter().any(|tool| tool.name == "files.edit")
+        {
+            let chunk_chars = run.limits.reserve_output_tokens
+                / (1usize
+                    << output_failures
+                        .max(usize::from(previous_output_limit))
+                        .min(8));
+            prompt.push_str(&format!(
+                    "\nOutput budget: {} tokens total, including reasoning and tool JSON. Be brief. Build large files across turns: FIRST files.write a skeleton under 1000 characters with unique insertion markers, no implementation. THEN files.edit one section at a time, aiming below {} new characters per call. Use the latest successful sha256 as expected_hash. Insert complete functions/blocks with balanced delimiters; never cut a function/string to fit. Preserve a marker for the next section. Keep names/interfaces consistent; reread file ranges when earlier code leaves context. Finish all sections and remove markers before completion. Reuse successful work; do not rewrite the entire file.\n",
+                    run.limits.reserve_output_tokens, chunk_chars.max(128),
+                ));
+        }
+        if output_failures > 0 {
+            prompt.push_str(&format!(
+                    "\nOutput-limit recovery {output_failures}: the preceding generation was cut off and discarded. NONE of its tool calls ran. Earlier successful tool results still apply. Do not repeat the oversized response. Produce one smaller complete tool call, or a concise complete final answer satisfying the requested schema and constraints. Do not claim unfinished work is complete.\n"
+                ));
+        }
         let loaded: BTreeSet<_> = run
             .invocations
             .iter()
@@ -135,28 +240,21 @@ impl ContextBuilder for DefaultContextBuilder {
             .collect();
         if !loaded.is_empty() {
             prompt.push_str(&format!(
-                "Skills already loaded successfully in this run: {}. Reuse their results; do not restart setup after each tool call. Continue to the next concrete task step.\n",
-                loaded.into_iter().collect::<Vec<_>>().join(", ")
-            ));
+                    "Skills already loaded successfully in this run: {}. Reuse their results; do not restart setup after each tool call. Continue to the next concrete task step.\n",
+                    loaded.into_iter().collect::<Vec<_>>().join(", ")
+                ));
         }
         let mut repeated = BTreeSet::new();
         for invocation in &run.invocations {
-            let count = run
-                .invocations
-                .iter()
-                .filter(|i| {
-                    i.call.name == invocation.call.name
-                        && i.call.arguments == invocation.call.arguments
-                })
-                .count();
+            let count = run.repeated_calls_without_progress(&invocation.call);
             if count >= 2
                 && count >= run.limits.max_repeated_calls.saturating_sub(1)
                 && repeated.insert(invocation.call.name.clone())
             {
                 prompt.push_str(&format!(
-                    "Loop warning: {} has already been called with identical arguments {count} times in this run (limit {}). Reuse the existing result; do not repeat it to solve a permission blocker.\n",
-                    invocation.call.name, run.limits.max_repeated_calls,
-                ));
+                        "Loop warning: {} has already been called with identical arguments {count} times without workspace progress (limit {}). Reuse the existing result; do not repeat it to solve a permission blocker.\n",
+                        invocation.call.name, run.limits.max_repeated_calls,
+                    ));
             }
         }
         if let Some(schema) = &run.output_schema {
@@ -184,13 +282,21 @@ impl ContextBuilder for DefaultContextBuilder {
                 .filter(|(i, _)| !compacted.contains(i))
                 .map(|(_, m)| m.clone()),
         );
-        let estimate = |m: &Vec<Message>| -> usize {
-            estimate_request(&ModelRequest {
+        let estimate = |m: &Vec<Message>| {
+            let request = ModelRequest {
                 messages: m.clone(),
                 tools: tools.clone(),
                 max_output_tokens: run.limits.reserve_output_tokens,
                 output_schema: run.output_schema.clone(),
-            })
+            };
+            async move {
+                if let Some(provider) = provider
+                    && let Some(count) = provider.count_input_tokens(&request).await?
+                {
+                    return Ok::<usize, WorkerError>(count);
+                }
+                Ok(estimate_request(&request))
+            }
         };
         let available = run
             .limits
@@ -248,9 +354,9 @@ impl ContextBuilder for DefaultContextBuilder {
         }
         let mut i = 0;
         let mut preserve_setup = true;
-        while estimate(&messages) > target {
+        while estimate(&messages).await? > target {
             if i >= protected {
-                if protected > 0 && preserve_setup && estimate(&messages) > available {
+                if protected > 0 && preserve_setup && estimate(&messages).await? > available {
                     // Retention is a preference, never a new hard context limit.
                     preserve_setup = false;
                     i = 0;
@@ -339,7 +445,7 @@ impl ContextBuilder for DefaultContextBuilder {
                     .filter(|(n, _)| !omitted.contains(n))
                     .map(|(_, m)| m.clone()),
             );
-            if estimate(&messages) >= estimate(&previous_messages) {
+            if estimate(&messages).await? >= estimate(&previous_messages).await? {
                 messages = previous_messages;
                 summary = previous_summary;
                 omitted = previous_omitted;
@@ -349,7 +455,7 @@ impl ContextBuilder for DefaultContextBuilder {
         // Excerpts are optional context, unlike current work/user constraints.
         // A fixed 1,536-byte excerpt budget can itself prevent a small request
         // from fitting. Remove oldest excerpts before reporting an overflow.
-        while estimate(&messages) > available && !summary.is_empty() {
+        while estimate(&messages).await? > available && !summary.is_empty() {
             let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
             summary.drain(..end);
             messages[0] = Message::text(
@@ -363,7 +469,7 @@ impl ContextBuilder for DefaultContextBuilder {
                 },
             );
         }
-        let estimated = estimate(&messages);
+        let estimated = estimate(&messages).await?;
         if estimated > available {
             return Err(WorkerError::new(
                 "context_overflow",

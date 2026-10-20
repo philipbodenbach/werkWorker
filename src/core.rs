@@ -156,10 +156,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_steps: 24,
-            max_model_requests: 30,
+            max_steps: 48,
+            max_model_requests: 60,
             max_tool_invocations: 64,
-            max_wall_ms: 300_000,
+            max_wall_ms: 900_000,
             max_output_bytes: 65_536,
             context_tokens: 32_768,
             reserve_output_tokens: 2048,
@@ -381,6 +381,32 @@ pub struct Run {
     pub similar_grants: Vec<String>,
     pub repaired_output: bool,
 }
+impl Run {
+    /// Count repetitions in the current workspace revision. A different successful
+    /// write/process can change the next result (e.g. edit, then rerun a test).
+    /// Process effects are deliberately conservative: even shell commands can write.
+    /// Identical commands never reset themselves; overall run budgets still apply.
+    pub fn repeated_calls_without_progress(&self, call: &ToolCall) -> usize {
+        let mut count = 0;
+        for invocation in self.invocations.iter().rev() {
+            if invocation.call.name == call.name && invocation.call.arguments == call.arguments {
+                count += 1;
+            } else if invocation
+                .result
+                .as_ref()
+                .is_some_and(|r| r.status == Outcome::Succeeded)
+                && invocation
+                    .definition
+                    .as_ref()
+                    .is_some_and(|d| matches!(d.effect, Effect::Write | Effect::Process))
+            {
+                break;
+            }
+        }
+        count
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
     pub session_id: String,

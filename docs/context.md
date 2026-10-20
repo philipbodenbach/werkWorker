@@ -13,7 +13,11 @@ schemas, available skill metadata, optional output schema, committed summaries
 and canonical history. Skill content enters only through `skills.load`; project
 instructions enter through explicitly granted file reads.
 
-Sizing conservatively counts serialized **wire-shaped UTF-8 bytes**, including
+When werkProtocol advertises `api.chat.token_count`, sizing uses the exact native
+chat count from `/werk/v1/chat/count_tokens`, including tool schemas/history and
+template options. Identical requests reuse a bounded cache; eviction triggers
+recounting before admission. Protocol errors and model identity are validated.
+Unsupported counters fall back to conservatively counting **wire-shaped UTF-8 bytes**, including
 escaped tool arguments, tool schemas and structured output schemas, plus 256
 units of template margin. It is an upper estimate for ordinary byte-based tokenizers,
 not a native tokenizer measurement or a universal guarantee about custom templates.
@@ -25,14 +29,15 @@ endpoint is not silently substituted for OpenAI chat/tool history.
 WerkProvider resolves context from these sources, always honoring a smaller
 explicit `capabilities.context_tokens` in the connection JSON:
 
-- Matching deployment diagnostics: use the smallest per-request context across
-  the configured ID/alias. vLLM uses `profile.context`; llama.cpp conservatively
-  divides it by `profile.parallel`, so a shared KV allocation is never counted
-  as every child's individual budget. Unknown runtime/invalid values supply no
-  context evidence.
-- Fresh, protocol-validated llama.cpp observability with **one slot** can supply
-  `context_capacity_tokens`. An aggregate over several slots cannot establish
-  the smallest slot size; no average is claimed as a safe minimum.
+- Fresh, protocol-validated llama.cpp observability supplies
+  `context_per_request_tokens`, the minimum native slot size. Older servers with
+  **one slot** may supply `context_capacity_tokens`. A multi-slot aggregate
+  cannot establish the minimum; it is never divided to guess a limit.
+- Matching deployment diagnostics are a fallback: use the smallest
+  `profile.context` across the configured ID/alias. Both vLLM and llama.cpp
+  deployment profiles express per-sequence context; the llama launcher multiplies
+  it by parallel slots when allocating the native aggregate. Unknown runtime or
+  invalid values supply no context evidence.
 - An explicit host setting is accepted when the server cannot expose the limit.
   Without either evidence or that setting, inference returns
   `context_limit_unknown`; `diagnose` still works. Set this to the actual server
@@ -55,8 +60,11 @@ same payload. Learning can only lower capacity and is bounded by ordinary
 step/request/wall limits. Reconnect to discover later capacity increases.
 Server error bodies are not exposed in session history.
 
-A `finish_reason: length` becomes nonretryable `model_output_limit`. Partial
-text remains audit evidence; incomplete tool JSON never executes. Ordinary
+A `finish_reason: length` becomes `model_output_limit`. It is never blindly
+replayed by transport retries. The engine can rebuild with feedback to use
+smaller complete calls, up to `max_retries` consecutive recoveries, inside the
+same step/request/time budgets. Partial text remains audit evidence; none of
+the incomplete response's tools execute. Ordinary
 429/503 retries remain bounded and honor Retry-After. A provider's private
 rate/total-token quotas cannot be inferred from concurrency telemetry.
 
@@ -74,7 +82,7 @@ the saved conversation, and does not require a server restart or cache reset.
 Pending invocations finish or resolve their approvals before this step; no
 half tool-call/result group is compacted.
 
-Excerpts include source message indices, roles, tool names and up to 100
+Excerpts include source message indices, roles, tool names and up to 400
 characters of each source content; the accumulated excerpt is capped at 1,536
 UTF-8 bytes. Candidates that would increase size are discarded. These are
 explicitly labeled incomplete, untrusted excerpts, not a claim of lossless
@@ -82,6 +90,11 @@ semantic summarization. The model may need to reread evidence through granted
 tools. If the fixed excerpt allowance would crowd out current work, older
 excerpts are further removed to fit the available budget. Canonical messages,
 outcomes and approvals are never deleted.
+
+Small setup/skill results receive bounded retention. A separate receipt summary
+keeps the latest successful changes for up to eight paths within 2 KiB, so losing
+earlier code from the prompt does not make the agent restart file creation.
+It records observed hashes and sizes, not a claim that external files never change.
 
 Each durable `ContextSnapshot` records its hash, estimated size, omitted source
 indices and excerpt/summary. Compaction is recalculated from canonical history,
@@ -98,16 +111,27 @@ hash, attempt ID and summary. Empty, larger, tool-requesting or failed summaries
 are not committed; source messages remain available for export.
 
 Large tool results use bounded excerpts and, where configured and within quota,
-owned artifacts. Failed artifact writes never claim a retrievable artifact.
+owned artifacts. File reads return compact text with line-range metadata; long
+reads retain complete lines, their hash and `next_start_line`. A single oversized
+line falls back to an excerpt/artifact. Failed artifact writes never claim a retrievable artifact.
 `artifacts.read` checks scope and returns at most 64 KiB. No Worker KV cache,
 weights, residency manager or hidden long-term memory is implemented. Normal
 Werk chat can benefit from server caching; only observed usage is reported.
 
 See [recorded validation](benchmarks/2026-10-19-subagents/README.md) for the
 long-run compaction, oversized-constraint, context-reduction and truncated-tool
-regressions. No live-model token-limit experiment is claimed.
+regressions. The [live coding runner](local-werk-example.md) additionally exercises
+the configured local model without scripted replies.
 
 ## Interactive budgets and project rules
+
+Identical tool calls are limited within a workspace revision, not across the
+whole task. A different successful write or process call resets that comparison,
+so an edit/test/fix/test cycle can reuse the same test command. Failed writes and
+read-only setup calls do not reset it; identical processes cannot reset themselves.
+Processes are conservatively treated as potential workspace changes, including
+shell edits. The overall step, request and time budgets still bound alternating
+processes.
 
 The connection wizard defaults to 4,096 output tokens including reasoning. It
 checks the effective per-request context and requires an output reserve no larger

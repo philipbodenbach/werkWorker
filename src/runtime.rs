@@ -223,10 +223,16 @@ impl Workspace {
                         ));
                     }
                 }
-                (Some(_), Err(_)) | (None, Ok(_)) => {
+                (Some(_), Err(_)) => {
                     return Err(WorkerError::new(
                         "write_conflict",
-                        "Expected file state changed",
+                        "Expected file is missing or inaccessible",
+                    ));
+                }
+                (None, Ok(_)) => {
+                    return Err(WorkerError::new(
+                        "write_conflict",
+                        "Target already exists; supply expected_hash from files.read or the last successful write",
                     ));
                 }
                 (None, Err(_)) => {}

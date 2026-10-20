@@ -1101,6 +1101,12 @@ impl SessionHandle {
                 self.engine.inner.provider.capabilities().context_tokens,
             )?;
             let run = &effective_run;
+            if crate::context::output_limit_failures(run) > run.limits.max_retries as usize {
+                return Err(WorkerError::new(
+                    "model_output_limit",
+                    "Output limit still reached after bounded recovery with smaller steps",
+                ));
+            }
             if run.metrics.steps >= run.limits.max_steps {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
             }
@@ -1113,7 +1119,20 @@ impl SessionHandle {
                 .into_iter()
                 .filter(|def| data.policy.can_request(def))
                 .collect();
-            let (request, snapshot) = self.engine.inner.context.build(&data, run, defs).await?;
+            let planning = self.engine.inner.context.build_with_provider(
+                &data,
+                run,
+                defs,
+                self.engine.inner.provider.as_ref(),
+            );
+            tokio::pin!(planning);
+            let (request, snapshot) = loop {
+                tokio::select! {
+                    result = &mut planning => break result?,
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => self.check_running_without_wait(run_id, shutdown)?,
+                    _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Context planning cancelled")),
+                }
+            };
             let step_id = id("step");
             self.update(|d| {
                 let r = d.run_mut(run_id)?;
@@ -1192,6 +1211,28 @@ impl SessionHandle {
                             // Rebuild/compact against the smaller server limit, never
                             // resend the identical rejected request. Steps/tree budget bound retries.
                             continue 'steps;
+                        }
+                        if error.code == "model_output_limit" {
+                            let data = self.snapshot().await?;
+                            let run = data.run(run_id)?;
+                            if crate::context::output_limit_failures(run)
+                                <= run.limits.max_retries as usize
+                            {
+                                // Never replay the identical oversized request.
+                                // Rebuild with explicit feedback and smaller chunks;
+                                // partial tool arguments remain outside canonical history.
+                                self.update(|d| {
+                                    d.emit(
+                                        Some(run_id),
+                                        EventKind::Diagnostic {
+                                            code: "model_output_recovery".into(),
+                                        },
+                                    );
+                                    Ok(())
+                                })
+                                .await?;
+                                continue 'steps;
+                            }
                         }
                         let max_retries = self.snapshot().await?.run(run_id)?.limits.max_retries;
                         if !error.retryable || retries >= max_retries {
@@ -1528,9 +1569,19 @@ impl SessionHandle {
                 &data.run(run_id)?.limits,
                 self.engine.inner.provider.capabilities().context_tokens,
             )?;
+            // Another session can evict an earlier planning count while this
+            // run waits. Recount on a cache miss instead of falsely rejecting
+            // a valid request using the conservative byte fallback.
+            let input_tokens = self
+                .engine
+                .inner
+                .provider
+                .count_input_tokens(&request)
+                .await?
+                .unwrap_or_else(|| crate::context::estimate_request(&request));
             if request.max_output_tokens == 0
                 || request.max_output_tokens > limits.reserve_output_tokens
-                || crate::context::estimate_request(&request)
+                || input_tokens
                     .saturating_add(request.max_output_tokens)
                     .saturating_add(512)
                     > limits.context_tokens
@@ -1551,54 +1602,104 @@ impl SessionHandle {
             let mut stream = self.engine.inner.provider.stream(request).await?;
             let mut assembler = ResponseAssembler::default();
             let limit = self.snapshot().await?.run(run_id)?.limits.max_output_bytes;
-            while let Some(delta) = stream.next().await {
-                let delta = delta?;
-                assembler.push(&delta, limit)?;
-                match &delta {
+            let mut pending = Vec::new();
+            let mut pending_bytes = 0;
+            let mut first_output = true;
+            let mut flush_at = tokio::time::Instant::now();
+            loop {
+                let next = tokio::select! {
+                    next = stream.next() => next,
+                    _ = tokio::time::sleep_until(flush_at), if !pending.is_empty() => {
+                        self.flush_model_events(run_id, &mut pending).await?;
+                        pending_bytes = 0;
+                        flush_at = tokio::time::Instant::now() + Duration::from_millis(100);
+                        continue;
+                    }
+                };
+                let Some(next) = next else { break };
+                let delta = match next {
+                    Ok(delta) => delta,
+                    Err(error) => {
+                        self.flush_model_events(run_id, &mut pending).await?;
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = assembler.push(&delta, limit) {
+                    self.flush_model_events(run_id, &mut pending).await?;
+                    return Err(error);
+                }
+                match delta {
                     ModelDelta::Text { text } => {
-                        self.update(|d| {
-                            let r = d.run_mut(run_id)?;
-                            r.attempts.last_mut().unwrap().partial_text.push_str(text);
-                            if r.metrics.first_text_ms.is_none() {
-                                r.metrics.first_text_ms =
-                                    Some(now_ms().saturating_sub(r.started_at_ms));
-                            }
-                            d.emit(
-                                Some(run_id),
-                                EventKind::TextDelta {
-                                    attempt_id: attempt_id.into(),
-                                    text: text.clone(),
-                                },
-                            );
-                            Ok(())
-                        })
-                        .await?;
+                        pending_bytes += text.len();
+                        if let Some(EventKind::TextDelta { text: tail, .. }) = pending.last_mut() {
+                            tail.push_str(&text);
+                        } else {
+                            pending.push(EventKind::TextDelta {
+                                attempt_id: attempt_id.into(),
+                                text,
+                            });
+                        }
                     }
                     ModelDelta::Tool {
                         index, arguments, ..
                     } => {
-                        self.update(|d| {
-                            d.emit(
-                                Some(run_id),
-                                EventKind::ToolDelta {
-                                    attempt_id: attempt_id.into(),
-                                    index: *index,
-                                    arguments: arguments.clone(),
-                                },
-                            );
-                            Ok(())
-                        })
-                        .await?;
+                        pending_bytes += arguments.len();
+                        match pending.last_mut() {
+                            Some(EventKind::ToolDelta {
+                                index: tail_index,
+                                arguments: tail,
+                                ..
+                            }) if *tail_index == index => tail.push_str(&arguments),
+                            _ => pending.push(EventKind::ToolDelta {
+                                attempt_id: attempt_id.into(),
+                                index,
+                                arguments,
+                            }),
+                        }
                     }
                     _ => {}
                 }
+                // First output is visible immediately. Subsequent fragments are
+                // committed together, avoiding one full SQLite snapshot per token.
+                if !pending.is_empty()
+                    && (first_output
+                        || pending_bytes >= 4096
+                        || tokio::time::Instant::now() >= flush_at)
+                {
+                    self.flush_model_events(run_id, &mut pending).await?;
+                    pending_bytes = 0;
+                    first_output = false;
+                    flush_at = tokio::time::Instant::now() + Duration::from_millis(100);
+                }
             }
+            self.flush_model_events(run_id, &mut pending).await?;
             assembler.finish()
         };
         tokio::pin!(operation);
         loop {
             tokio::select! {result=&mut operation=>return result,_=tokio::time::sleep(Duration::from_millis(20))=>self.check_running_without_wait(run_id,shutdown)?,_=shutdown.cancelled()=>return Err(WorkerError::new("cancelled","Model request cancelled"))}
         }
+    }
+    async fn flush_model_events(&self, run_id: &str, pending: &mut Vec<EventKind>) -> Result<()> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let events = std::mem::take(pending);
+        self.update(|data| {
+            for event in events {
+                if let EventKind::TextDelta { text, .. } = &event {
+                    let run = data.run_mut(run_id)?;
+                    run.attempts.last_mut().unwrap().partial_text.push_str(text);
+                    if run.metrics.first_text_ms.is_none() {
+                        run.metrics.first_text_ms =
+                            Some(now_ms().saturating_sub(run.started_at_ms));
+                    }
+                }
+                data.emit(Some(run_id), event);
+            }
+            Ok(())
+        })
+        .await
     }
     async fn context_for(
         &self,
@@ -1670,7 +1771,49 @@ impl SessionHandle {
             {
                 result.artifacts.push(reference);
             }
-            result.data = json!({"excerpt":String::from_utf8_lossy(&bytes[..limit]),"original_bytes":bytes.len(),"truncated":true});
+            let mut excerpt = json!({"excerpt":String::from_utf8_lossy(&bytes[..limit]),"original_bytes":bytes.len(),"truncated":true});
+            if invocation.call.name == "files.read" {
+                if let Some(content) = result.data["content"].as_str() {
+                    // Keep a valid, compact page instead of double-escaping a
+                    // broken JSON prefix. Preserve complete lines and tell the
+                    // model exactly where the next read should continue.
+                    let start = result.data["start_line"].as_u64().unwrap_or(1);
+                    let mut page = result.data.clone();
+                    page["content"] = json!("");
+                    page["end_line"] = json!(start - 1);
+                    page["next_start_line"] = json!(start);
+                    page["truncated"] = json!(true);
+                    let mut kept = String::new();
+                    let mut count = 0;
+                    for line in content.split('\n') {
+                        let previous = kept.len();
+                        if count > 0 {
+                            kept.push('\n');
+                        }
+                        kept.push_str(line);
+                        page["content"] = json!(kept);
+                        if serde_json::to_vec(&page)?.len().saturating_add(32) > limit {
+                            kept.truncate(previous);
+                            break;
+                        }
+                        count += 1;
+                    }
+                    if count > 0 {
+                        page["content"] = json!(kept);
+                        page["end_line"] = json!(start + count - 1);
+                        page["next_start_line"] = json!(start + count);
+                        excerpt = page;
+                    }
+                }
+                // A single oversized line still has an artifact/byte excerpt.
+                // Its identity must remain visible for safe subsequent edits.
+                for field in ["path", "sha256", "start_line", "total_lines"] {
+                    if let Some(value) = result.data.get(field) {
+                        excerpt[field] = value.clone();
+                    }
+                }
+            }
+            result.data = excerpt;
             result.truncated = true;
         }
         self.update(|d| {
@@ -1784,13 +1927,18 @@ impl SessionHandle {
             {
                 Ok(v) => v,
                 Err(e) => {
-                    return self
-                        .outcome(
-                            run_id,
-                            invocation_id,
-                            ToolResult::error(Outcome::ValidationError, &e.code),
-                        )
-                        .await;
+                    let mut result = ToolResult::error(Outcome::ValidationError, &e.code);
+                    if (matches!(def.name.as_str(), "files.edit" | "files.write")
+                        && e.code == "write_conflict")
+                        || (matches!(def.name.as_str(), "process.run" | "process.start")
+                            && e.code == "path_denied")
+                    {
+                        // Builtin path/file preparation emits static, non-secret
+                        // reasons. The model must distinguish a stale base
+                        // from an absent/ambiguous replacement target.
+                        result.data = json!({"message": e.message});
+                    }
+                    return self.outcome(run_id, invocation_id, result).await;
                 }
             }
         } else {
@@ -1809,18 +1957,10 @@ impl SessionHandle {
         .await?;
         let data = self.snapshot().await?;
         let run = data.run(run_id)?;
-        if run
-            .invocations
-            .iter()
-            .filter(|i| {
-                i.call.name == invocation.call.name && i.call.arguments == invocation.call.arguments
-            })
-            .count()
-            > run.limits.max_repeated_calls
-        {
+        if run.repeated_calls_without_progress(&invocation.call) > run.limits.max_repeated_calls {
             return Err(WorkerError::new(
                 "repetition_limit",
-                "Repeated identical calls exceeded the run limit",
+                "Repeated identical calls without workspace progress exceeded the run limit",
             ));
         }
         if !self.ancestors_allow(def, &prepared).await? {
@@ -2089,14 +2229,22 @@ impl SessionHandle {
         };
         let outcome = match result {
             Ok(value) => value,
-            Err(e) => ToolResult::error(
-                if e.code == "outcome_unknown" {
-                    Outcome::OutcomeUnknown
-                } else {
-                    Outcome::Failed
-                },
-                &e.code,
-            ),
+            Err(e) => {
+                let mut result = ToolResult::error(
+                    if e.code == "outcome_unknown" {
+                        Outcome::OutcomeUnknown
+                    } else {
+                        Outcome::Failed
+                    },
+                    &e.code,
+                );
+                if matches!(def.name.as_str(), "files.edit" | "files.write")
+                    && e.code == "write_conflict"
+                {
+                    result.data = json!({"message": e.message});
+                }
+                result
+            }
         };
         if outcome.status == Outcome::Succeeded {
             if def.name == "task.plan" {

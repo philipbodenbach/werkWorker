@@ -64,6 +64,13 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    /// Exact native input count when supported; None keeps conservative fallback.
+    async fn count_input_tokens(&self, _request: &ModelRequest) -> Result<Option<usize>> {
+        Ok(None)
+    }
+    fn cached_input_tokens(&self, _request: &ModelRequest) -> Option<usize> {
+        None
+    }
     /// Verified server capacity, independent of parallel tool-call support.
     fn concurrency(&self) -> InferenceConcurrency {
         InferenceConcurrency::default()
@@ -354,6 +361,7 @@ pub struct WerkClient {
     secret: Option<Arc<String>>,
     deployment: Option<String>,
     max_body: usize,
+    timeout: Duration,
 }
 impl std::fmt::Debug for WerkClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -395,8 +403,7 @@ impl WerkClient {
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
-            .read_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_millis(config.timeout_ms))
+            .read_timeout(Duration::from_millis(config.timeout_ms))
             .build()
             .map_err(|_| WorkerError::new("http_client", "Cannot construct Werk client"))?;
         Ok(Self {
@@ -405,6 +412,7 @@ impl WerkClient {
             secret: secret.map(Arc::new),
             deployment: config.deployment.clone(),
             max_body: config.max_body_bytes,
+            timeout: Duration::from_millis(config.timeout_ms),
         })
     }
     fn request(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder> {
@@ -444,6 +452,11 @@ impl WerkClient {
         }
     }
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        self.send_chat(request.timeout(self.timeout)).await
+    }
+    // Streaming inference is bounded by inactivity and the engine's run deadline,
+    // not an HTTP total-duration timer that discards a healthy long generation.
+    async fn send_chat(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
         request.send().await.map_err(|e| {
             if e.is_timeout() {
                 WorkerError::transient("timeout")
@@ -453,12 +466,27 @@ impl WerkClient {
         })
     }
     pub async fn control(&self, path: &str) -> Result<Value> {
-        let response = self
-            .send(
-                self.request(reqwest::Method::GET, path)?
-                    .header("X-Werk-Protocol-Version", "1.0"),
-            )
-            .await?;
+        self.control_request(reqwest::Method::GET, path, None).await
+    }
+    pub async fn control_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        let mut request = self
+            .request(method, path)?
+            .header("X-Werk-Protocol-Version", "1.0");
+        if let Some(body) = body {
+            if body.to_string().len() > 1_048_576 {
+                return Err(WorkerError::new(
+                    "body_limit",
+                    "Werk Protocol request exceeds 1 MiB",
+                ));
+            }
+            request = request.json(&body);
+        }
+        let response = self.send(request).await?;
         let status = response.status();
         let headers = response.headers().clone();
         // Authentication middleware may reject before producing a Werk envelope.
@@ -504,9 +532,27 @@ impl WerkClient {
             ));
         }
         if !status.is_success() {
-            let mut e = http_error(status.as_u16());
-            e.retryable = value["error"]["retryable"].as_bool().unwrap_or(false)
+            let error = &value["error"];
+            let code = error["code"]
+                .as_str()
+                .filter(|code| validate_id(code).is_ok())
+                .ok_or_else(|| {
+                    WorkerError::new("invalid_envelope", "Missing protocol error code")
+                })?;
+            let message = error["message"].as_str().ok_or_else(|| {
+                WorkerError::new("invalid_envelope", "Missing protocol error message")
+            })?;
+            let mut e = WorkerError::new(
+                &format!("werk_protocol_{code}"),
+                format!("{message} [request {request_id}]"),
+            );
+            e.retryable = error["retryable"].as_bool().unwrap_or(false)
                 && matches!(status.as_u16(), 429 | 500..=599);
+            e.retry_after_ms = headers
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|s| s.saturating_mul(1000).min(30_000));
             return Err(e);
         }
         value
@@ -578,8 +624,33 @@ pub struct WerkProvider {
     pub inference_concurrency: InferenceConcurrency,
     context_limit: std::sync::atomic::AtomicUsize,
     pub context_limit_source: String,
+    token_counts: Mutex<BTreeMap<String, usize>>,
+    token_count_unavailable: std::sync::atomic::AtomicBool,
 }
 impl WerkProvider {
+    fn chat_body(&self, request: &ModelRequest) -> Result<Value> {
+        let mut body = json!({"model":self.config.model,"messages":request.messages.iter().map(wire_message).collect::<Vec<_>>(),"stream":self.config.stream,"max_completion_tokens":request.max_output_tokens});
+        if !request.tools.is_empty() {
+            body["tools"]=Value::Array(request.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect());
+            body["parallel_tool_calls"] =
+                json!(self.config.capabilities.parallel_tools == Support::Supported);
+        }
+        if self.config.stream {
+            body["stream_options"] = json!({"include_usage":true});
+        }
+        if self.config.capabilities.structured_output == Support::Supported
+            && let Some(schema) = request.output_schema.clone()
+        {
+            body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"worker_output","schema":schema,"strict":true}});
+        }
+        for (key, value) in &self.config.options {
+            body[key] = value.clone();
+        }
+        if body.to_string().len() > 1_048_576 {
+            return Err(WorkerError::new("body_limit", "Chat request exceeds 1 MiB"));
+        }
+        Ok(body)
+    }
     pub async fn connect(config: WerkConfig, secret: Option<String>) -> Result<Self> {
         let client = WerkClient::new(&config, secret)?;
         let info = client.control("/werk/v1/info").await?;
@@ -606,23 +677,48 @@ impl WerkProvider {
                 ));
             }
         }
-        // This deployed Werk route returns ordinary JSON, not a Protocol envelope.
-        // Optional discovery must never make older/read-restricted servers unusable.
-        let diagnostics = tokio::time::timeout(
+        // Prefer fresh, model-matched Werk Protocol evidence. This samples only
+        // running workers; it does not probe/load every installed backend.
+        let snapshot = tokio::time::timeout(
             Duration::from_secs(2),
-            client.json(reqwest::Method::GET, "/werk/v1/deployments", None),
+            client.control("/werk/v1/observability"),
         )
-        .await;
+        .await
+        .ok()
+        .and_then(std::result::Result::ok);
+        let protocol_capacity = snapshot
+            .as_ref()
+            .and_then(|value| observability_concurrency(value, &config.model));
+        let protocol_limit = snapshot
+            .as_ref()
+            .and_then(|value| observability_context(value, &config.model));
+        // Older protocol producers omit per-request context. Their deployment
+        // extension is plain JSON and is only an optional fallback.
+        let diagnostics = if protocol_capacity.is_none() || protocol_limit.is_none() {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                client.json(reqwest::Method::GET, "/werk/v1/deployments", None),
+            )
+            .await
+            .ok()
+            .and_then(std::result::Result::ok)
+        } else {
+            None
+        };
         let deployment_limit = diagnostics
             .as_ref()
-            .ok()
-            .and_then(|v| v.as_ref().ok())
-            .and_then(|v| deployment_context(v, &config.model));
-        let mut context_limit = match (config.capabilities.context_tokens, deployment_limit) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        let mut context_limit_source = if deployment_limit.is_some() {
+            .and_then(|value| deployment_context(value, &config.model));
+        let context_limit = [
+            config.capabilities.context_tokens,
+            protocol_limit,
+            deployment_limit,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let context_limit_source = if protocol_limit.is_some() {
+            "werk_protocol_and_host_minimum"
+        } else if deployment_limit.is_some() {
             "deployment_and_host_minimum"
         } else if context_limit.is_some() {
             "host_config"
@@ -630,44 +726,21 @@ impl WerkProvider {
             "unknown"
         }
         .to_owned();
-        let mut inference_concurrency = match diagnostics {
-            Ok(Ok(value)) => deployment_concurrency(&value, &config.model),
-            Ok(Err(error)) => InferenceConcurrency {
-                detail: format!(
-                    "Optional deployment discovery: {}; using one inference slot",
-                    error.code
-                ),
-                ..Default::default()
-            },
-            Err(_) => InferenceConcurrency {
-                detail: "Deployment discovery timed out; using one inference slot".into(),
-                ..Default::default()
-            },
-        };
-        if (inference_concurrency.max_requests.is_none() || context_limit.is_none())
-            && let Ok(Ok(snapshot)) = tokio::time::timeout(
-                Duration::from_secs(2),
-                client.control("/werk/v1/observability"),
-            )
-            .await
-            && let Some(capacity) = observability_concurrency(&snapshot, &config.model)
-        {
-            if inference_concurrency.max_requests.is_none() {
-                inference_concurrency = capacity;
-            }
-            // An aggregate divided by N is an average, not a safe minimum.
-            // Only a single-slot snapshot establishes an individual context size.
-            if let Some(limit) = observability_context(&snapshot, &config.model) {
-                context_limit = Some(context_limit.map_or(limit, |n| n.min(limit)));
-                context_limit_source = "observability_and_host_minimum".into();
-            }
-        }
+        let inference_concurrency = protocol_capacity
+            .or_else(|| {
+                diagnostics
+                    .as_ref()
+                    .map(|value| deployment_concurrency(value, &config.model))
+            })
+            .unwrap_or_default();
         Ok(Self {
             client,
             config,
             inference_concurrency,
             context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
             context_limit_source,
+            token_counts: Mutex::new(BTreeMap::new()),
+            token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             runtime_capabilities,
             discovery: json!({"info":info,"models":models}),
         })
@@ -697,10 +770,85 @@ impl ModelProvider for WerkProvider {
     fn identity(&self) -> String {
         format!("werk:{}", self.config.model)
     }
+    fn cached_input_tokens(&self, request: &ModelRequest) -> Option<usize> {
+        self.token_counts
+            .lock()
+            .unwrap()
+            .get(&fingerprint(request))
+            .copied()
+    }
+    async fn count_input_tokens(&self, request: &ModelRequest) -> Result<Option<usize>> {
+        if let Some(count) = self.cached_input_tokens(request) {
+            return Ok(Some(count));
+        }
+        if self
+            .token_count_unavailable
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || !self.runtime_capabilities.iter().any(|cap| {
+                cap.id == "api.chat.token_count"
+                    && cap.status == CapabilityStatus::Supported
+                    && cap.operations.iter().any(|op| op == "count_tokens")
+            })
+        {
+            return Ok(None);
+        }
+        let mut body = self.chat_body(request)?;
+        body["stream"] = json!(false);
+        body.as_object_mut().unwrap().remove("stream_options");
+        let mut retries = 0;
+        let value = loop {
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client.control_request(
+                    reqwest::Method::POST,
+                    "/werk/v1/chat/count_tokens",
+                    Some(body.clone()),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err(WorkerError::transient("token_count_timeout")));
+            match result {
+                Ok(value) => break value,
+                Err(error) if error.code == "werk_protocol_unsupported" => {
+                    self.token_count_unavailable
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(None);
+                }
+                Err(error) if error.retryable && retries < 2 => {
+                    retries += 1;
+                    tokio::time::sleep(Duration::from_millis(
+                        error.retry_after_ms.unwrap_or(100 * retries),
+                    ))
+                    .await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        if value["model"].as_str() != Some(&self.config.model) {
+            return Err(WorkerError::new(
+                "invalid_envelope",
+                "Token count returned a different model",
+            ));
+        }
+        let count = value["input_tokens"]
+            .as_u64()
+            .filter(|n| *n > 0 && *n <= 2_000_000)
+            .ok_or_else(|| WorkerError::new("invalid_envelope", "Invalid native token count"))?
+            as usize;
+        let mut cache = self.token_counts.lock().unwrap();
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(fingerprint(request), count);
+        Ok(Some(count))
+    }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         let limit = self.capabilities().context_tokens.ok_or_else(|| WorkerError::new("context_limit_unknown", "Set capabilities.context_tokens to the server's per-request context limit; discovery could not establish it"))?;
         if request.max_output_tokens == 0
-            || crate::context::estimate_request(&request)
+            || self
+                .count_input_tokens(&request)
+                .await?
+                .unwrap_or_else(|| crate::context::estimate_request(&request))
                 .saturating_add(request.max_output_tokens)
                 .saturating_add(512)
                 > limit
@@ -723,34 +871,16 @@ impl ModelProvider for WerkProvider {
                 "Streaming support is not confirmed",
             ));
         }
-        let mut body = json!({"model":self.config.model,"messages":request.messages.iter().map(wire_message).collect::<Vec<_>>(),"stream":self.config.stream,"max_completion_tokens":request.max_output_tokens});
-        if !request.tools.is_empty() {
-            body["tools"]=Value::Array(request.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect());
-            body["parallel_tool_calls"] =
-                json!(self.config.capabilities.parallel_tools == Support::Supported);
-        }
-        if self.config.stream {
-            body["stream_options"] = json!({"include_usage":true});
-        }
-        if self.config.capabilities.structured_output == Support::Supported
-            && let Some(schema) = request.output_schema
-        {
-            body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"worker_output","schema":schema,"strict":true}});
-        }
-        for (key, value) in &self.config.options {
-            body[key] = value.clone();
-        }
-        if body.to_string().len() > 1_048_576 {
-            return Err(WorkerError::new("body_limit", "Chat request exceeds 1 MiB"));
-        }
-        let response = self
+        let body = self.chat_body(&request)?;
+        let request = self
             .client
-            .send(
-                self.client
-                    .request(reqwest::Method::POST, "/v1/chat/completions")?
-                    .json(&body),
-            )
-            .await?;
+            .request(reqwest::Method::POST, "/v1/chat/completions")?
+            .json(&body);
+        let response = if self.config.stream {
+            self.client.send_chat(request).await?
+        } else {
+            self.client.send(request).await?
+        };
         if !response.status().is_success() {
             let mut e = http_error(response.status().as_u16());
             e.retry_after_ms = response
@@ -803,7 +933,7 @@ impl ModelProvider for WerkProvider {
             let mut bytes=response.bytes_stream();let mut parser=SseDecoder::new(max);
             let mut redactor=StreamRedactor::new(client.secret.as_ref().map(|s|s.as_str().to_owned()));
             while let Some(chunk)=bytes.next().await {
-                let chunk=chunk.map_err(|_|WorkerError::transient("interrupted_stream"))?;
+                let chunk=chunk.map_err(|error|WorkerError::transient(if error.is_timeout() {"timeout"} else {"interrupted_stream"}))?;
                 let deltas = parser.push(&chunk).map_err(|mut error| {
                     error.message = client.redact(&error.message);
                     error
@@ -1143,16 +1273,16 @@ fn deployment_context(value: &Value, model: &str) -> Option<usize> {
         if p["id"].as_str() != Some(model) && p["alias"].as_str() != Some(model) {
             continue;
         }
-        let total = p["context"]
+        let per_request = p["context"]
             .as_u64()
             .filter(|n| *n > 512 && *n <= 2_000_000)? as usize;
-        let slots = p["parallel"].as_u64().filter(|n| *n > 0 && *n <= 65536)? as usize;
-        let per_request = match p["runtime"].as_str()? {
-            "vllm_cuda" => total,
-            "llama_cuda" | "llama_cuda_offload" => total / slots,
-            _ => return None,
-        };
-        if per_request <= 512 {
+        p["parallel"].as_u64().filter(|n| *n > 0 && *n <= 65536)?;
+        // Werk deployment context is per sequence. The llama launcher multiplies
+        // it by parallel slots when constructing the native aggregate -c value.
+        if !matches!(
+            p["runtime"].as_str()?,
+            "vllm_cuda" | "llama_cuda" | "llama_cuda_offload"
+        ) {
             return None;
         }
         limit = Some(limit.map_or(per_request, |n| n.min(per_request)));
@@ -1166,10 +1296,15 @@ fn observability_context(value: &Value, model: &str) -> Option<usize> {
         if b["model"].as_str() != Some(model) {
             continue;
         }
-        if b["gauges"]["slots_total"].as_f64()? != 1.0 {
+        let tokens = if b["gauges"].get("context_per_request_tokens").is_some() {
+            b["gauges"]["context_per_request_tokens"].as_f64()?
+        } else if b["gauges"]["slots_total"].as_f64()? == 1.0 {
+            // Compatibility with older protocol producers: an aggregate is only
+            // safe evidence of an individual limit when exactly one slot exists.
+            b["gauges"]["context_capacity_tokens"].as_f64()?
+        } else {
             return None;
-        }
-        let tokens = b["gauges"]["context_capacity_tokens"].as_f64()?;
+        };
         if !(513.0..=2_000_000.0).contains(&tokens) || tokens.fract() != 0.0 {
             return None;
         }

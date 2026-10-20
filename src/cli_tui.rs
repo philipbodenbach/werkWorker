@@ -788,6 +788,9 @@ impl View {
             EventKind::AttemptFailed { code, .. } => {
                 self.append(&format!("\n[Attempt interrupted: {code}]\n"))
             }
+            EventKind::Diagnostic { code } if code == "model_output_recovery" => {
+                self.append("\nOutput limit reached. Continuing with smaller steps; incomplete tool calls were discarded.\n");
+            }
             EventKind::ToolPrepared { name, .. } => {
                 self.tools += 1;
                 self.append(&format!("\n  tool · {name}\n"));

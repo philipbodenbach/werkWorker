@@ -42,9 +42,18 @@ Builtin inventory:
 
 Listings/search are bounded, nonrecursive and exclude dotfiles/symlinks. Search
 uses a portable literal-text fallback, at most 500 matches. Binary/large files
-are skipped; reads expose line numbers and SHA-256. Writes are create-only
+are skipped; reads expose `content`, `start_line`, `end_line`, `total_lines`
+and SHA-256. Large reads return complete text lines and `next_start_line` rather
+than a broken JSON fragment; a single oversized line uses an excerpt/artifact.
+Writes return compact path/hash/byte-count receipts; full diffs remain in approval
+records. File preparation conflicts include the concrete reason so the agent can
+distinguish a stale hash from a missing or ambiguous edit target. Writes are create-only
 without expected_hash; edits require one exact nonempty match. File operations
 do not implement a multi-file transaction. Tools run serially in this release.
+
+Process `cwd` accepts workspace-relative paths and the fixed `/workspace` sandbox
+mount, normalized before approval. Other absolute paths and traversal remain
+denied. `/workspace` persists between calls; each call gets a fresh `/tmp`.
 
 Skills follow [Agent Skills](https://agentskills.io/specification): a directory
 name matching YAML `name`, a nonempty bounded `description`, Markdown body and

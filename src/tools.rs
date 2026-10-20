@@ -139,7 +139,7 @@ impl Tool for Builtin {
         let (effect, description, schema) = match self.name.as_str() {
             "files.read" => (
                 Effect::Read,
-                "Read a UTF-8 workspace file with hash and line numbers",
+                "Read UTF-8 file text with its hash and line range. If next_start_line is present, continue there; do not reread the same truncated range",
                 object(
                     json!({"path":string(),"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}),
                     &["path"],
@@ -160,7 +160,7 @@ impl Tool for Builtin {
             ),
             "files.write" => (
                 Effect::Write,
-                "Create a file or replace an expected SHA-256 base atomically",
+                "Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
                 object(
                     json!({"path":string(),"content":string(),"expected_hash":string()}),
                     &["path", "content"],
@@ -176,9 +176,9 @@ impl Tool for Builtin {
             ),
             "process.run" | "process.start" => (
                 Effect::Process,
-                "Execute program and argv in the assigned Linux sandbox with no network; shell commands require explicit argv approval",
+                "Sandboxed argv, no network. /workspace persists; /tmp is fresh each call. Keep cross-call files in /workspace. Shell argv needs explicit approval",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":string()}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"}}),
                     &["argv"],
                 ),
             ),
@@ -287,8 +287,7 @@ impl Tool for Builtin {
                     json!({"path":args["path"],"before":original,"after":args["content"]});
             }
             "process.run" | "process.start" => {
-                let cwd = args["cwd"].as_str().unwrap_or(".").to_owned();
-                crate::policy::relative_path(&cwd)?;
+                let cwd = process_cwd(args["cwd"].as_str().unwrap_or("."))?;
                 args["cwd"] = json!(cwd);
                 args["sandbox"] = json!({"backend":"bubblewrap","workspace_writable":ctx.writable,"network":false,"host_home":false,"limits":ctx.sandbox.limits});
             }
@@ -304,8 +303,10 @@ impl Tool for Builtin {
                 let text=String::from_utf8(bytes.clone()).map_err(|_|WorkerError::new("encoding_error","File is not UTF-8"))?;
                 let start=args["start_line"].as_u64().unwrap_or(1) as usize;let end=args["end_line"].as_u64().unwrap_or(u64::MAX) as usize;
                 if end<start{return Err(WorkerError::new("validation_error","Reversed line range"));}
-                let lines:Vec<_>=text.lines().enumerate().filter(|(i,_)|*i+1>=start&&*i<end).map(|(i,t)|json!({"line":i+1,"text":t})).collect();
-                json!({"path":path,"sha256":hash(bytes),"lines":lines})
+                let total_lines=text.lines().count();
+                let lines:Vec<_>=text.lines().skip(start-1).take(end.saturating_sub(start).saturating_add(1)).collect();
+                json!({"path":path,"sha256":hash(bytes),"start_line":start,
+                    "end_line":start-1+lines.len(),"total_lines":total_lines,"content":lines.join("\n")})
             },
             "files.list"=>json!({"entries":ctx.workspace.list(field(&args,"path")?,1000).await?,"hidden":false,"recursive":false}),
             "files.search"=>{
@@ -319,7 +320,10 @@ impl Tool for Builtin {
             },
             "files.write"|"files.edit"=>{
                 let content=field(&args,"content")?;ctx.workspace.write(field(&args,"path")?,content.as_bytes().to_vec(),args["expected_hash"].as_str().map(str::to_owned)).await?;
-                json!({"path":args["path"],"sha256":hash(content),"diff":args["diff"]})
+                // The full diff remains in the prepared action/approval record.
+                // Echoing growing files here exhausts context and can truncate
+                // away the hash needed for the next incremental edit.
+                json!({"path":args["path"],"sha256":hash(content),"bytes_written":content.len()})
             },
             "process.run"|"process.start"=>{
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
@@ -341,6 +345,18 @@ impl Tool for Builtin {
         };
         Ok(ToolResult::ok(value))
     }
+}
+
+/// The fixed sandbox mount is a logical workspace path, never a host path.
+/// Normalize before approvals so equivalent cwd spellings have one receipt.
+fn process_cwd(path: &str) -> Result<&str> {
+    let relative = if path == "/workspace" || path == "/workspace/" {
+        "."
+    } else {
+        path.strip_prefix("/workspace/").unwrap_or(path)
+    };
+    crate::policy::relative_path(relative)?;
+    Ok(relative)
 }
 
 /// Small example connector. The fixed endpoint and token are host-owned, never
@@ -569,5 +585,34 @@ impl Tool for WerkNativeTool {
             ));
         }
         Ok(ToolResult::ok(result))
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_workspace_cwd_is_normalized_without_widening_access() {
+        for (input, expected) in [
+            (".", "."),
+            ("src", "src"),
+            ("/workspace", "."),
+            ("/workspace/", "."),
+            ("/workspace/src", "src"),
+        ] {
+            assert_eq!(process_cwd(input).unwrap(), expected);
+        }
+        for input in [
+            "/etc",
+            "/workspace-other",
+            "/workspace//etc",
+            "/workspace/../etc",
+            "../escape",
+            "",
+            "/workspace/a\\b",
+        ] {
+            assert_eq!(process_cwd(input).unwrap_err().code, "path_denied");
+        }
     }
 }

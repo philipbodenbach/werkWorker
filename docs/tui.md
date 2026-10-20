@@ -35,7 +35,10 @@ Indentation is retained; an unfinished code fence is styled while streaming.
 | Key | Behavior |
 |---|---|
 | Enter | Submit a message, steer the active run, or answer the pending question |
-| Backspace | Edit the input |
+| Left / Right, Backspace / Delete | Move the cursor or edit at its position |
+| Ctrl-Left / Ctrl-Right | Move by word |
+| Up / Down (nonempty draft) | Move between draft lines |
+| Alt-Enter / Ctrl-J | Insert a newline without sending |
 | / | Preview slash commands, filtered as you type |
 | Up / Down, Tab, Enter, Esc | Select a suggestion, complete it, execute it, or dismiss the preview |
 | Ctrl-Y / Ctrl-N | Allow the displayed prepared action once / deny it |
@@ -54,14 +57,17 @@ Indentation is retained; an unfinished code fence is styled while streaming.
 | Ctrl-Q | Cancel/clean up managed work, close the session and restore the terminal |
 | Page Up / Page Down | Scroll conversation history |
 | Mouse wheel | Independently scroll the pane under the pointer: chat, request details, session sidebar, agent list/details, permissions or input |
-| Home / End | Jump to oldest visible history / latest output and resume following |
+| Home / End | Move to the start/end of the draft line; with an empty draft, scroll to oldest/latest history |
+| Ctrl-Home / Ctrl-End | Scroll to oldest/latest history |
 | Alt-Up / Alt-Down | Scroll pending approval/question details, or the session sidebar when no request is pending |
 
 Clipboard paste preserves Unicode and line breaks in the draft. Bracketed paste
 also works with the terminal's paste shortcut (usually Ctrl-Shift-V); pasted
-newlines never submit a message or approval. Input is limited to 16 KiB, with a
-visible notice if a bracketed paste is truncated. Multiline drafts expand up to
-four visible rows and can be scrolled with the mouse wheel.
+newlines never submit a message or approval. The expanded input is limited to
+64 KiB. Large pastes appear as numbered blocks and are expanded losslessly when
+sent; deleting a block removes its complete pasted text. Oversized pastes are
+rejected with a visible notice. Multiline drafts expand and keep the editing
+cursor visible; the mouse wheel can also scroll the input.
 
 Direct clipboard access uses PowerShell on Windows/WSL, `pbcopy`/`pbpaste` on
 macOS, or `wl-copy`/`wl-paste` and `xclip`/`xsel` on Linux. If these helpers are

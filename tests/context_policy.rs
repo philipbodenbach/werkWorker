@@ -292,6 +292,8 @@ async fn large_output_has_owned_artifact_and_context_excerpt() {
     let result = state.invocations[0].result.as_ref().unwrap();
     assert!(result.truncated);
     assert_eq!(result.artifacts.len(), 1);
+    assert_eq!(result.data["path"], "large");
+    assert_eq!(result.data["sha256"], hash("a".repeat(20_000)));
     assert!(result.data.to_string().len() < 9000);
     engine.close().await.unwrap();
 }
@@ -300,6 +302,60 @@ struct BoundedProvider {
     inner: Arc<ScriptedProvider>,
     limit: usize,
 }
+
+#[tokio::test]
+async fn large_file_reads_keep_complete_text_lines_and_a_precise_next_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let lines: Vec<_> = (1..=400)
+        .map(|n| format!("{n}: const text = \"Grüße 世界, no escaped JSON excerpt\";"))
+        .collect();
+    let source = lines.join("\n");
+    std::fs::write(dir.path().join("large"), &source).unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        read("large"),
+        ScriptedTurn::calls(
+            "",
+            vec![ToolCall {
+                id: id("call"),
+                name: "files.read".into(),
+                arguments: json!({"path":"large","start_line":201,"end_line":210}),
+            }],
+        ),
+        ScriptedTurn::text("done"),
+    ]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let mut grants = policy(false);
+    grants.grants[0].preapproved = true;
+    let session = engine
+        .create_session(profile(&["files.read"]), dir.path(), grants, Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit("Read the file", "read", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    let state = run.status().await.unwrap();
+    let first = state.invocations[0].result.as_ref().unwrap();
+    assert!(first.truncated);
+    assert!(first.data.get("excerpt").is_none());
+    assert_eq!(first.data["sha256"], hash(&source));
+    assert_eq!(first.data["start_line"], 1);
+    assert_eq!(first.data["total_lines"], 400);
+    let end = first.data["end_line"].as_u64().unwrap() as usize;
+    assert!(end > 1 && end < 400);
+    assert_eq!(first.data["next_start_line"], end + 1);
+    assert_eq!(first.data["content"], lines[..end].join("\n"));
+    assert!(serde_json::to_vec(&first.data).unwrap().len() <= 8192);
+    let next = state.invocations[1].result.as_ref().unwrap();
+    assert!(!next.truncated);
+    assert_eq!(next.data["start_line"], 201);
+    assert_eq!(next.data["end_line"], 210);
+    assert_eq!(next.data["content"], lines[200..210].join("\n"));
+    assert_eq!(next.data["sha256"], first.data["sha256"]);
+    engine.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn followups_compact_previous_final_code_and_keep_the_session_usable() {
     let dir = tempfile::tempdir().unwrap();

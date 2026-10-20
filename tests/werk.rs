@@ -22,6 +22,64 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
 }
 
 #[tokio::test]
+async fn streaming_timeout_measures_inactivity_not_total_generation_time() {
+    use std::time::Duration;
+    for (streaming, pause, expected_error) in [
+        (true, 30, None),
+        (true, 600, Some("timeout")),
+        (false, 30, Some("network_error")),
+    ] {
+        let server = Server::with_body_delay(
+            move |request| {
+                if request.path != "/v1/chat/completions" {
+                    return werk(request);
+                }
+                if !streaming {
+                    return Response::json(json!({"choices":[{"message":{"content":"x".repeat(1000)},"finish_reason":"stop"}]}));
+                }
+                let mut body = String::new();
+                for _ in 0..10 {
+                    body.push_str("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n");
+                }
+                body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+                Response {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/event-stream".into())],
+                    body: body.into_bytes(),
+                }
+            },
+            Some((24, Duration::from_millis(pause))),
+        ).await;
+        let mut configuration = config(&server.origin, streaming);
+        configuration.timeout_ms = 300;
+        let provider = WerkProvider::connect(configuration, None).await.unwrap();
+        let started = std::time::Instant::now();
+        let result = async {
+            let mut stream = provider
+                .stream(ModelRequest {
+                    messages: vec![Message::text(Role::User, "generate")],
+                    tools: vec![],
+                    max_output_tokens: 1024,
+                    output_schema: None,
+                })
+                .await?;
+            let mut assembler = ResponseAssembler::default();
+            while let Some(delta) = stream.next().await {
+                assembler.push(&delta?, 65536)?;
+            }
+            assembler.finish()
+        }
+        .await;
+        if let Some(code) = expected_error {
+            assert_eq!(result.unwrap_err().code, code);
+        } else {
+            assert_eq!(result.unwrap().0.content, "hello".repeat(10));
+            assert!(started.elapsed() > Duration::from_millis(600));
+        }
+    }
+}
+
+#[tokio::test]
 async fn backend_error_messages_are_preserved_and_credentials_redacted() {
     for streaming in [false, true] {
         let server = Server::start(move |request| {
@@ -386,7 +444,7 @@ async fn protocol_observability_accepts_fresh_slots_not_stale_or_other_models() 
 
 #[tokio::test]
 async fn server_context_discovery_uses_per_request_minimum_and_requires_evidence() {
-    for (runtime, expected) in [("llama_cuda", 4096), ("vllm_cuda", 8192)] {
+    for (runtime, expected) in [("llama_cuda", 8192), ("vllm_cuda", 8192)] {
         let server = Server::start(move |r| {
             if r.path == "/werk/v1/deployments" {
                 Response::json(json!({"deployments":{"profiles":[{"plan":{"profile":{"id":"a","alias":"fixture-model","parallel":4,"context":16384,"runtime":runtime}}},{"plan":{"profile":{"id":"b","alias":"fixture-model","parallel":2,"context":8192,"runtime":runtime}}}]}}))
@@ -418,6 +476,197 @@ async fn server_context_discovery_uses_per_request_minimum_and_requires_evidence
             .iter()
             .any(|r| r.path == "/v1/chat/completions")
     );
+}
+
+#[tokio::test]
+async fn protocol_slot_minimum_clamps_host_without_guessing_from_aggregate() {
+    for (minimum, expected) in [
+        (json!(8192), Some(8192)),
+        (Value::Null, None),
+        (json!(0), None),
+        (json!(8192.5), None),
+    ] {
+        let server = Server::start(move |r| {
+            if r.path == "/werk/v1/observability" {
+                let mut gauges = json!({"slots_total":2,"context_capacity_tokens":40960});
+                if !minimum.is_null() { gauges["context_per_request_tokens"] = minimum.clone(); }
+                control(json!({"schema_version":1,"observed_at_ms":now_ms(),"backend_observed_at_ms":now_ms(),
+                    "backends":[{"model":"fixture-model","backend":"llama.cpp / CUDA","available":true,"gauges":gauges}]}))
+            } else { werk(r) }
+        }).await;
+        let mut cfg = config(&server.origin, false);
+        cfg.capabilities.context_tokens = None;
+        let provider = WerkProvider::connect(cfg, None).await.unwrap();
+        assert_eq!(provider.capabilities().context_tokens, expected);
+        if expected.is_some() {
+            assert_eq!(
+                provider.context_limit_source,
+                "werk_protocol_and_host_minimum"
+            );
+            assert!(
+                !server
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.path == "/werk/v1/deployments")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn protocol_native_count_keeps_large_current_file_work_in_context() {
+    let source = "<script>/*ü*/</script>".repeat(700);
+    let expected = source.clone();
+    let server = Server::start(move |r| {
+        match r.path.as_str() {
+            "/werk/v1/capabilities" => control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"fixture native counter","operations":["count_tokens"]}]})),
+            "/werk/v1/chat/count_tokens" => {
+                assert!(r.raw.contains("x-werk-protocol-version: 1.0"));
+                assert_eq!(r.body["stream"], false);
+                assert_eq!(r.body["messages"][1]["content"], expected);
+                control(json!({"model":"fixture-model","input_tokens":1500}))
+            },
+            "/v1/chat/completions" => {
+                assert_eq!(r.body["messages"][1]["content"], expected);
+                werk(r)
+            },
+            _ => werk(r),
+        }
+    }).await;
+    let mut configuration = config(&server.origin, false);
+    configuration.capabilities.context_tokens = Some(4096);
+    let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                schema_version: 1,
+                name: "test".into(),
+                prompt: "Keep the complete user source".into(),
+                tools: vec![],
+                skills: vec![],
+            },
+            dir.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            source.clone(),
+            "start",
+            Limits {
+                context_tokens: 4096,
+                reserve_output_tokens: 1024,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(
+        run.status().await.unwrap().metrics.estimated_input_tokens,
+        1500
+    );
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == "/werk/v1/chat/count_tokens")
+            .count(),
+        1,
+        "identical request counts must be cached"
+    );
+    let original = ModelRequest {
+        messages: vec![
+            Message::text(Role::System, "Keep the complete user source"),
+            Message::text(Role::User, source),
+        ],
+        tools: vec![],
+        max_output_tokens: 1024,
+        output_schema: None,
+    };
+    provider.count_input_tokens(&original).await.unwrap();
+    for reserve in 512..577 {
+        let mut other = original.clone();
+        other.max_output_tokens = reserve;
+        provider.count_input_tokens(&other).await.unwrap();
+    }
+    assert_eq!(provider.cached_input_tokens(&original), None);
+    let mut stream = provider.stream(original).await.unwrap();
+    let mut assembler = ResponseAssembler::default();
+    while let Some(delta) = stream.next().await {
+        assembler.push(&delta.unwrap(), 65536).unwrap();
+    }
+    assembler.finish().unwrap();
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_counter_respects_protocol_retryability_and_model_identity() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for case in ["transient", "unsupported", "wrong_model"] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let server = Server::start(move |r| {
+            if r.path == "/werk/v1/capabilities" {
+                return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"counter","operations":["count_tokens"]}]}));
+            }
+            if r.path == "/werk/v1/chat/count_tokens" {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                if case == "unsupported" || (case == "transient" && n == 0) {
+                    let mut response = control(Value::Null);
+                    response.status = if case == "unsupported" { 501 } else { 503 };
+                    response.body = json!({"protocol":{"major":1,"minor":0},"request_id":"req_test",
+                        "error":{"code":if case=="unsupported" {"unsupported"} else {"unavailable"},
+                        "message":"fixture test-secret","retryable":case=="transient"}}).to_string().into_bytes();
+                    return response;
+                }
+                return control(json!({"model":if case=="wrong_model" {"other"} else {"fixture-model"},"input_tokens":42}));
+            }
+            werk(r)
+        }).await;
+        let provider =
+            WerkProvider::connect(config(&server.origin, false), Some("test-secret".into()))
+                .await
+                .unwrap();
+        let request = ModelRequest {
+            messages: vec![Message::text(Role::User, "hi")],
+            tools: vec![],
+            max_output_tokens: 64,
+            output_schema: None,
+        };
+        let count = provider.count_input_tokens(&request).await;
+        match case {
+            "transient" => {
+                assert_eq!(count.unwrap(), Some(42));
+                assert_eq!(
+                    provider.count_input_tokens(&request).await.unwrap(),
+                    Some(42)
+                );
+                assert_eq!(calls.load(Ordering::SeqCst), 2);
+            }
+            "unsupported" => {
+                assert_eq!(count.unwrap(), None);
+                assert_eq!(provider.count_input_tokens(&request).await.unwrap(), None);
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            }
+            _ => {
+                assert_eq!(count.unwrap_err().code, "invalid_envelope");
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
 }
 #[tokio::test]
 async fn smaller_server_context_is_learned_and_rebuilt_without_identical_retry() {

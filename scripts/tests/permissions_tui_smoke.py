@@ -168,7 +168,10 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         assert sum(i.get("approval") is not None for i in state("state.sqlite")["runs"][0]["invocations"]) == 1
         # Large paste blocks stay compact in the TUI, but the model receives all text.
         first = "\n".join(f"Large pasted line {n}: Grüße 世界" for n in range(24))
-        second = "very long single line " + "x" * 20_000
+        # The scripted provider uses conservative bytes-as-tokens sizing.
+        # Leave room for tool/policy schemas; this test checks lossless paste,
+        # while the editor unit tests cover the full 64 KiB input capacity.
+        second = "very long single line " + "x" * 16_000
         os.write(master, b"Read: \x1b[200~" + first.encode() + b"\x1b[201~")
         wait("[Pasted text #1 +24 lines]")
         os.write(master, b" and \x1b[200~" + second.encode() + b"\x1b[201~")

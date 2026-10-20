@@ -134,7 +134,7 @@ fn credentials_are_redacted_even_across_text_and_tool_fragments() {
 }
 
 #[test]
-fn server_output_limit_never_retries_or_executes_truncated_tools() {
+fn server_output_limit_rejects_fragments_without_blind_transport_retry() {
     let mut assembler = ResponseAssembler::default();
     assembler
         .push(

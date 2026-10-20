@@ -8,11 +8,27 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Conservative serialized wire bytes plus template margin, not a tokenizer count.
 pub fn estimate_request(request: &ModelRequest) -> usize {
     let wire = serde_json::json!({
-        "messages": request.messages.iter().map(wire_message).collect::<Vec<_>>(),
+        "messages": request.messages.iter().map(|m| {
+            if m.images.is_empty() { wire_message(m) } else {
+                let mut text = m.clone(); text.images.clear(); wire_message(&text)
+            }
+        }).collect::<Vec<_>>(),
         "tools": request.tools.iter().map(|t| serde_json::json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect::<Vec<_>>(),
         "response_format": request.output_schema,
     });
-    serde_json::to_vec(&wire).map_or(usize::MAX, |b| b.len().saturating_add(256))
+    // Base64 bytes are transport, not text tokens. Normalized images are at most
+    // 1024px; reserve 8192 tokens each when no native image counter exists.
+    // This is an estimate; server admission remains authoritative.
+    let images = request
+        .messages
+        .iter()
+        .map(|m| m.images.len())
+        .sum::<usize>();
+    serde_json::to_vec(&wire).map_or(usize::MAX, |b| {
+        b.len()
+            .saturating_add(256)
+            .saturating_add(images.saturating_mul(crate::attachments::IMAGE_TOKEN_RESERVE))
+    })
 }
 pub fn effective_limits(limits: &Limits, provider_context: Option<usize>) -> Result<Limits> {
     let mut effective = limits.clone();

@@ -33,12 +33,12 @@ does not mean completion. Events are notifications:
 | session.open, session.export | session_id |
 | session.list | none |
 | session.fork | session_id; uses explicit startup host policy for new scope |
-| run.submit | session_id, input, command_id; optional limits/output_schema |
+| run.submit | session_id, input, command_id; optional limits/output_schema/images |
 | run.status | session_id, run_id |
 | run.cancel | session_id, run_id, command_id; optional reason |
-| run.steer | session_id, run_id, input, command_id |
+| run.steer | session_id, run_id, input, command_id; optional images |
 | run.resume | session_id, run_id |
-| session.followup | session_id, input, command_id; optional limits |
+| session.followup | session_id, input, command_id; optional limits/images |
 | approval.respond | session_id, run_id, request_id, decision, command_id |
 | interaction.respond | session_id, run_id, request_id, answer, command_id |
 | events.subscribe | session_id, optional after_cursor (exclusive) |
@@ -50,6 +50,15 @@ does not mean completion. Events are notifications:
 | shutdown | none |
 
 Approval decisions serialize as `allow_once`, `deny`, `allow_same_arguments`.
+
+`images` is an optional array of up to four attachments with `mime_type`
+(`image/jpeg`), `data_base64`, `width` and `height`. Use the SDK's
+`ImageAttachment::from_bytes` to normalize PNG/JPEG data to at most 1024 pixels
+per side and 128 KiB per image before encoding. Image-only submissions use
+`input: ""`. Attachments persist with their message; they are sent as standard
+OpenAI `image_url` content parts and require a vision-capable model/backend.
+Omitting `images` preserves existing text requests and their idempotency keys.
+
 Inspect `run.status` for pending request IDs after reconnect. Reuse command IDs
 with the same payload if delivery is uncertain; changed payloads conflict.
 The dedupe scope is the session, including method and run. Native Werk HTTP

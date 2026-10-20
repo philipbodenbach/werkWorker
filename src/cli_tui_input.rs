@@ -1,8 +1,15 @@
 //! Host clipboard access and selection of visible terminal text.
+use base64::{Engine, engine::general_purpose::STANDARD};
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 use std::{io, process::Stdio, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use unicode_segmentation::UnicodeSegmentation;
+use werk_worker::attachments::{CLIPBOARD_IMAGE_LIMIT, ImageAttachment};
+
+pub(super) enum Clipboard {
+    Text(String),
+    Image(ImageAttachment),
+}
 
 pub(super) const INPUT_LIMIT: usize = 65_536;
 
@@ -184,7 +191,7 @@ fn commands(write: bool) -> Vec<(String, Vec<String>)> {
         let script = if write {
             "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())"
         } else {
-            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::Write((Get-Clipboard -Raw))"
+            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; if ([Windows.Forms.Clipboard]::ContainsImage()) { $i=[Windows.Forms.Clipboard]::GetImage(); $s=[IO.MemoryStream]::new(); try { $i.Save($s,[Drawing.Imaging.ImageFormat]::Png); [Console]::Write('WERK_IMAGE_PNG:'+ [Convert]::ToBase64String($s.ToArray())) } finally { $s.Dispose(); $i.Dispose() } } else { [Console]::Write([Windows.Forms.Clipboard]::GetText()) }"
         };
         let args = [
             "-NoLogo",
@@ -194,15 +201,30 @@ fn commands(write: bool) -> Vec<(String, Vec<String>)> {
             "-Command",
             script,
         ];
-        add("powershell.exe", &args);
-        if cfg!(target_os = "linux") {
-            add(
-                "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-                &args,
-            );
-        }
+        let in_path = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|p| p.join("powershell.exe").is_file())
+        });
+        add(
+            if in_path || cfg!(windows) {
+                "powershell.exe"
+            } else {
+                "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+            },
+            &args,
+        );
     }
     if cfg!(target_os = "macos") {
+        if !write {
+            add(
+                "osascript",
+                &[
+                    "-l",
+                    "JavaScript",
+                    "-e",
+                    "ObjC.import('AppKit'); ObjC.import('Foundation'); var p=$.NSPasteboard.generalPasteboard; var d=p.dataForType('public.png'); if (!d) { var t=p.dataForType('public.tiff'); if(t) { var r=$.NSBitmapImageRep.imageRepWithData(t); d=r.representationUsingTypeProperties($.NSBitmapImageFileTypePNG,$.NSDictionary.dictionary); } } if(d) { 'WERK_IMAGE_PNG:'+ObjC.unwrap(d.base64EncodedStringWithOptions(0)); } else { ObjC.unwrap(p.stringForType('public.utf8-plain-text')) || ''; }",
+                ],
+            );
+        }
         add(if write { "pbcopy" } else { "pbpaste" }, &[]);
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -229,7 +251,12 @@ fn commands(write: bool) -> Vec<(String, Vec<String>)> {
     commands
 }
 
-async fn transfer(program: &str, args: &[String], value: Option<&str>) -> io::Result<String> {
+async fn transfer_bytes(
+    program: &str,
+    args: &[String],
+    value: Option<&str>,
+    limit: usize,
+) -> io::Result<Vec<u8>> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
         .stdin(if value.is_some() {
@@ -254,17 +281,17 @@ async fn transfer(program: &str, args: &[String], value: Option<&str>) -> io::Re
         let mut bytes = Vec::new();
         if let Some(stdout) = child.stdout.take() {
             stdout
-                .take((INPUT_LIMIT + 1) as u64)
+                .take((limit + 1) as u64)
                 .read_to_end(&mut bytes)
                 .await?;
         }
-        if bytes.len() > INPUT_LIMIT {
-            return Err(io::Error::other("Clipboard text exceeds 64 KiB"));
+        if bytes.len() > limit {
+            return Err(io::Error::other("Clipboard exceeds the import size limit"));
         }
         if !child.wait().await?.success() {
             return Err(io::Error::other("Clipboard helper failed"));
         }
-        String::from_utf8(bytes).map_err(io::Error::other)
+        Ok(bytes)
     })
     .await;
     result.unwrap_or_else(|_| {
@@ -275,11 +302,55 @@ async fn transfer(program: &str, args: &[String], value: Option<&str>) -> io::Re
     })
 }
 
-pub(super) async fn paste() -> io::Result<String> {
+fn decode_clipboard(bytes: Vec<u8>) -> io::Result<Clipboard> {
+    let image = if let Some(encoded) = bytes.strip_prefix(b"WERK_IMAGE_PNG:") {
+        Some(
+            STANDARD
+                .decode(encoded.trim_ascii())
+                .map_err(io::Error::other)?,
+        )
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some(bytes.clone())
+    } else {
+        None
+    };
+    if let Some(image) = image {
+        return ImageAttachment::from_bytes(&image)
+            .map(Clipboard::Image)
+            .map_err(io::Error::other);
+    }
+    if bytes.len() > INPUT_LIMIT {
+        return Err(io::Error::other("Clipboard text exceeds 64 KiB"));
+    }
+    String::from_utf8(bytes)
+        .map(Clipboard::Text)
+        .map_err(io::Error::other)
+}
+
+pub(super) async fn paste() -> io::Result<Clipboard> {
     let mut last = io::Error::other("No clipboard helper available");
     for (program, args) in commands(false) {
-        match transfer(&program, &args, None).await {
-            Ok(text) => return Ok(text),
+        // X11 defaults to text targets. Ask for an actual image when present.
+        let mut args = args;
+        if program == "xclip" {
+            let targets: Vec<String> = ["-selection", "clipboard", "-out", "-target", "TARGETS"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            if let Ok(types) = transfer_bytes(&program, &targets, None, 8192).await
+                && String::from_utf8_lossy(&types)
+                    .lines()
+                    .any(|t| t.trim() == "image/png")
+            {
+                args.extend(["-target".into(), "image/png".into()]);
+            }
+        }
+        match transfer_bytes(&program, &args, None, CLIPBOARD_IMAGE_LIMIT * 4 / 3 + 128).await {
+            Ok(bytes) => {
+                return tokio::task::spawn_blocking(move || decode_clipboard(bytes))
+                    .await
+                    .map_err(io::Error::other)?;
+            }
             Err(error) => last = error,
         }
     }
@@ -288,7 +359,10 @@ pub(super) async fn paste() -> io::Result<String> {
 
 pub(super) async fn copy(value: &str) -> io::Result<()> {
     for (program, args) in commands(true) {
-        if transfer(&program, &args, Some(value)).await.is_ok() {
+        if transfer_bytes(&program, &args, Some(value), INPUT_LIMIT)
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
     }

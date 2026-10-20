@@ -306,6 +306,15 @@ impl Form {
                     .into(),
                 ),
                 (
+                    "Image input".into(),
+                    match self.settings.werk.capabilities.images {
+                        Support::Unsupported => "Disabled",
+                        Support::Unknown => "Auto; server validates model support",
+                        Support::Supported => "Enabled; requires a vision model",
+                    }
+                    .into(),
+                ),
+                (
                     "Save settings (never API key)".into(),
                     [
                         "Global connection",
@@ -370,7 +379,15 @@ impl Form {
                     }
             }
             (2, 6) => self.settings.werk.stream = !self.settings.werk.stream,
-            (2, 7) => self.save = next(self.save, 3),
+            (2, 7) => {
+                self.settings.werk.capabilities.images =
+                    match self.settings.werk.capabilities.images {
+                        Support::Unsupported => Support::Unknown,
+                        Support::Unknown => Support::Supported,
+                        Support::Supported => Support::Unsupported,
+                    }
+            }
+            (2, 8) => self.save = next(self.save, 3),
             _ => {}
         }
     }
@@ -768,10 +785,10 @@ pub async fn show(
                                 },
                                 _=>Ok(())
                             };
-                            if let Err(error)=saved {form.error=format!("Connection works, but saving failed ({}). Choose Do not save to continue.",error.code);form.field=7;continue;}
+                            if let Err(error)=saved {form.error=format!("Connection works, but saving failed ({}). Choose Do not save to continue.",error.code);form.field=8;continue;}
                             if form.save < 2
                                 && let Err(error)=save(&previous_path,&PreviousConnection{settings:form.settings.clone(),access:form.access}).await {
-                                    form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=7;continue;
+                                    form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=8;continue;
                             }
                             if form.save < 2 && !custom_policy
                                 && let Err(error) = crate::cli_config::save_policy(workspace, form.access.policy()).await {

@@ -194,6 +194,7 @@ impl ResponseAssembler {
             Message {
                 role: Role::Assistant,
                 content: self.text,
+                images: vec![],
                 tool_calls: calls,
                 tool_call_id: None,
             },
@@ -629,6 +630,14 @@ pub struct WerkProvider {
 }
 impl WerkProvider {
     fn chat_body(&self, request: &ModelRequest) -> Result<Value> {
+        if request.messages.iter().any(|m| !m.images.is_empty())
+            && self.config.capabilities.images == Support::Unsupported
+        {
+            return Err(WorkerError::new(
+                "images_unsupported",
+                "Selected connection does not support image input",
+            ));
+        }
         let mut body = json!({"model":self.config.model,"messages":request.messages.iter().map(wire_message).collect::<Vec<_>>(),"stream":self.config.stream,"max_completion_tokens":request.max_output_tokens});
         if !request.tools.is_empty() {
             body["tools"]=Value::Array(request.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect());
@@ -748,6 +757,16 @@ impl WerkProvider {
 }
 pub fn wire_message(message: &Message) -> Value {
     let mut value = json!({"role":message.role,"content":message.content});
+    if !message.images.is_empty() {
+        let mut parts = vec![json!({"type":"text","text":message.content})];
+        parts.extend(
+            message
+                .images
+                .iter()
+                .map(|image| json!({"type":"image_url","image_url":{"url":image.data_url()}})),
+        );
+        value["content"] = json!(parts);
+    }
     if !message.tool_calls.is_empty() {
         value["tool_calls"]=Value::Array(message.tool_calls.iter().map(|c|json!({"id":c.id,"type":"function","function":{"name":c.name,"arguments":c.arguments.to_string()}})).collect());
     }
@@ -810,8 +829,11 @@ impl ModelProvider for WerkProvider {
             match result {
                 Ok(value) => break value,
                 Err(error) if error.code == "werk_protocol_unsupported" => {
-                    self.token_count_unavailable
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    // A text counter can still be useful after an unsupported image request.
+                    if request.messages.iter().all(|m| m.images.is_empty()) {
+                        self.token_count_unavailable
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     return Ok(None);
                 }
                 Err(error) if error.retryable && retries < 2 => {

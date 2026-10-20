@@ -128,8 +128,11 @@ impl RpcHost {
                         };
                         let run = if method == "run.submit" {
                             session
-                                .submit(
+                                .submit_with_images(
                                     text(p, "input")?,
+                                    serde_json::from_value(
+                                        p.get("images").cloned().unwrap_or_else(|| json!([])),
+                                    )?,
                                     text(p, "command_id")?,
                                     limits,
                                     p.get("output_schema").cloned(),
@@ -137,7 +140,14 @@ impl RpcHost {
                                 .await?
                         } else {
                             session
-                                .follow_up(text(p, "input")?, text(p, "command_id")?, limits)
+                                .follow_up_with_images(
+                                    text(p, "input")?,
+                                    serde_json::from_value(
+                                        p.get("images").cloned().unwrap_or_else(|| json!([])),
+                                    )?,
+                                    text(p, "command_id")?,
+                                    limits,
+                                )
                                 .await?
                         };
                         Ok(json!({"run_id":run.id,"receipt":run.receipt}))
@@ -184,7 +194,14 @@ impl RpcHost {
                                 .await?
                             )),
                             "run.steer" => Ok(json!(
-                                run.steer(text(p, "input")?, text(p, "command_id")?).await?
+                                run.steer_with_images(
+                                    text(p, "input")?,
+                                    serde_json::from_value(
+                                        p.get("images").cloned().unwrap_or_else(|| json!([]))
+                                    )?,
+                                    text(p, "command_id")?
+                                )
+                                .await?
                             )),
                             "approval.respond" => Ok(json!(
                                 run.respond_to_approval(

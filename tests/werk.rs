@@ -743,3 +743,59 @@ async fn bare_auth_rejection_is_reported_without_protocol_or_body_leaks() {
     assert_eq!(error.code, "auth_error");
     assert!(!error.to_string().contains("secret"));
 }
+
+#[tokio::test]
+async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_counter() {
+    let server=Server::start(|r| {
+        if r.path=="/werk/v1/capabilities" {
+            return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"counter","operations":["count_tokens"]}]}));
+        }
+        if r.path=="/werk/v1/chat/count_tokens" {
+            if r.body["messages"][0]["content"].is_array() {
+                let mut response=control(Value::Null);response.status=501;
+                response.body=json!({"protocol":{"major":1,"minor":0},"request_id":"req_test","error":{"code":"unsupported","message":"Image counting unavailable","retryable":false}}).to_string().into_bytes();
+                return response;
+            }
+            return control(json!({"model":"fixture-model","input_tokens":42}));
+        }
+        if r.path=="/v1/chat/completions" {
+            let content=&r.body["messages"][0]["content"];
+            assert_eq!(content[0]["text"],"Describe this");
+            assert!(content[1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/jpeg;base64,"));
+        }
+        werk(r)
+    }).await;
+    let mut configuration = config(&server.origin, false);
+    configuration.capabilities.images = Support::Supported;
+    let provider = WerkProvider::connect(configuration, None).await.unwrap();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let mut message = Message::text(Role::User, "Describe this");
+    message
+        .images
+        .push(attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap());
+    let request = ModelRequest {
+        messages: vec![message],
+        tools: vec![],
+        max_output_tokens: 128,
+        output_schema: None,
+    };
+    let mut stream = provider.stream(request).await.unwrap();
+    while let Some(delta) = stream.next().await {
+        delta.unwrap();
+    }
+    assert_eq!(
+        provider
+            .count_input_tokens(&ModelRequest {
+                messages: vec![Message::text(Role::User, "text after image")],
+                tools: vec![],
+                max_output_tokens: 128,
+                output_schema: None
+            })
+            .await
+            .unwrap(),
+        Some(42)
+    );
+}

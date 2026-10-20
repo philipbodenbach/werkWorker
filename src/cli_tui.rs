@@ -1,11 +1,11 @@
 //! Interactive CLI client. Engine policy and lifecycle stay in the public SDK.
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 #[path = "cli_tui_input.rs"]
 mod text_input;
-use futures_util::{Stream, StreamExt};
+use futures_util::{FutureExt, Stream, StreamExt};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -253,14 +253,35 @@ pub(crate) fn banner() -> Vec<Line<'static>> {
 }
 
 pub(crate) struct Restore;
-/// Crossterm's background reader is process-global and its stream Drop wakes
-/// but does not join the polling thread. Recreating streams during a screen
-/// transition can leave the new screen waiting on the old thread's wakeup.
-/// Keep one stream for the interactive process; screens borrow it exclusively.
-pub(crate) async fn input() -> tokio::sync::MutexGuard<'static, EventStream> {
-    static INPUT: std::sync::OnceLock<tokio::sync::Mutex<EventStream>> = std::sync::OnceLock::new();
+pub(crate) struct Input(tokio::sync::mpsc::Receiver<std::io::Result<Event>>);
+impl Stream for Input {
+    type Item = std::io::Result<Event>;
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
+    }
+}
+/// A single blocking reader feeds a bounded queue across all interactive screens.
+/// Keep terminal polling off the async UI thread; unlike EventStream's zero-time
+/// polling, this also works with Crossterm's level-triggered Unix backend.
+pub(crate) async fn input() -> tokio::sync::MutexGuard<'static, Input> {
+    static INPUT: std::sync::OnceLock<tokio::sync::Mutex<Input>> = std::sync::OnceLock::new();
     INPUT
-        .get_or_init(|| tokio::sync::Mutex::new(EventStream::new()))
+        .get_or_init(|| {
+            let (tx, rx) = tokio::sync::mpsc::channel(4096);
+            std::thread::spawn(move || {
+                loop {
+                    let event = crossterm::event::read();
+                    let failed = event.is_err();
+                    if tx.blocking_send(event).is_err() || failed {
+                        break;
+                    }
+                }
+            });
+            tokio::sync::Mutex::new(Input(rx))
+        })
         .lock()
         .await
 }
@@ -368,6 +389,8 @@ struct View {
     input_cursor: Option<usize>,
     input_scroll_manual: bool,
     pasted_texts: Vec<text_input::PastedText>,
+    pasted_images: Vec<(String, attachments::ImageAttachment)>,
+    clipboard: Option<tokio::task::JoinHandle<std::io::Result<text_input::Clipboard>>>,
     paste_number: usize,
     status: String,
     session_id: String,
@@ -473,14 +496,16 @@ impl View {
         &mut self.panes[pane as usize]
     }
     fn paste(&mut self, text: &str) {
-        if !matches!(self.screen, Screen::Conversation) {
-            return;
+        if matches!(self.screen, Screen::Conversation) {
+            self.paste_into_draft(text);
         }
+    }
+    fn paste_into_draft(&mut self, text: &str) {
         self.selection = None;
         self.quit_armed = false;
         let mut normalized = String::new();
         let complete = text_input::append_paste(&mut normalized, text);
-        if !complete || self.expanded_input().len() + normalized.len() > text_input::INPUT_LIMIT {
+        if !complete || self.expanded_input_len() + normalized.len() > text_input::INPUT_LIMIT {
             self.error = "Paste exceeds the 64 KiB message limit; nothing was added.".into();
             return;
         }
@@ -501,6 +526,32 @@ impl View {
     }
     fn expanded_input(&self) -> String {
         text_input::expand_pastes(&self.input, &self.pasted_texts)
+    }
+    fn expanded_input_len(&self) -> usize {
+        self.pasted_texts
+            .iter()
+            .fold(self.input.len(), |length, paste| {
+                let count = self.input.matches(&paste.marker).count();
+                length - count * paste.marker.len() + count * paste.text.len()
+            })
+    }
+    fn paste_image(&mut self, image: attachments::ImageAttachment) {
+        if self.pasted_images.len() >= attachments::MAX_IMAGES {
+            self.error = "At most four images per message.".into();
+            return;
+        }
+        self.paste_number += 1;
+        let marker = format!(
+            "[Image #{} · {}×{}]",
+            self.paste_number, image.width, image.height
+        );
+        self.insert_input(&marker);
+        self.pasted_texts.push(text_input::PastedText {
+            marker: marker.clone(),
+            text: String::new(),
+        });
+        self.pasted_images.push((marker, image));
+        self.error.clear();
     }
     fn cursor(&self) -> usize {
         self.input_cursor
@@ -610,17 +661,13 @@ impl View {
         };
         self.input_cursor = (next < self.input.len()).then_some(next);
     }
-    async fn paste_clipboard(&mut self) {
+    fn paste_clipboard(&mut self) {
         if !matches!(self.screen, Screen::Conversation) {
             return;
         }
-        match text_input::paste().await {
-            Ok(text) => self.paste(&text),
-            Err(error) => {
-                self.error = format!(
-                    "Cannot paste: {error}. Use the terminal paste shortcut (Ctrl-Shift-V)."
-                )
-            }
+        if self.clipboard.is_none() {
+            self.clipboard = Some(tokio::spawn(text_input::paste()));
+            self.error = "Reading clipboard… You can keep editing.".into();
         }
     }
     async fn copy_selection(&mut self) -> bool {
@@ -740,11 +787,17 @@ impl View {
         self.input_scroll_manual = false;
         self.pasted_texts
             .retain(|paste| self.input.contains(&paste.marker));
+        self.pasted_images
+            .retain(|(marker, _)| self.input.contains(marker));
         let at = self.cursor();
-        let at = text_input::boundaries(&self.input, &self.pasted_texts)
-            .into_iter()
-            .find(|i| *i >= at)
-            .unwrap_or(self.input.len());
+        let at = if at == self.input.len() {
+            at
+        } else {
+            text_input::boundaries(&self.input, &self.pasted_texts)
+                .into_iter()
+                .find(|i| *i >= at)
+                .unwrap_or(self.input.len())
+        };
         self.input_cursor = (at < self.input.len()).then_some(at);
         self.command_selected = 0;
         self.commands_dismissed = false;
@@ -1586,7 +1639,7 @@ fn draw(frame: &mut Frame, view: &mut View) {
     } else if view.native_selection {
         " Terminal selection: drag to select · terminal copy/paste shortcuts · F6: return to pane scrolling"
     } else {
-        " Ctrl-C copy selection · Ctrl-V paste · Right-click copy/paste · Wheel scroll pane · F6 terminal selection · /help"
+        " Ctrl-C copy selection · Ctrl-V / Alt-V paste · Right-click copy/paste · Wheel scroll pane · F6 terminal selection · /help"
     };
     frame.render_widget(
         Paragraph::new(if view.error.is_empty() {
@@ -1740,7 +1793,7 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
     if changed {
         view.pane(Pane::Request).offset = 0;
         view.choice_selected = usize::from(approval.is_some());
-        if interaction.is_some() {
+        if interaction.is_some() && view.pasted_images.is_empty() {
             view.input.clear();
             view.edited_input();
         }
@@ -1765,8 +1818,10 @@ async fn answer_question(view: &mut View, run: &RunHandle, answer: &str) -> Resu
             view.request_owner, request.question
         ));
         view.interaction = None;
-        view.input.clear();
-        view.edited_input();
+        if view.pasted_images.is_empty() {
+            view.input.clear();
+            view.edited_input();
+        }
         view.scroll = None;
     }
     Ok(())
@@ -1820,8 +1875,10 @@ async fn approve_choice(
             }
         ));
         view.approval = None;
-        view.input.clear();
-        view.edited_input();
+        if view.pasted_images.is_empty() {
+            view.input.clear();
+            view.edited_input();
+        }
         if choice == 3
             && let Some(session) = session
         {
@@ -1846,7 +1903,17 @@ pub enum Exit {
 fn restore_history(view: &mut View, data: &SessionData) {
     for (index, message) in data.messages.iter().enumerate() {
         match message.role {
-            Role::User => view.append(&format!("\n\nyou › {}\n", message.content)),
+            Role::User => {
+                view.append(&format!("\n\nyou › {}\n", message.content));
+                for (index, image) in message.images.iter().enumerate() {
+                    view.append(&format!(
+                        "[Image {} · {}×{}]\n",
+                        index + 1,
+                        image.width,
+                        image.height
+                    ));
+                }
+            }
             Role::Assistant => {
                 if !message.content.is_empty() {
                     view.append(&format!("\n\nwerk › {}\n", message.content));
@@ -1980,6 +2047,7 @@ pub async fn show(
     let _restore = Restore;
     crossterm::execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let mut keys = input().await;
+    let mut buffered_key = None;
     let mut tick = tokio::time::interval(Duration::from_millis(16));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
@@ -1988,6 +2056,16 @@ pub async fn show(
     let mut exit = Exit::Quit;
     loop {
         tokio::select! {
+            result = async { match &mut view.clipboard { Some(task) => task.await, None => std::future::pending().await } } => {
+                view.clipboard = None;
+                match result {
+                    Ok(Ok(text_input::Clipboard::Text(text))) => view.paste_into_draft(&text),
+                    Ok(Ok(text_input::Clipboard::Image(image))) => view.paste_image(image),
+                    Ok(Err(error)) => view.error = format!("Cannot paste: {error}. Text also works with terminal paste (Ctrl-Shift-V)."),
+                    Err(error) => view.error = format!("Clipboard task failed: {error}"),
+                }
+                dirty = true;
+            },
             _ = agents_tick.tick() => {
                 if let Some(run) = &active {
                     let previous = (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
@@ -2012,12 +2090,12 @@ pub async fn show(
                 Some(Err(error)) => return Err(error),
                 None => break,
             },
-            key = keys.next() => {
+            key = async { if let Some(key) = buffered_key.take() { Some(key) } else { keys.next().await } } => {
                 let Some(key) = key else { break; };
                 dirty = true;
                 let event = key?;
                 if let Event::Paste(text) = &event {
-                    view.paste(text);
+                    if matches!(view.screen, Screen::Conversation) { view.paste(text); }
                     continue;
                 }
                 if let Event::Mouse(mouse) = event {
@@ -2074,7 +2152,7 @@ pub async fn show(
                             }
                         }
                         MouseEventKind::Down(MouseButton::Right) if !view.copy_selection().await => {
-                            view.paste_clipboard().await;
+                            view.paste_clipboard();
                         }
                         _ => {}
                     }
@@ -2088,8 +2166,9 @@ pub async fn show(
                     continue;
                 }
                 if (ctrl && matches!(key.code, KeyCode::Char('v' | 'V')))
+                    || (key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Char('v' | 'V')))
                     || (key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Insert) {
-                    if key.kind != KeyEventKind::Repeat { view.paste_clipboard().await; }
+                    if key.kind != KeyEventKind::Repeat { view.paste_clipboard(); }
                     continue;
                 }
                 // Reveal live requests before allowing keys to act on a frame
@@ -2109,6 +2188,9 @@ pub async fn show(
                         crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
                     }
                     continue;
+                }
+                if key.code == KeyCode::Enter && view.clipboard.is_some() {
+                    view.error = "Clipboard is still loading; wait before sending.".into(); continue;
                 }
                 if ctrl && key.code == KeyCode::Char('q') { break; }
                 if ctrl && key.code == KeyCode::Char('c') {
@@ -2219,6 +2301,30 @@ pub async fn show(
                     }
                     continue;
                 }
+                // Drain already-buffered plain text as a batch. A terminal that
+                // pastes without bracketed paste must not pay the whole event
+                // loop/render overhead for every single byte. Preserve the first
+                // non-text event so arrows, Enter and shortcuts stay ordered.
+                if let KeyCode::Char(c) = key.code
+                    && !ctrl && !key.modifiers.contains(KeyModifiers::ALT) && !c.is_control() {
+                    let mut text = c.to_string();
+                    while text.len() < 4096 {
+                        match keys.next().now_or_never() {
+                            Some(Some(Ok(Event::Key(next)))) if next.kind != KeyEventKind::Release
+                                && !next.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && matches!(next.code, KeyCode::Char(c) if !c.is_control()) => {
+                                    if let KeyCode::Char(c) = next.code { text.push(c); }
+                                },
+                            Some(Some(other)) => { buffered_key = Some(other); break; },
+                            _ => break,
+                        }
+                    }
+                    let mut end = text.len().min(text_input::INPUT_LIMIT.saturating_sub(view.expanded_input_len()));
+                    while !text.is_char_boundary(end) { end -= 1; }
+                    if end > 0 { view.insert_input(&text[..end]); }
+                    if view.clipboard.is_none() { view.error.clear(); }
+                    continue;
+                }
                 let commands = view.commands();
                 if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) && !commands.is_empty() {
                     match key.code {
@@ -2242,7 +2348,7 @@ pub async fn show(
                 if (key.code == KeyCode::Enter && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT))
                     || (ctrl && key.code == KeyCode::Char('j'))
                 {
-                    if view.expanded_input().len() < text_input::INPUT_LIMIT { view.insert_input("\n"); }
+                    if view.expanded_input_len() < text_input::INPUT_LIMIT { view.insert_input("\n"); }
                     continue;
                 }
                 if key.code == KeyCode::Enter && view.input == "/quit" { break; }
@@ -2263,6 +2369,7 @@ pub async fn show(
                             approve_choice(&mut view, run, choice, session.as_ref()).await?;
                         }
                     } else if ctrl && key.code == KeyCode::Char('u') {
+                        if let Some(task) = view.clipboard.take() { task.abort(); }
                         view.input.clear(); view.edited_input();
                     } else if key.code == KeyCode::Enter && view.input.is_empty() && view.interaction.is_some() {
                         let answer = view.interaction.as_ref().and_then(|q| q.choices.get(view.choice_selected)).cloned();
@@ -2286,7 +2393,7 @@ pub async fn show(
                         KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End => view.move_input(key.code, ctrl),
                         KeyCode::Backspace => view.backspace_input(),
                         KeyCode::Delete => view.delete_input(),
-                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input().len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.insert_input(&c.to_string()); },
+                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input_len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.insert_input(&c.to_string()); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
                             if input.starts_with("/permissions ") {
@@ -2303,7 +2410,7 @@ pub async fn show(
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
                                         view.append(&format!("{}\n", crate::cli_config::COMMAND_HELP));
-                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Shift-Insert: paste · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nDraft: arrows move · Ctrl-Left/Right move by word · Home/End move within line · Delete/Backspace edit\nAlt-Enter or Ctrl-J: newline · Enter: send\nPgUp/PgDn scroll chat · Ctrl-Home/End: oldest/latest (also Home/End with an empty draft)\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
+                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Alt-V / Shift-Insert: paste text or images · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nDraft: arrows move · Ctrl-Left/Right move by word · Home/End move within line · Delete/Backspace edit\nAlt-Enter or Ctrl-J: newline · Enter: send\nPgUp/PgDn scroll chat · Ctrl-Home/End: oldest/latest (also Home/End with an empty draft)\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
                                     },
                                     "/clear" => view.transcript.clear(),
                                     "/agents" => { view.screen = Screen::Agents; view.pane(Pane::AgentDetails).offset = 0; },
@@ -2318,6 +2425,10 @@ pub async fn show(
                             }
                             let display_input = input;
                             let input = view.expanded_input();
+                            let images: Vec<_> = view.pasted_images.iter().map(|(_, image)| image.clone()).collect();
+                            if !images.is_empty() && (view.approval.is_some() || view.interaction.is_some()) {
+                                return Err(WorkerError::new("image_answer", "Images belong to a task message; answer the pending question/approval first. The draft is retained."));
+                            }
                             if input.len() > text_input::INPUT_LIMIT {
                                 return Err(WorkerError::new("input_limit", "Expanded message exceeds 64 KiB. Remove a pasted block before sending."));
                             }
@@ -2336,9 +2447,9 @@ pub async fn show(
                                     return Err(WorkerError::new("resume_required", RESUME_REQUIRED));
                                 }
                                 if let Some(run) = &active && !run.status().await?.status.terminal() {
-                                    run.steer(&input, &id("steer")).await?;
+                                    run.steer_with_images(&input, images, &id("steer")).await?;
                                 } else {
-                                    active = Some(session.submit(&input, &id("tui"), limits.clone(), None).await?);
+                                    active = Some(session.submit_with_images(&input, images, &id("tui"), limits.clone(), None).await?);
                                 }
                             } else { return Err(WorkerError::new("provider_required", "Connect Werk or start ww tui --demo")); }
                             view.append(&format!("\n\nyou › {display_input}\n")); view.input.clear(); view.edited_input(); view.scroll = None;
@@ -2350,6 +2461,9 @@ pub async fn show(
                 view.error = result.err().map(|e| e.to_string()).unwrap_or_default();
             }
         }
+    }
+    if let Some(task) = view.clipboard.take() {
+        task.abort();
     }
     if let Some(run) = active
         && !run.status().await?.status.terminal()

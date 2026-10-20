@@ -1,6 +1,7 @@
 //! werkWorker: explicit, durable, policy-controlled agent execution.
 pub mod agents;
 pub mod api;
+pub mod attachments;
 pub mod context;
 pub mod core;
 pub mod parallel;

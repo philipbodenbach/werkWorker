@@ -82,6 +82,15 @@ into host commands.
 Library-only consumers can set `default-features = false` to omit the optional
 ratatui/crossterm client dependencies. Default installs include both CLI commands.
 
+For image input, construct `attachments::ImageAttachment::from_bytes(&png_or_jpeg)`
+and use `session.submit_with_images`, `session.follow_up_with_images` or
+`run.steer_with_images`. Existing text methods keep their signatures. Images
+are durable in `Message.images`; old session JSON defaults to an empty array.
+Providers receive standard OpenAI text/image content parts. Explicit
+`Support::Unsupported` rejects an image before accepting the command; `Unknown`
+lets the server validate model support. No model capability is inferred from
+successfully importing a clipboard image.
+
 Configure `parallel::ExecutionConfig` on the builder before `build`. Provider
 implementations can report `providers::InferenceConcurrency` through the defaulted
 `ModelProvider::concurrency()` method. Unknown capacity serializes inference.

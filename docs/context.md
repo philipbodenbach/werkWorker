@@ -141,3 +141,10 @@ each new TUI run; existing recovered runs retain their original persisted limits
 Project instructions are immutable profile constraints in the request, counted
 by the existing estimator and retained during compaction. See [setup](setup.md)
 and [project rules](project-configuration.md) for configuration and size bounds.
+
+For image attachments, a native multimodal count is used when available. An
+unsupported image count does not disable the native counter for text requests.
+Otherwise normalized images reserve 8,192 input tokens each; encoded base64 is
+not counted as text. This is a conservative image estimate, not a model-specific
+measurement. Server context admission remains authoritative. The regular body
+size, context and run limits still apply to messages containing images.

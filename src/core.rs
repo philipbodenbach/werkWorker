@@ -93,6 +93,8 @@ pub struct Message {
     pub role: Role,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachments::ImageAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -102,6 +104,7 @@ impl Message {
         Self {
             role,
             content: content.into(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         }
@@ -110,6 +113,7 @@ impl Message {
         Self {
             role: Role::Tool,
             content: serde_json::to_string(result).expect("tool result"),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: Some(call_id.into()),
         }
@@ -365,6 +369,8 @@ pub struct Run {
     pub id: String,
     pub status: RunStatus,
     pub input: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_images: Vec<crate::attachments::ImageAttachment>,
     pub limits: Limits,
     pub output_schema: Option<Value>,
     pub started_at_ms: u64,
@@ -377,6 +383,8 @@ pub struct Run {
     pub contexts: Vec<ContextSnapshot>,
     pub invocations: Vec<ToolInvocation>,
     pub steering: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering_messages: Vec<Message>,
     pub plan: Value,
     pub similar_grants: Vec<String>,
     pub repaired_output: bool,

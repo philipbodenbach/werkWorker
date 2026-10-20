@@ -69,7 +69,7 @@ sent; deleting a block removes its complete pasted text. Oversized pastes are
 rejected with a visible notice. Multiline drafts expand and keep the editing
 cursor visible; the mouse wheel can also scroll the input.
 
-Direct clipboard access uses PowerShell on Windows/WSL, `pbcopy`/`pbpaste` on
+Direct clipboard access uses PowerShell on Windows/WSL, `osascript` (AppKit), `pbcopy`/`pbpaste` on
 macOS, or `wl-copy`/`wl-paste` and `xclip`/`xsel` on Linux. If these helpers are
 unavailable, copying falls back to the terminal's OSC 52 support; for pasting,
 use the terminal's paste shortcut. F6 releases mouse capture so native terminal
@@ -214,3 +214,34 @@ cancel descendants and wait for cleanup. See [subagents](subagents.md).
 
 Context planning also reports its conservative token estimate and compaction
 notices. These are estimates, not server usage; see [context handling](context.md).
+
+Clipboard images can be attached with Ctrl-V, Alt-V, Shift-Insert or right-click.
+Alt-V is useful when the terminal consumes Ctrl-V itself. Terminal bracketed
+paste (usually Ctrl-Shift-V) transports text; it does not carry clipboard bitmap
+data. Native import reads PNG/JPEG on Wayland/X11, Windows/WSL and macOS, shows
+an `[Image #…]` draft block, and removes the whole attachment with Backspace or
+Delete. Images travel as standard OpenAI `image_url` content parts and survive
+session storage/recovery. Text-only messages keep their existing string format.
+
+Import runs in the background; typing and navigation stay responsive while a
+clipboard helper starts. Enter waits for an outstanding paste, and Ctrl-U
+cancels it and clears the draft. Clipboard decoding is bounded (16 MiB source,
+128 MiB decoder allocation); images are normalized to JPEG, at most 1024 pixels
+on the longest side and 128 KiB each, with at most four per message. This can
+reduce fine detail in large screenshots. No clipboard image is uploaded until
+the user submits the message.
+
+Setup exposes **Image input**: Disabled, Auto (server validation), or Enabled
+for a known vision model. Import itself does not turn a text-only model into a
+vision model. An explicitly disabled connection keeps the image draft and
+reports the missing capability when sending. Pending tool approvals and
+questions accept text answers; image drafts are retained instead of being
+silently discarded.
+
+The regression runner `scripts/tests/clipboard_tui_smoke.py <ww-binary>` checks
+32 KiB unbracketed input, continued typing during a delayed clipboard operation,
+PNG import/removal, and the actual persisted image+text message.
+
+The Unix terminal reader uses level-triggered polling on a dedicated thread.
+A bounded event queue and batched text editing keep unbracketed paste responsive
+as well; terminal input never waits for clipboard helper processes.

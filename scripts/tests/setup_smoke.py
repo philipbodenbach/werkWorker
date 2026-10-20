@@ -143,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         wait_for('Model and agent settings')
         wait_for('fixture-model')
         # Model(0), context(1), output(2), profile(3), access(4), tools(5), stream(6).
-        send('\t32768' + '\t' * 5 + '\x1b[C' + '\t' * 2 + '\r')
+        send('\t32768' + '\t' * 5 + '\x1b[C' + '\t' * 3 + '\r')
         wait_for('Ready')
         config = root / 'config/werkworker/config.json'
         settings = json.loads(config.read_text())
@@ -185,7 +185,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\t\x1b[C\t\x15WW_SETUP_FIXTURE_KEY\t\r')
         wait_for('Model and agent settings')
         wait_for('32768')
-        send('\t' * 8 + '\r')
+        send('\t' * 9 + '\r')
         wait_for('Ready')
         settings = json.loads(config.read_text())
         assert settings['secret_env'] == 'WW_SETUP_FIXTURE_KEY'
@@ -212,7 +212,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         wait_for('Model and agent settings')
         wait_for('2048')
         # Change output, keep default read-only policy, save only project settings.
-        send('\t' * 2 + '\x154096' + '\t' * 6 + '\r')
+        send('\t' * 2 + '\x154096' + '\t' * 7 + '\r')
         wait_for('Ready')
         assert config.read_bytes() == global_before
         project_settings = json.loads(project_file.read_text())
@@ -251,7 +251,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\t' * 3 + '\r')
         wait_for('Model and agent settings')
         wait_for('fixture-model')
-        send('\t' * 8 + '\r')
+        send('\t' * 9 + '\r')
         wait_for('Ready')
         send('\x11')
         assert exited() == 0

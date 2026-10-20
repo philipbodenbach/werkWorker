@@ -704,8 +704,15 @@ impl SessionHandle {
         limits: Limits,
         output_schema: Option<Value>,
     ) -> Result<RunHandle> {
-        self.enqueue(input.into(), command_id, limits, output_schema, false)
-            .await
+        self.enqueue(
+            input.into(),
+            vec![],
+            command_id,
+            limits,
+            output_schema,
+            false,
+        )
+        .await
     }
     pub async fn follow_up(
         &self,
@@ -713,12 +720,62 @@ impl SessionHandle {
         command_id: &str,
         limits: Limits,
     ) -> Result<RunHandle> {
-        self.enqueue(input.into(), command_id, limits, None, true)
+        self.enqueue(input.into(), vec![], command_id, limits, None, true)
             .await
+    }
+    pub async fn submit_with_images(
+        &self,
+        input: impl Into<String>,
+        images: Vec<crate::attachments::ImageAttachment>,
+        command_id: &str,
+        limits: Limits,
+        output_schema: Option<Value>,
+    ) -> Result<RunHandle> {
+        self.enqueue(
+            input.into(),
+            images,
+            command_id,
+            limits,
+            output_schema,
+            false,
+        )
+        .await
+    }
+    pub async fn follow_up_with_images(
+        &self,
+        input: impl Into<String>,
+        images: Vec<crate::attachments::ImageAttachment>,
+        command_id: &str,
+        limits: Limits,
+    ) -> Result<RunHandle> {
+        self.enqueue(input.into(), images, command_id, limits, None, true)
+            .await
+    }
+    fn validate_images(&self, images: &[crate::attachments::ImageAttachment]) -> Result<()> {
+        if images.len() > crate::attachments::MAX_IMAGES {
+            return Err(WorkerError::new(
+                "image_limit",
+                "At most four images per message",
+            ));
+        }
+        if !images.is_empty()
+            && self.engine.inner.provider.capabilities().images
+                == crate::providers::Support::Unsupported
+        {
+            return Err(WorkerError::new(
+                "images_unsupported",
+                "This connection declares image input unsupported. Select a vision-capable model/connection; the image draft is retained.",
+            ));
+        }
+        for image in images {
+            image.validate()?;
+        }
+        Ok(())
     }
     async fn enqueue(
         &self,
         input: String,
+        images: Vec<crate::attachments::ImageAttachment>,
         command_id: &str,
         limits: Limits,
         output_schema: Option<Value>,
@@ -726,7 +783,8 @@ impl SessionHandle {
     ) -> Result<RunHandle> {
         self.engine.ensure_open()?;
         limits.validate()?;
-        if input.trim().is_empty() || input.len() > 65_536 {
+        self.validate_images(&images)?;
+        if (input.trim().is_empty() && images.is_empty()) || input.len() > 65_536 {
             return Err(WorkerError::new(
                 "input_limit",
                 "Input must contain 1..65536 bytes",
@@ -737,7 +795,10 @@ impl SessionHandle {
         }
         let _admission = self.engine.inner.admission.lock().await;
         let data = self.snapshot().await?;
-        let payload = json!({"method":if queue{"follow_up"}else{"submit"},"input":input,"limits":limits,"schema":output_schema});
+        let mut payload = json!({"method":if queue{"follow_up"}else{"submit"},"input":input,"limits":limits,"schema":output_schema});
+        if !images.is_empty() {
+            payload["images"] = json!(images);
+        }
         if let Some(previous) = data.commands.get(command_id) {
             if previous.payload_hash != fingerprint(&payload) {
                 return Err(WorkerError::new(
@@ -798,6 +859,7 @@ impl SessionHandle {
                     id: run_id.clone(),
                     status: RunStatus::Queued,
                     input,
+                    input_images: images,
                     limits,
                     output_schema,
                     started_at_ms: 0,
@@ -810,6 +872,7 @@ impl SessionHandle {
                     contexts: vec![],
                     invocations: vec![],
                     steering: vec![],
+                    steering_messages: vec![],
                     plan: Value::Null,
                     similar_grants: vec![],
                     repaired_output: false,
@@ -1029,7 +1092,9 @@ impl SessionHandle {
             if first {
                 let start = d.messages.len();
                 let input = d.run(run_id)?.input.clone();
-                d.messages.push(Message::text(Role::User, input));
+                let mut message = Message::text(Role::User, input);
+                message.images = d.run(run_id)?.input_images.clone();
+                d.messages.push(message);
                 let run = d.run_mut(run_id)?;
                 run.history_start = start;
                 run.started_at_ms = now_ms();
@@ -1064,6 +1129,7 @@ impl SessionHandle {
             }
             if let Some(text) = &saved.final_text
                 && saved.steering.is_empty()
+                && saved.steering_messages.is_empty()
                 && saved.invocations.iter().all(|i| i.result.is_some())
                 && saved.output_schema.as_ref().is_none_or(|schema| {
                     serde_json::from_str::<Value>(text)
@@ -1091,6 +1157,8 @@ impl SessionHandle {
                 for input in steering {
                     d.messages.push(Message::text(Role::User, input));
                 }
+                let messages = std::mem::take(&mut d.run_mut(run_id)?.steering_messages);
+                d.messages.extend(messages);
                 Ok(())
             })
             .await?;
@@ -1346,7 +1414,7 @@ impl SessionHandle {
                 if self.deliver_children(run_id, shutdown).await? {
                     continue;
                 }
-                if !run.steering.is_empty() {
+                if !run.steering.is_empty() || !run.steering_messages.is_empty() {
                     self.update(|d| {
                         d.run_mut(run_id)?.final_text = None;
                         Ok(())
@@ -2385,17 +2453,26 @@ impl RunHandle {
         input: impl Into<String>,
         command_id: &str,
     ) -> Result<CommandReceipt> {
+        self.steer_with_images(input, vec![], command_id).await
+    }
+    pub async fn steer_with_images(
+        &self,
+        input: impl Into<String>,
+        images: Vec<crate::attachments::ImageAttachment>,
+        command_id: &str,
+    ) -> Result<CommandReceipt> {
         let input = input.into();
+        self.session.validate_images(&images)?;
         if input.len() > 65_536 {
             return Err(WorkerError::new("input_limit", "Steering input too large"));
         }
         self.session
             .update(|d| {
-                let receipt = d.command(
-                    command_id,
-                    &json!({"method":"steer","run":self.id,"input":input}),
-                    Some(&self.id),
-                )?;
+                let mut payload = json!({"method":"steer","run":self.id,"input":input});
+                if !images.is_empty() {
+                    payload["images"] = json!(images);
+                }
+                let receipt = d.command(command_id, &payload, Some(&self.id))?;
                 if matches!(receipt.status, ReceiptStatus::Duplicate) {
                     return Ok(receipt);
                 }
@@ -2406,10 +2483,12 @@ impl RunHandle {
                         "Run has reached its final response boundary",
                     ));
                 }
-                if r.steering.len() >= 16 {
+                if r.steering.len() + r.steering_messages.len() >= 16 {
                     return Err(WorkerError::new("queue_limit", "Steering queue is full"));
                 }
-                r.steering.push(input);
+                let mut message = Message::text(Role::User, input);
+                message.images = images;
+                r.steering_messages.push(message);
                 Ok(receipt)
             })
             .await

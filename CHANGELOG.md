@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Compact chat layout by default, with inline magenta question/approval cards,
+  keyboard-selectable answers, freeform replies and a persisted F4 `/view` menu
+  switching between Compact and the existing Cockpit layout.
+- Addressed approval/question cards, F2 permission inspection and
+  clearer profile/access setup guidance; F3 opens selectable live subagent details.
+- PTY regression for two child agents, addressed approvals/questions and retained
+  tool results; slash commands remain available while an agent asks a question.
 - Accept omitted empty capability operation lists from Werk during connection
   discovery, fixing the setup's `invalid_json` failure with Werk 1.9.1.
 - Automatically load interactive connection defaults and optional local API keys

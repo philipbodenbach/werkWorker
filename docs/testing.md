@@ -53,6 +53,7 @@ cargo test --test werk --test rpc
 cargo run --example parallel_benchmark > scheduler.json
 cargo build --bins
 python3 scripts/tests/tui_smoke.py target/debug/ww
+python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
 python3 scripts/generate-cli-reference.py target/debug/werk-worker --check
 ```
 

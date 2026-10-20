@@ -91,6 +91,13 @@ as global grants. Each operation still needs approval; native sandbox support
 is still required. An explicit `--grants` file takes precedence over this field.
 Project access requests are displayed but never select a broader policy for you.
 
+For code changes and `cargo test`, choose both **Agent profile: coding-basic**
+and **Workspace access: Read/write + sandbox processes** using Left/Right on each
+field. The profile supplies tools; workspace access grants host permission.
+Choosing only one is insufficient. In chat, F2 or `/permissions` shows both
+settings and how to start a new session with different access. Replying "yes"
+to an agent question cannot change either setting.
+
 ## Existing CLI paths
 
 `ww --werk-config config.json` seeds the dialog with that WerkConfig. Supplying

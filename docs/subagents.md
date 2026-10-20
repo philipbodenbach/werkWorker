@@ -23,7 +23,11 @@ ww --werk-config examples/werk-config.json \
   "Delegate two independent reviews: architecture and documentation. Collect both results."
 ```
 
-Use `/agents` to inspect the tree. The TUI shows effective inference capacity,
+Use `/agents` or F3 to open the live subagent inspector. Up/Down selects a child,
+Page Up/Down scrolls its model text and tool results, and Esc returns to chat or
+the pending request. Completed child results and errors remain inspectable.
+Use `/permissions` or F2 to inspect current tools and host grants.
+The TUI shows effective inference capacity,
 child goals/statuses and pending child approvals/questions. Ctrl-Y/Ctrl-N and
 answers address the displayed child's exact request. Ctrl-C cancels the parent
 and descendants; a second consecutive Ctrl-C exits after cleanup.
@@ -192,4 +196,7 @@ cover simulated concurrency, fallback, ownership, cancellation, nesting, shared
 budgets, revocation and write conflicts. These are harness/HTTP-fixture tests,
 not model quality or GPU throughput measurements. No live Werk inference was
 available in the recorded environment. Native Windows/macOS execution and a
-live child-approval PTY scenario were not established by these Linux results.
+live child-approval PTY scenario were not established by those original Linux results.
+The subsequent `scripts/tests/subagents_tui_smoke.py` regression exercises two
+children, inspector selection, addressed approvals/questions and completed results
+against a local HTTP fixture, without a real model.

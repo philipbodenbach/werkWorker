@@ -38,13 +38,18 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r"\____/ "];
-const COMMANDS: [(&str, &str); 6] = [
+const COMMANDS: [(&str, &str); 8] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
     ("/quit", "Close werkWorker"),
-    ("/agents", "Show subagents and inference capacity"),
+    ("/agents", "Browse subagent progress and tool results"),
+    (
+        "/permissions",
+        "Show active tools, rights and how to change them",
+    ),
     ("/setup", "Configure server, model and credentials"),
+    ("/view", "Choose Compact or Cockpit layout"),
 ];
 pub(crate) fn banner() -> Vec<Line<'static>> {
     let glyphs = [W, E, R, K, W, O, R, K, E, R];
@@ -85,6 +90,59 @@ pub(crate) fn clean(text: &str) -> String {
         .collect()
 }
 #[derive(Default)]
+enum Screen {
+    #[default]
+    Conversation,
+    Agents,
+    Permissions,
+    Appearance,
+}
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LayoutMode {
+    #[default]
+    Compact,
+    Cockpit,
+}
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct UiPreferences {
+    #[serde(default)]
+    layout: LayoutMode,
+}
+fn preferences_path() -> Result<std::path::PathBuf> {
+    Ok(crate::cli_setup::settings_path()?.with_file_name("ui.json"))
+}
+async fn load_layout() -> Result<LayoutMode> {
+    match tokio::fs::read(preferences_path()?).await {
+        Ok(bytes) => Ok(serde_json::from_slice::<UiPreferences>(&bytes)?.layout),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LayoutMode::Compact),
+        Err(error) => Err(error.into()),
+    }
+}
+async fn save_layout(layout: LayoutMode) -> Result<()> {
+    let path = preferences_path()?;
+    let parent = path.parent().expect("configuration parent");
+    tokio::fs::create_dir_all(parent).await?;
+    let temporary = parent.join(format!("{}.tmp", id("ui")));
+    tokio::fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(&UiPreferences { layout })?,
+    )
+    .await?;
+    #[cfg(windows)]
+    if tokio::fs::try_exists(&path).await? {
+        tokio::fs::remove_file(&path).await?;
+    }
+    tokio::fs::rename(temporary, path).await?;
+    Ok(())
+}
+#[derive(Clone, PartialEq, Eq)]
+struct AgentView {
+    run_id: String,
+    label: String,
+    details: String,
+}
+#[derive(Default)]
 struct View {
     transcript: String,
     input: String,
@@ -96,7 +154,6 @@ struct View {
     scroll: u16,
     detail_scroll: u16,
     error: String,
-    configured: bool,
     model_requests: u32,
     tools: u32,
     command_selected: usize,
@@ -106,10 +163,36 @@ struct View {
     capacity: String,
     request_owner: String,
     context_status: String,
+    screen: Screen,
+    agent_views: Vec<AgentView>,
+    agent_selected: usize,
+    agent_scroll: u16,
+    permissions: String,
+    access_summary: String,
+    layout: LayoutMode,
+    layout_selected: usize,
+    choice_selected: usize,
 }
 impl View {
+    fn response_options(&self) -> Vec<String> {
+        if self.approval.is_some() {
+            vec!["Allow once".into(), "Deny".into()]
+        } else if let Some(question) = &self.interaction {
+            let mut options = question.choices.clone();
+            if !options.is_empty() {
+                options.push("Write my own answer".into());
+            }
+            options
+        } else {
+            vec![]
+        }
+    }
+    fn open_appearance(&mut self) {
+        self.layout_selected = usize::from(self.layout == LayoutMode::Cockpit);
+        self.screen = Screen::Appearance;
+    }
     fn commands(&self) -> Vec<(&'static str, &'static str)> {
-        if self.interaction.is_some() || self.commands_dismissed || !self.input.starts_with('/') {
+        if self.commands_dismissed || !self.input.starts_with('/') {
             return Vec::new();
         }
         COMMANDS
@@ -184,6 +267,129 @@ impl View {
         }
     }
 }
+
+fn permission_details(data: &SessionData) -> (String, String) {
+    let summary = format!(
+        "Profile: {}\nWorkspace writes: {}\nProcess tool: {}",
+        data.profile.name,
+        if data.policy.workspace_writable {
+            "enabled (within grants)"
+        } else {
+            "disabled"
+        },
+        if data.profile.tools.iter().any(|t| t == "process.run") {
+            if data.policy.grants.iter().any(|g| g.tool == "process.run") {
+                "granted; see /permissions"
+            } else {
+                "not granted"
+            }
+        } else {
+            "not in profile"
+        },
+    );
+    let grants = data
+        .policy
+        .grants
+        .iter()
+        .map(|g| {
+            format!(
+                "{} · {} · {}{}{}",
+                g.tool,
+                g.resource,
+                if g.preapproved || data.policy.mode == policy::ApprovalMode::FullAccess {
+                    "preapproved"
+                } else {
+                    "ask each time"
+                },
+                if g.arguments_hash.is_some() {
+                    " · exact arguments only"
+                } else {
+                    ""
+                },
+                g.expires_at_ms
+                    .map(|t| format!(" · expires at {t} ms"))
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let details = format!(
+        "{summary}\nWorkspace: {}\n\nAvailable profile tools:\n{}\n\nHost grants:\n{}\n\nHard-denied tools: {}\n\nChange access:\n1. /cancel the current run (including subagents), if running.\n2. /setup opens a new session.\n3. For editing and cargo test: choose coding-basic and\n   Workspace access: Read/write + sandbox processes.\n4. Submit the task again.\n\nAn answer to an agent question does not grant permissions.\nCtrl-Y approves only the displayed prepared action within existing grants.\nSubagents inherit these limits; they cannot add tools or rights.",
+        data.workspace.display(),
+        data.profile.tools.join(", "),
+        if grants.is_empty() { "None" } else { &grants },
+        if data.policy.hard_denied_tools.is_empty() {
+            "None".into()
+        } else {
+            data.policy.hard_denied_tools.join(", ")
+        },
+    );
+    (summary, details)
+}
+
+fn agent_details(run: &Run, goal: &str) -> String {
+    let mut view = View::default();
+    view.append(&format!(
+        "Goal: {goal}\nRun: {}\nStatus: {:?}\n\n",
+        run.id, run.status
+    ));
+    if let Some(text) = &run.final_text {
+        view.append(&format!("Final response:\n{text}\n\n"));
+    }
+    if let Some(error) = &run.error {
+        view.append(&format!(
+            "Run failed: {} · {}\n\n",
+            error.code, error.message
+        ));
+    }
+    for attempt in &run.attempts {
+        view.append(&format!("werk > {}\n", attempt.partial_text));
+        if let Some(error) = &attempt.error {
+            view.append(&format!("Attempt error: {}\n", error.code));
+        }
+        for invocation in run
+            .invocations
+            .iter()
+            .filter(|i| i.step_id == attempt.step_id)
+        {
+            view.append(&format!(
+                "\nTool: {}\n{}\n",
+                invocation.call.name,
+                serde_json::to_string_pretty(&invocation.call.arguments).unwrap_or_default()
+            ));
+            if let Some(request) = &invocation.approval {
+                view.append(&format!(
+                    "Approval: {}\n",
+                    match request.decision {
+                        None => "waiting (Esc to review)",
+                        Some(ApprovalDecision::Deny) => "denied",
+                        _ => "allowed",
+                    }
+                ));
+            }
+            if let Some(request) = &invocation.interaction {
+                view.append(&format!(
+                    "Question: {}\nAnswer: {}\n",
+                    request.question,
+                    request
+                        .answer
+                        .as_deref()
+                        .unwrap_or("waiting (Esc to answer)")
+                ));
+            }
+            if let Some(result) = &invocation.result {
+                view.append(&format!(
+                    "Result: {:?} {}\n{}\n",
+                    result.status,
+                    result.error_code.as_deref().unwrap_or(""),
+                    serde_json::to_string_pretty(&result.data).unwrap_or_default()
+                ));
+            }
+        }
+    }
+    view.transcript
+}
+
 pub(crate) fn panel(title: &str, color: Color) -> Block<'_> {
     Block::default()
         .title(title)
@@ -192,109 +398,333 @@ pub(crate) fn panel(title: &str, color: Color) -> Block<'_> {
         .border_style(Style::default().fg(color))
         .style(Style::default().bg(PANEL).fg(TEXT))
 }
+fn wrapped_lines(text: &str, width: u16) -> usize {
+    let width = usize::from(width.max(1));
+    text.lines()
+        .map(|line| line.chars().count().max(1).div_ceil(width))
+        .sum()
+}
+
+fn draw_request(frame: &mut Frame, view: &View, area: Rect) {
+    let (title, body) = if let Some(request) = &view.approval {
+        (
+            " Approval ",
+            format!(
+                "Agent: {}\nTool: {}\n{}\n\nAllows only this prepared action; existing permissions still apply.",
+                view.request_owner,
+                request.description["tool"].as_str().unwrap_or("unknown"),
+                serde_json::to_string_pretty(&request.description).unwrap_or_default()
+            ),
+        )
+    } else if let Some(request) = &view.interaction {
+        (
+            " Question ",
+            format!("Agent: {}\n\n{}", view.request_owner, request.question),
+        )
+    } else {
+        return;
+    };
+    let block = panel(title, BRAND[4]);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let options = view.response_options();
+    let option_height = (options.len().min(4) as u16).min(inner.height.saturating_sub(2));
+    let rows = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(option_height),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(clean(&body))
+            .wrap(Wrap { trim: false })
+            .scroll((view.detail_scroll, 0)),
+        rows[0],
+    );
+    let selected = view.choice_selected.min(options.len().saturating_sub(1));
+    let first = (selected + 1).saturating_sub(option_height as usize);
+    let choices: Vec<Line<'_>> = options
+        .iter()
+        .enumerate()
+        .skip(first)
+        .map(|(i, option)| {
+            Line::styled(
+                format!(
+                    "{} {}",
+                    if i == selected && view.input.is_empty() {
+                        "›"
+                    } else {
+                        " "
+                    },
+                    clean(option)
+                ),
+                if i == selected && view.input.is_empty() {
+                    Style::default().fg(BG).bg(BRAND[4]).bold()
+                } else {
+                    Style::default().fg(TEXT)
+                },
+            )
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(choices), rows[1]);
+    let hint = if view.approval.is_some() {
+        "↑↓ choose · Enter confirm · Ctrl-Y allow / Ctrl-N deny · Alt-↑↓ details"
+    } else if options.is_empty() {
+        "Type your answer below · Enter send · Alt-↑↓ details"
+    } else {
+        "↑↓ choose · Enter send · or type your own answer · Alt-↑↓ details"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(BRAND[4])),
+        rows[2],
+    );
+}
+
+fn draw_chat(frame: &mut Frame, view: &View, area: Rect) {
+    let pending = view.approval.is_some() || view.interaction.is_some();
+    let (chat, request) = if pending {
+        let body = view
+            .interaction
+            .as_ref()
+            .map(|q| q.question.as_str())
+            .unwrap_or("");
+        let desired = if view.approval.is_some() {
+            14
+        } else {
+            wrapped_lines(body, area.width.saturating_sub(2))
+                + view.response_options().len().min(4)
+                + 7
+        };
+        let height = (desired.min(u16::MAX as usize) as u16).min(area.height.saturating_mul(2) / 3);
+        let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).split(area);
+        (rows[0], Some(rows[1]))
+    } else {
+        (area, None)
+    };
+    let height = usize::from(chat.height.saturating_sub(2));
+    let offset = wrapped_lines(&view.transcript, chat.width.saturating_sub(2))
+        .saturating_sub(height)
+        .min(u16::MAX as usize) as u16;
+    frame.render_widget(
+        Paragraph::new(view.transcript.as_str())
+            .wrap(Wrap { trim: false })
+            .scroll((offset.saturating_sub(view.scroll), 0))
+            .block(panel(
+                " Conversation ",
+                if view.layout == LayoutMode::Compact {
+                    MUTED
+                } else {
+                    BRAND[0]
+                },
+            )),
+        chat,
+    );
+    if let Some(area) = request {
+        draw_request(frame, view, area);
+    }
+}
+
+fn draw_agents(frame: &mut Frame, view: &View, area: Rect) {
+    let split = if view.layout == LayoutMode::Cockpit {
+        Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area)
+    } else {
+        Layout::vertical([
+            Constraint::Length(
+                (view.agent_views.len().clamp(1, 5) as u16 + 2).min(area.height / 3),
+            ),
+            Constraint::Min(1),
+        ])
+        .split(area)
+    };
+    let items = if view.agent_views.is_empty() {
+        vec![Line::from("No subagents in this run yet.")]
+    } else {
+        view.agent_views
+            .iter()
+            .enumerate()
+            .map(|(i, agent)| {
+                Line::styled(
+                    format!(
+                        "{} {}",
+                        if i == view.agent_selected { ">" } else { " " },
+                        agent.label
+                    ),
+                    if i == view.agent_selected {
+                        Style::default().fg(BG).bg(BRAND[4])
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
+                )
+            })
+            .collect()
+    };
+    let list_scroll =
+        (view.agent_selected + 1).saturating_sub(split[0].height.saturating_sub(2) as usize);
+    frame.render_widget(
+        Paragraph::new(items)
+            .scroll((list_scroll.min(u16::MAX as usize) as u16, 0))
+            .block(panel(" Subagents · Up/Down select ", BRAND[4])),
+        split[0],
+    );
+    let details = view
+        .agent_views
+        .get(view.agent_selected)
+        .map(|a| a.details.as_str())
+        .unwrap_or(
+            "Subagent progress and tool results appear here.\nEsc returns to the conversation.",
+        );
+    frame.render_widget(
+        Paragraph::new(details)
+            .wrap(Wrap { trim: false })
+            .scroll((view.agent_scroll, 0))
+            .block(panel(
+                " Agent details · PgUp/PgDn scroll · Esc close ",
+                BRAND[3],
+            )),
+        split[1],
+    );
+}
+
 fn draw(frame: &mut Frame, view: &View) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(BG).fg(TEXT)),
         area,
     );
-    let wide_banner = area.width >= 94 && area.height >= 24;
+    let wide_banner = view.layout == LayoutMode::Cockpit && area.width >= 94 && area.height >= 24;
     let rows = Layout::vertical([
         Constraint::Length(if wide_banner { 8 } else { 2 }),
-        Constraint::Min(4),
-        Constraint::Length(4),
+        Constraint::Min(1),
+        Constraint::Length(3),
         Constraint::Length(2),
     ])
     .split(area);
-    let logo = Line::from(vec![
-        Span::styled(" w", Style::default().fg(BRAND[0]).bold()),
-        Span::styled("e", Style::default().fg(BRAND[1]).bold()),
-        Span::styled("r", Style::default().fg(BRAND[2]).bold()),
-        Span::styled("k", Style::default().fg(BRAND[3]).bold()),
-        Span::styled("Worker", Style::default().fg(BRAND[4]).bold()),
-        Span::styled(
-            format!("   AGENT  ·  {}", view.status),
-            Style::default().fg(MUTED),
-        ),
-    ]);
     if wide_banner {
         frame.render_widget(Paragraph::new(banner()), rows[0]);
     } else {
-        frame.render_widget(Paragraph::new(logo), rows[0]);
-    }
-    let columns =
-        Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)]).split(rows[1]);
-    let width = usize::from(columns[0].width.saturating_sub(2).max(1));
-    let height = usize::from(columns[0].height.saturating_sub(2));
-    let lines: usize = view
-        .transcript
-        .lines()
-        .map(|line| line.chars().count().max(1).div_ceil(width))
-        .sum();
-    let offset = lines.saturating_sub(height).min(u16::MAX as usize) as u16;
-    frame.render_widget(
-        Paragraph::new(view.transcript.as_str())
-            .wrap(Wrap { trim: false })
-            .scroll((offset.saturating_sub(view.scroll), 0))
-            .block(panel(" Conversation ", BRAND[0])),
-        columns[0],
-    );
-    let (title, details) = if let Some(request) = &view.approval {
-        (
-            " Approval · Ctrl-Y allow / Ctrl-N deny ",
-            format!(
-                "{}\n{}",
-                view.request_owner,
-                serde_json::to_string_pretty(&request.description).unwrap_or_default()
-            ),
-        )
-    } else if let Some(request) = &view.interaction {
-        (
-            " Question · answer below ",
-            format!(
-                "{}\n{}\n\n{}",
-                view.request_owner,
-                request.question,
-                request.choices.join("\n")
-            ),
-        )
-    } else {
-        (
-            " Session ",
-            format!(
-                "Status: {}\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nEnter: send / steer\n/: commands\nCtrl-C: cancel; twice: quit\nCtrl-Q: close session\nPgUp/PgDn: scroll\nAlt-Up/Down: details\n\n{}",
-                view.status,
-                view.session_id,
-                format_args!(
-                    "{}\n\n{}\n{}\n{}",
-                    view.run_id, view.capacity, view.context_status, view.agents
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    format!(
+                        " werkWorker · {} · {}",
+                        if view.layout == LayoutMode::Compact {
+                            "Compact"
+                        } else {
+                            "Cockpit"
+                        },
+                        view.status
+                    ),
+                    Style::default().fg(BRAND[0]).bold(),
                 ),
-                view.model_requests,
-                view.tools,
-                if view.configured {
-                    "Resource grants and approvals are enforced by the engine."
-                } else {
-                    "Connect a model:\nww --werk-config config.json\n\nTry the offline UI:\nww tui --demo\n\nNo provider is connected."
-                }
-            ),
-        )
-    };
-    frame.render_widget(
-        Paragraph::new(clean(&details))
-            .wrap(Wrap { trim: false })
-            .scroll((view.detail_scroll, 0))
-            .block(panel(
-                title,
-                if view.approval.is_some() {
-                    BRAND[4]
-                } else {
-                    BRAND[3]
-                },
-            )),
-        columns[1],
-    );
-    let input_title = if view.interaction.is_some() {
-        " Your answer "
+                Line::styled(
+                    clean(&format!(
+                        " {} · {} subagents · {} model requests · {} tool calls",
+                        view.capacity.lines().next().unwrap_or("Not connected"),
+                        view.agent_views.len(),
+                        view.model_requests,
+                        view.tools
+                    )),
+                    Style::default().fg(MUTED),
+                ),
+            ]),
+            rows[0],
+        );
+    }
+    match view.screen {
+        Screen::Conversation => {
+            if view.layout == LayoutMode::Cockpit {
+                let columns =
+                    Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
+                        .split(rows[1]);
+                draw_chat(frame, view, columns[0]);
+                let details = format!(
+                    "Status: {}\n{}\n{}\n\n{}\n{}\n\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nF2 permissions · F3 agents\nF4 view menu",
+                    view.status,
+                    view.session_id,
+                    view.run_id,
+                    view.capacity,
+                    view.context_status,
+                    view.agents,
+                    view.access_summary,
+                    view.model_requests,
+                    view.tools
+                );
+                frame.render_widget(
+                    Paragraph::new(clean(&details))
+                        .wrap(Wrap { trim: false })
+                        .block(panel(" Session ", BRAND[3])),
+                    columns[1],
+                );
+            } else {
+                draw_chat(frame, view, rows[1]);
+            }
+        }
+        Screen::Agents => draw_agents(frame, view, rows[1]),
+        Screen::Permissions => {
+            frame.render_widget(
+                Paragraph::new(clean(&view.permissions))
+                    .wrap(Wrap { trim: false })
+                    .scroll((view.detail_scroll, 0))
+                    .block(panel(
+                        " Permissions · PgUp/PgDn scroll · Esc close ",
+                        BRAND[3],
+                    )),
+                rows[1],
+            );
+        }
+        Screen::Appearance => {
+            let labels = [
+                "Compact — one chat column, inline questions and answers",
+                "Cockpit — conversation with a session sidebar",
+            ];
+            let mut lines = vec![Line::from("Choose your layout"), Line::from("")];
+            for (i, label) in labels.iter().enumerate() {
+                lines.push(Line::styled(
+                    format!(
+                        "{} {label}",
+                        if i == view.layout_selected {
+                            "›"
+                        } else {
+                            " "
+                        }
+                    ),
+                    if i == view.layout_selected {
+                        Style::default().fg(BG).bg(BRAND[4]).bold()
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
+                ));
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(
+                "Up/Down: select · Enter: apply and remember · Esc: cancel",
+            ));
+            lines.push(Line::from(
+                "Your conversation and pending answers stay in place.",
+            ));
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(panel(" View · Compact / Cockpit ", BRAND[4])),
+                rows[1],
+            );
+        }
+    }
+    let pending = view.approval.is_some() || view.interaction.is_some();
+    let input_title = if !matches!(view.screen, Screen::Conversation) {
+        " Inspector · Esc returns to chat / pending request "
+    } else if view.approval.is_some() {
+        " Approval · ↑↓ choose · Enter confirm "
+    } else if view.interaction.is_some() {
+        if view
+            .interaction
+            .as_ref()
+            .is_some_and(|q| q.choices.is_empty() || view.choice_selected == q.choices.len())
+        {
+            " Your answer · type below · Enter send "
+        } else {
+            " Your answer · ↑↓ choose or type · Enter send "
+        }
     } else {
         " Message · Enter to send "
     };
@@ -308,45 +738,50 @@ fn draw(frame: &mut Frame, view: &View) {
         .rev()
         .collect();
     frame.render_widget(
-        Paragraph::new(format!("› {tail}")).block(panel(input_title, BRAND[1])),
+        Paragraph::new(format!("› {tail}")).block(panel(
+            input_title,
+            if pending { BRAND[4] } else { BRAND[1] },
+        )),
         rows[2],
     );
+    let footer = if view.quit_armed {
+        " Press Ctrl-C again to quit. Any other key continues."
+    } else if !view.error.is_empty() {
+        &view.error
+    } else {
+        " F2 permissions · F3 agents · F4 view · / commands · Ctrl-C cancel · Ctrl-Q quit"
+    };
     frame.render_widget(
-        Paragraph::new(clean(if view.quit_armed {
-            " Press Ctrl-C again to quit. Any other key continues."
-        } else if view.error.is_empty() {
-            " / commands   Ctrl-C cancel / twice quit   Ctrl-Q quit   Ctrl-Y allow   Ctrl-N deny"
-        } else {
-            &view.error
-        }))
-        .style(Style::default().fg(if view.error.is_empty() {
+        Paragraph::new(clean(footer)).style(Style::default().fg(if view.error.is_empty() {
             MUTED
         } else {
-            BRAND[4]
+            Color::Rgb(255, 90, 110)
         })),
         rows[3],
     );
-    let commands = view.commands();
+    let commands = if matches!(view.screen, Screen::Conversation) {
+        view.commands()
+    } else {
+        vec![]
+    };
     if !commands.is_empty() {
         let height = (commands.len() as u16 + 2).min(rows[2].y.saturating_sub(area.y));
         if height >= 3 {
-            let popup = Rect::new(area.x, rows[2].y - height, area.width.min(76), height);
+            let popup = Rect::new(area.x, rows[2].y - height, area.width.min(80), height);
             let selected = view.command_selected.min(commands.len() - 1);
-            let visible = usize::from(height - 2);
-            let start = (selected + 1).saturating_sub(visible);
+            let start = (selected + 1).saturating_sub(usize::from(height - 2));
             let items: Vec<Line<'_>> = commands
                 .iter()
                 .enumerate()
                 .skip(start)
-                .take(visible)
                 .map(|(i, (name, description))| {
                     Line::styled(
                         format!(
-                            "{} {name:<9} {description}",
+                            "{} {name:<13} {description}",
                             if i == selected { "›" } else { " " }
                         ),
                         if i == selected {
-                            Style::default().fg(BG).bg(BRAND[0]).bold()
+                            Style::default().fg(BG).bg(BRAND[4]).bold()
                         } else {
                             Style::default().fg(TEXT)
                         },
@@ -357,7 +792,7 @@ fn draw(frame: &mut Frame, view: &View) {
             frame.render_widget(
                 Paragraph::new(items).block(panel(
                     " Commands · ↑↓ select · Tab complete · Enter run · Esc close ",
-                    BRAND[0],
+                    BRAND[4],
                 )),
                 popup,
             );
@@ -370,6 +805,11 @@ fn draw(frame: &mut Frame, view: &View) {
 async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunHandle>> {
     let mut pending = vec![(root.clone(), "Main agent".to_owned(), 0usize)];
     let mut lines = Vec::new();
+    let selected = view
+        .agent_views
+        .get(view.agent_selected)
+        .map(|a| a.run_id.clone());
+    let mut agent_views = Vec::new();
     let mut addressed = None;
     let mut approval = None;
     let mut interaction = None;
@@ -383,6 +823,15 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
                 state.status,
                 clean(&goal).chars().take(80).collect::<String>()
             ));
+            agent_views.push(AgentView {
+                run_id: state.id.clone(),
+                label: clean(&format!(
+                    "{}{:?} · {goal}",
+                    "  ".repeat(depth - 1),
+                    state.status
+                )),
+                details: agent_details(&state, &goal),
+            });
         }
         if addressed.is_none() && !state.status.terminal() {
             for invocation in &state.invocations {
@@ -420,6 +869,14 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
                 ));
             } else {
                 lines.push(format!("Interrupted · {}", child.goal));
+                agent_views.push(AgentView {
+                    run_id: child.session_id.clone(),
+                    label: clean(&format!("Interrupted · {}", child.goal)),
+                    details: clean(&format!(
+                        "{}\nSession: {}\nInterrupted before the run started.",
+                        child.goal, child.session_id
+                    )),
+                });
             }
         }
     }
@@ -428,12 +885,17 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
     } else {
         format!("Subagents:\n{}", lines.join("\n"))
     };
+    view.agent_selected = selected
+        .and_then(|id| agent_views.iter().position(|a| a.run_id == id))
+        .unwrap_or(0);
+    view.agent_views = agent_views;
     let changed = view.approval.as_ref().map(|a| &a.request_id)
         != approval.as_ref().map(|a| &a.request_id)
         || view.interaction.as_ref().map(|q| &q.request_id)
             != interaction.as_ref().map(|q| &q.request_id);
     if changed {
         view.detail_scroll = 0;
+        view.choice_selected = usize::from(approval.is_some());
         if interaction.is_some() {
             view.input.clear();
         }
@@ -442,6 +904,22 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
     view.interaction = interaction;
     view.request_owner = owner;
     Ok(addressed)
+}
+
+async fn answer_question(view: &mut View, run: &RunHandle, answer: &str) -> Result<()> {
+    if let Some(request) = view.interaction.clone() {
+        run.respond_to_interaction(&request.request_id, answer, &id("answer"))
+            .await?;
+        view.append(&format!(
+            "\n\n{} asks > {}\nyou › {answer}\n",
+            view.request_owner, request.question
+        ));
+        view.interaction = None;
+        view.input.clear();
+        view.edited_input();
+        view.scroll = 0;
+    }
+    Ok(())
 }
 
 pub async fn show(
@@ -457,10 +935,18 @@ pub async fn show(
         ));
     }
     let mut view = View {
-        configured: session.is_some(),
         status: "Ready".into(),
         ..Default::default()
     };
+    match load_layout().await {
+        Ok(layout) => view.layout = layout,
+        Err(error) => {
+            view.error = format!(
+                "Cannot read view preferences ({}); using Compact.",
+                error.code
+            )
+        }
+    }
     if let Some(session) = &session {
         let execution = session.execution_status();
         view.capacity = format!(
@@ -472,12 +958,14 @@ pub async fn show(
     let mut active = resume;
     if let Some(session) = &session {
         let data = session.snapshot().await?;
+        (view.access_summary, view.permissions) = permission_details(&data);
         view.session_id = data.id;
         if let Some(run) = &active {
             let state = run.status().await?;
             for invocation in state.invocations {
                 if let Some(request) = invocation.approval.filter(|r| r.decision.is_none()) {
                     view.approval = Some(request);
+                    view.choice_selected = 1;
                 }
                 if let Some(request) = invocation.interaction.filter(|r| r.answer.is_none()) {
                     view.interaction = Some(request);
@@ -512,9 +1000,9 @@ pub async fn show(
         tokio::select! {
             _ = agents_tick.tick() => {
                 if let Some(run) = &active {
-                    let previous = (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()));
+                    let previous = (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
                     addressed = refresh_agents(run, &mut view).await?;
-                    dirty |= previous != (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()));
+                    dirty |= previous != (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
                 }
             },
             _ = tick.tick() => { if dirty { terminal.draw(|frame| draw(frame, &view))?; dirty = false; } },
@@ -528,6 +1016,7 @@ pub async fn show(
                 dirty = true;
                 let Event::Key(key) = key? else { continue; };
                 if key.kind == KeyEventKind::Release { continue; }
+                if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter { continue; }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 if ctrl && key.code == KeyCode::Char('q') { break; }
                 if ctrl && key.code == KeyCode::Char('c') {
@@ -536,6 +1025,39 @@ pub async fn show(
                     view.quit_armed = true;
                 } else {
                     view.quit_armed = false;
+                }
+                if key.code == KeyCode::F(2) {
+                    view.screen = Screen::Permissions; view.detail_scroll = 0; continue;
+                }
+                if key.code == KeyCode::F(3) {
+                    view.screen = Screen::Agents; view.agent_scroll = 0; continue;
+                }
+                if key.code == KeyCode::F(4) { view.open_appearance(); continue; }
+                if !matches!(view.screen, Screen::Conversation) && !(ctrl && key.code == KeyCode::Char('c')) {
+                    match key.code {
+                        KeyCode::Esc => { view.screen = Screen::Conversation; view.detail_scroll = 0; },
+                        KeyCode::Up | KeyCode::Down if matches!(view.screen, Screen::Appearance) => {
+                            view.layout_selected = 1 - view.layout_selected;
+                        },
+                        KeyCode::Enter if matches!(view.screen, Screen::Appearance) => {
+                            let layout = if view.layout_selected == 0 { LayoutMode::Compact } else { LayoutMode::Cockpit };
+                            match save_layout(layout).await {
+                                Ok(()) => { view.layout = layout; view.screen = Screen::Conversation; view.error.clear(); },
+                                Err(error) => view.error = format!("Could not save layout ({}).", error.code),
+                            }
+                        },
+                        KeyCode::Up | KeyCode::Down if matches!(view.screen, Screen::Agents) && !view.agent_views.is_empty() => {
+                            let count = view.agent_views.len();
+                            view.agent_selected = if key.code == KeyCode::Up { (view.agent_selected + count - 1) % count } else { (view.agent_selected + 1) % count };
+                            view.agent_scroll = 0;
+                        },
+                        KeyCode::PageUp | KeyCode::PageDown => {
+                            let scroll = if matches!(view.screen, Screen::Agents) { &mut view.agent_scroll } else { &mut view.detail_scroll };
+                            *scroll = if key.code == KeyCode::PageUp { scroll.saturating_sub(10) } else { scroll.saturating_add(10) };
+                        },
+                        _ => {}
+                    }
+                    continue;
                 }
                 let commands = view.commands();
                 if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) && !commands.is_empty() {
@@ -548,8 +1070,17 @@ pub async fn show(
                         _ => {}
                     }
                 }
-                if key.code == KeyCode::Enter && view.interaction.is_none() && view.input == "/quit" { break; }
-                if key.code == KeyCode::Enter && view.interaction.is_none() && view.input == "/setup" {
+                if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) && view.input.is_empty()
+                    && matches!(key.code, KeyCode::Up | KeyCode::Down)
+                {
+                    let count = view.response_options().len();
+                    if count > 0 {
+                        view.choice_selected = if key.code == KeyCode::Up { (view.choice_selected + count - 1) % count } else { (view.choice_selected + 1) % count };
+                        continue;
+                    }
+                }
+                if key.code == KeyCode::Enter && view.input == "/quit" { break; }
+                if key.code == KeyCode::Enter && view.input == "/setup" {
                     if let Some(run)=&active && !run.status().await?.status.terminal() {
                         view.error="Cancel or finish the current run before changing the connection.".into();
                         continue;
@@ -559,10 +1090,21 @@ pub async fn show(
                 let result: Result<()> = async {
                     if ctrl && key.code == KeyCode::Char('c') {
                         if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI Ctrl-C", &id("cancel")).await?; }
-                    } else if ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('n')) {
+                    } else if (ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('n')))
+                        || (key.code == KeyCode::Enter && view.input.is_empty() && view.approval.is_some()) {
                         if let (Some(run), Some(request)) = (addressed.as_ref().or(active.as_ref()), &view.approval) {
-                            run.respond_to_approval(&request.request_id, if key.code == KeyCode::Char('y') { ApprovalDecision::AllowOnce } else { ApprovalDecision::Deny }, &id("approval")).await?;
+                            let allow = if ctrl { key.code == KeyCode::Char('y') } else { view.choice_selected == 0 };
+                            run.respond_to_approval(&request.request_id, if allow { ApprovalDecision::AllowOnce } else { ApprovalDecision::Deny }, &id("approval")).await?;
+                            let tool = request.description["tool"].as_str().unwrap_or("action").to_owned();
+                            view.append(&format!("\n\n{} · {tool}: {}\n", view.request_owner, if allow { "Allowed once" } else { "Denied" }));
                             view.approval = None;
+                        }
+                    } else if ctrl && key.code == KeyCode::Char('u') {
+                        view.input.clear(); view.edited_input();
+                    } else if key.code == KeyCode::Enter && view.input.is_empty() && view.interaction.is_some() {
+                        let answer = view.interaction.as_ref().and_then(|q| q.choices.get(view.choice_selected)).cloned();
+                        if let (Some(run), Some(answer)) = (addressed.as_ref().or(active.as_ref()), answer) {
+                            answer_question(&mut view, run, &answer).await?;
                         }
                     } else if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Up | KeyCode::Down) {
                         view.detail_scroll = if key.code == KeyCode::Up { view.detail_scroll.saturating_sub(3) } else { view.detail_scroll.saturating_add(3) };
@@ -573,24 +1115,29 @@ pub async fn show(
                         KeyCode::Char(c) if !ctrl && !c.is_control() && view.input.len() < 16_384 => { view.input.push(c); view.edited_input(); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
-                            if view.interaction.is_none() && input.starts_with('/') {
+                            if COMMANDS.iter().any(|(name, _)| *name == input) || (view.interaction.is_none() && input.starts_with('/')) {
                                 match input.as_str() {
                                     "/help" => {
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
-                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nCtrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · PgUp/PgDn scroll\nAlt-Up/Down scroll details\n");
+                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit\nQuestion: ↑/↓ + Enter, or type an answer\nCtrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · PgUp/PgDn scroll\nAlt-Up/Down scroll request details · Ctrl-U clears input\n");
                                     },
                                     "/clear" => view.transcript.clear(),
-                                    "/agents" => { view.append(&format!("\n\n{}\n{}\n", view.capacity, view.agents)); },
+                                    "/agents" => { view.screen = Screen::Agents; view.agent_scroll = 0; },
+                                    "/permissions" => { view.screen = Screen::Permissions; view.detail_scroll = 0; },
+                                    "/view" => view.open_appearance(),
                                     "/cancel" => { if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI /cancel", &id("cancel")).await?; } },
                                     _ => return Err(WorkerError::new("unknown_command", "Unknown command. Type / for suggestions or /help.")),
                                 }
                                 view.input.clear(); view.edited_input(); view.scroll = 0;
                                 return Ok(());
                             }
-                            if let (Some(run), Some(request)) = (addressed.as_ref().or(active.as_ref()), &view.interaction) {
-                                run.respond_to_interaction(&request.request_id, &input, &id("answer")).await?;
-                                view.interaction = None;
+                            if view.approval.is_some() {
+                                return Err(WorkerError::new("approval_pending", "Use Ctrl-Y to allow this action or Ctrl-N to deny. F2 shows permissions."));
+                            }
+                            if let Some(run) = addressed.as_ref().or(active.as_ref()) && view.interaction.is_some() {
+                                answer_question(&mut view, run, &input).await?;
+                                return Ok(());
                             } else if let Some(session) = &session {
                                 if let Some(run) = &active && !run.status().await?.status.terminal() {
                                     run.steer(&input, &id("steer")).await?;
@@ -626,7 +1173,7 @@ mod tests {
             input: "/".into(),
             ..Default::default()
         };
-        assert_eq!(view.commands().len(), 6);
+        assert_eq!(view.commands().len(), 8);
         view.input = "/ca".into();
         assert_eq!(view.commands()[0].0, "/cancel");
         view.commands_dismissed = true;
@@ -639,11 +1186,12 @@ mod tests {
             choices: vec![],
             answer: None,
         });
-        assert!(view.commands().is_empty());
+        assert_eq!(view.commands()[0].0, "/cancel");
         assert_eq!(view.input, "/ca");
-        view.interaction = None;
         view.input = "/unknown".into();
         assert!(view.commands().is_empty());
+        assert_eq!(view.input, "/unknown");
+        view.interaction = None;
         view.input = "/".into();
         for size in [(100, 30), (20, 8), (1, 1)] {
             let mut terminal =
@@ -655,7 +1203,6 @@ mod tests {
     fn palette_layout_and_untrusted_text_are_safe() {
         let mut view = View {
             status: "Ready".into(),
-            configured: true,
             ..Default::default()
         };
         view.append("hello\x1b]52;c;payload\x07世界");
@@ -681,6 +1228,54 @@ mod tests {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(size.0, size.1)).unwrap();
             terminal.draw(|f| draw(f, &view)).unwrap();
+        }
+    }
+
+    #[test]
+    fn inspectors_and_full_width_requests_render_on_small_terminals() {
+        let mut view = View {
+            agent_views: vec![AgentView {
+                run_id: "child".into(),
+                label: "WaitingForApproval · child".into(),
+                details: "Tool: files.write\nPending approval".into(),
+            }],
+            permissions: "Profile: general-readonly\nWorkspace writes: disabled".into(),
+            interaction: Some(InteractionRequest {
+                request_id: "q".into(),
+                question: "Can I write?".into(),
+                choices: vec!["Yes".into()],
+                answer: None,
+            }),
+            ..Default::default()
+        };
+        for screen in [
+            Screen::Conversation,
+            Screen::Agents,
+            Screen::Permissions,
+            Screen::Appearance,
+        ] {
+            view.screen = screen;
+            for (width, height) in [(130, 36), (40, 12), (1, 1)] {
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                        .unwrap();
+                terminal.draw(|f| draw(f, &view)).unwrap();
+                if width == 130 {
+                    let text = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .map(|c| c.symbol())
+                        .collect::<String>();
+                    assert!(text.contains(match view.screen {
+                        Screen::Conversation => "Can I write?",
+                        Screen::Agents => "Pending approval",
+                        Screen::Permissions => "Workspace writes: disabled",
+                        Screen::Appearance => "Choose your layout",
+                    }));
+                }
+            }
         }
     }
 }

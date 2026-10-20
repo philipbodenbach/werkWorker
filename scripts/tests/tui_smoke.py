@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -26,34 +27,67 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
     script=root/'script.json'; script.write_text(json.dumps([
         turn('files.write',{'path':'approved.txt','content':'approved'},'Prepared write'),
         turn('interaction.ask',{'question':'Which audience?','choices':['team','public']}),
+        turn('interaction.ask',{'question':'Choose visibility','choices':['private','public']}),
         turn(text='Finished for the team'),
         dict(turn(text='slow response'),delay_ms=10_000),
     ]))
     grants=root/'grants.json'; grants.write_text(json.dumps({'mode':'ask','workspace_writable':True,'grants':[{'tool':'files.write','version':'1','resource':'.','arguments_hash':None,'expires_at_ms':None,'preapproved':False}]}))
     master,slave=pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,130,0,0))
     before=termios.tcgetattr(slave)
-    terminal_env=dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor')
+    terminal_env=dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor', XDG_CONFIG_HOME=str(root/'config'))
     terminal_env.pop('NO_COLOR', None)
     proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'state.sqlite'),'--script',str(script),'--grants',str(grants),'tui','initial task','--profile','coding-basic'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
     capture=bytearray(); screen=Screen()
-    def wait_for(token,timeout=15):
+    def wait_for(token,timeout=15,present=True):
         deadline=time.monotonic()+timeout
         while time.monotonic()<deadline:
-            if token in screen.text(): return
+            if (token in screen.text()) == present: return
             if select.select([master],[],[],0.1)[0]:
                 data=os.read(master,65536); capture.extend(data); screen.feed(data)
             if proc.poll() is not None: break
         raise AssertionError((token,screen.text()[-2000:]))
     try:
         wait_for(b'Approval')
-        assert b'werkWorker' in screen.text() and b'__        __' in screen.text()
+        wait_for(b'Compact')
+        wait_for(b'Prepared write')
+        assert b' Session ' not in screen.text()
         if os.environ.get('WERK_WORKER_TUI_CAPTURE'):
             Path(os.environ['WERK_WORKER_TUI_CAPTURE']).write_bytes(screen.text())
         assert not (workspace/'approved.txt').exists()
-        os.write(master,b'\x19')  # Ctrl-Y explicitly approves the prepared write.
+        os.write(master,b'/permissions\r')
+        wait_for(b'Host grants:')
+        wait_for(b'Inspector ')
+        wait_for(b'files.write')
+        os.write(master,b'\x19')  # Inspector cannot approve a hidden request.
+        time.sleep(.3)
+        assert not (workspace/'approved.txt').exists()
+        os.write(master,b'\x1b')
+        wait_for(b'Inspector ',present=False)
+        wait_for(b'Approval')
+        os.write(master,b'\x1b[A\r')  # Move from Deny to Allow once and confirm.
         wait_for(b'Which audience?')
         assert (workspace/'approved.txt').read_text()=='approved'
-        os.write(master,b'team\r')
+        os.write(master,b'/agents\r')  # Commands also work while answering a child/root question.
+        wait_for(b'No subagents in this run yet.')
+        wait_for(b'Inspector ')
+        os.write(master,b'\x1b')
+        wait_for(b'Inspector ',present=False)
+        wait_for(b'Which audience?')
+        os.write(master,b'\x1b[B\x1b[B\r')  # Select Write my own answer.
+        wait_for(b'Your answer \xc2\xb7 type below')
+        os.write(master,b'te\x1bOS')  # F4 opens the layout menu while preserving a draft answer.
+        wait_for(b'Choose your layout')
+        wait_for(b'Inspector ')
+        os.write(master,b'\x1b[B\r')
+        wait_for(b'Inspector ',present=False)
+        wait_for(b' Session ')
+        wait_for(b'__        __')
+        wait_for('› te'.encode())
+        assert json.loads((root/'config/werkworker/ui.json').read_text())['layout']=='cockpit'
+        os.write(master,b'am\r')
+        wait_for(b'Choose visibility')
+        wait_for(b'Write my own answer')
+        os.write(master,b'\x1b[B\r')  # Choose public with arrows and Enter.
         wait_for(b'Finished for the team')
         wait_for(b'Completed')
         os.write(master,b'/')
@@ -62,10 +96,14 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x1b[B\t')  # Select /clear and complete it.
         wait_for('› /clear'.encode())
         os.write(master,b'\r')
+        wait_for(b'Finished for the team',present=False)
         # Help also works without involving the model or consuming a scripted turn.
         os.write(master,b'/he\t\r')
         wait_for(b'/help: Show keyboard shortcuts')
-        assert b'Finished for the team' not in screen.text()
+        # PTY reads can split a frame after the help heading but before old
+        # conversation rows have been erased. Wait for the actual clear too.
+        wait_for(b'Finished for the team',present=False)
+        assert b'Finished for the team' not in screen.text(), screen.text().decode()
         os.write(master,b'\x03')
         wait_for(b'Press Ctrl-C again to quit')
         assert proc.poll() is None
@@ -77,7 +115,25 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x03'); assert proc.wait(timeout=10)==0
         assert termios.tcgetattr(slave)==before, 'Terminal raw mode was not restored'
         assert colors_seen
-        print('PTY: approval, answer, slash preview/completion/commands, Ctrl-C reset, double Ctrl-C exit and terminal restoration passed.')
+        with sqlite3.connect(root/'state.sqlite') as db:
+            sessions=[json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')]
+        answers=[i['interaction']['answer'] for s in sessions for r in s['runs'] for i in r['invocations'] if i.get('interaction')]
+        assert answers==['team','public'],answers
+        screen=Screen()
+        proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'restart.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
+        wait_for(b' Session ')
+        wait_for(b'__        __')
+        os.write(master,b'/view\r')
+        wait_for(b'Choose your layout')
+        wait_for(b'Inspector ')
+        os.write(master,b'\x1b[A\r')
+        wait_for(b'Inspector ',present=False)
+        wait_for(b'Compact')
+        wait_for(b' Session ',present=False)
+        os.write(master,b'\x11')
+        assert proc.wait(timeout=10)==0
+        assert termios.tcgetattr(slave)==before
+        print('PTY: inline approval, freeform/selected answers, persisted Compact/Cockpit menu, draft preservation, commands, cancellation and terminal restoration passed.')
     finally:
         if proc.poll() is None: proc.kill(); proc.wait()
         os.close(master); os.close(slave)

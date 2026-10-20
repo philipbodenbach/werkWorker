@@ -264,7 +264,7 @@ impl Form {
                 ),
                 ("Agent profile".into(), self.settings.profile.clone()),
                 (
-                    "Workspace access".into(),
+                    "Workspace access (Left/Right to change)".into(),
                     if self.custom_policy {
                         "CLI grants (unchanged)"
                     } else {
@@ -454,7 +454,11 @@ fn draw(frame: &mut ratatui::Frame, form: &Form) {
     } else if !form.error.is_empty() {
         form.error.clone()
     } else {
-        "Tab / Shift-Tab or Up / Down: field · Left / Right: select\nEnter: next / action · Ctrl-U: clear field · Esc: back\nCtrl-Q: exit · Ctrl-C twice: exit · API keys stay in memory for this session.".into()
+        if form.stage == 2 && matches!(form.field, 3 | 4) {
+            "For code changes and cargo test: select coding-basic AND Read/write + sandbox processes.\nProfile selects tools; workspace access grants rights. Both are required.\nLeft/Right: change selection · Tab: next field · Enter: next / action\nAccess is session-only; an answer in chat cannot grant permissions.".into()
+        } else {
+            "Tab / Shift-Tab or Up / Down: field · Left / Right: select\nEnter: next / action · Ctrl-U: clear field · Esc: back\nCtrl-Q: exit · Ctrl-C twice: exit · API keys are masked.".into()
+        }
     };
     frame.render_widget(
         Paragraph::new(clean(&footer))

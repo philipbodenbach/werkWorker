@@ -1,8 +1,11 @@
 # Interactive connection setup
 
 Start `ww`, or `cargo run --bin ww --` from this checkout. The setup uses the
-same colors and banner as the chat. No API request is made until you choose
-**Discover models**, and no inference is made until you submit a chat message.
+same colors and banner as the chat. On first use, no API request is made until
+you choose **Discover models**. On subsequent starts, **Continue previous**
+checks and reconnects to the saved service, while **Connect new** opens the wizard.
+No inference is made until you submit a chat message or explicitly resume an
+interrupted run.
 
 1. Choose a local Werk server, a remote Werk server, or the explicit offline demo.
 2. Enter the server origin (local default `http://127.0.0.1:11434`). Remote
@@ -43,6 +46,14 @@ or been cancelled. It closes the old engine and starts a **new session**; it doe
 not silently change the provider of an existing run. The earlier session remains
 in SQLite. An initial CLI prompt is not resubmitted when reconnecting.
 `ww --setup` explicitly opens the wizard even when configuration flags are given.
+With a saved connection, ordinary startup instead offers **Continue previous**
+and **Connect new**. Continue checks the live server and its current context
+capacity with a cancellable 20-second timeout. Failure leaves the choices visible
+for retry or new setup; it does not erase previous chats or silently use a demo.
+It reuses the effective model and capability choices from the successful setup,
+even when the original project transport file contains incomplete defaults.
+After connecting, choose a new or previous session. `/sessions` returns to that
+selection without reconnecting.
 
 ## Global configuration and credentials
 
@@ -59,6 +70,13 @@ A named environment reference is saved; the variable's value is not.
 The file is written using a temporary file and replacement; Unix mode is 0600.
 Windows replacement removes the old file first and is not atomic.
 
+Successful saved setups also remember the effective connection, budgets, profile
+and explicitly selected access in `connections/<workspace-hash>.json` beside the
+global config. These files are scoped to the canonical workspace path and written
+with mode 0600 on Unix. They contain credential references, never API-key values.
+This also remembers connections when the wizard saves project preferences only.
+**Do not save** leaves the remembered connection unchanged.
+
 Directly entered keys exist only in the process for the connection/session.
 They are masked on screen and are absent from settings, prompts, tool arguments
 and session exports. You must enter them again after reconnect/restart unless
@@ -74,7 +92,7 @@ never writes or copies this token to global/project settings. Local credentials
 are used only with the automatically discovered local connection; `--werk-config`
 bypasses both files, and `--secret-env` overrides the local token. A different
 local server URL clears inherited global authentication. The connection is still
-reviewed in setup before any request. Do not put keys in rule files, profiles or
+shown in the connection selection before any reconnect request. Do not put keys in rule files, profiles or
 chat prompts.
 
 **Project model/profile/budgets** writes `.werkworker/config.json` in the selected
@@ -86,9 +104,11 @@ See [project configuration and profiles](project-configuration.md).
 
 The default interactive workspace access is read-only with an approval for each
 operation. You can explicitly choose no access, read/write, or read/write plus
-sandboxed processes. These selections are **session-only** and never remembered
-as global grants. Each operation still needs approval; native sandbox support
-is still required. An explicit `--grants` file takes precedence over this field.
+sandboxed processes. Saved setups remember this explicit selection for the current
+workspace and show it next to **Continue previous**. Choosing Continue reuses it
+for new chats; **Connect new** defaults to read-only. Each operation still needs
+approval; native sandbox support is still required. An explicit `--grants` file
+takes precedence for new sessions. Existing sessions retain their stored policy.
 Project access requests are displayed but never select a broader policy for you.
 
 For code changes and `cargo test`, choose both **Agent profile: coding-basic**

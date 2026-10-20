@@ -160,6 +160,22 @@ with tempfile.TemporaryDirectory(prefix='ww-child-ui-') as temporary:
         token('beta finished for team')
         assert (workspace / 'alpha.txt').read_text() == 'alpha'
         assert (workspace / 'beta.txt').read_text() == 'beta'
+        send('\x1b')
+        wait_for(lambda text: 'Inspector ' not in text)
+        send('/sessions\r')
+        token('New / Previous sessions')
+        with sqlite3.connect(root / 'state.sqlite') as db:
+            saved = [json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')]
+        parent = next(data for data in saved if not data.get('parent'))
+        token(parent['id'])
+        assert all(data['id'].encode() not in screen.text() for data in saved if data.get('parent'))
+        send('\x1b[B\r')
+        token('Opened saved session')
+        send('/agents\r')
+        token('Agent details')
+        token('alpha finished for team')
+        send('\x1b[B')
+        token('beta finished for team')
         send('\x11')
         assert proc.wait(timeout=10) == 0
         assert termios.tcgetattr(slave) == before

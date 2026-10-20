@@ -38,6 +38,21 @@ struct Settings {
     profile: String,
     limits: Limits,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviousConnection {
+    settings: Settings,
+    access: Access,
+}
+
+async fn previous_path(workspace: &Path) -> Result<PathBuf> {
+    let workspace = tokio::fs::canonicalize(workspace).await?;
+    Ok(settings_path()?
+        .parent()
+        .expect("config parent")
+        .join("connections")
+        .join(format!("{}.json", fingerprint(&workspace))))
+}
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -108,7 +123,7 @@ async fn read_settings(path: &Path) -> std::io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-async fn save(path: &Path, settings: &Settings) -> Result<()> {
+async fn save(path: &Path, settings: &impl Serialize) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| WorkerError::new("config_path", "Invalid configuration path"))?;
@@ -539,6 +554,7 @@ pub async fn show(
     workspace: &Path,
     project: &Project,
     explicit_profile: Option<&str>,
+    force_setup: bool,
 ) -> Result<Option<Connected>> {
     let path = settings_path()?;
     let (settings, load_error) = match read_settings(&path).await {
@@ -555,6 +571,22 @@ pub async fn show(
             "Saved connection could not be read. Review settings.".into(),
         ),
     };
+    let previous_path = previous_path(workspace).await?;
+    let previous = if !force_setup && seed.is_none() && secret_env.is_none() {
+        match read_settings(&previous_path).await {
+            Ok(bytes) => serde_json::from_slice::<PreviousConnection>(&bytes)
+                .ok()
+                .filter(|p| p.settings.version == 1),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let can_continue = !force_setup
+        && seed.is_none()
+        && secret_env.is_none()
+        && (previous.is_some() || (!settings.werk.model.is_empty() && load_error.is_empty()));
+    let previous_access = previous.as_ref().map_or(Access::Read, |p| p.access);
     let (settings, api_key) = resolve_settings(
         settings,
         seed,
@@ -582,6 +614,113 @@ pub async fn show(
             .map(|a| format!("; requested: {}", a.label()))
             .unwrap_or_default()
     );
+    if can_continue {
+        // Continue uses the effective transport that actually connected, including
+        // verified capability choices. Project defaults may still be incomplete
+        // or point at a different service selected before the last setup.
+        let settings = previous.map_or_else(|| form.settings.clone(), |p| p.settings);
+        let key = if settings.werk.base_url == form.settings.werk.base_url {
+            form.key.clone()
+        } else {
+            String::new()
+        };
+        let mut form = Form::new(settings, custom_policy);
+        form.key = key;
+        if let Some(profile) = explicit_profile {
+            form.settings.profile = profile.into();
+        }
+        let mut error = String::new();
+        loop {
+            let detail = format!(
+                "{}\nModel: {} · Profile: {} · Access: {}\n{}",
+                form.settings.werk.base_url,
+                form.settings.werk.model,
+                form.settings.profile,
+                if custom_policy {
+                    "explicit grants file"
+                } else {
+                    previous_access.label()
+                },
+                error
+            );
+            match crate::cli_start::choose(
+                "Connection",
+                &detail,
+                &[
+                    "Continue previous\n  Reconnect to the saved server / service".into(),
+                    "Connect new\n  Open connection setup".into(),
+                ],
+            )
+            .await?
+            {
+                None => return Ok(None),
+                Some(1) => break,
+                _ => {}
+            }
+            let secret = match form.secret() {
+                Ok(secret) => secret,
+                Err(e) => {
+                    error = format!(
+                        "{} Choose Connect new to enter credentials.",
+                        error_message(&e)
+                    );
+                    continue;
+                }
+            };
+            let outcome = crate::cli_start::connecting(
+                &form.settings.werk.base_url,
+                WerkProvider::connect(form.settings.werk.clone(), secret),
+            )
+            .await;
+            match outcome {
+                Ok(None) => continue,
+                Err(e) => {
+                    error = error_message(&e);
+                    continue;
+                }
+                Ok(Some(provider)) => {
+                    let Some(context) = provider.capabilities().context_tokens else {
+                        error = "Context limit unknown. Choose Connect new to set it.".into();
+                        continue;
+                    };
+                    form.settings.limits.context_tokens = context.min(2_000_000);
+                    if form.settings.limits.validate().is_err()
+                        || form.settings.limits.reserve_output_tokens > context / 4
+                    {
+                        error = "Saved output budget exceeds the current server capacity. Choose Connect new.".into();
+                        continue;
+                    }
+                    let profile = match project
+                        .profile(&form.settings.profile, workspace, global)
+                        .await
+                    {
+                        Ok(profile) => profile,
+                        Err(e) => {
+                            error = format!(
+                                "Saved profile cannot be loaded ({}). Choose Connect new.",
+                                e.code
+                            );
+                            continue;
+                        }
+                    };
+                    save(
+                        &previous_path,
+                        &PreviousConnection {
+                            settings: form.settings.clone(),
+                            access: previous_access,
+                        },
+                    )
+                    .await?;
+                    return Ok(Some(Connected {
+                        provider: Arc::new(provider),
+                        limits: form.settings.limits,
+                        profile,
+                        access: previous_access,
+                    }));
+                }
+            }
+        }
+    }
     let mut terminal = ratatui::try_init()?;
     let _restore = Restore;
     crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
@@ -624,6 +763,10 @@ pub async fn show(
                                 _=>Ok(())
                             };
                             if let Err(error)=saved {form.error=format!("Connection works, but saving failed ({}). Choose Do not save to continue.",error.code);form.field=7;continue;}
+                            if form.save < 2
+                                && let Err(error)=save(&previous_path,&PreviousConnection{settings:form.settings.clone(),access:form.access}).await {
+                                    form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=7;continue;
+                            }
                             result=Some(Connected{provider:Arc::new(provider),limits:form.settings.limits.clone(),profile:project.profile(&form.settings.profile,workspace,global).await?,access:form.access});break;
                         }
                     }

@@ -54,8 +54,16 @@ cargo run --example parallel_benchmark > scheduler.json
 cargo build --bins
 python3 scripts/tests/tui_smoke.py target/debug/ww
 python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
+python3 scripts/tests/setup_smoke.py target/debug/ww
 python3 scripts/generate-cli-reference.py target/debug/werk-worker --check
 ```
+
+The authenticated setup fixture also exercises remembered service reconnects,
+workspace-scoped session selection, same-session follow-ups with model history,
+crash/restart with a pending approval, and retry/new-connection choices after a
+server disappears. It verifies stable session/run/request IDs and no replay of
+committed tool calls. The subagent PTY test reopens the parent conversation and
+checks that completed child results remain inspectable.
 
 The scheduler benchmark uses eight simulated 100-ms requests and five repeats
 for unknown/1/2/4 slots. It needs no model and must not be called GPU throughput.

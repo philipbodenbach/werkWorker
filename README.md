@@ -45,6 +45,9 @@ profile and workspace access. Settings can be saved globally in
 `~/.config/werkworker/config.json` or as project preferences in
 `.werkworker/config.json`. Keys are session-only; reusable credentials use an
 environment-variable reference. `/setup` reconfigures after a run finishes.
+On subsequent starts, **Continue previous** reconnects to the remembered service;
+**Connect new** opens setup. Choose **New session** or a previous conversation
+to restore its history and continue. `/sessions` opens this list from chat.
 See [setup and authentication](docs/setup.md) and [terminal controls](docs/tui.md).
 
 Project rules use `.werkworker.md` / `WERKWORKER.md`, with `AGENTS.override.md`,

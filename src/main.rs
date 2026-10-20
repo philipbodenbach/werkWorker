@@ -1,5 +1,7 @@
 #[path = "cli_setup.rs"]
 mod cli_setup;
+#[path = "cli_start.rs"]
+mod cli_start;
 #[path = "cli_tui.rs"]
 mod cli_tui;
 use clap::{Parser, Subcommand};
@@ -58,7 +60,8 @@ enum Command {
         profile: String,
         #[arg(long)]
         demo: bool,
-        #[arg(long, requires = "run_id")]
+        /// Open a saved conversation; optionally resume a specific interrupted run.
+        #[arg(long)]
         session: Option<String>,
         #[arg(long, requires = "session")]
         run_id: Option<String>,
@@ -242,6 +245,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             &cli.workspace,
             &project,
             explicit_profile,
+            cli.setup,
         )
         .await?
         else {
@@ -282,7 +286,9 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     } else if matches!(&command, Command::Sessions { .. }) {
         Arc::new(ScriptedProvider::default())
     } else if matches!(&command, Command::Tui { .. }) {
-        return cli_tui::show(None, None, None, Limits::default()).await;
+        return cli_tui::show(None, None, None, Limits::default())
+            .await
+            .map(|exit| matches!(exit, cli_tui::Exit::Setup));
     } else {
         return Err(WorkerError::new(
             "provider_required",
@@ -308,7 +314,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     .await?;
     let engine = WorkerEngine::builder(provider)
         .execution(execution)
-        .store(store)
+        .store(store.clone())
         .sandbox(sandbox)
         .artifacts(artifacts)
         .build()
@@ -316,55 +322,125 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     let mut configure = false;
     let result = match command {
         Command::Tui {
-            input,
+            mut input,
             profile,
             session: session_id,
             run_id,
             ..
         } => {
-            let (session, resume) = if let (Some(session_id), Some(run_id)) = (session_id, run_id) {
-                let session = engine.open_session(&session_id).await?;
-                let run = engine.resume_run(&session_id, &run_id).await?;
-                (session, Some(run))
-            } else {
-                (
-                    engine
-                        .create_session(
-                            match setup_profile {
-                                Some(profile) => profile,
-                                None => {
-                                    project
-                                        .profile(
-                                            if profile == "general-readonly" {
-                                                project
-                                                    .config
-                                                    .profile
-                                                    .as_deref()
-                                                    .unwrap_or(&profile)
-                                            } else {
-                                                &profile
-                                            },
-                                            &cli.workspace,
-                                            cli_setup::settings_path()?
-                                                .parent()
-                                                .expect("config parent"),
-                                        )
-                                        .await?
-                                }
+            let profile = match setup_profile {
+                Some(profile) => profile,
+                None => {
+                    project
+                        .profile(
+                            if profile == "general-readonly" {
+                                project.config.profile.as_deref().unwrap_or(&profile)
+                            } else {
+                                &profile
                             },
-                            cli.workspace,
-                            policy,
-                            project.metadata(),
+                            &cli.workspace,
+                            cli_setup::settings_path()?.parent().expect("config parent"),
                         )
-                        .await?,
-                    None,
-                )
+                        .await?
+                }
             };
-            cli_tui::show(Some(session), input, resume, setup_limits)
-                .await
-                .map(|again| {
-                    configure = again;
-                })
+            let mut choice = match session_id {
+                Some(id) => cli_start::SessionChoice::Previous(id),
+                None if input.is_none() && !cli.setup => {
+                    cli_start::sessions(store.as_ref(), &cli.workspace, false).await?
+                }
+                None => cli_start::SessionChoice::New,
+            };
+            let mut explicit_run = run_id;
+            let mut current: Option<SessionHandle> = None;
+            loop {
+                let session = match choice {
+                    cli_start::SessionChoice::Back => match current.take() {
+                        Some(session) => session,
+                        None => break Ok(()),
+                    },
+                    cli_start::SessionChoice::New => {
+                        engine
+                            .create_session(
+                                profile.clone(),
+                                &cli.workspace,
+                                policy.clone(),
+                                project.metadata(),
+                            )
+                            .await?
+                    }
+                    cli_start::SessionChoice::Previous(ref id) => {
+                        match engine.open_session(id).await {
+                            Ok(session) => session,
+                            Err(error) => {
+                                if cli_start::choose(
+                                    "Cannot open session",
+                                    &error.to_string(),
+                                    &["Back to sessions".into()],
+                                )
+                                .await?
+                                .is_none()
+                                {
+                                    break Ok(());
+                                }
+                                choice = cli_start::sessions(store.as_ref(), &cli.workspace, true)
+                                    .await?;
+                                continue;
+                            }
+                        }
+                    }
+                };
+                let data = session.snapshot().await?;
+                let mut active = match data.runs.last() {
+                    Some(run) => Some(session.run(&run.id).await?),
+                    None => None,
+                };
+                if let Some(run_id) = explicit_run.take() {
+                    active = Some(engine.resume_run(&data.id, &run_id).await?);
+                } else if let Some(run) = data
+                    .runs
+                    .last()
+                    .filter(|r| r.status == RunStatus::Interrupted)
+                {
+                    let mut detail = format!("{}\nThe previous run was interrupted.", run.input);
+                    while let Some(0) = cli_start::choose(
+                        "Interrupted session",
+                        &detail,
+                        &[
+                            "Resume interrupted run".into(),
+                            "Open history without resuming".into(),
+                        ],
+                    )
+                    .await?
+                    {
+                        match engine.resume_run(&data.id, &run.id).await {
+                            Ok(handle) => {
+                                active = Some(handle);
+                                break;
+                            }
+                            Err(error) => detail = error.to_string(),
+                        }
+                    }
+                }
+                match cli_tui::show(
+                    Some(session.clone()),
+                    input.take(),
+                    active,
+                    setup_limits.clone(),
+                )
+                .await?
+                {
+                    cli_tui::Exit::Quit => break Ok(()),
+                    cli_tui::Exit::Setup => {
+                        configure = true;
+                        break Ok(());
+                    }
+                    cli_tui::Exit::Sessions => {
+                        current = Some(session);
+                        choice = cli_start::sessions(store.as_ref(), &cli.workspace, true).await?;
+                    }
+                }
+            }
         }
         Command::Rpc => {
             RpcHost::new(engine.clone(), cli.workspace, policy)

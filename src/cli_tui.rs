@@ -38,7 +38,7 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r"\____/ "];
-const COMMANDS: [(&str, &str); 8] = [
+const COMMANDS: [(&str, &str); 9] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
@@ -50,7 +50,10 @@ const COMMANDS: [(&str, &str); 8] = [
     ),
     ("/setup", "Configure server, model and credentials"),
     ("/view", "Choose Compact or Cockpit layout"),
+    ("/sessions", "Start a new chat or open a previous session"),
 ];
+const RESUME_REQUIRED: &str =
+    "Resume the interrupted run via /sessions before sending another message.";
 pub(crate) fn banner() -> Vec<Line<'static>> {
     let glyphs = [W, E, R, K, W, O, R, K, E, R];
     let mut lines = Vec::new();
@@ -833,7 +836,12 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
                 details: agent_details(&state, &goal),
             });
         }
-        if addressed.is_none() && !state.status.terminal() {
+        if addressed.is_none()
+            && matches!(
+                state.status,
+                RunStatus::WaitingApproval | RunStatus::WaitingInput
+            )
+        {
             for invocation in &state.invocations {
                 if invocation.result.is_some() {
                     continue;
@@ -922,12 +930,82 @@ async fn answer_question(view: &mut View, run: &RunHandle, answer: &str) -> Resu
     Ok(())
 }
 
+pub enum Exit {
+    Quit,
+    Setup,
+    Sessions,
+}
+
+fn restore_history(view: &mut View, data: &SessionData) {
+    for (index, message) in data.messages.iter().enumerate() {
+        match message.role {
+            Role::User => view.append(&format!("\n\nyou › {}\n", message.content)),
+            Role::Assistant => {
+                if !message.content.is_empty() {
+                    view.append(&format!("\n\nwerk › {}\n", message.content));
+                }
+                for call in &message.tool_calls {
+                    view.append(&format!("\n  tool · {}\n", call.name));
+                }
+            }
+            Role::Tool => {
+                let invocation = data
+                    .runs
+                    .iter()
+                    .flat_map(|r| &r.invocations)
+                    .filter(|i| {
+                        i.message_index < index && Some(&i.call.id) == message.tool_call_id.as_ref()
+                    })
+                    .max_by_key(|i| i.message_index);
+                if let Some(question) = invocation.and_then(|i| i.interaction.as_ref()) {
+                    view.append(&format!("\n  question · {}\n", question.question));
+                    if let Some(answer) = &question.answer {
+                        view.append(&format!("you › {answer}\n"));
+                    }
+                } else if let Some(result) = invocation.and_then(|i| i.result.as_ref()) {
+                    view.append(&format!(
+                        "  result · {:?} {}\n",
+                        result.status,
+                        result.error_code.as_deref().unwrap_or_default()
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(run) = data.runs.last() {
+        view.run_id = run.id.clone();
+        view.status = format!("{:?}", run.status);
+        for attempt in run
+            .attempts
+            .iter()
+            .filter(|a| !a.completed && !a.partial_text.is_empty())
+        {
+            view.append(&format!(
+                "\nwerk › {}\n[Unfinished attempt]\n",
+                attempt.partial_text
+            ));
+        }
+        view.append(&format!("\n[Opened saved session · {:?}]\n", run.status));
+    }
+    view.model_requests = data
+        .events
+        .iter()
+        .filter(|e| matches!(e.event, EventKind::ModelRequest { .. }))
+        .count() as u32;
+    view.tools = data
+        .events
+        .iter()
+        .filter(|e| matches!(e.event, EventKind::ToolPrepared { .. }))
+        .count() as u32;
+}
+
 pub async fn show(
     session: Option<SessionHandle>,
     initial: Option<String>,
     resume: Option<RunHandle>,
     limits: Limits,
-) -> Result<bool> {
+) -> Result<Exit> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(WorkerError::new(
             "terminal_required",
@@ -956,36 +1034,36 @@ pub async fn show(
         );
     }
     let mut active = resume;
+    let mut cursor = 0;
     if let Some(session) = &session {
         let data = session.snapshot().await?;
+        cursor = data.events.last().map_or(0, |e| e.cursor);
+        restore_history(&mut view, &data);
         (view.access_summary, view.permissions) = permission_details(&data);
         view.session_id = data.id;
-        if let Some(run) = &active {
-            let state = run.status().await?;
-            for invocation in state.invocations {
-                if let Some(request) = invocation.approval.filter(|r| r.decision.is_none()) {
-                    view.approval = Some(request);
-                    view.choice_selected = 1;
-                }
-                if let Some(request) = invocation.interaction.filter(|r| r.answer.is_none()) {
-                    view.interaction = Some(request);
-                }
-            }
-        }
+        // refresh_agents exposes saved requests only once recovery has returned
+        // the owning run to WaitingApproval/WaitingInput, not while still queued.
         if let Some(input) = initial {
-            view.append(&format!("you › {input}\n"));
-            active = Some(
-                session
-                    .submit(input, &id("tui"), limits.clone(), None)
-                    .await?,
-            );
+            if let Some(run) = &active
+                && run.status().await?.status == RunStatus::Interrupted
+            {
+                view.input = input;
+                view.error = RESUME_REQUIRED.into();
+            } else {
+                view.append(&format!("you › {input}\n"));
+                active = Some(
+                    session
+                        .submit(input, &id("tui"), limits.clone(), None)
+                        .await?,
+                );
+            }
         }
     } else {
         view.append("Welcome to werkWorker.\n\nConnect Werk to start an agent, or choose the explicit offline demo.\nThe connection commands are shown in the session panel.");
         view.status = "Setup".into();
     }
     let mut events: Pin<Box<dyn Stream<Item = Result<WorkerEvent>> + Send>> = match &session {
-        Some(session) => Box::pin(session.events(0)),
+        Some(session) => Box::pin(session.events(cursor)),
         None => Box::pin(futures_util::stream::pending()),
     };
     let mut terminal = ratatui::try_init()?;
@@ -995,7 +1073,7 @@ pub async fn show(
     let mut dirty = true;
     let mut agents_tick = tokio::time::interval(Duration::from_millis(250));
     let mut addressed: Option<RunHandle> = None;
-    let mut configure = false;
+    let mut exit = Exit::Quit;
     loop {
         tokio::select! {
             _ = agents_tick.tick() => {
@@ -1080,12 +1158,12 @@ pub async fn show(
                     }
                 }
                 if key.code == KeyCode::Enter && view.input == "/quit" { break; }
-                if key.code == KeyCode::Enter && view.input == "/setup" {
+                if key.code == KeyCode::Enter && matches!(view.input.as_str(), "/setup" | "/sessions") {
                     if let Some(run)=&active && !run.status().await?.status.terminal() {
-                        view.error="Cancel or finish the current run before changing the connection.".into();
+                        view.error="Cancel or finish the current run before changing the connection or session.".into();
                         continue;
                     }
-                    configure=true; break;
+                    exit = if view.input == "/setup" { Exit::Setup } else { Exit::Sessions }; break;
                 }
                 let result: Result<()> = async {
                     if ctrl && key.code == KeyCode::Char('c') {
@@ -1139,6 +1217,9 @@ pub async fn show(
                                 answer_question(&mut view, run, &input).await?;
                                 return Ok(());
                             } else if let Some(session) = &session {
+                                if let Some(run) = &active && run.status().await?.status == RunStatus::Interrupted {
+                                    return Err(WorkerError::new("resume_required", RESUME_REQUIRED));
+                                }
                                 if let Some(run) = &active && !run.status().await?.status.terminal() {
                                     run.steer(&input, &id("steer")).await?;
                                 } else {
@@ -1161,7 +1242,7 @@ pub async fn show(
         run.cancel("TUI closed", &id("cancel")).await?;
         run.wait().await?;
     }
-    Ok(configure)
+    Ok(exit)
 }
 
 #[cfg(test)]
@@ -1173,7 +1254,7 @@ mod tests {
             input: "/".into(),
             ..Default::default()
         };
-        assert_eq!(view.commands().len(), 8);
+        assert_eq!(view.commands().len(), COMMANDS.len());
         view.input = "/ca".into();
         assert_eq!(view.commands()[0].0, "/cancel");
         view.commands_dismissed = true;

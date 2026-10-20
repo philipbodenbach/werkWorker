@@ -1694,6 +1694,29 @@ impl SessionHandle {
                     Ok(())
                 })
                 .await?;
+            } else {
+                // Recovery enters Running before rechecking preparation/policy.
+                // Re-expose the durable request without allocating a new ID.
+                self.update(|d| {
+                    let r = d.run_mut(run_id)?;
+                    let waiting = r
+                        .invocations
+                        .iter()
+                        .find(|i| i.invocation_id == *invocation_id)
+                        .and_then(|i| i.approval.as_ref())
+                        .is_some_and(|a| a.decision.is_none());
+                    if waiting && r.status == RunStatus::Running {
+                        r.status = RunStatus::WaitingApproval;
+                        d.emit(
+                            Some(run_id),
+                            EventKind::RunState {
+                                status: RunStatus::WaitingApproval,
+                            },
+                        );
+                    }
+                    Ok(())
+                })
+                .await?;
             }
             let started = now_ms();
             let allowed = loop {
@@ -1771,6 +1794,27 @@ impl SessionHandle {
                         .unwrap()
                         .interaction = Some(request.clone());
                     d.emit(Some(run_id), EventKind::InteractionRequested { request });
+                    Ok(())
+                })
+                .await?;
+            } else {
+                self.update(|d| {
+                    let r = d.run_mut(run_id)?;
+                    let waiting = r
+                        .invocations
+                        .iter()
+                        .find(|i| i.invocation_id == *invocation_id)
+                        .and_then(|i| i.interaction.as_ref())
+                        .is_some_and(|q| q.answer.is_none());
+                    if waiting && r.status == RunStatus::Running {
+                        r.status = RunStatus::WaitingInput;
+                        d.emit(
+                            Some(run_id),
+                            EventKind::RunState {
+                                status: RunStatus::WaitingInput,
+                            },
+                        );
+                    }
                     Ok(())
                 })
                 .await?;

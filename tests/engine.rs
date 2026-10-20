@@ -462,6 +462,138 @@ async fn budgets_include_retries_and_output_correction() {
     engine.close().await.unwrap();
 }
 #[tokio::test]
+async fn resumed_requests_can_be_answered_after_resume_with_the_original_ids() {
+    async fn waiting(run: &RunHandle, expected: RunStatus) -> Run {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let state = run.status().await.unwrap();
+                if state.status == expected {
+                    return state;
+                }
+                assert!(!state.status.terminal(), "{:?}", state.error);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("recovered request never became answerable")
+    }
+    for (name, arguments, status) in [
+        (
+            "files.write",
+            json!({"path":"new.txt","content":"saved"}),
+            RunStatus::WaitingApproval,
+        ),
+        (
+            "interaction.ask",
+            json!({"question":"Which team?","choices":["Operations"]}),
+            RunStatus::WaitingInput,
+        ),
+    ] {
+        let workspace = TempDir::new().unwrap();
+        let engine =
+            WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![ScriptedTurn::calls(
+                "",
+                vec![call(name, arguments)],
+            )])))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                profile(&[name]),
+                workspace.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    grants: vec![grant("files.write", false)],
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit("prepare request", "submit", Limits::default(), None)
+            .await
+            .unwrap();
+        let before = waiting(&run, status).await;
+        let captured = session.snapshot().await.unwrap();
+        let store = Arc::new(InMemoryStore::default());
+        store.save(&captured, None).await.unwrap();
+        engine.close().await.unwrap();
+        let provider = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("recovered")]));
+        let fresh = WorkerEngine::builder(provider.clone())
+            .store(store)
+            .build()
+            .await
+            .unwrap();
+        let resumed = fresh.resume_run(&captured.id, &run.id).await.unwrap();
+        let after = waiting(&resumed, status).await;
+        assert_eq!(after.invocations.len(), 1);
+        assert_eq!(
+            after.invocations[0].invocation_id,
+            before.invocations[0].invocation_id
+        );
+        assert!(
+            provider.requests().is_empty(),
+            "Recovery must not regenerate the tool call"
+        );
+        if status == RunStatus::WaitingApproval {
+            let original = before.invocations[0].approval.as_ref().unwrap();
+            assert_eq!(
+                after.invocations[0].approval.as_ref().unwrap().request_id,
+                original.request_id
+            );
+            assert!(!workspace.path().join("new.txt").exists());
+            resumed
+                .respond_to_approval(&original.request_id, ApprovalDecision::AllowOnce, "allow")
+                .await
+                .unwrap();
+        } else {
+            let original = before.invocations[0].interaction.as_ref().unwrap();
+            assert_eq!(
+                after.invocations[0]
+                    .interaction
+                    .as_ref()
+                    .unwrap()
+                    .request_id,
+                original.request_id
+            );
+            resumed
+                .respond_to_interaction(&original.request_id, "Operations", "answer")
+                .await
+                .unwrap();
+        }
+        assert_eq!(finish(&resumed).await.status, RunStatus::Completed);
+        assert_eq!(provider.requests().len(), 1);
+        let data = fresh
+            .open_session(&captured.id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        assert_eq!(
+            data.events
+                .iter()
+                .filter(|e| matches!(
+                    e.event,
+                    EventKind::ApprovalRequested { .. } | EventKind::InteractionRequested { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            data.events
+                .iter()
+                .filter(|e| matches!(e.event, EventKind::ToolCompleted { .. }))
+                .count(),
+            1
+        );
+        fresh.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn sqlite_ownership_future_version_corruption_and_resume_approval() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("sessions.sqlite");

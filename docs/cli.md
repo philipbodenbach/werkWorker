@@ -74,7 +74,7 @@ Arguments:
 Options:
       --profile <PROFILE>  [default: general-readonly]
       --demo
-      --session <SESSION>
+      --session <SESSION>  Open a saved conversation; optionally resume a specific interrupted run
       --run-id <RUN_ID>
   -h, --help               Print help
 ```

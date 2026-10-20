@@ -4,6 +4,7 @@
 No live model or real credential is used. Run with a built ww binary.
 """
 import fcntl
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -116,8 +117,21 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
     def send(value):
         os.write(master, value.encode())
 
+    def exited(timeout=10):
+        # Keep consuming terminal output while waiting: a partial frame can
+        # otherwise fill the PTY and block the UI before it processes Ctrl-Q.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], .05)[0]:
+                data = os.read(master, 65536)
+                capture.extend(data)
+                screen.feed(data)
+            if proc.poll() is not None:
+                return proc.returncode
+        raise AssertionError(('UI did not exit', screen.text().decode()))
+
     try:
-        proc = start()
+        proc = start('--setup')
         wait_for('Choose how to connect')
         send('\r')
         wait_for('Server and credentials')
@@ -154,7 +168,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\x03')
         wait_for('Press Ctrl-C again to exit setup')
         send('\x03')
-        assert proc.wait(timeout=10) == 0
+        assert exited() == 0
         assert termios.tcgetattr(slave) == before
         assert KEY.encode() not in capture
         assert KEY.encode() not in (root / 'state.sqlite').read_bytes()
@@ -162,7 +176,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         # A new process reloads the same config and can use an environment reference.
         screen = Screen()
         env['WW_SETUP_FIXTURE_KEY'] = KEY
-        proc = start()
+        proc = start('--setup')
         wait_for('Choose how to connect')
         send('\r')
         wait_for(origin)
@@ -175,7 +189,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert settings['secret_env'] == 'WW_SETUP_FIXTURE_KEY'
         assert KEY not in config.read_text()
         send('\x11')
-        assert proc.wait(timeout=10) == 0
+        assert exited() == 0
         assert termios.tcgetattr(slave) == before
         assert KEY.encode() not in capture
         assert len(requests) == 2
@@ -188,7 +202,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
             'test_commands': {'check': ['never-run-this-command']}}))
         global_before = config.read_bytes()
         screen = Screen()
-        proc = start()
+        proc = start('--setup')
         wait_for('Choose how to connect')
         send('\r')
         wait_for(origin)
@@ -204,8 +218,8 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert project_settings['test_commands']['check'] == ['never-run-this-command']
         assert 'base_url' not in project_settings and 'secret_env' not in project_settings
         send('\x11')
-        assert proc.wait(timeout=10) == 0
-        with sqlite3.connect(root / 'state.sqlite') as db:
+        assert exited() == 0
+        with closing(sqlite3.connect(root / 'state.sqlite')) as db:
             sessions = [json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')]
         assert len(sessions) == 3
         assert all(not data['policy']['workspace_writable'] for data in sessions)
@@ -225,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         config.write_text(json.dumps(settings))
         global_before = config.read_bytes()
         screen = Screen()
-        proc = start(cwd=workspace)
+        proc = start('--setup', cwd=workspace)
         wait_for('Choose how to connect')
         send('\r')
         wait_for(origin)
@@ -236,7 +250,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\t' * 8 + '\r')
         wait_for('Ready')
         send('\x11')
-        assert proc.wait(timeout=10) == 0
+        assert exited() == 0
         assert config.read_bytes() == global_before
         assert KEY not in project_file.read_text()
         assert KEY.encode() not in capture
@@ -245,13 +259,148 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert termios.tcgetattr(slave) == before
         # --workspace has the same discovery behavior as the working directory.
         screen = Screen()
-        proc = start()
+        proc = start('--setup')
         wait_for('Choose how to connect')
         send('\r')
         wait_for(origin)
         wait_for('********')
         send('\x11')
-        assert proc.wait(timeout=10) == 0
+        assert exited() == 0
+        # Ordinary restart offers the remembered service and durable root chats.
+        with closing(sqlite3.connect(root / 'state.sqlite')) as db:
+            old_sessions = [json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')]
+        original = next(data for data in old_sessions if data['runs'])
+        # Project connection defaults can be incomplete; Continue must retain the
+        # effective capability choices validated during the successful setup.
+        defaults = json.loads(local_connection.read_text())
+        defaults['capabilities']['tool_calling'] = 'unknown'
+        local_connection.write_text(json.dumps(defaults))
+        other_workspace = root / 'other-workspace'
+        other_workspace.mkdir()
+        subprocess.run([str(binary), '--workspace', str(other_workspace),
+                        '--store', str(root / 'state.sqlite'), 'run', '--demo',
+                        'Hidden other workspace conversation'], env=env, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        screen = Screen()
+        proc = start(cwd=workspace)
+        wait_for('Continue previous')
+        wait_for('Connect new')
+        assert len(requests) == 2
+        send('\r')
+        wait_for('New / Previous sessions')
+        wait_for('Hello from configured TUI')
+        assert b'Hidden other workspace' not in screen.text()
+        send('\x1b[B\r')
+        wait_for('Opened saved session')
+        wait_for('Setup connected successfully')
+        assert len(requests) == 2, 'Opening completed history must not repeat inference or tools'
+        send('Follow up in the original conversation\r')
+        deadline = time.monotonic() + 15
+        while len(requests) < 3 and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert len(requests) == 3
+        assert any(m['role'] == 'user' and m['content'] == 'Hello from configured TUI'
+                   for m in requests[-1]['messages'])
+        assert any(m['role'] == 'assistant' and m.get('content') == 'Setup connected successfully'
+                   for m in requests[-1]['messages'])
+        # Wait for the committed follow-up instead of a previous frame's Completed label.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with closing(sqlite3.connect(root / 'state.sqlite')) as db:
+                restored = next(json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')
+                                if json.loads(row[0])['id'] == original['id'])
+            if len(restored['runs']) == 2 and restored['runs'][-1]['status'] == 'completed':
+                break
+            if select.select([master], [], [], .05)[0]:
+                data = os.read(master, 65536)
+                capture.extend(data)
+                screen.feed(data)
+        assert len(restored['runs']) == 2 and restored['runs'][-1]['status'] == 'completed', (
+            [(r['status'], r.get('error')) for r in restored['runs']], screen.text().decode())
+        assert restored['policy'] == original['policy']
+        assert restored['profile'] == original['profile']
+        send('/sessions\r')
+        wait_for('New / Previous sessions')
+        send('\r')
+        wait_for('Ready')
+        send('\x11')
+        assert exited() == 0
+        assert termios.tcgetattr(slave) == before
+        assert len(requests) == 3
+        # --session alone opens a completed conversation without requiring a run ID.
+        screen = Screen()
+        proc = start('tui', '--session', original['id'])
+        wait_for('Continue previous')
+        send('\r')
+        wait_for('Opened saved session')
+        wait_for('Follow up in the original conversation')
+        send('\x11')
+        assert exited() == 0
+        # Abrupt exit while awaiting approval: reopen the same run and request ID.
+        screen = Screen()
+        proc = start('tui', 'Recover the pending read')
+        wait_for('Continue previous')
+        send('\r')
+        wait_for('Approval')
+        with closing(sqlite3.connect(root / 'state.sqlite')) as db:
+            pending = next(json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')
+                           if any(r['input'] == 'Recover the pending read' for r in json.loads(row[0])['runs']))
+        pending_run = pending['runs'][-1]
+        request_id = next(i['approval']['request_id'] for i in pending_run['invocations'] if i.get('approval'))
+        proc.kill()
+        proc.wait(timeout=10)
+        termios.tcsetattr(slave, termios.TCSANOW, before)
+        screen = Screen()
+        proc = start()
+        wait_for('Continue previous')
+        send('\r')
+        wait_for('New / Previous sessions')
+        send('\x1b[B\r')
+        wait_for('Resume interrupted run')
+        send('\x1b[B\r')
+        wait_for('Opened saved session')
+        send('Do not start another run over unresolved tools\r')
+        wait_for('Resume the interrupted run via /sessions')
+        assert len(requests) == 4
+        send('\x15/sessions\r')
+        wait_for('New / Previous sessions')
+        send('\x1b[B\r')
+        wait_for('Resume interrupted run')
+        send('\r')
+        wait_for('Allow once')
+        assert len(requests) == 4, 'Resume must not replay the already committed model tool call'
+        send('\x19')
+        wait_for('Setup connected successfully')
+        wait_for('Completed')
+        send('\x11')
+        assert exited() == 0
+        with closing(sqlite3.connect(root / 'state.sqlite')) as db:
+            recovered = next(json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')
+                             if json.loads(row[0])['id'] == pending['id'])
+        assert len(recovered['runs']) == 1
+        recovered_run = recovered['runs'][0]
+        assert recovered_run['id'] == pending_run['id'] and recovered_run['status'] == 'completed'
+        assert [i['approval']['request_id'] for i in recovered_run['invocations'] if i.get('approval')] == [request_id]
+        assert len(requests) == 5
+        assert termios.tcgetattr(slave) == before
+        # Failure keeps the previous service available for retry or explicit new setup.
+        server.shutdown()
+        server.server_close()
+        screen = Screen()
+        proc = start()
+        wait_for('Continue previous')
+        send('\r')
+        wait_for('Connection failed')
+        wait_for('Connect new')
+        send('\x1b[B\r')
+        wait_for('Choose how to connect')
+        send('\x11')
+        assert exited() == 0
+        assert KEY.encode() not in capture
+        remembered = list((root / 'config/werkworker/connections').glob('*.json'))
+        assert len(remembered) == 1
+        assert all(KEY not in p.read_text() and p.stat().st_mode & 0o777 == 0o600 for p in remembered)
+        print('PASS: remembered connection and capabilities, workspace-filtered sessions, same-session follow-up with model history, --session without run-id, interrupted approval recovery, retry/connect-new after failure; no replay or leaked credentials.')
         print('PASS: PTY setup, masked key paste, auth retry, model discovery, budgets, authenticated chat and approval, saved global/project configs (0600), project rules and permission separation, reconnect, environment reference, double Ctrl-C and terminal restoration.')
         print('PASS: automatic workspace connection and masked local credentials for bare ww and --workspace; no token in settings, terminal capture or sessions.')
     finally:

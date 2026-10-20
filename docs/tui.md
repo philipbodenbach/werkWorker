@@ -4,7 +4,8 @@
 seeds the [interactive connection wizard](setup.md). Without configuration, the
 UI asks for the server, credentials, model and agent settings. It never silently
 uses a demo model. Saved global settings and [project rules/preferences](project-configuration.md)
-are loaded for review on subsequent starts.
+are loaded on subsequent starts. **Continue previous** reconnects to the remembered
+service; **Connect new** opens the full wizard. No inference runs during connection.
 `ww tui --demo "Hello"` explicitly uses one scripted response. `ww run ...` is
 the headless path; `ww rpc` continues to emit JSONL only.
 
@@ -37,6 +38,7 @@ these directly. See NOTICE for attribution.
 | Up / Down, Enter (empty input, pending request) | Select and send a suggested answer or approval decision |
 | Ctrl-U | Clear a draft answer to use the selection again |
 | F4 / `/view` | Choose and remember Compact or Cockpit |
+| `/sessions` | Choose a new chat or a previous conversation in this workspace |
 | F2 / `/permissions` | Inspect the current profile, grants and instructions for changing access |
 | F3 / `/agents` | Open the subagent inspector; Up/Down selects a child, Page Up/Down scrolls its details, Esc returns |
 | Ctrl-C | Cancel the active run; press again consecutively to quit (any other key resets this) |
@@ -69,14 +71,44 @@ question cannot enlarge them. To create files and run `cargo test`, select both
 the `coding-basic` profile and `Read/write + sandbox processes` workspace access.
 If the current run has insufficient rights, use `/cancel`, then `/setup`, choose
 the profile/access, and resubmit the task in the new session. Access is not
-remembered as an automatic grant on the next launch. An explicit `--grants` file
-continues to control host access when supplied.
+changed when reopening an existing session: it retains its stored profile and
+policy. **Continue previous** shows and reuses the access selected in the last
+saved setup for this workspace when creating a new session. **Connect new** starts
+with read-only access. An explicit `--grants` file controls newly created sessions;
+opening an old session retains that session's stored grants.
 Questions are answered through their durable request IDs. Typing another message
 after completion starts a new run in the same session. Display history is bounded;
 full committed events remain in SQLite. Untrusted text cannot emit terminal control
 characters. Redraws happen only after changes, at most 20 times per second.
 
-Explicit recovery:
+## Previous sessions
+
+After connecting, the startup list offers **New session** and previous chats
+from the current workspace, most recently used first. Titles use the first
+prompt, with age, status, profile and session ID. Empty chats and internal
+subagent sessions are omitted. With no previous chats, the first chat opens
+directly. An initial CLI prompt starts a new session unless `--session` is given.
+`/sessions` opens the list after the active run finishes or is cancelled;
+Esc returns to the current conversation. On startup, Esc exits.
+
+Opening a completed conversation restores its committed messages and permits
+follow-up messages in the **same session**. The model receives the stored history,
+subject to normal context compaction. Opening history never replays completed
+model requests or tools. Previous subagents remain available through F3.
+Sessions live in the worker's SQLite store; server-side inference persistence
+is not required. `--store` must point at the same database to find previous chats.
+
+An interrupted run offers **Resume interrupted run** or **Open history without
+resuming**. Failed, cancelled and completed runs are not automatically retried.
+Opening interrupted history leaves it read-only until you resume through
+`/sessions`; it does not start a new run over unresolved tool calls.
+Explicitly open a conversation with:
+
+```sh
+ww tui --session SESSION_ID
+```
+
+Explicit run recovery:
 
 ```sh
 ww --werk-config config.json tui --session SESSION_ID --run-id RUN_ID

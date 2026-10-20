@@ -129,6 +129,15 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x1b[B\r')  # Choose public with arrows and Enter.
         wait_for(b'Finished for the team')
         wait_for(b'Completed')
+        # Edit an unsent prompt in the middle, including Delete and a newline.
+        os.write(master, b'helo\x1b[D' + b'l')
+        wait_for('› hello'.encode())
+        os.write(master, b'\x1b[H\x1b[3~H')
+        wait_for('› Hello'.encode())
+        os.write(master, b'\x1b[F\x1b\rsecond')
+        wait_for(b'second')
+        os.write(master, b'\x15')
+        wait_for('› Hello'.encode(), present=False)
         os.write(master,b'\x16')  # Ctrl-V reads the host clipboard, preserving Unicode/newlines.
         wait_for('Grüße'.encode())
         wait_for('世'.encode())  # The minimal screen emulator retains wide-cell placeholders.

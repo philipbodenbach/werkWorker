@@ -385,6 +385,103 @@ impl ModelProvider for BoundedProvider {
 }
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn compaction_retains_loaded_skill_and_directory_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("workspace_marker.txt"), "present").unwrap();
+    std::fs::write(
+        dir.path().join("evidence"),
+        "Detailed evidence 世界. ".repeat(80),
+    )
+    .unwrap();
+    let call = |name: &str, arguments| {
+        ScriptedTurn::calls(
+            "",
+            vec![ToolCall {
+                id: id("call"),
+                name: name.into(),
+                arguments,
+            }],
+        )
+    };
+    let mut turns = vec![
+        call("skills.load", json!({"name":"coding-basic"})),
+        call("files.list", json!({"path":"."})),
+    ];
+    turns.extend((0..8).map(|_| read("evidence")));
+    turns.push(ScriptedTurn::text("done"));
+    let scripted = Arc::new(ScriptedProvider::new(turns));
+    let engine = WorkerEngine::builder(Arc::new(BoundedProvider {
+        inner: scripted.clone(),
+        limit: 12288,
+    }))
+    .build()
+    .await
+    .unwrap();
+    let mut agent = profile(&["skills.load", "files.list", "files.read"]);
+    agent.skills = vec!["coding-basic".into()];
+    let mut granted = policy(false);
+    granted.grants[0].preapproved = true;
+    granted.grants.push(CapabilityGrant {
+        tool: "files.list".into(),
+        ..granted.grants[0].clone()
+    });
+    let session = engine
+        .create_session(agent, dir.path(), granted, Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement a file; preserve user changes",
+            "start",
+            Limits {
+                max_repeated_calls: 20,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert!(
+        run.status()
+            .await
+            .unwrap()
+            .contexts
+            .iter()
+            .any(|c| !c.omitted_messages.is_empty())
+    );
+    for request in &scripted.requests()[3..] {
+        assert!(
+            request.messages[0]
+                .content
+                .contains("Skills already loaded successfully")
+        );
+        let results: Vec<ToolResult> = request
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| serde_json::from_str(&m.content).unwrap())
+            .collect();
+        assert!(
+            results.iter().any(|r| r.data["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("then run its unit test"))),
+            "loaded skill lost"
+        );
+        assert!(
+            results.iter().any(|r| r.data["entries"]
+                .as_array()
+                .is_some_and(|entries| entries.contains(&json!("workspace_marker.txt")))),
+            "directory result lost"
+        );
+        werk_worker::context::validate_messages(&request.messages).unwrap();
+    }
+    engine.close().await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn automatic_compaction_keeps_long_tool_runs_inside_provider_context() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("evidence"), "Evidence 世界. ".repeat(130)).unwrap();

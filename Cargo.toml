@@ -11,7 +11,7 @@ include = ["src/**", "scripts/*.py", "scripts/*.sh", "scripts/*.ps1", "scripts/t
 
 [features]
 default = ["tui"]
-tui = ["dep:ratatui", "dep:crossterm"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-segmentation"]
 
 [lib]
 name = "werk_worker"
@@ -47,6 +47,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
+unicode-segmentation = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

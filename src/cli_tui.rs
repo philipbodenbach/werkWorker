@@ -365,6 +365,8 @@ impl ScrollPane {
 struct View {
     transcript: String,
     input: String,
+    input_cursor: Option<usize>,
+    input_scroll_manual: bool,
     pasted_texts: Vec<text_input::PastedText>,
     paste_number: usize,
     status: String,
@@ -486,13 +488,13 @@ impl View {
         if lines >= 5 || normalized.len() > 512 {
             self.paste_number += 1;
             let marker = format!("[Pasted text #{} +{lines} lines]", self.paste_number);
-            self.input.push_str(&marker);
+            self.insert_input(&marker);
             self.pasted_texts.push(text_input::PastedText {
                 marker,
                 text: normalized,
             });
         } else {
-            self.input.push_str(&normalized);
+            self.insert_input(&normalized);
         }
         self.edited_input();
         self.error.clear();
@@ -500,17 +502,113 @@ impl View {
     fn expanded_input(&self) -> String {
         text_input::expand_pastes(&self.input, &self.pasted_texts)
     }
+    fn cursor(&self) -> usize {
+        self.input_cursor
+            .unwrap_or(self.input.len())
+            .min(self.input.len())
+    }
+    fn insert_input(&mut self, text: &str) {
+        let at = self.cursor();
+        self.input.insert_str(at, text);
+        self.input_cursor = Some(at + text.len());
+        self.edited_input();
+    }
     fn backspace_input(&mut self) {
-        if let Some(paste) = self
-            .pasted_texts
-            .iter()
-            .find(|p| self.input.ends_with(&p.marker))
+        let at = self.cursor();
+        if let Some(start) = text_input::boundaries(&self.input, &self.pasted_texts)
+            .into_iter()
+            .rev()
+            .find(|i| *i < at)
         {
-            self.input.truncate(self.input.len() - paste.marker.len());
-        } else {
-            self.input.pop();
+            self.input.replace_range(start..at, "");
+            self.input_cursor = Some(start);
         }
         self.edited_input();
+    }
+    fn delete_input(&mut self) {
+        let at = self.cursor();
+        if let Some(end) = text_input::boundaries(&self.input, &self.pasted_texts)
+            .into_iter()
+            .find(|i| *i > at)
+        {
+            self.input.replace_range(at..end, "");
+        }
+        self.edited_input();
+    }
+    fn move_input(&mut self, key: KeyCode, word: bool) {
+        self.input_scroll_manual = false;
+        let at = self.cursor();
+        let boundaries = text_input::boundaries(&self.input, &self.pasted_texts);
+        let next = match key {
+            KeyCode::Left if word => {
+                let mut start = at;
+                for i in boundaries.iter().copied().rev().filter(|i| *i < at) {
+                    if !self.input[i..start].trim().is_empty() {
+                        break;
+                    }
+                    start = i;
+                }
+                let word_end = start;
+                for i in boundaries.iter().copied().rev().filter(|i| *i < word_end) {
+                    if self.input[i..start]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_whitespace)
+                    {
+                        break;
+                    }
+                    start = i;
+                }
+                start
+            }
+            KeyCode::Right if word => {
+                let mut end = at;
+                let mut saw_word = false;
+                for i in boundaries.iter().copied().filter(|i| *i > at) {
+                    let whitespace = self.input[end..i].trim().is_empty();
+                    if saw_word && whitespace {
+                        break;
+                    }
+                    saw_word |= !whitespace;
+                    end = i;
+                }
+                end
+            }
+            KeyCode::Left => boundaries.into_iter().rev().find(|i| *i < at).unwrap_or(0),
+            KeyCode::Right => boundaries
+                .into_iter()
+                .find(|i| *i > at)
+                .unwrap_or(self.input.len()),
+            KeyCode::Home => self.input[..at].rfind('\n').map_or(0, |i| i + 1),
+            KeyCode::End => self.input[at..]
+                .find('\n')
+                .map_or(self.input.len(), |i| at + i),
+            KeyCode::Up | KeyCode::Down => {
+                let layout = text_input::input_layout(
+                    &self.input,
+                    self.panes[Pane::Input as usize].area.width.max(1) as usize,
+                );
+                let (_, x, y) = layout
+                    .positions
+                    .iter()
+                    .find(|(i, _, _)| *i == at)
+                    .copied()
+                    .unwrap();
+                let row = if key == KeyCode::Up {
+                    y.saturating_sub(1)
+                } else {
+                    y + 1
+                };
+                layout
+                    .positions
+                    .into_iter()
+                    .filter(|(i, _, y)| *y == row && boundaries.contains(i))
+                    .min_by_key(|(_, col, _)| col.abs_diff(x))
+                    .map_or(at, |(i, _, _)| i)
+            }
+            _ => at,
+        };
+        self.input_cursor = (next < self.input.len()).then_some(next);
     }
     async fn paste_clipboard(&mut self) {
         if !matches!(self.screen, Screen::Conversation) {
@@ -544,6 +642,12 @@ impl View {
     }
     fn scroll_at(&mut self, x: u16, y: u16, up: bool) {
         self.selection = None;
+        if self.panes[Pane::Input as usize]
+            .area
+            .contains((x, y).into())
+        {
+            self.input_scroll_manual = true;
+        }
         if matches!(self.screen, Screen::Conversation) && self.chat_area.contains((x, y).into()) {
             self.scroll_chat(up, 3);
         } else if let Some(pane) = self
@@ -589,7 +693,7 @@ impl View {
                 "Use F5 to edit workspace writes/process access or /permissions mode manual project, then continue in this session."
             }
             "repetition_limit" => {
-                "The agent repeated the same tool call too often. Review blocked rights with F5 or /permissions mode manual project, then send a follow-up. The history is retained."
+                "The agent repeated the same tool call too often. The history is retained. Send a follow-up naming the next concrete step; successful setup results can be reused."
             }
             _ => "The session is still open. You can send another message.",
         };
@@ -633,9 +737,15 @@ impl View {
             .collect()
     }
     fn edited_input(&mut self) {
+        self.input_scroll_manual = false;
         self.pasted_texts
             .retain(|paste| self.input.contains(&paste.marker));
-        self.pane(Pane::Input).offset = usize::MAX;
+        let at = self.cursor();
+        let at = text_input::boundaries(&self.input, &self.pasted_texts)
+            .into_iter()
+            .find(|i| *i >= at)
+            .unwrap_or(self.input.len());
+        self.input_cursor = (at < self.input.len()).then_some(at);
         self.command_selected = 0;
         self.commands_dismissed = false;
     }
@@ -1245,14 +1355,11 @@ fn draw(frame: &mut Frame, view: &mut View) {
         area,
     );
     let wide_banner = view.layout == LayoutMode::Cockpit && area.width >= 94 && area.height >= 24;
+    let input_layout = text_input::input_layout(&view.input, area.width.saturating_sub(2) as usize);
     let rows = Layout::vertical([
         Constraint::Length(if wide_banner { 8 } else { 2 }),
         Constraint::Min(1),
-        Constraint::Length(
-            (wrapped_lines(&format!("› {}", view.input), area.width.saturating_sub(2)) as u16)
-                .clamp(1, 4)
-                + 2,
-        ),
+        Constraint::Length((input_layout.lines.len().min(6) as u16).max(1) + 2),
         Constraint::Length(2),
     ])
     .split(area);
@@ -1429,17 +1536,46 @@ fn draw(frame: &mut Frame, view: &mut View) {
             " Your answer · ↑↓ choose or type · Enter send "
         }
     } else {
-        " Message · Enter to send "
+        " Message · Enter send · Alt-Enter newline "
     };
-    draw_text_panel(
-        frame,
-        view,
-        Pane::Input,
-        format!("› {}", view.input),
-        input_title,
-        if pending { BRAND[4] } else { BRAND[1] },
-        rows[2],
+    let block = panel(input_title, if pending { BRAND[4] } else { BRAND[1] });
+    let inner = block.inner(rows[2]);
+    frame.render_widget(block, rows[2]);
+    view.selectable.push(inner);
+    let (_, cursor_x, cursor_y) = input_layout
+        .positions
+        .iter()
+        .find(|(i, _, _)| *i == view.cursor())
+        .copied()
+        .unwrap();
+    let manual = view.input_scroll_manual;
+    let state = view.pane(Pane::Input);
+    state.area = inner;
+    state.page = inner.height.max(1) as usize;
+    state.max = input_layout.lines.len().saturating_sub(state.page);
+    state.offset = state.offset.min(state.max);
+    if !manual {
+        state.offset = state
+            .offset
+            .min(cursor_y)
+            .max((cursor_y + 1).saturating_sub(state.page));
+    }
+    let cursor_visible = cursor_y >= state.offset && cursor_y < state.offset + state.page;
+    frame.render_widget(
+        Paragraph::new(input_layout.lines.join("\n")).scroll((state.offset as u16, 0)),
+        inner,
     );
+    let input_cursor = (
+        inner.x + cursor_x.min(inner.width.saturating_sub(1) as usize) as u16,
+        inner.y + cursor_y.saturating_sub(state.offset) as u16,
+    );
+    if matches!(view.screen, Screen::Conversation)
+        && inner.width > 0
+        && inner.height > 0
+        && cursor_visible
+    {
+        frame.set_cursor_position(input_cursor);
+    }
     let footer = if view.quit_armed {
         " Press Ctrl-C again to quit. Any other key continues."
     } else if !view.error.is_empty() {
@@ -1841,7 +1977,8 @@ pub async fn show(
     let _restore = Restore;
     crossterm::execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let mut keys = input().await;
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut tick = tokio::time::interval(Duration::from_millis(16));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
     let mut agents_tick = tokio::time::interval(Duration::from_millis(250));
     let mut addressed: Option<RunHandle> = None;
@@ -1956,7 +2093,10 @@ pub async fn show(
                 // that was frozen for copying.
                 let saving_settings = matches!(view.screen, Screen::Settings)
                     && ((ctrl && matches!(key.code, KeyCode::Char('s' | 'S'))) || key.code == KeyCode::F(10));
-                if view.selection.take().is_some() && !saving_settings { continue; }
+                if view.selection.take().is_some() && !saving_settings
+                    && !(matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete)
+                        && !ctrl && !key.modifiers.contains(KeyModifiers::ALT))
+                { continue; }
                 if key.code == KeyCode::F(6) {
                     view.quit_armed = false;
                     view.native_selection = !view.native_selection;
@@ -2081,9 +2221,9 @@ pub async fn show(
                     match key.code {
                         KeyCode::Up => { view.command_selected = (view.command_selected + commands.len() - 1) % commands.len(); continue; },
                         KeyCode::Down => { view.command_selected = (view.command_selected + 1) % commands.len(); continue; },
-                        KeyCode::Tab => { view.input = commands[view.command_selected.min(commands.len() - 1)].0.into(); view.command_selected = 0; continue; },
+                        KeyCode::Tab => { view.input = commands[view.command_selected.min(commands.len() - 1)].0.into(); view.input_cursor = None; view.command_selected = 0; continue; },
                         KeyCode::Esc => { view.commands_dismissed = true; continue; },
-                        KeyCode::Enter => { view.input = commands[view.command_selected.min(commands.len() - 1)].0.into(); },
+                        KeyCode::Enter => { view.input = commands[view.command_selected.min(commands.len() - 1)].0.into(); view.input_cursor = None; },
                         _ => {}
                     }
                 }
@@ -2095,6 +2235,12 @@ pub async fn show(
                         view.choice_selected = if key.code == KeyCode::Up { (view.choice_selected + count - 1) % count } else { (view.choice_selected + 1) % count };
                         continue;
                     }
+                }
+                if (key.code == KeyCode::Enter && key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT))
+                    || (ctrl && key.code == KeyCode::Char('j'))
+                {
+                    if view.expanded_input().len() < text_input::INPUT_LIMIT { view.insert_input("\n"); }
+                    continue;
                 }
                 if key.code == KeyCode::Enter && view.input == "/quit" { break; }
                 if key.code == KeyCode::Enter && matches!(view.input.as_str(), "/setup" | "/sessions") {
@@ -2132,10 +2278,12 @@ pub async fn show(
                     } else { match key.code {
                         KeyCode::PageUp => view.scroll_chat(true, view.chat_page.saturating_sub(1).max(1)),
                         KeyCode::PageDown => view.scroll_chat(false, view.chat_page.saturating_sub(1).max(1)),
-                        KeyCode::Home => view.scroll = Some(0),
-                        KeyCode::End => view.scroll = None,
+                        KeyCode::Home if ctrl || view.input.is_empty() => view.scroll = Some(0),
+                        KeyCode::End if ctrl || view.input.is_empty() => view.scroll = None,
+                        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End => view.move_input(key.code, ctrl),
                         KeyCode::Backspace => view.backspace_input(),
-                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input().len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.input.push(c); view.edited_input(); },
+                        KeyCode::Delete => view.delete_input(),
+                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input().len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.insert_input(&c.to_string()); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
                             if input.starts_with("/permissions ") {
@@ -2152,7 +2300,7 @@ pub async fn show(
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
                                         view.append(&format!("{}\n", crate::cli_config::COMMAND_HELP));
-                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Shift-Insert: paste · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nPgUp/PgDn scroll chat · Home: oldest · End: latest and follow output\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
+                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Shift-Insert: paste · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nDraft: arrows move · Ctrl-Left/Right move by word · Home/End move within line · Delete/Backspace edit\nAlt-Enter or Ctrl-J: newline · Enter: send\nPgUp/PgDn scroll chat · Ctrl-Home/End: oldest/latest (also Home/End with an empty draft)\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
                                     },
                                     "/clear" => view.transcript.clear(),
                                     "/agents" => { view.screen = Screen::Agents; view.pane(Pane::AgentDetails).offset = 0; },
@@ -2212,6 +2360,53 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prompt_edits_at_cursor_with_unicode_words_and_atomic_pastes() {
+        let mut view = View::default();
+        view.insert_input("Grüße 👩‍💻 Welt");
+        view.move_input(KeyCode::Left, true);
+        view.insert_input("schöne ");
+        assert_eq!(view.input, "Grüße 👩‍💻 schöne Welt");
+        view.move_input(KeyCode::Home, false);
+        view.delete_input();
+        assert_eq!(view.input, "rüße 👩‍💻 schöne Welt");
+        view.move_input(KeyCode::End, false);
+        view.move_input(KeyCode::Left, true);
+        view.move_input(KeyCode::Left, true);
+        view.backspace_input(); // space after the emoji
+        view.backspace_input(); // the complete emoji, not a partial ZWJ sequence
+        assert_eq!(view.input, "rüße schöne Welt");
+        view.move_input(KeyCode::Home, false);
+        view.paste(&"block\n".repeat(8));
+        view.move_input(KeyCode::Left, false);
+        assert_eq!(view.cursor(), 0);
+        view.delete_input();
+        assert_eq!(view.input, "rüße schöne Welt");
+        assert!(view.pasted_texts.is_empty());
+    }
+
+    #[test]
+    fn multiline_prompt_keeps_cursor_visible_and_supports_vertical_edits() {
+        let mut view = View::default();
+        view.insert_input("first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh 世界");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(view.panes[Pane::Input as usize].offset > 0);
+        view.move_input(KeyCode::Home, false);
+        view.move_input(KeyCode::Up, false);
+        view.insert_input("NEW ");
+        assert!(view.input.contains("\nNEW sixth\n"));
+        for _ in 0..10 {
+            view.move_input(KeyCode::Up, false);
+        }
+        view.move_input(KeyCode::Home, false);
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert_eq!(view.panes[Pane::Input as usize].offset, 0);
+        view.insert_input("start ");
+        assert!(view.input.starts_with("start first"));
+    }
+
     #[test]
     fn paste_stays_in_the_draft_and_does_not_answer_hidden_requests() {
         let mut view = View::default();
@@ -2303,7 +2498,10 @@ mod tests {
                     let chat_before = view.scroll;
                     view.scroll_at(state.area.x, state.area.y, false);
                     terminal.draw(|f| draw(f, &mut view)).unwrap();
-                    assert_eq!(view.pane(pane).offset, 3);
+                    assert_eq!(
+                        view.pane(pane).offset,
+                        state.offset.saturating_add(3).min(state.max)
+                    );
                     assert_eq!(view.scroll, chat_before);
                     for (i, previous) in before.iter().enumerate() {
                         if i != pane as usize {

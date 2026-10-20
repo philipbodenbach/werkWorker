@@ -124,6 +124,12 @@ Selections use a bright cyan background, actions and shortcuts are cyan, enabled
 states are green and restrictions are amber. Ctrl-C copies selected text, Ctrl-V
 pastes, a single right-click copies a selection or pastes, and the wheel scrolls
 the pane under the pointer. F6 switches to native terminal selection.
+The prompt has a visible editing cursor: arrows move through the text,
+Ctrl-Left/Right move by word, Home/End move within a line, and Delete/Backspace
+edit at the cursor. Alt-Enter or Ctrl-J inserts a newline; Enter sends the message.
+Wrapped and multiline drafts scroll to keep the cursor visible while editing.
+PgUp/PgDn scroll the conversation; Ctrl-Home/End jump to its start/end
+(Home/End also do this when the draft is empty).
 Large pastes appear as numbered blocks such as `[Pasted text #1 +24 lines]`.
 The full text is sent to the model; Backspace at the block's end removes it as
 one unit. The complete message supports up to 64 KiB; oversized pastes are

@@ -3,7 +3,7 @@ use crate::{
     providers::{ModelRequest, wire_message},
 };
 use async_trait::async_trait;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Conservative serialized wire bytes plus template margin, not a tokenizer count.
 pub fn estimate_request(request: &ModelRequest) -> usize {
@@ -120,6 +120,25 @@ impl ContextBuilder for DefaultContextBuilder {
             ));
         }
         prompt.push_str("For implementation tasks, use the permitted file/process tools to make and verify changes. Code shown in chat is only a proposal, not a file change. Report tests as executed only when tool results prove they ran.\n");
+        let loaded: BTreeSet<_> = run
+            .invocations
+            .iter()
+            .filter_map(|invocation| {
+                (invocation.call.name == "skills.load"
+                    && invocation
+                        .result
+                        .as_ref()
+                        .is_some_and(|r| r.status == Outcome::Succeeded))
+                .then(|| invocation.call.arguments["name"].as_str())
+                .flatten()
+            })
+            .collect();
+        if !loaded.is_empty() {
+            prompt.push_str(&format!(
+                "Skills already loaded successfully in this run: {}. Reuse their results; do not restart setup after each tool call. Continue to the next concrete task step.\n",
+                loaded.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
         let mut repeated = BTreeSet::new();
         for invocation in &run.invocations {
             let count = run
@@ -191,10 +210,59 @@ impl ContextBuilder for DefaultContextBuilder {
             .rfind(|(i, m)| *i >= run.history_start && m.role == Role::Assistant)
             .map(|(i, _)| i)
             .unwrap_or(session.messages.len());
+        // Keep the latest small setup results verbatim. A 100-character excerpt
+        // of a loaded skill or directory listing loses the evidence needed to
+        // move on, causing alternating reload/list loops on small contexts.
+        // Bound this reservation so large results remain compactable.
+        let mut setup = BTreeMap::new();
+        for invocation in &run.invocations {
+            if matches!(invocation.call.name.as_str(), "skills.load" | "files.list")
+                && invocation.result.is_some()
+            {
+                setup.insert(
+                    (
+                        invocation.call.name.as_str(),
+                        fingerprint(&invocation.call.arguments),
+                    ),
+                    invocation.message_index,
+                );
+            }
+        }
+        let mut retained = BTreeSet::new();
+        let mut retention_budget = (available / 3).min(4096);
+        let mut candidates: Vec<_> = setup.into_iter().collect();
+        candidates
+            .sort_by_key(|((name, _), index)| (*name != "skills.load", std::cmp::Reverse(*index)));
+        for (_, index) in candidates {
+            if index >= protected || compacted.contains(&index) || retained.contains(&index) {
+                continue;
+            }
+            let end = index + 1 + session.messages[index].tool_calls.len();
+            if end <= protected {
+                let size = serde_json::to_vec(&session.messages[index..end])?.len();
+                if size <= retention_budget {
+                    retention_budget -= size;
+                    retained.insert(index);
+                }
+            }
+        }
         let mut i = 0;
-        while i < protected && estimate(&messages) > target {
+        let mut preserve_setup = true;
+        while estimate(&messages) > target {
+            if i >= protected {
+                if protected > 0 && preserve_setup && estimate(&messages) > available {
+                    // Retention is a preference, never a new hard context limit.
+                    preserve_setup = false;
+                    i = 0;
+                } else {
+                    break;
+                }
+            }
             let message = &session.messages[i];
-            if message.role != Role::Assistant || compacted.contains(&i) {
+            if message.role != Role::Assistant
+                || omitted.contains(&i)
+                || (preserve_setup && retained.contains(&i))
+            {
                 i += 1;
                 continue;
             }
@@ -208,11 +276,37 @@ impl ContextBuilder for DefaultContextBuilder {
             for (n, item) in session.messages[i..end].iter().enumerate() {
                 omitted.insert(i + n);
                 // Extractive, explicitly untrusted excerpts; no invented semantic summary.
-                let excerpt: String = item.content.chars().take(100).collect();
+                let evidence = if item.role == Role::Tool {
+                    serde_json::from_str::<ToolResult>(&item.content)
+                        .ok()
+                        .map(|result| {
+                            format!(
+                                "status={:?} error={:?} truncated={} artifacts={} data={}",
+                                result.status,
+                                result.error_code,
+                                result.truncated,
+                                serde_json::to_string(&result.artifacts).unwrap_or_default(),
+                                result.data
+                            )
+                        })
+                } else {
+                    None
+                };
+                let excerpt: String = evidence
+                    .as_deref()
+                    .unwrap_or(&item.content)
+                    .chars()
+                    .take(400)
+                    .collect();
                 let names = item
                     .tool_calls
                     .iter()
-                    .map(|c| c.name.as_str())
+                    .map(|c| {
+                        format!("{} {}", c.name, c.arguments)
+                            .chars()
+                            .take(256)
+                            .collect::<String>()
+                    })
                     .collect::<Vec<_>>()
                     .join(",");
                 summary.push_str(&format!(
@@ -255,7 +349,7 @@ impl ContextBuilder for DefaultContextBuilder {
         // Excerpts are optional context, unlike current work/user constraints.
         // A fixed 1,536-byte excerpt budget can itself prevent a small request
         // from fitting. Remove oldest excerpts before reporting an overflow.
-        while estimate(&messages) > target && !summary.is_empty() {
+        while estimate(&messages) > available && !summary.is_empty() {
             let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
             summary.drain(..end);
             messages[0] = Message::text(

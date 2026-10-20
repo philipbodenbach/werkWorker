@@ -2,12 +2,77 @@
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 use std::{io, process::Stdio, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) const INPUT_LIMIT: usize = 65_536;
 
 pub(super) struct PastedText {
     pub marker: String,
     pub text: String,
+}
+
+/// Byte offsets for whole graphemes; collapsed pastes behave like single tokens.
+pub(super) fn boundaries(input: &str, pastes: &[PastedText]) -> Vec<usize> {
+    let ranges: Vec<_> = pastes
+        .iter()
+        .flat_map(|paste| {
+            input
+                .match_indices(&paste.marker)
+                .map(|(start, _)| start..start + paste.marker.len())
+        })
+        .collect();
+    input
+        .grapheme_indices(true)
+        .map(|(i, _)| i)
+        .chain(std::iter::once(input.len()))
+        .filter(|i| {
+            !ranges
+                .iter()
+                .any(|range| range.start < *i && *i < range.end)
+        })
+        .collect()
+}
+
+pub(super) struct InputLayout {
+    pub lines: Vec<String>,
+    pub positions: Vec<(usize, usize, usize)>,
+}
+
+/// Use the same wrapping for painting and cursor placement, including wide
+/// graphemes, explicit newlines and the empty cell after a full final row.
+pub(super) fn input_layout(input: &str, width: usize) -> InputLayout {
+    let width = width.max(1);
+    let mut lines = vec![String::new()];
+    let mut column = 0;
+    let mut positions = Vec::new();
+    for (offset, grapheme) in "› "
+        .graphemes(true)
+        .map(|g| (None, g))
+        .chain(input.grapheme_indices(true).map(|(i, g)| (Some(i), g)))
+    {
+        let shown = if grapheme == "\t" { "    " } else { grapheme };
+        let cells = ratatui::text::Span::raw(shown).width();
+        if grapheme != "\n" && column + cells > width && column > 0 {
+            lines.push(String::new());
+            column = 0;
+        }
+        if let Some(offset) = offset {
+            positions.push((offset, column, lines.len() - 1));
+        }
+        if grapheme == "\n" {
+            lines.push(String::new());
+            column = 0;
+        } else {
+            lines.last_mut().unwrap().push_str(shown);
+            column += cells.min(width);
+        }
+    }
+    if column >= width {
+        lines.push(String::new());
+        column = 0;
+    }
+    positions.push((input.len(), column, lines.len() - 1));
+    InputLayout { lines, positions }
 }
 
 /// Expand only markers in the draft itself, never marker-like text inside a paste.

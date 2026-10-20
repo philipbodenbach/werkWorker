@@ -28,7 +28,11 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         turn('files.write',{'path':'approved.txt','content':'approved'},'Prepared write'),
         turn('interaction.ask',{'question':'Which audience?','choices':['team','public']}),
         turn('interaction.ask',{'question':'Choose visibility','choices':['private','public']}),
-        turn(text='Finished for the team'),
+        turn(text='\n'.join(f'History row {i:03}' for i in range(80))
+             + '\n```rust\nfn main() {\n    let message = "hello"; // checked code\n}\n```\nFinished for the team'),
+        {'deltas': [], 'error': {'code': 'fixture_failure', 'message': 'Fixture model request failed.',
+                                'retryable': False, 'retry_after_ms': None}},
+        turn(text='Follow-up recovered in the same session'),
         dict(turn(text='slow response'),delay_ms=10_000),
     ]))
     grants=root/'grants.json'; grants.write_text(json.dumps({'mode':'ask','workspace_writable':True,'grants':[{'tool':'files.write','version':'1','resource':'.','arguments_hash':None,'expires_at_ms':None,'preapproved':False}]}))
@@ -90,6 +94,28 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x1b[B\r')  # Choose public with arrows and Enter.
         wait_for(b'Finished for the team')
         wait_for(b'Completed')
+        assert b'48;2;29;32;30' in capture, 'Code block background was not rendered'
+        assert b'\x1b[?1006h' in capture, 'Mouse capture was not enabled'
+        os.write(master,b'\x1b[H')  # Home: oldest history.
+        wait_for(b'you')
+        wait_for(b'initial task')
+        wait_for(b'End: latest')
+        os.write(master,b'\x1b[6~')  # Page Down.
+        wait_for(b'History row')
+        os.write(master,b'\x1b[F')  # End: follow the latest output.
+        wait_for(b'Finished for the team')
+        wait_for(b'End: latest',present=False)
+        os.write(master,b'\x1b[<64;10;15M')  # SGR mouse wheel over the chat.
+        wait_for(b'End: latest')
+        os.write(master,b'\x1b[F')
+        wait_for(b'End: latest',present=False)
+        os.write(master,b'trigger failure\r')
+        wait_for(b'Fixture model request failed.')
+        wait_for(b'The session is still open.')
+        assert proc.poll() is None
+        os.write(master,b'continue after failure\r')
+        wait_for(b'Follow-up recovered in the same session')
+        wait_for(b'Completed')
         os.write(master,b'/')
         wait_for(b'Commands ')
         wait_for(b'/clear')
@@ -113,12 +139,19 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x03'); wait_for(b'Cancelled')
         assert proc.poll() is None
         os.write(master,b'\x03'); assert proc.wait(timeout=10)==0
+        while select.select([master],[],[],0)[0]:
+            data=os.read(master,65536)
+            if not data: break
+            capture.extend(data); screen.feed(data)
         assert termios.tcgetattr(slave)==before, 'Terminal raw mode was not restored'
         assert colors_seen
+        assert b'\x1b[?1006l' in capture, 'Mouse capture was not restored'
         with sqlite3.connect(root/'state.sqlite') as db:
             sessions=[json.loads(row[0]) for row in db.execute('SELECT data FROM sessions')]
         answers=[i['interaction']['answer'] for s in sessions for r in s['runs'] for i in r['invocations'] if i.get('interaction')]
         assert answers==['team','public'],answers
+        assert len(sessions)==1, 'Follow-up created a different session'
+        assert [r['status'] for r in sessions[0]['runs']]==['completed','failed','completed','cancelled']
         screen=Screen()
         proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'restart.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
         wait_for(b' Session ')
@@ -133,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x11')
         assert proc.wait(timeout=10)==0
         assert termios.tcgetattr(slave)==before
-        print('PTY: inline approval, freeform/selected answers, persisted Compact/Cockpit menu, draft preservation, commands, cancellation and terminal restoration passed.')
+        print('PTY: approvals, answers, layouts, styled code, keyboard/mouse scrolling, follow-up after failure, commands, cancellation and terminal restoration passed.')
     finally:
         if proc.poll() is None: proc.kill(); proc.wait()
         os.close(master); os.close(slave)

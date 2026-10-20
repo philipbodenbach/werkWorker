@@ -28,6 +28,10 @@ background `(9,13,23)`, panel `(15,21,35)`, text `(224,230,248)`, muted
 violet `(139,92,246)` and pink `(255,79,195)`. A true-color terminal displays
 these directly. See NOTICE for attribution.
 
+Fenced source code has a separate charcoal/olive background, a language label,
+and muted sage strings, ochre numbers, mauve keywords and gray-green comments.
+Indentation is retained; an unfinished code fence is styled while streaming.
+
 | Key | Behavior |
 |---|---|
 | Enter | Submit a message, steer the active run, or answer the pending question |
@@ -44,6 +48,8 @@ these directly. See NOTICE for attribution.
 | Ctrl-C | Cancel the active run; press again consecutively to quit (any other key resets this) |
 | Ctrl-Q | Cancel/clean up managed work, close the session and restore the terminal |
 | Page Up / Page Down | Scroll conversation history |
+| Mouse wheel | Scroll chat or inspector under the pointer (Shift selects terminal text in most terminals) |
+| Home / End | Jump to oldest visible history / latest output and resume following |
 | Alt-Up / Alt-Down | Scroll full approval details, question or session information |
 
 Slash commands: `/help` shows commands and shortcuts, `/clear` clears only the
@@ -52,8 +58,14 @@ session with the same cleanup as Ctrl-Q. Commands work without a connected model
 Known commands also work while answering a pending question. Other slash-prefixed
 input is treated as an answer. F2/F3 preserve any draft answer.
 
-The conversation streams attempt text and tool states. Failed attempts remain
-visibly interrupted. Pending approvals and questions appear below the conversation
+The conversation streams attempt text and tool states. Scrolling up anchors the
+reading position while new output arrives; End or scrolling to the bottom resumes
+following. A scrollbar and position indicator show where you are. Wrapping and
+scroll offsets use the same terminal-width calculation, including wide characters.
+Failed attempts remain visibly interrupted. Terminal run errors show their code,
+message and next action in the transcript, including when reopening a failed chat.
+Completed and failed runs leave the session open for follow-up messages.
+Pending approvals and questions appear below the conversation
 and identify their owning agent. Questions show the agent's suggested answers plus
 **Write my own answer**. Use Up/Down and Enter, or type a custom answer directly.
 When the input contains text, Enter sends that text instead of the highlighted
@@ -64,7 +76,10 @@ process rights; Alt-Up/Down scrolls them independently of the choice list.
 Typing a chat message does not approve a prepared action. Inspectors do not accept approval keystrokes
 for hidden requests: return with Esc to review and answer the displayed request.
 The Cockpit sidebar summarizes the profile and host access; F2 exposes these
-details in either layout.
+details in either layout. Read-only sessions also show a persistent footer notice:
+chat code does not create files. The model receives the host write restriction
+and granted tool names, with instructions to report blocked execution rather
+than fabricate file changes or test results.
 
 The setup explicitly selects session grants; a reply such as "yes" to an agent
 question cannot enlarge them. To create files and run `cargo test`, select both

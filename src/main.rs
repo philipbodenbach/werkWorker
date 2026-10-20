@@ -2,6 +2,8 @@
 mod cli_setup;
 #[path = "cli_start.rs"]
 mod cli_start;
+#[path = "cli_transcript.rs"]
+mod cli_transcript;
 #[path = "cli_tui.rs"]
 mod cli_tui;
 use clap::{Parser, Subcommand};

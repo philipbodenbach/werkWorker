@@ -72,6 +72,9 @@ for unknown/1/2/4 slots. It needs no model and must not be called GPU throughput
 Record raw JSON, environment, exact command and validation logs alongside the
 summary; keep baseline and later runs distinct. See the
 [2026-10-19 experiment record](benchmarks/2026-10-19-subagents/README.md).
-Context tests verify rolling compaction within a single long tool run, preserved
+Context tests verify rolling compaction within a single long tool run, follow-up
+turns after a large final code response in the same session, preserved
 constraints/tool pairs, server-sized reserves, oversized input rejection before
 dispatch, learned smaller limits and nonretryable truncated tool output.
+The TUI PTY test also checks keyboard/mouse scrolling, code-block colors, visible
+run errors and follow-ups after failure without creating another session.

@@ -66,7 +66,11 @@ Compaction is enabled by default without an extra model request. Before **each**
 ordinary inference, the default builder targets 80% of available input capacity.
 It replaces complete earlier assistant/tool groups with bounded extractive
 excerpts, including groups completed earlier in the same long-running task.
-The latest assistant/tool group and every user/system constraint are retained.
+The latest assistant/tool group **within the current run** and every user/system
+constraint are retained. After a run finishes, its final answer becomes eligible
+for compaction on the next turn. A long code answer therefore does not permanently
+block follow-up messages in the same session. This trims the next request, not
+the saved conversation, and does not require a server restart or cache reset.
 Pending invocations finish or resolve their approvals before this step; no
 half tool-call/result group is compacted.
 
@@ -75,7 +79,9 @@ characters of each source content; the accumulated excerpt is capped at 1,536
 UTF-8 bytes. Candidates that would increase size are discarded. These are
 explicitly labeled incomplete, untrusted excerpts, not a claim of lossless
 semantic summarization. The model may need to reread evidence through granted
-tools. Canonical messages, outcomes and approvals are never deleted.
+tools. If the fixed excerpt allowance would crowd out current work, older
+excerpts are further removed to fit the available budget. Canonical messages,
+outcomes and approvals are never deleted.
 
 Each durable `ContextSnapshot` records its hash, estimated size, omitted source
 indices and excerpt/summary. Compaction is recalculated from canonical history,

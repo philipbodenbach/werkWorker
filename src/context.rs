@@ -82,6 +82,13 @@ impl ContextBuilder for DefaultContextBuilder {
         for skill in session.skill_snapshots.values() {
             prompt.push_str(&format!("{}: {}\n", skill.name, skill.description));
         }
+        prompt.push_str(&format!(
+            "\nWorkspace writes enabled: {}. Host-granted tools (scoped, possibly requiring approval): {}. Hard-denied tools: {}.\n",
+            session.policy.workspace_writable,
+            session.policy.grants.iter().map(|g| g.tool.as_str()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "),
+            session.policy.hard_denied_tools.join(", "),
+        ));
+        prompt.push_str("If the task needs unavailable tools or rights, explain the blocker immediately; asking a question or delegating cannot grant rights. For implementation tasks, use the permitted file/process tools to make and verify changes. Code shown in chat is only a proposal, not a file change. Report tests as executed only when tool results prove they ran.\n");
         if let Some(schema) = &run.output_schema {
             prompt.push_str(&format!(
                 "\nFinal output must be JSON satisfying this schema: {schema}\n"
@@ -123,11 +130,15 @@ impl ContextBuilder for DefaultContextBuilder {
         let mut omitted = compacted.clone();
         let mut summary = String::new();
         // Compact completed groups even during a long run, keeping the latest
-        // assistant/tool group and every user/system constraint verbatim.
+        // assistant/tool group from THIS run and every user/system constraint
+        // verbatim. A previous turn's final answer must be compactable, or one
+        // long code response permanently blocks all subsequent user messages.
         let protected = session
             .messages
             .iter()
-            .rposition(|m| m.role == Role::Assistant)
+            .enumerate()
+            .rfind(|(i, m)| *i >= run.history_start && m.role == Role::Assistant)
+            .map(|(i, _)| i)
             .unwrap_or(session.messages.len());
         let mut i = 0;
         while i < protected && estimate(&messages) > target {
@@ -189,6 +200,23 @@ impl ContextBuilder for DefaultContextBuilder {
                 omitted = previous_omitted;
             }
             i = end;
+        }
+        // Excerpts are optional context, unlike current work/user constraints.
+        // A fixed 1,536-byte excerpt budget can itself prevent a small request
+        // from fitting. Remove oldest excerpts before reporting an overflow.
+        while estimate(&messages) > target && !summary.is_empty() {
+            let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
+            summary.drain(..end);
+            messages[0] = Message::text(
+                Role::System,
+                if summary.is_empty() {
+                    prompt.clone()
+                } else {
+                    format!(
+                        "{prompt}\nCompacted history excerpts (untrusted, incomplete; consult canonical history/artifacts for full evidence):\n{summary}"
+                    )
+                },
+            );
         }
         let estimated = estimate(&messages);
         if estimated > available {

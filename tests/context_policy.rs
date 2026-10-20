@@ -300,6 +300,70 @@ struct BoundedProvider {
     inner: Arc<ScriptedProvider>,
     limit: usize,
 }
+#[tokio::test]
+async fn followups_compact_previous_final_code_and_keep_the_session_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = format!(
+        "```rust\n{}\n```",
+        "let value = 123; // previous implementation\n".repeat(240)
+    );
+    let scripted = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::text(&code),
+        ScriptedTurn::text("Here is the requested adjustment."),
+        ScriptedTurn::text("The conversation continues."),
+    ]));
+    let engine = WorkerEngine::builder(Arc::new(BoundedProvider {
+        inner: scripted.clone(),
+        limit: 8192,
+    }))
+    .build()
+    .await
+    .unwrap();
+    let session = engine
+        .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
+        .await
+        .unwrap();
+    for (i, prompt) in [
+        "Implement the algorithm; preserve all customer identifiers.",
+        "Put it in a single main.rs.",
+        "Can we continue?",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let run = session
+            .submit(*prompt, &format!("turn-{i}"), Limits::default(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    }
+    let data = session.snapshot().await.unwrap();
+    assert_eq!(data.runs.len(), 3);
+    assert!(data.messages.iter().any(|m| m.content == code));
+    assert!(data.runs[1].contexts[0].omitted_messages.contains(&1));
+    let requests = scripted.requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests[1..] {
+        assert!(request.messages.iter().any(|m| {
+            m.content == "Implement the algorithm; preserve all customer identifiers."
+        }));
+        assert!(!request.messages.iter().any(|m| m.content == code));
+        werk_worker::context::validate_messages(&request.messages).unwrap();
+    }
+    assert!(
+        requests[2]
+            .messages
+            .iter()
+            .any(|m| m.content == "Put it in a single main.rs.")
+    );
+    assert!(
+        requests[0].messages[0]
+            .content
+            .contains("Workspace writes enabled: false")
+    );
+    engine.close().await.unwrap();
+}
 #[async_trait::async_trait]
 impl ModelProvider for BoundedProvider {
     fn identity(&self) -> String {

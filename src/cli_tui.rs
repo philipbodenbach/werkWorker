@@ -1,12 +1,18 @@
 //! Interactive CLI client. Engine policy and lifecycle stay in the public SDK.
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+    KeyModifiers, MouseEventKind,
+};
 use futures_util::{Stream, StreamExt};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 use std::{io::IsTerminal, pin::Pin, time::Duration};
 use werk_worker::*;
@@ -95,6 +101,7 @@ pub(crate) async fn input() -> tokio::sync::MutexGuard<'static, EventStream> {
 }
 impl Drop for Restore {
     fn drop(&mut self) {
+        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
     }
 }
@@ -165,7 +172,11 @@ struct View {
     run_id: String,
     approval: Option<ApprovalRequest>,
     interaction: Option<InteractionRequest>,
-    scroll: u16,
+    // None follows the bottom; Some anchors a visual row while output streams.
+    scroll: Option<usize>,
+    chat_max_scroll: usize,
+    chat_page: usize,
+    chat_area: Rect,
     detail_scroll: u16,
     error: String,
     model_requests: u32,
@@ -183,11 +194,39 @@ struct View {
     agent_scroll: u16,
     permissions: String,
     access_summary: String,
+    access_hint: String,
     layout: LayoutMode,
     layout_selected: usize,
     choice_selected: usize,
 }
 impl View {
+    fn scroll_chat(&mut self, up: bool, rows: usize) {
+        let position = self.scroll.unwrap_or(self.chat_max_scroll);
+        let next = if up {
+            position.saturating_sub(rows)
+        } else {
+            position.saturating_add(rows).min(self.chat_max_scroll)
+        };
+        self.scroll = (next < self.chat_max_scroll).then_some(next);
+    }
+    fn show_run_error(&mut self, error: &WorkerError) {
+        let advice = match error.code.as_str() {
+            "context_overflow" => {
+                "The current work or user constraints exceed the context budget. Use /setup for a larger context, or /sessions for a new chat. The saved history is intact."
+            }
+            "wall_budget" | "step_budget" | "request_budget" | "tool_budget" => {
+                "This run reached its limit. Send a follow-up to continue in this session."
+            }
+            "capability_denied" => {
+                "Use /permissions to review access; /setup configures a new session with different rights."
+            }
+            _ => "The session is still open. You can send another message.",
+        };
+        self.append(&format!(
+            "\nError · {}: {}\n{advice}\n",
+            error.code, error.message
+        ));
+    }
     fn response_options(&self) -> Vec<String> {
         if self.approval.is_some() {
             vec!["Allow once".into(), "Deny".into()]
@@ -413,10 +452,9 @@ pub(crate) fn panel(title: &str, color: Color) -> Block<'_> {
         .style(Style::default().bg(PANEL).fg(TEXT))
 }
 fn wrapped_lines(text: &str, width: u16) -> usize {
-    let width = usize::from(width.max(1));
-    text.lines()
-        .map(|line| line.chars().count().max(1).div_ceil(width))
-        .sum()
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
 }
 
 fn draw_request(frame: &mut Frame, view: &View, area: Rect) {
@@ -494,7 +532,7 @@ fn draw_request(frame: &mut Frame, view: &View, area: Rect) {
     );
 }
 
-fn draw_chat(frame: &mut Frame, view: &View, area: Rect) {
+fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
     let pending = view.approval.is_some() || view.interaction.is_some();
     let (chat, request) = if pending {
         let body = view
@@ -516,23 +554,55 @@ fn draw_chat(frame: &mut Frame, view: &View, area: Rect) {
         (area, None)
     };
     let height = usize::from(chat.height.saturating_sub(2));
-    let offset = wrapped_lines(&view.transcript, chat.width.saturating_sub(2))
+    let paragraph = Paragraph::new(crate::cli_transcript::render(
+        &view.transcript,
+        chat.width.saturating_sub(2),
+    ))
+    .wrap(Wrap { trim: false });
+    let offset = paragraph
+        .line_count(chat.width.saturating_sub(2))
         .saturating_sub(height)
-        .min(u16::MAX as usize) as u16;
+        .min(u16::MAX as usize);
+    view.chat_max_scroll = offset;
+    view.chat_page = height.max(1);
+    view.chat_area = chat;
+    if let Some(position) = &mut view.scroll {
+        *position = (*position).min(offset);
+    }
+    let position = view.scroll.unwrap_or(offset);
+    let title = if view.scroll.is_some() {
+        format!(
+            " Conversation · {}/{} · End: latest ",
+            position + 1,
+            offset + 1
+        )
+    } else {
+        " Conversation ".into()
+    };
     frame.render_widget(
-        Paragraph::new(view.transcript.as_str())
-            .wrap(Wrap { trim: false })
-            .scroll((offset.saturating_sub(view.scroll), 0))
-            .block(panel(
-                " Conversation ",
-                if view.layout == LayoutMode::Compact {
-                    MUTED
-                } else {
-                    BRAND[0]
-                },
-            )),
+        paragraph.scroll((position as u16, 0)).block(panel(
+            &title,
+            if view.layout == LayoutMode::Compact {
+                MUTED
+            } else {
+                BRAND[0]
+            },
+        )),
         chat,
     );
+    if offset > 0 && chat.height > 2 {
+        let mut state = ScrollbarState::new(offset + 1)
+            .position(position)
+            .viewport_content_length(height);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(MUTED)),
+            Rect::new(chat.x, chat.y + 1, chat.width, chat.height - 2),
+            &mut state,
+        );
+    }
     if let Some(area) = request {
         draw_request(frame, view, area);
     }
@@ -599,7 +669,7 @@ fn draw_agents(frame: &mut Frame, view: &View, area: Rect) {
     );
 }
 
-fn draw(frame: &mut Frame, view: &View) {
+fn draw(frame: &mut Frame, view: &mut View) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(BG).fg(TEXT)),
@@ -763,14 +833,16 @@ fn draw(frame: &mut Frame, view: &View) {
     } else if !view.error.is_empty() {
         &view.error
     } else {
-        " F2 permissions · F3 agents · F4 view · / commands · Ctrl-C cancel · Ctrl-Q quit"
+        " Wheel/PgUp/PgDn scroll · Home/End · F2 permissions · F3 agents · F4 view · / commands · Ctrl-Q quit"
     };
     frame.render_widget(
-        Paragraph::new(clean(footer)).style(Style::default().fg(if view.error.is_empty() {
-            MUTED
-        } else {
-            Color::Rgb(255, 90, 110)
-        })),
+        Paragraph::new(format!("{}\n{}", clean(footer), view.access_hint)).style(
+            Style::default().fg(if view.error.is_empty() {
+                MUTED
+            } else {
+                Color::Rgb(255, 90, 110)
+            }),
+        ),
         rows[3],
     );
     let commands = if matches!(view.screen, Screen::Conversation) {
@@ -936,7 +1008,7 @@ async fn answer_question(view: &mut View, run: &RunHandle, answer: &str) -> Resu
         view.interaction = None;
         view.input.clear();
         view.edited_input();
-        view.scroll = 0;
+        view.scroll = None;
     }
     Ok(())
 }
@@ -998,6 +1070,9 @@ fn restore_history(view: &mut View, data: &SessionData) {
             ));
         }
         view.append(&format!("\n[Opened saved session · {:?}]\n", run.status));
+        if let Some(error) = &run.error {
+            view.show_run_error(error);
+        }
     }
     view.model_requests = data
         .events
@@ -1051,6 +1126,15 @@ pub async fn show(
         cursor = data.events.last().map_or(0, |e| e.cursor);
         restore_history(&mut view, &data);
         (view.access_summary, view.permissions) = permission_details(&data);
+        if !data.policy.workspace_writable
+            || !data
+                .profile
+                .tools
+                .iter()
+                .any(|t| t == "files.write" || t == "files.edit")
+        {
+            view.access_hint = " Read-only session: no file changes. /setup: coding-basic + Read/write + sandbox processes for coding.".into();
+        }
         view.session_id = data.id;
         // refresh_agents exposes saved requests only once recovery has returned
         // the owning run to WaitingApproval/WaitingInput, not while still queued.
@@ -1079,6 +1163,7 @@ pub async fn show(
     };
     let mut terminal = ratatui::try_init()?;
     let _restore = Restore;
+    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     let mut keys = input().await;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut dirty = true;
@@ -1094,16 +1179,40 @@ pub async fn show(
                     dirty |= previous != (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
                 }
             },
-            _ = tick.tick() => { if dirty { terminal.draw(|frame| draw(frame, &view))?; dirty = false; } },
+            _ = tick.tick() => { if dirty { terminal.draw(|frame| draw(frame, &mut view))?; dirty = false; } },
             event = events.next() => match event {
-                Some(Ok(event)) => { view.event(event); dirty = true; },
+                Some(Ok(event)) => {
+                    let ended = matches!(event.event, EventKind::RunState { status } if status.terminal());
+                    let run_id = event.run_id.clone();
+                    view.event(event);
+                    if ended && let (Some(session), Some(run_id)) = (&session, run_id) {
+                        let data = session.snapshot().await?;
+                        if let Some(error) = &data.run(&run_id)?.error {
+                            view.show_run_error(error);
+                        }
+                    }
+                    dirty = true;
+                },
                 Some(Err(error)) => return Err(error),
                 None => break,
             },
             key = keys.next() => {
                 let Some(key) = key else { break; };
                 dirty = true;
-                let Event::Key(key) = key? else { continue; };
+                let event = key?;
+                if let Event::Mouse(mouse) = event {
+                    if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                        let up = mouse.kind == MouseEventKind::ScrollUp;
+                        match view.screen {
+                            Screen::Conversation if view.chat_area.contains((mouse.column, mouse.row).into()) => view.scroll_chat(up, 3),
+                            Screen::Agents => view.agent_scroll = if up { view.agent_scroll.saturating_sub(3) } else { view.agent_scroll.saturating_add(3) },
+                            Screen::Permissions => view.detail_scroll = if up { view.detail_scroll.saturating_sub(3) } else { view.detail_scroll.saturating_add(3) },
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                let Event::Key(key) = event else { continue; };
                 if key.kind == KeyEventKind::Release { continue; }
                 if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter { continue; }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1198,8 +1307,10 @@ pub async fn show(
                     } else if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Up | KeyCode::Down) {
                         view.detail_scroll = if key.code == KeyCode::Up { view.detail_scroll.saturating_sub(3) } else { view.detail_scroll.saturating_add(3) };
                     } else { match key.code {
-                        KeyCode::PageUp => view.scroll = view.scroll.saturating_add(10),
-                        KeyCode::PageDown => view.scroll = view.scroll.saturating_sub(10),
+                        KeyCode::PageUp => view.scroll_chat(true, view.chat_page.saturating_sub(1).max(1)),
+                        KeyCode::PageDown => view.scroll_chat(false, view.chat_page.saturating_sub(1).max(1)),
+                        KeyCode::Home => view.scroll = Some(0),
+                        KeyCode::End => view.scroll = None,
                         KeyCode::Backspace => { view.input.pop(); view.edited_input(); },
                         KeyCode::Char(c) if !ctrl && !c.is_control() && view.input.len() < 16_384 => { view.input.push(c); view.edited_input(); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
@@ -1209,7 +1320,7 @@ pub async fn show(
                                     "/help" => {
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
-                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit\nQuestion: ↑/↓ + Enter, or type an answer\nCtrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · PgUp/PgDn scroll\nAlt-Up/Down scroll request details · Ctrl-U clears input\n");
+                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit\nQuestion: ↑/↓ + Enter, or type an answer\nCtrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel/PgUp/PgDn scroll\nHome: oldest · End: latest and follow output\nAlt-Up/Down scroll request details · Ctrl-U clears input\n");
                                     },
                                     "/clear" => view.transcript.clear(),
                                     "/agents" => { view.screen = Screen::Agents; view.agent_scroll = 0; },
@@ -1218,7 +1329,7 @@ pub async fn show(
                                     "/cancel" => { if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI /cancel", &id("cancel")).await?; } },
                                     _ => return Err(WorkerError::new("unknown_command", "Unknown command. Type / for suggestions or /help.")),
                                 }
-                                view.input.clear(); view.edited_input(); view.scroll = 0;
+                                view.input.clear(); view.edited_input(); view.scroll = None;
                                 return Ok(());
                             }
                             if view.approval.is_some() {
@@ -1237,7 +1348,7 @@ pub async fn show(
                                     active = Some(session.submit(&input, &id("tui"), limits.clone(), None).await?);
                                 }
                             } else { return Err(WorkerError::new("provider_required", "Connect Werk or start ww tui --demo")); }
-                            view.append(&format!("\n\nyou › {input}\n")); view.input.clear(); view.edited_input(); view.scroll = 0;
+                            view.append(&format!("\n\nyou › {input}\n")); view.input.clear(); view.edited_input(); view.scroll = None;
                         },
                         _ => {}
                     }}
@@ -1259,6 +1370,67 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scrolling_uses_rendered_rows_and_holds_position_during_streaming() {
+        let mut view = View::default();
+        for n in 0..80 {
+            view.append(&format!(
+                "line-{n:03} 世界 some words that wrap at narrow widths\n"
+            ));
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 18)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(view.chat_max_scroll > 80);
+        let bottom = view.chat_max_scroll;
+        view.scroll_chat(true, 12);
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let position = view.scroll.unwrap();
+        assert_eq!(position, bottom - 12);
+        let first_row = |t: &ratatui::Terminal<ratatui::backend::TestBackend>, v: &View| {
+            let buffer = t.backend().buffer();
+            (v.chat_area.x + 1..v.chat_area.right() - 1)
+                .map(|x| buffer[(x, v.chat_area.y + 1)].symbol())
+                .collect::<String>()
+        };
+        let before = first_row(&terminal, &view);
+        view.append(&"new output\n".repeat(20));
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert_eq!(view.scroll, Some(position));
+        assert_eq!(first_row(&terminal, &view), before);
+        view.scroll_chat(false, usize::MAX);
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert_eq!(view.scroll, None);
+        assert!(view.chat_max_scroll > bottom);
+    }
+
+    #[test]
+    fn fenced_code_has_a_muted_background_and_preserves_indentation() {
+        let mut view = View::default();
+        view.append("werk › ```rust\nfn main() {\n    let message = \"Grüße 世界\"; // explanation\n}\n```\nProse after code.");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("│     let message"));
+        assert!(text.contains("Prose after code."));
+        assert!(!text.contains("```"));
+        let cells: Vec<_> = buffer
+            .content()
+            .iter()
+            .filter(|c| c.bg == crate::cli_transcript::CODE_BG)
+            .collect();
+        assert!(!cells.is_empty());
+        assert!(cells.iter().any(|c| c.fg == Color::Rgb(183, 157, 174)));
+        assert!(cells.iter().any(|c| c.fg == Color::Rgb(169, 185, 141)));
+        assert!(cells.iter().any(|c| c.fg == Color::Rgb(139, 148, 129)));
+    }
+
     #[test]
     fn command_preview_filters_and_preserves_question_answers() {
         let mut view = View {
@@ -1288,7 +1460,7 @@ mod tests {
         for size in [(100, 30), (20, 8), (1, 1)] {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(size.0, size.1)).unwrap();
-            terminal.draw(|f| draw(f, &view)).unwrap();
+            terminal.draw(|f| draw(f, &mut view)).unwrap();
         }
     }
     #[test]
@@ -1301,7 +1473,7 @@ mod tests {
         assert!(!view.transcript.contains('\x1b'));
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
-        terminal.draw(|f| draw(f, &view)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 0)].bg, BG);
         assert_eq!(buffer[(3, 0)].fg, BRAND[0]);
@@ -1319,7 +1491,7 @@ mod tests {
         for size in [(20, 8), (1, 1)] {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(size.0, size.1)).unwrap();
-            terminal.draw(|f| draw(f, &view)).unwrap();
+            terminal.draw(|f| draw(f, &mut view)).unwrap();
         }
     }
 
@@ -1351,7 +1523,7 @@ mod tests {
                 let mut terminal =
                     ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
                         .unwrap();
-                terminal.draw(|f| draw(f, &view)).unwrap();
+                terminal.draw(|f| draw(f, &mut view)).unwrap();
                 if width == 130 {
                     let text = terminal
                         .backend()

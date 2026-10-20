@@ -248,9 +248,10 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         wait_for(b' Session ',present=False)
         os.write(master,b'\x1b[15~')  # F5 edits profile/access/tools/skills in the current session.
         wait_for(b'Draft profile: general-readonly')
+        os.write(master,b'\x1b[Z')  # Settings opens on Permissions; Shift-Tab selects Profiles.
         os.write(master,b'\x1b[B ')
         wait_for(b'Draft profile: coding-basic')
-        os.write(master,b'\t'+b'\x1b[B'*5+b' ')
+        os.write(master,b'\t'+b'\x1b[B'*6+b' ')
         wait_for(b'Ask before each action; workspace writes enabled')
         os.write(master,b'\t')
         wait_for('› [x] agents.cancel'.encode())

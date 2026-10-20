@@ -299,6 +299,9 @@ pub enum ApprovalDecision {
     AllowOnce,
     Deny,
     AllowSameArguments,
+    /// Remember workspace file access for this tool, or exact prepared
+    /// arguments for other effects, in the owning root session.
+    AllowForSession,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InteractionRequest {

@@ -51,6 +51,199 @@ async fn answer(run: &RunHandle, request: &ApprovalRequest, allow: bool) {
 }
 
 #[tokio::test]
+async fn configure_during_question_and_remember_workspace_write_approval() {
+    let workspace = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteStore::open(storage.path().join("session.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        call(
+            "interaction.ask",
+            json!({"question":"May I write files?","choices":["continue"]}),
+        ),
+        call("files.write", json!({"path":"first.txt","content":"first"})),
+        call(
+            "files.write",
+            json!({"path":"second.txt","content":"second"}),
+        ),
+        ScriptedTurn::text("done"),
+    ]));
+    let engine = WorkerEngine::builder(provider)
+        .store(store)
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile::bundled("general-readonly").unwrap(),
+            workspace.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("write", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let mut events = run.events(0);
+    let question = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let EventKind::InteractionRequested { request } =
+                events.next().await.unwrap().unwrap().event
+            {
+                break request;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let mut policy = werk_worker::project::Access::Ask.policy();
+    policy.tool_permissions.insert(
+        "files.read".into(),
+        werk_worker::policy::ToolPermission::Allow,
+    );
+    session
+        .configure(
+            AgentProfile::bundled("coding-basic").unwrap(),
+            policy,
+            "configure-waiting",
+        )
+        .await
+        .unwrap();
+    run.respond_to_interaction(&question.request_id, "continue", "continue")
+        .await
+        .unwrap();
+    let request = approval(&run, 0).await;
+    run.respond_to_approval(
+        &request.request_id,
+        ApprovalDecision::AllowForSession,
+        "remember",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        run.respond_to_approval(
+            &request.request_id,
+            ApprovalDecision::AllowForSession,
+            "remember"
+        )
+        .await
+        .unwrap()
+        .status,
+        ReceiptStatus::Duplicate
+    ));
+    tokio::time::timeout(Duration::from_secs(5), run.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("second.txt")).unwrap(),
+        "second"
+    );
+    let data = session.snapshot().await.unwrap();
+    assert_eq!(data.policy.remembered_grants.len(), 1);
+    assert_eq!(data.policy.remembered_grants[0].tool, "files.write");
+    assert_eq!(data.policy.remembered_grants[0].resource, ".");
+    assert!(data.policy.remembered_grants[0].arguments_hash.is_none());
+    assert_eq!(
+        run.status()
+            .await
+            .unwrap()
+            .invocations
+            .iter()
+            .filter(|i| i.approval.is_some())
+            .count(),
+        1
+    );
+    let session_id = session.id().await;
+    engine.close().await.unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![])))
+        .store(Arc::new(
+            SqliteStore::open(storage.path().join("session.sqlite"))
+                .await
+                .unwrap(),
+        ))
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .open_session(&session_id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap()
+            .policy
+            .remembered_grants
+            .len(),
+        1
+    );
+    engine.close().await.unwrap();
+}
+
+#[test]
+fn explicit_permissions_and_remembered_actions_respect_denials_and_exact_scope() {
+    use werk_worker::policy::{CapabilityGrant, ToolPermission};
+    let registry = ToolRegistry::builtins().unwrap();
+    let process = registry.get("process.run").unwrap().definition();
+    let write = registry.get("files.write").unwrap().definition();
+    let args = json!({"argv":["echo","allowed"],"cwd":"."});
+    assert!(!HostPolicy::default().can_request(&process));
+    assert!(!HostPolicy::default().can_request(&write));
+    let mut policy = HostPolicy {
+        request_approvals: true,
+        workspace_writable: true,
+        remembered_grants: vec![CapabilityGrant {
+            tool: process.name.clone(),
+            version: process.version.clone(),
+            resource: "workspace".into(),
+            arguments_hash: Some(fingerprint(&args)),
+            expires_at_ms: None,
+            preapproved: true,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Allow);
+    assert!(policy.can_request(&process));
+    assert_eq!(
+        policy.evaluate(&process, &json!({"argv":["echo","other"],"cwd":"."}), &[]),
+        PolicyDecision::Ask
+    );
+    policy
+        .tool_permissions
+        .insert(process.name.clone(), ToolPermission::Deny);
+    assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Deny);
+    assert!(!policy.can_request(&process));
+    policy
+        .tool_permissions
+        .insert(write.name.clone(), ToolPermission::Allow);
+    assert_eq!(
+        policy.evaluate(&write, &json!({"path":"allowed.txt"}), &[]),
+        PolicyDecision::Allow
+    );
+    assert_eq!(
+        policy.evaluate(&write, &json!({"path":"../outside"}), &[]),
+        PolicyDecision::Deny
+    );
+    policy.workspace_writable = false;
+    assert_eq!(
+        policy.evaluate(&write, &json!({"path":"allowed.txt"}), &[]),
+        PolicyDecision::Deny
+    );
+    policy.workspace_writable = true;
+    policy.hard_denied_tools.push(write.name.clone());
+    assert_eq!(
+        policy.evaluate(&write, &json!({"path":"allowed.txt"}), &[]),
+        PolicyDecision::Deny
+    );
+}
+
+#[tokio::test]
 async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_history() {
     let workspace = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
@@ -170,13 +363,12 @@ async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_
 #[tokio::test]
 async fn configure_rejects_unknown_names_and_active_runs_without_partial_changes() {
     let workspace = tempfile::tempdir().unwrap();
-    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![call(
-        "interaction.ask",
-        json!({"question":"wait","choices":[]}),
-    )])))
-    .build()
-    .await
-    .unwrap();
+    let mut slow = ScriptedTurn::text("slow response");
+    slow.delay_ms = 10_000;
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![slow])))
+        .build()
+        .await
+        .unwrap();
     let session = engine
         .create_session(
             AgentProfile::bundled("general-readonly").unwrap(),

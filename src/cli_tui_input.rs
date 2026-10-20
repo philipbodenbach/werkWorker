@@ -3,7 +3,29 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 use std::{io, process::Stdio, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub(super) const INPUT_LIMIT: usize = 16_384;
+pub(super) const INPUT_LIMIT: usize = 65_536;
+
+pub(super) struct PastedText {
+    pub marker: String,
+    pub text: String,
+}
+
+/// Expand only markers in the draft itself, never marker-like text inside a paste.
+pub(super) fn expand_pastes(input: &str, pastes: &[PastedText]) -> String {
+    let mut expanded = String::new();
+    let mut rest = input;
+    while let Some((at, paste)) = pastes
+        .iter()
+        .filter_map(|paste| rest.find(&paste.marker).map(|at| (at, paste)))
+        .min_by_key(|(at, _)| *at)
+    {
+        expanded.push_str(&rest[..at]);
+        expanded.push_str(&paste.text);
+        rest = &rest[at + paste.marker.len()..];
+    }
+    expanded.push_str(rest);
+    expanded
+}
 
 pub(super) fn append_paste(input: &mut String, value: &str) -> bool {
     let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
@@ -172,7 +194,7 @@ async fn transfer(program: &str, args: &[String], value: Option<&str>) -> io::Re
                 .await?;
         }
         if bytes.len() > INPUT_LIMIT {
-            return Err(io::Error::other("Clipboard text exceeds 16 KiB"));
+            return Err(io::Error::other("Clipboard text exceeds 64 KiB"));
         }
         if !child.wait().await?.success() {
             return Err(io::Error::other("Clipboard helper failed"));

@@ -88,6 +88,47 @@ allows the engine to consider an action; an approval authorizes its prepared
 arguments. Full access and exact-argument reusable approvals require explicit
 host configuration and cannot expand the sandbox or override a hard denial.
 
+F5 → **Permissions** edits workspace reads, workspace writes and sandbox processes
+individually: **deny / ask / allow**. Enabling access also enables the matching
+tools in the selected profile. Presets include **Manual** (allow reads, ask for
+edits/commands), **Accept edits** (allow reads/edits, ask for commands) and
+**Read only**. In the Tools tab, Enter toggles availability and A cycles permission.
+Ctrl-S applies changes; P chooses current session only or session + project defaults.
+Settings can also be changed while the agent is waiting for an answer.
+F5 opens Permissions directly. Tabs and options accept a single click; the
+visible **Apply & close** button or F10 saves and returns to the conversation.
+Unsaved edits are marked explicitly, and Esc warns before discarding them.
+Explicitly enabled tools remain enabled when a different profile is selected.
+
+Host chat commands work during questions without consuming the pending answer:
+
+```text
+/permissions writes allow project
+/permissions process ask session
+/permissions mode manual project
+/permissions mode edits project
+/permissions mode readonly session
+```
+
+Omitting the final scope saves both the session and project default. Concrete
+approval prompts offer **Allow once**, **Deny**, **session**, and **save for project**.
+Reusable file approvals name the individual tool and cover its workspace file
+access; other actions match the exact prepared arguments and tool version.
+Child requests remain one-time; configure future child access in the root session.
+Project defaults store profile/tool/skill choices in `.werkworker/config.json`
+and trusted permissions in the host's `werkworker/workspace-access` configuration
+directory, bound to workspace identity. Editing a repository file cannot grant
+itself rights. The permissions editor can forget remembered approvals.
+
+Selections use a bright cyan background, actions and shortcuts are cyan, enabled
+states are green and restrictions are amber. Ctrl-C copies selected text, Ctrl-V
+pastes, a single right-click copies a selection or pastes, and the wheel scrolls
+the pane under the pointer. F6 switches to native terminal selection.
+Large pastes appear as numbered blocks such as `[Pasted text #1 +24 lines]`.
+The full text is sent to the model; Backspace at the block's end removes it as
+one unit. The complete message supports up to 64 KiB; oversized pastes are
+rejected with an error instead of silently shortening the prompt.
+
 ## Parallel subagents
 
 The agent can delegate independent tasks with `delegate_task`, continue its own

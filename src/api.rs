@@ -25,6 +25,11 @@ use std::{
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
+fn configuration_allowed(status: RunStatus) -> bool {
+    (status.terminal() && status != RunStatus::Interrupted)
+        || matches!(status, RunStatus::WaitingInput | RunStatus::WaitingApproval)
+}
+
 struct SessionRuntime {
     data: Arc<Mutex<SessionData>>,
     workspace: Workspace,
@@ -460,7 +465,7 @@ impl SessionHandle {
     pub fn available_skills(&self) -> Vec<crate::skills::Skill> {
         self.engine.skills()
     }
-    /// Trusted host configuration for an idle root session. This is not a model
+    /// Trusted host configuration for an idle or waiting root session. This is not a model
     /// tool. Historical messages/skill versions and hard denies are retained.
     pub async fn configure(
         &self,
@@ -488,14 +493,10 @@ impl SessionHandle {
                 "Configure the root session",
             ));
         }
-        if data
-            .runs
-            .iter()
-            .any(|r| !r.status.terminal() || r.status == RunStatus::Interrupted)
-        {
+        if data.runs.iter().any(|r| !configuration_allowed(r.status)) {
             return Err(WorkerError::new(
                 "session_busy",
-                "Finish or cancel the active/interrupted run before applying settings.",
+                "Settings can be applied when idle or waiting for an answer/approval. Wait or cancel the running action.",
             ));
         }
         for run in &data.runs {
@@ -520,13 +521,21 @@ impl SessionHandle {
         let _admission = self.engine.inner.admission.lock().await;
         self.engine.ensure_open()?;
         self.update(|d| {
+            if d.policy.workspace_writable != policy.workspace_writable
+                && d.runs.iter().any(|r| r.status == RunStatus::WaitingApproval)
+            {
+                return Err(WorkerError::new(
+                    "approval_pending",
+                    "Resolve the prepared action before changing workspace writability. Its sandbox was already prepared.",
+                ));
+            }
             if d.runs
                 .iter()
-                .any(|r| !r.status.terminal() || r.status == RunStatus::Interrupted)
+                .any(|r| !configuration_allowed(r.status))
             {
                 return Err(WorkerError::new(
                     "session_busy",
-                    "Finish or cancel the active/interrupted run before applying settings.",
+                    "Settings can be applied when idle or waiting for an answer/approval. Wait or cancel the running action.",
                 ));
             }
             let receipt = d.command(command_id, &payload, None)?;
@@ -600,6 +609,8 @@ impl SessionHandle {
             d.profile_hash = fingerprint(&d.profile);
             d.policy.request_approvals = true;
             d.policy.workspace_writable = true;
+            d.policy.tool_permissions.clear();
+            d.policy.remembered_grants.clear();
             d.emit(
                 None,
                 EventKind::Diagnostic {
@@ -1098,7 +1109,10 @@ impl SessionHandle {
                 .tools
                 .iter()
                 .map(|name| self.engine.inner.tools.get(name).map(|t| t.definition()))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|def| data.policy.can_request(def))
+                .collect();
             let (request, snapshot) = self.engine.inner.context.build(&data, run, defs).await?;
             let step_id = id("step");
             self.update(|d| {
@@ -2016,9 +2030,10 @@ impl SessionHandle {
                 .await;
         }
         self.update(|d| {
-            if d.policy
-                .evaluate(def, &prepared, &d.run(run_id)?.similar_grants)
-                == PolicyDecision::Deny
+            if !d.profile.tools.contains(&def.name)
+                || d.policy
+                    .evaluate(def, &prepared, &d.run(run_id)?.similar_grants)
+                    == PolicyDecision::Deny
             {
                 return Err(WorkerError::new(
                     "grant_revoked",
@@ -2287,11 +2302,24 @@ impl RunHandle {
         self.session.update(|d|{
             let receipt=d.command(command_id,&json!({"method":"approval","run":self.id,"request":request_id,"decision":decision}),Some(&self.id))?;if matches!(receipt.status,ReceiptStatus::Duplicate){return Ok(receipt);}
             if decision==ApprovalDecision::AllowSameArguments&&!d.policy.allow_similar{return Err(WorkerError::new("similar_disabled","Host did not enable exact-scope reusable approvals"));}
+            if decision==ApprovalDecision::AllowForSession && d.parent.is_some(){return Err(WorkerError::new("root_required","Reusable access must be configured in the root session; child approvals remain one-time"));}
             let r=d.run_mut(&self.id)?;if !matches!(r.status,RunStatus::WaitingApproval|RunStatus::Interrupted){return Err(WorkerError::new("stale_request","Run is not awaiting approval"));}
             let i=r.invocations.iter_mut().find(|i|i.approval.as_ref().is_some_and(|a|a.request_id==request_id)).ok_or_else(||WorkerError::new("unknown_request","Approval does not belong to this run"))?;
             let a=i.approval.as_mut().unwrap();if a.decision.is_some()||a.expires_at_ms<=now_ms(){return Err(WorkerError::new("stale_request","Approval is resolved or expired"));}
             if a.arguments_hash!=approval_key(i.definition.as_ref().unwrap(),&i.prepared){return Err(WorkerError::new("scope_conflict","Prepared arguments no longer match approval"));}
             a.decision=Some(decision.clone());if decision==ApprovalDecision::AllowSameArguments{r.similar_grants.push(a.arguments_hash.clone());}
+            if decision==ApprovalDecision::AllowForSession {
+                let def=i.definition.as_ref().unwrap();
+                let files=matches!(def.effect, Effect::Read|Effect::Write);
+                let grant=crate::policy::CapabilityGrant {
+                    tool:def.name.clone(), version:def.version.clone(),
+                    resource:if files {".".into()} else {crate::policy::resource(def,&i.prepared)?},
+                    arguments_hash:if files {None} else {Some(fingerprint(&i.prepared))},
+                    expires_at_ms:None, preapproved:true,
+                };
+                d.policy.remembered_grants.retain(|g| !(g.tool==grant.tool && g.arguments_hash==grant.arguments_hash));
+                d.policy.remembered_grants.push(grant);
+            }
             d.emit(Some(&self.id),EventKind::ApprovalResolved{request_id:request_id.into(),decision});Ok(receipt)
         }).await
     }

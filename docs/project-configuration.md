@@ -1,6 +1,27 @@
 # Project configuration, rules and profiles
 
 werkWorker separates connection settings, agent behavior and host permissions.
+
+F5 edits all three access groups (workspace reads, workspace writes, sandbox
+processes) separately from profile/tool/skill selection. Each group supports
+deny, ask and allow. Ctrl-S saves the session and, by default, project defaults;
+P selects session-only changes. `/permissions writes allow project` and
+`/permissions mode manual session` are equivalent host commands in the chat.
+They remain available while a model question is pending; the question still
+requires its own answer. Applying settings during a prepared action approval
+cannot change workspace writability, because that action's sandbox has already
+been prepared. Resolve the action first in that case.
+
+The editor opens on Permissions. Clicking a tab opens it; clicking an option
+changes it. **Apply & close** (F10) saves the same draft as Ctrl-S and returns to
+the chat. A text selection in the settings details does not consume the save
+shortcut. Esc warns about unsaved edits; a second Esc discards them. Selecting
+a profile retains tools explicitly enabled through permission rules.
+
+Remembered approvals are scoped: individual file tool within the workspace, or
+exact prepared arguments for non-file actions. A project approval is saved in
+the host's `workspace-access` configuration and reloaded for new project chats.
+Hard denials, invalid paths and read-only workers still take precedence.
 The design takes inspiration from [Hermes context files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files/)
 and [profile configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration/);
 the filenames and behavior below are werkWorker's own contract.

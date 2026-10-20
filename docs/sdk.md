@@ -33,14 +33,25 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | `run.subagent(child_session_id).await` | Owned child RunHandle; existing steer/cancel/approval/interaction APIs apply |
 | `engine.close().await` | Cancel active work, await managed cleanup, flush and close store |
 
-`ApprovalDecision` is `AllowOnce`, `Deny` or `AllowSameArguments`. Reusable
-approval requires `HostPolicy.allow_similar=true`. Its deterministic scope is
+`ApprovalDecision` is `AllowOnce`, `Deny`, `AllowSameArguments` or `AllowForSession`.
+`AllowSameArguments` requires `HostPolicy.allow_similar=true`. Its deterministic scope is
 the same tool name/version and identical prepared JSON in the same run,
 including file base/diff or process sandbox descriptor. It never covers another
 run. `FullAccess` is a host-selected approval mode within existing grants.
 `HostPolicy.request_approvals=true` instead asks for every non-internal action,
 including actions without a static grant. It never bypasses hard denies or
-read-only workspaces, and does not use reusable approvals to skip confirmation.
+read-only workspaces. `AllowSameArguments` does not skip this mode's confirmation.
+The explicit `AllowForSession` decision stores a host-owned remembered grant:
+workspace-wide use of the named file tool, or exact prepared arguments for other
+effects, bound to the tool version. It is available only on root session requests.
+`HostPolicy.tool_permissions` supports per-tool `deny`, `ask` and `allow` rules;
+hard denies and workspace writability still take precedence. An explicit deny
+also overrides remembered grants. Hosts should clear a tool's remembered grants
+when resetting its rule to `ask`, as the CLI editor does.
+
+`session.configure(profile, policy, command_id)` accepts idle sessions and root
+sessions waiting for input/approval. Active descendants still block changes;
+workspace writability cannot change during an already prepared approval.
 SDK/headless defaults remain unchanged.
 
 Every event carries schema version, opaque event/session/run IDs, monotonic

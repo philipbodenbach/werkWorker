@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Wrap,
@@ -24,6 +24,10 @@ pub(crate) const BG: Color = Color::Rgb(9, 13, 23);
 const PANEL: Color = Color::Rgb(15, 21, 35);
 pub(crate) const TEXT: Color = Color::Rgb(224, 230, 248);
 pub(crate) const MUTED: Color = Color::Rgb(129, 143, 174);
+const ACTION_BG: Color = Color::Rgb(25, 39, 62);
+const HEADING: Color = Color::Rgb(192, 168, 255);
+const ENABLED: Color = Color::Rgb(120, 225, 170);
+const RESTRICTED: Color = Color::Rgb(255, 205, 115);
 pub(crate) const BRAND: [Color; 5] = [
     Color::Rgb(0, 220, 255),
     Color::Rgb(59, 130, 246),
@@ -31,6 +35,164 @@ pub(crate) const BRAND: [Color; 5] = [
     Color::Rgb(139, 92, 246),
     Color::Rgb(255, 79, 195),
 ];
+
+pub(crate) fn choice_style(selected: bool) -> Style {
+    if selected {
+        Style::default().fg(BG).bg(BRAND[0]).bold()
+    } else {
+        Style::default().fg(BRAND[0]).bg(ACTION_BG).bold()
+    }
+}
+
+pub(crate) fn choice_line(text: String, selected: bool, width: u16) -> Line<'static> {
+    let mut line = if !selected && let Some((prefix, suffix)) = text.split_once("[x]") {
+        Line::from(vec![
+            Span::raw(prefix.to_owned()),
+            Span::styled("[x]", Style::default().fg(ENABLED)),
+            Span::raw(suffix.to_owned()),
+        ])
+        .style(choice_style(false))
+    } else {
+        Line::styled(text, choice_style(selected))
+    };
+    let padding = usize::from(width).saturating_sub(line.width());
+    line.spans.push(Span::raw(" ".repeat(padding)));
+    line
+}
+
+pub(crate) fn shortcut_text(text: &str) -> Text<'static> {
+    Text::from(
+        clean(text)
+            .lines()
+            .map(|line| {
+                Line::from(
+                    line.split_inclusive(' ')
+                        .map(|word| {
+                            let key = word.trim().trim_end_matches([':', ',', '.']);
+                            let is_key = key.starts_with("Ctrl-")
+                                || key.starts_with("Shift-")
+                                || key.starts_with("Alt-")
+                                || key.starts_with("F2")
+                                || key.starts_with("F3")
+                                || key.starts_with("F4")
+                                || key.starts_with("F5")
+                                || key.starts_with("F6")
+                                || key.starts_with("Tab")
+                                || key.starts_with("Enter")
+                                || key.starts_with("Esc")
+                                || key.starts_with("Space")
+                                || key.starts_with("PgUp")
+                                || key.starts_with("PgDn")
+                                || key.starts_with("↑")
+                                || key.starts_with("←")
+                                || matches!(
+                                    key,
+                                    "Up" | "Down"
+                                        | "Up/Down"
+                                        | "Left"
+                                        | "Right"
+                                        | "Home"
+                                        | "End"
+                                        | "P"
+                                        | "/help"
+                                );
+                            Span::styled(
+                                word.to_owned(),
+                                if is_key {
+                                    Style::default().fg(BRAND[0]).bg(ACTION_BG).bold()
+                                } else {
+                                    Style::default().fg(TEXT)
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn information_text(text: &str) -> Text<'static> {
+    let mut section = "";
+    Text::from(
+        clean(text)
+            .lines()
+            .map(|line| {
+                if line.starts_with("E / F5:") || line.starts_with("Enter: review") {
+                    let (key, description) = line.split_once(':').expect("action separator");
+                    return Line::from(vec![
+                        Span::styled(format!("{key}:"), choice_style(true)),
+                        Span::styled(
+                            description.to_string(),
+                            Style::default().fg(TEXT).bg(ACTION_BG).bold(),
+                        ),
+                    ])
+                    .style(Style::default().bg(ACTION_BG));
+                }
+                if line.starts_with("F2 permissions") || line.starts_with("F4 view") {
+                    return shortcut_text(line).lines.remove(0);
+                }
+                if let Some((label, value)) = line.split_once(':')
+                    && matches!(
+                        label,
+                        "Profile"
+                            | "Workspace writes"
+                            | "Process tool"
+                            | "Workspace"
+                            | "Available profile tools"
+                            | "Host grants"
+                            | "Hard-denied tools"
+                            | "Available skills"
+                            | "Status"
+                            | "Model requests"
+                            | "Tool calls"
+                            | "Draft profile"
+                            | "Enabled"
+                            | "Save"
+                            | "Tools"
+                            | "Skills"
+                            | "Effect"
+                    )
+                {
+                    section = match label {
+                        "Available profile tools" => "tools",
+                        "Host grants" => "grants",
+                        _ => "",
+                    };
+                    let color = if value.contains("disabled")
+                        || value.contains("not ")
+                        || value.contains("approval")
+                        || (label == "Hard-denied tools" && value.trim() != "None")
+                    {
+                        RESTRICTED
+                    } else if matches!(
+                        label,
+                        "Workspace writes" | "Process tool" | "Available skills" | "Enabled"
+                    ) {
+                        ENABLED
+                    } else {
+                        TEXT
+                    };
+                    return Line::from(vec![
+                        Span::styled(format!("{label}:"), Style::default().fg(HEADING).bold()),
+                        Span::styled(value.to_owned(), Style::default().fg(color)),
+                    ]);
+                }
+                if line.is_empty() {
+                    section = "";
+                }
+                Line::styled(
+                    line.to_owned(),
+                    Style::default().fg(match section {
+                        "tools" => BRAND[0],
+                        "grants" => RESTRICTED,
+                        _ => TEXT,
+                    }),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
 
 // Same five-row slanted letterforms as werk1112's startup banner.
 // Fixed glyph advances keep the top strokes aligned; the shared row indent
@@ -203,6 +365,8 @@ impl ScrollPane {
 struct View {
     transcript: String,
     input: String,
+    pasted_texts: Vec<text_input::PastedText>,
+    paste_number: usize,
     status: String,
     session_id: String,
     run_id: String,
@@ -215,6 +379,11 @@ struct View {
     chat_area: Rect,
     panes: [ScrollPane; 8],
     settings: Option<crate::cli_config::Editor>,
+    settings_tabs: [Rect; 4],
+    settings_apply: Rect,
+    settings_scope: Rect,
+    settings_discard: Rect,
+    discard_armed: bool,
     selection: Option<text_input::Selection>,
     rendered: Option<ratatui::buffer::Buffer>,
     selectable: Vec<Rect>,
@@ -250,11 +419,53 @@ impl View {
                     self.pane(Pane::SettingsList).offset = 0;
                     self.pane(Pane::SettingsDetails).offset = 0;
                     self.error.clear();
+                    self.discard_armed = false;
                 }
                 Err(error) => self.error = error.to_string(),
             },
             None => self.error = "Connect a session before editing settings.".into(),
         }
+    }
+    async fn save_settings(&mut self, session: Option<&SessionHandle>, close: bool) {
+        let (Some(session), Some(editor)) = (session, &mut self.settings) else {
+            return;
+        };
+        let result = editor.apply(session).await;
+        if let Err(error) = &result {
+            editor.status = error.to_string();
+        }
+        self.error = result
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        if let Ok(data) = session.snapshot().await {
+            self.refresh_permissions(&data);
+        }
+        if result.is_ok() {
+            self.discard_armed = false;
+            if close {
+                let status = self.settings.as_ref().unwrap().status.clone();
+                self.append(&format!("\nSettings · {status}\n"));
+                self.settings = None;
+                self.screen = Screen::Conversation;
+            }
+        }
+    }
+
+    fn close_settings(&mut self) {
+        if let Some(editor) = &mut self.settings
+            && editor.is_dirty()
+            && !self.discard_armed
+        {
+            self.discard_armed = true;
+            editor.status =
+                "UNSAVED changes: F10 applies and closes. Press Esc again to discard.".into();
+            return;
+        }
+        self.settings = None;
+        self.screen = Screen::Conversation;
+        self.discard_armed = false;
     }
     fn pane(&mut self, pane: Pane) -> &mut ScrollPane {
         &mut self.panes[pane as usize]
@@ -265,13 +476,41 @@ impl View {
         }
         self.selection = None;
         self.quit_armed = false;
-        let complete = text_input::append_paste(&mut self.input, text);
-        self.edited_input();
-        self.error = if complete {
-            String::new()
+        let mut normalized = String::new();
+        let complete = text_input::append_paste(&mut normalized, text);
+        if !complete || self.expanded_input().len() + normalized.len() > text_input::INPUT_LIMIT {
+            self.error = "Paste exceeds the 64 KiB message limit; nothing was added.".into();
+            return;
+        }
+        let lines = normalized.lines().count().max(1);
+        if lines >= 5 || normalized.len() > 512 {
+            self.paste_number += 1;
+            let marker = format!("[Pasted text #{} +{lines} lines]", self.paste_number);
+            self.input.push_str(&marker);
+            self.pasted_texts.push(text_input::PastedText {
+                marker,
+                text: normalized,
+            });
         } else {
-            "Input limited to 16 KiB; paste was truncated.".into()
-        };
+            self.input.push_str(&normalized);
+        }
+        self.edited_input();
+        self.error.clear();
+    }
+    fn expanded_input(&self) -> String {
+        text_input::expand_pastes(&self.input, &self.pasted_texts)
+    }
+    fn backspace_input(&mut self) {
+        if let Some(paste) = self
+            .pasted_texts
+            .iter()
+            .find(|p| self.input.ends_with(&p.marker))
+        {
+            self.input.truncate(self.input.len() - paste.marker.len());
+        } else {
+            self.input.pop();
+        }
+        self.edited_input();
     }
     async fn paste_clipboard(&mut self) {
         if !matches!(self.screen, Screen::Conversation) {
@@ -317,7 +556,12 @@ impl View {
     }
     fn refresh_permissions(&mut self, data: &SessionData) {
         (self.access_summary, self.permissions) = permission_details(data);
-        self.access_hint = if data.policy.request_approvals {
+        self.access_hint = if !data.policy.tool_permissions.is_empty()
+            || !data.policy.remembered_grants.is_empty()
+        {
+            " F5 edit access · /permissions reads|writes|process deny|ask|allow [session|project]"
+                .into()
+        } else if data.policy.request_approvals {
             " Selected tools can request approval · ja/yes approves the displayed action · F2 permissions · F5 settings".into()
         } else {
             " Restricted tool access · F5 settings: edit profile, permissions, tools and skills"
@@ -342,7 +586,10 @@ impl View {
                 "This run reached its limit. Send a follow-up to continue in this session."
             }
             "capability_denied" => {
-                "Use /permissions to review access; /setup configures a new session with different rights."
+                "Use F5 to edit workspace writes/process access or /permissions mode manual project, then continue in this session."
+            }
+            "repetition_limit" => {
+                "The agent repeated the same tool call too often. Review blocked rights with F5 or /permissions mode manual project, then send a follow-up. The history is retained."
             }
             _ => "The session is still open. You can send another message.",
         };
@@ -352,13 +599,20 @@ impl View {
         ));
     }
     fn response_options(&self) -> Vec<String> {
-        if self.approval.is_some() {
-            vec!["Allow once".into(), "Deny".into()]
+        if let Some(request) = &self.approval {
+            let mut options = vec!["Allow once".into(), "Deny".into()];
+            if request.session_id == self.session_id {
+                let scope = approval_scope(request);
+                options.push(format!("Allow {scope} · session"));
+                options.push(format!("Allow {scope} · save for project"));
+            }
+            options
         } else if let Some(question) = &self.interaction {
             let mut options = question.choices.clone();
             if !options.is_empty() {
                 options.push("Write my own answer".into());
             }
+            options.push("Edit permissions · session / project (F5)".into());
             options
         } else {
             vec![]
@@ -379,6 +633,8 @@ impl View {
             .collect()
     }
     fn edited_input(&mut self) {
+        self.pasted_texts
+            .retain(|paste| self.input.contains(&paste.marker));
         self.pane(Pane::Input).offset = usize::MAX;
         self.command_selected = 0;
         self.commands_dismissed = false;
@@ -450,14 +706,31 @@ fn permission_details(data: &SessionData) -> (String, String) {
     let summary = format!(
         "Profile: {}\nWorkspace writes: {}\nProcess tool: {}",
         data.profile.name,
-        if data.policy.request_approvals && data.policy.workspace_writable {
+        if !data.policy.workspace_writable {
+            "disabled · F5 to edit"
+        } else if data.policy.tool_permissions.get("files.write")
+            == Some(&policy::ToolPermission::Allow)
+            || data
+                .policy
+                .remembered_grants
+                .iter()
+                .any(|g| g.tool == "files.write" && g.arguments_hash.is_none())
+        {
+            "allowed in workspace"
+        } else if data.policy.request_approvals
+            || data.policy.tool_permissions.get("files.write") == Some(&policy::ToolPermission::Ask)
+        {
             "explicit approval required"
-        } else if data.policy.workspace_writable {
-            "enabled (within grants)"
         } else {
-            "disabled"
+            "enabled (within grants)"
         },
-        if data.profile.tools.iter().any(|t| t == "process.run") {
+        if let Some(permission) = data.policy.tool_permissions.get("process.run") {
+            match permission {
+                policy::ToolPermission::Deny => "blocked",
+                policy::ToolPermission::Ask => "sandboxed; ask",
+                policy::ToolPermission::Allow => "sandboxed; allowed",
+            }
+        } else if data.profile.tools.iter().any(|t| t == "process.run") {
             if data.policy.request_approvals {
                 "sandboxed; explicit approval required"
             } else if data.policy.grants.iter().any(|g| g.tool == "process.run") {
@@ -473,6 +746,7 @@ fn permission_details(data: &SessionData) -> (String, String) {
         .policy
         .grants
         .iter()
+        .chain(data.policy.remembered_grants.iter())
         .map(|g| {
             format!(
                 "{} · {} · {}{}{}",
@@ -495,11 +769,23 @@ fn permission_details(data: &SessionData) -> (String, String) {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let rules = data
+        .policy
+        .tool_permissions
+        .iter()
+        .map(|(tool, rule)| format!("{tool}: {rule:?}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let details = format!(
         "E / F5: edit profile, permissions, tools and skills\nEnter: review enabling all tools with explicit approval\n\n{summary}\nWorkspace: {}\n\nAvailable profile tools:\n{}\n\nHost grants:\n{}\n\nHard-denied tools: {}\n\nAvailable skills: {}\n\nApproval requests expose the actual tool, file diff or command before execution.\nChoose Allow once, Ctrl-Y, or type ja/yes to approve that action; Deny, Ctrl-N or nein/no rejects it.\nA normal agent question is not an action approval.\nNew subagents inherit access and ask for their own addressed approvals.\nFinish or cancel existing subagents before changing this session's access.",
         data.workspace.display(),
-        data.profile.tools.join(", "),
-        if grants.is_empty() { "None" } else { &grants },
+        data.profile
+            .tools
+            .chunks(3)
+            .map(|names| names.join(", "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        format_args!("{grants}\n{rules}"),
         if data.policy.hard_denied_tools.is_empty() {
             "None".into()
         } else {
@@ -575,7 +861,7 @@ fn agent_details(run: &Run, goal: &str) -> String {
 
 pub(crate) fn panel(title: &str, color: Color) -> Block<'_> {
     Block::default()
-        .title(title)
+        .title(Line::styled(title, Style::default().fg(color).bold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
@@ -611,6 +897,14 @@ fn draw_text_panel(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     view.selectable.push(inner);
+    let text = if matches!(
+        pane,
+        Pane::Permissions | Pane::Session | Pane::SettingsDetails
+    ) {
+        information_text(&text)
+    } else {
+        Text::from(text)
+    };
     draw_scrolled(
         frame,
         view.pane(pane),
@@ -663,7 +957,7 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
         .enumerate()
         .skip(first)
         .map(|(i, option)| {
-            Line::styled(
+            choice_line(
                 format!(
                     "{} {}",
                     if i == selected && view.input.is_empty() {
@@ -673,11 +967,8 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
                     },
                     clean(option)
                 ),
-                if i == selected && view.input.is_empty() {
-                    Style::default().fg(BG).bg(BRAND[4]).bold()
-                } else {
-                    Style::default().fg(TEXT)
-                },
+                i == selected && view.input.is_empty(),
+                rows[1].width,
             )
         })
         .collect();
@@ -689,10 +980,7 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
     } else {
         "↑↓ choose · Enter send · or type your own answer · Alt-↑↓ details"
     };
-    frame.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(BRAND[4])),
-        rows[2],
-    );
+    frame.render_widget(Paragraph::new(shortcut_text(hint)), rows[2]);
 }
 
 fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
@@ -791,17 +1079,14 @@ fn draw_agents(frame: &mut Frame, view: &mut View, area: Rect) {
             .iter()
             .enumerate()
             .map(|(i, agent)| {
-                Line::styled(
+                choice_line(
                     format!(
                         "{} {}",
                         if i == view.agent_selected { ">" } else { " " },
                         clean(&agent.label)
                     ),
-                    if i == view.agent_selected {
-                        Style::default().fg(BG).bg(BRAND[4])
-                    } else {
-                        Style::default().fg(TEXT)
-                    },
+                    i == view.agent_selected,
+                    split[0].width.saturating_sub(2),
                 )
             })
             .collect()
@@ -842,44 +1127,32 @@ fn draw_settings(frame: &mut Frame, view: &mut View, area: Rect) {
     let tab = editor.tab;
     let selected = editor.selected[tab];
     let details = editor.details();
-    let status = clean(&editor.status);
-    let items = editor
-        .items()
-        .into_iter()
-        .enumerate()
-        .map(|(i, text)| {
-            Line::styled(
-                format!("{} {}", if i == selected { "›" } else { " " }, clean(&text)),
-                if i == selected {
-                    Style::default().fg(BG).bg(BRAND[4])
-                } else {
-                    Style::default().fg(TEXT)
-                },
-            )
-        })
-        .collect::<Vec<_>>();
+    let status = clean(&format!(
+        "{}{}",
+        if editor.is_dirty() { "UNSAVED · " } else { "" },
+        editor.status
+    ));
+    let save_project = editor.save_project;
+    let items = editor.items();
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
         Constraint::Min(1),
-        Constraint::Length(2),
+        Constraint::Length(3),
     ])
     .split(area);
+    let mut x = rows[0].x;
+    for (index, title) in crate::cli_config::TABS.iter().enumerate() {
+        let width = (title.len() as u16 + 2).min(rows[0].right().saturating_sub(x));
+        view.settings_tabs[index] = Rect::new(x, rows[0].y, width, 1);
+        x += width;
+    }
     frame.render_widget(
         Paragraph::new(Line::from(
             crate::cli_config::TABS
                 .iter()
                 .enumerate()
-                .map(|(i, title)| {
-                    Span::styled(
-                        format!(" {title} "),
-                        if i == tab {
-                            Style::default().fg(BG).bg(BRAND[0]).bold()
-                        } else {
-                            Style::default().fg(TEXT)
-                        },
-                    )
-                })
+                .map(|(i, title)| Span::styled(format!(" {title} "), choice_style(i == tab)))
                 .collect::<Vec<_>>(),
         )),
         rows[0],
@@ -898,6 +1171,17 @@ fn draw_settings(frame: &mut Frame, view: &mut View, area: Rect) {
     let block = panel(crate::cli_config::TABS[tab], BRAND[4]);
     let inner = block.inner(split[0]);
     frame.render_widget(block, split[0]);
+    let items = items
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            choice_line(
+                format!("{} {}", if i == selected { "›" } else { " " }, clean(&text)),
+                i == selected,
+                inner.width,
+            )
+        })
+        .collect::<Vec<_>>();
     draw_scrolled(
         frame,
         view.pane(Pane::SettingsList),
@@ -913,7 +1197,32 @@ fn draw_settings(frame: &mut Frame, view: &mut View, area: Rect) {
         BRAND[3],
         split[1],
     );
-    frame.render_widget(Paragraph::new("Tab/←/→ sections · ↑/↓ select · Space/Enter change\nCtrl-S save · P toggle project defaults · Esc close").style(Style::default().fg(MUTED)), rows[3]);
+    let controls = [
+        " Apply & close [F10] ".to_string(),
+        if save_project {
+            " Session + project [P] "
+        } else {
+            " Session only [P] "
+        }
+        .to_string(),
+        " Discard / close [Esc] ".to_string(),
+    ];
+    let mut x = rows[3].x;
+    for (index, label) in controls.iter().enumerate() {
+        let width = (label.len() as u16).min(rows[3].right().saturating_sub(x));
+        let area = Rect::new(x, rows[3].y, width, 1);
+        match index {
+            0 => view.settings_apply = area,
+            1 => view.settings_scope = area,
+            _ => view.settings_discard = area,
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(label.clone(), choice_style(index == 0))),
+            area,
+        );
+        x += width;
+    }
+    frame.render_widget(Paragraph::new(shortcut_text("Click tabs/options to change · Tab sections · ↑/↓ select · Enter change\nCtrl-S save · F10 apply & close")), Rect::new(rows[3].x, rows[3].y + 1, rows[3].width, rows[3].height.saturating_sub(1)));
 }
 
 fn draw(frame: &mut Frame, view: &mut View) {
@@ -1025,7 +1334,10 @@ fn draw(frame: &mut Frame, view: &mut View) {
         }
         Screen::PermissionConsent => {
             let mut lines = vec![
-                Line::from("Enable tool approval requests in this session?"),
+                Line::styled(
+                    "Enable tool approval requests in this session?",
+                    Style::default().fg(HEADING).bold(),
+                ),
                 Line::from(""),
                 Line::from("Make all registered tools and skills available to the agent."),
                 Line::from("File changes, sandbox commands and network actions each need"),
@@ -1042,7 +1354,7 @@ fn draw(frame: &mut Frame, view: &mut View) {
             .iter()
             .enumerate()
             {
-                lines.push(Line::styled(
+                lines.push(choice_line(
                     format!(
                         "{} {label}",
                         if i == view.permission_selected {
@@ -1051,14 +1363,11 @@ fn draw(frame: &mut Frame, view: &mut View) {
                             " "
                         }
                     ),
-                    if i == view.permission_selected {
-                        Style::default().fg(BG).bg(BRAND[4]).bold()
-                    } else {
-                        Style::default().fg(TEXT)
-                    },
+                    i == view.permission_selected,
+                    rows[1].width.saturating_sub(2),
                 ));
             }
-            lines.push(Line::from("\n↑/↓ select · Enter confirm · Esc cancel"));
+            lines.extend(shortcut_text("\n↑/↓ select · Enter confirm · Esc cancel").lines);
             frame.render_widget(
                 Paragraph::new(lines)
                     .wrap(Wrap { trim: false })
@@ -1071,9 +1380,12 @@ fn draw(frame: &mut Frame, view: &mut View) {
                 "Compact — one chat column, inline questions and answers",
                 "Cockpit — conversation with a session sidebar",
             ];
-            let mut lines = vec![Line::from("Choose your layout"), Line::from("")];
+            let mut lines = vec![
+                Line::styled("Choose your layout", Style::default().fg(HEADING).bold()),
+                Line::from(""),
+            ];
             for (i, label) in labels.iter().enumerate() {
-                lines.push(Line::styled(
+                lines.push(choice_line(
                     format!(
                         "{} {label}",
                         if i == view.layout_selected {
@@ -1082,17 +1394,14 @@ fn draw(frame: &mut Frame, view: &mut View) {
                             " "
                         }
                     ),
-                    if i == view.layout_selected {
-                        Style::default().fg(BG).bg(BRAND[4]).bold()
-                    } else {
-                        Style::default().fg(TEXT)
-                    },
+                    i == view.layout_selected,
+                    rows[1].width.saturating_sub(2),
                 ));
                 lines.push(Line::from(""));
             }
-            lines.push(Line::from(
-                "Up/Down: select · Enter: apply and remember · Esc: cancel",
-            ));
+            lines.extend(
+                shortcut_text("Up/Down: select · Enter: apply and remember · Esc: cancel").lines,
+            );
             lines.push(Line::from(
                 "Your conversation and pending answers stay in place.",
             ));
@@ -1141,13 +1450,14 @@ fn draw(frame: &mut Frame, view: &mut View) {
         " Ctrl-C copy selection · Ctrl-V paste · Right-click copy/paste · Wheel scroll pane · F6 terminal selection · /help"
     };
     frame.render_widget(
-        Paragraph::new(format!("{}\n{}", clean(footer), view.access_hint)).style(
-            Style::default().fg(if view.error.is_empty() {
-                MUTED
-            } else {
-                Color::Rgb(255, 90, 110)
-            }),
-        ),
+        Paragraph::new(if view.error.is_empty() {
+            shortcut_text(&format!("{footer}\n{}", view.access_hint))
+        } else {
+            Text::styled(
+                format!("{}\n{}", clean(footer), view.access_hint),
+                Style::default().fg(Color::Rgb(255, 120, 130)).bold(),
+            )
+        }),
         rows[3],
     );
     let commands = if matches!(view.screen, Screen::Conversation) {
@@ -1166,16 +1476,13 @@ fn draw(frame: &mut Frame, view: &mut View) {
                 .enumerate()
                 .skip(start)
                 .map(|(i, (name, description))| {
-                    Line::styled(
+                    choice_line(
                         format!(
                             "{} {name:<13} {description}",
                             if i == selected { "›" } else { " " }
                         ),
-                        if i == selected {
-                            Style::default().fg(BG).bg(BRAND[4]).bold()
-                        } else {
-                            Style::default().fg(TEXT)
-                        },
+                        i == selected,
+                        popup.width.saturating_sub(2),
                     )
                 })
                 .collect();
@@ -1296,6 +1603,7 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
         view.choice_selected = usize::from(approval.is_some());
         if interaction.is_some() {
             view.input.clear();
+            view.edited_input();
         }
     }
     view.approval = approval;
@@ -1308,8 +1616,13 @@ async fn answer_question(view: &mut View, run: &RunHandle, answer: &str) -> Resu
     if let Some(request) = view.interaction.clone() {
         run.respond_to_interaction(&request.request_id, answer, &id("answer"))
             .await?;
+        let display_answer = if view.input.is_empty() {
+            answer.to_owned()
+        } else {
+            view.input.clone()
+        };
         view.append(&format!(
-            "\n\n{} asks > {}\nyou › {answer}\n",
+            "\n\n{} asks > {}\nyou › {display_answer}\n",
             view.request_owner, request.question
         ));
         view.interaction = None;
@@ -1328,14 +1641,31 @@ fn approval_answer(input: &str) -> Option<bool> {
     }
 }
 
+fn approval_scope(request: &ApprovalRequest) -> String {
+    let tool = request.description["tool"].as_str().unwrap_or("tool");
+    match request.description["effect"].as_str() {
+        Some("read" | "write") => format!("{tool} in workspace"),
+        _ => "exact prepared action".into(),
+    }
+}
+
 async fn approve_action(view: &mut View, run: &RunHandle, allow: bool) -> Result<()> {
+    approve_choice(view, run, usize::from(!allow), None).await
+}
+
+async fn approve_choice(
+    view: &mut View,
+    run: &RunHandle,
+    choice: usize,
+    session: Option<&SessionHandle>,
+) -> Result<()> {
     if let Some(request) = view.approval.clone() {
         run.respond_to_approval(
             &request.request_id,
-            if allow {
-                ApprovalDecision::AllowOnce
-            } else {
-                ApprovalDecision::Deny
+            match choice {
+                0 => ApprovalDecision::AllowOnce,
+                1 => ApprovalDecision::Deny,
+                _ => ApprovalDecision::AllowForSession,
             },
             &id("approval"),
         )
@@ -1344,11 +1674,26 @@ async fn approve_action(view: &mut View, run: &RunHandle, allow: bool) -> Result
         view.append(&format!(
             "\n\n{} · {tool}: {}\n",
             view.request_owner,
-            if allow { "Allowed once" } else { "Denied" }
+            match choice {
+                0 => "Allowed once",
+                1 => "Denied",
+                _ => "Allowed and remembered for this session",
+            }
         ));
         view.approval = None;
         view.input.clear();
         view.edited_input();
+        if choice == 3
+            && let Some(session) = session
+        {
+            crate::cli_config::save_defaults(session).await.map_err(|error| WorkerError::new(
+                "defaults_save_failed", format!("Action approved and remembered in this session, but project defaults could not be saved: {error}"),
+            ))?;
+            view.append("Saved permission in project defaults.\n");
+        }
+        if let Some(session) = session {
+            view.refresh_permissions(&session.snapshot().await?);
+        }
     }
     Ok(())
 }
@@ -1541,12 +1886,37 @@ pub async fn show(
                             view.scroll_at(mouse.column, mouse.row, mouse.kind == MouseEventKind::ScrollUp);
                         }
                         MouseEventKind::Down(MouseButton::Left) => {
+                            if matches!(view.screen, Screen::Settings) {
+                                view.selection = None;
+                                let point = (mouse.column, mouse.row).into();
+                                if view.settings_apply.contains(point) {
+                                    view.save_settings(session.as_ref(), true).await;
+                                    continue;
+                                }
+                                if view.settings_discard.contains(point) {
+                                    view.close_settings();
+                                    continue;
+                                }
+                                if view.settings_scope.contains(point) {
+                                    if let Some(editor) = &mut view.settings { editor.save_project = !editor.save_project; }
+                                    continue;
+                                }
+                                if let Some(tab) = view.settings_tabs.iter().position(|area| area.contains(point)) {
+                                    if let Some(editor) = &mut view.settings { editor.tab = tab; }
+                                    view.pane(Pane::SettingsList).offset = 0;
+                                    view.pane(Pane::SettingsDetails).offset = 0;
+                                    view.selection = None;
+                                    continue;
+                                }
+                            }
                             let list = *view.pane(Pane::SettingsList);
                             if matches!(view.screen, Screen::Settings) && list.area.contains((mouse.column, mouse.row).into()) {
                                 if let Some(editor) = &mut view.settings {
                                     let selected = list.offset + usize::from(mouse.row - list.area.y);
                                     if selected < editor.items().len() {
                                         editor.selected[editor.tab] = selected;
+                                        editor.activate();
+                                        view.discard_armed = false;
                                     }
                                 }
                                 view.pane(Pane::SettingsDetails).offset = 0;
@@ -1584,7 +1954,9 @@ pub async fn show(
                 }
                 // Reveal live requests before allowing keys to act on a frame
                 // that was frozen for copying.
-                if view.selection.take().is_some() { continue; }
+                let saving_settings = matches!(view.screen, Screen::Settings)
+                    && ((ctrl && matches!(key.code, KeyCode::Char('s' | 'S'))) || key.code == KeyCode::F(10));
+                if view.selection.take().is_some() && !saving_settings { continue; }
                 if key.code == KeyCode::F(6) {
                     view.quit_armed = false;
                     view.native_selection = !view.native_selection;
@@ -1619,23 +1991,19 @@ pub async fn show(
                     continue;
                 }
                 if matches!(view.screen, Screen::Settings) && !(ctrl && key.code == KeyCode::Char('c')) {
-                    if ctrl && key.code == KeyCode::Char('s') {
-                        if let (Some(session), Some(editor)) = (&session, &mut view.settings) {
-                            let result = editor.apply(session).await;
-                            if let Err(error) = &result { editor.status = error.to_string(); }
-                            view.error = result.err().map(|e| e.to_string()).unwrap_or_default();
-                            view.refresh_permissions(&session.snapshot().await?);
-                        }
+                    if (ctrl && matches!(key.code, KeyCode::Char('s' | 'S'))) || key.code == KeyCode::F(10) {
+                        view.save_settings(session.as_ref(), key.code == KeyCode::F(10)).await;
                     } else if key.code == KeyCode::Esc {
-                        view.settings = None;
-                        view.screen = Screen::Conversation;
+                        view.close_settings();
                     } else if let Some(editor) = &mut view.settings {
+                        view.discard_armed = false;
                         match key.code {
                             KeyCode::Tab | KeyCode::Right => editor.tab = (editor.tab + 1) % 4,
                             KeyCode::BackTab | KeyCode::Left => editor.tab = (editor.tab + 3) % 4,
                             KeyCode::Up | KeyCode::Down => editor.move_selection(key.code == KeyCode::Up),
                             KeyCode::Char(' ') | KeyCode::Enter => editor.activate(),
                             KeyCode::Char('p') => editor.save_project = !editor.save_project,
+                            KeyCode::Char('a') => editor.cycle_tool_permission(),
                             KeyCode::PageUp | KeyCode::PageDown => {
                                 let state = view.pane(Pane::SettingsDetails);
                                 state.scroll(key.code == KeyCode::PageUp, state.page.saturating_sub(1).max(1));
@@ -1742,8 +2110,8 @@ pub async fn show(
                     } else if (ctrl && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('n')))
                         || (key.code == KeyCode::Enter && view.input.is_empty() && view.approval.is_some()) {
                         if let Some(run) = addressed.as_ref().or(active.as_ref()) {
-                            let allow = if ctrl { key.code == KeyCode::Char('y') } else { view.choice_selected == 0 };
-                            approve_action(&mut view, run, allow).await?;
+                            let choice = if ctrl { usize::from(key.code != KeyCode::Char('y')) } else { view.choice_selected };
+                            approve_choice(&mut view, run, choice, session.as_ref()).await?;
                         }
                     } else if ctrl && key.code == KeyCode::Char('u') {
                         view.input.clear(); view.edited_input();
@@ -1751,6 +2119,12 @@ pub async fn show(
                         let answer = view.interaction.as_ref().and_then(|q| q.choices.get(view.choice_selected)).cloned();
                         if let (Some(run), Some(answer)) = (addressed.as_ref().or(active.as_ref()), answer) {
                             answer_question(&mut view, run, &answer).await?;
+                        } else if view.choice_selected + 1 == view.response_options().len() {
+                            view.open_settings(session.as_ref()).await;
+                            if let Some(editor) = &mut view.settings {
+                                editor.tab = 1;
+                                editor.selected[1] = 1;
+                            }
                         }
                     } else if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Up | KeyCode::Down) {
                         let pane = if view.approval.is_some() || view.interaction.is_some() { Pane::Request } else { Pane::Session };
@@ -1760,15 +2134,24 @@ pub async fn show(
                         KeyCode::PageDown => view.scroll_chat(false, view.chat_page.saturating_sub(1).max(1)),
                         KeyCode::Home => view.scroll = Some(0),
                         KeyCode::End => view.scroll = None,
-                        KeyCode::Backspace => { view.input.pop(); view.edited_input(); },
-                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.input.len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.input.push(c); view.edited_input(); },
+                        KeyCode::Backspace => view.backspace_input(),
+                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input().len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.input.push(c); view.edited_input(); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
+                            if input.starts_with("/permissions ") {
+                                let session = session.as_ref().ok_or_else(|| WorkerError::new("session_required", "Connect a session first"))?;
+                                let message = crate::cli_config::permission_command(session, &input).await?;
+                                view.append(&format!("\n\nPermissions · {message}\n"));
+                                view.refresh_permissions(&session.snapshot().await?);
+                                view.input.clear(); view.edited_input();
+                                return Ok(());
+                            }
                             if COMMANDS.iter().any(|(name, _)| *name == input) || (view.interaction.is_none() && input.starts_with('/')) {
                                 match input.as_str() {
                                     "/help" => {
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
+                                        view.append(&format!("{}\n", crate::cli_config::COMMAND_HELP));
                                         view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Shift-Insert: paste · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nPgUp/PgDn scroll chat · Home: oldest · End: latest and follow output\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
                                     },
                                     "/clear" => view.transcript.clear(),
@@ -1781,6 +2164,11 @@ pub async fn show(
                                 }
                                 view.input.clear(); view.edited_input(); view.scroll = None;
                                 return Ok(());
+                            }
+                            let display_input = input;
+                            let input = view.expanded_input();
+                            if input.len() > text_input::INPUT_LIMIT {
+                                return Err(WorkerError::new("input_limit", "Expanded message exceeds 64 KiB. Remove a pasted block before sending."));
                             }
                             if view.approval.is_some() {
                                 let allow = approval_answer(&input).ok_or_else(|| WorkerError::new("approval_pending", "Type ja/yes or nein/no, choose Allow once/Deny, or use Ctrl-Y/Ctrl-N."))?;
@@ -1802,7 +2190,7 @@ pub async fn show(
                                     active = Some(session.submit(&input, &id("tui"), limits.clone(), None).await?);
                                 }
                             } else { return Err(WorkerError::new("provider_required", "Connect Werk or start ww tui --demo")); }
-                            view.append(&format!("\n\nyou › {input}\n")); view.input.clear(); view.edited_input(); view.scroll = None;
+                            view.append(&format!("\n\nyou › {display_input}\n")); view.input.clear(); view.edited_input(); view.scroll = None;
                         },
                         _ => {}
                     }}
@@ -1833,6 +2221,40 @@ mod tests {
         view.screen = Screen::Permissions;
         view.paste("hidden answer");
         assert_eq!(view.input, "ja\n/quit\n");
+    }
+
+    #[test]
+    fn large_pastes_are_lossless_numbered_atomic_draft_blocks() {
+        let mut view = View {
+            input: "Explain: ".into(),
+            ..Default::default()
+        };
+        let first = (0..24)
+            .map(|n| format!("Zeile {n} 世界"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        view.paste(&first);
+        assert_eq!(view.input, "Explain: [Pasted text #1 +24 lines]");
+        view.input.push_str(" then ");
+        let second = format!("{}\n[Pasted text #1 +24 lines]", "x".repeat(20_000));
+        view.paste(&second);
+        assert_eq!(
+            view.expanded_input(),
+            format!("Explain: {first} then {second}")
+        );
+        assert!(view.input.ends_with("[Pasted text #2 +2 lines]"));
+        view.backspace_input();
+        assert_eq!(view.expanded_input(), format!("Explain: {first} then "));
+        assert_eq!(view.pasted_texts.len(), 1);
+        let before = view.input.clone();
+        view.paste(&"x".repeat(text_input::INPUT_LIMIT));
+        assert_eq!(view.input, before);
+        assert!(view.error.contains("nothing was added"));
+        view.input.clear();
+        view.edited_input();
+        assert!(view.pasted_texts.is_empty());
+        view.paste(&first);
+        assert_eq!(view.input, "[Pasted text #3 +24 lines]");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Keyboard-operated connection and durable session selection.
-use crate::cli_tui::{BG, BRAND, MUTED, Restore, TEXT, clean, panel};
+use crate::cli_tui::{BG, BRAND, Restore, TEXT, choice_style, clean, panel, shortcut_text};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use ratatui::{
@@ -38,19 +38,20 @@ pub async fn choose(title: &str, detail: &str, options: &[String]) -> Result<Opt
             );
             let items = options
                 .iter()
-                .map(|s| ListItem::new(clean(s)))
+                .map(|s| ListItem::new(clean(s)).style(choice_style(false)))
                 .collect::<Vec<_>>();
             frame.render_stateful_widget(
                 List::new(items)
                     .block(panel(title, BRAND[4]))
                     .highlight_symbol("› ")
-                    .highlight_style(Style::default().fg(BRAND[4]).bold()),
+                    .highlight_style(choice_style(true)),
                 rows[2],
                 &mut state,
             );
             frame.render_widget(
-                Paragraph::new(" ↑/↓ select · Enter continue · Esc / Ctrl-Q close")
-                    .style(Style::default().fg(MUTED)),
+                Paragraph::new(shortcut_text(
+                    " ↑/↓ select · Enter continue · Esc / Ctrl-Q close",
+                )),
                 rows[3],
             );
         })?;

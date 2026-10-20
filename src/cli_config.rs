@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use werk_worker::{
-    policy::HostPolicy,
+    policy::{HostPolicy, PolicyDecision, ToolPermission},
     profiles::AgentProfile,
     project::{Access, Project},
     *,
@@ -46,7 +46,64 @@ pub async fn save_policy(workspace: &Path, policy: HostPolicy) -> Result<()> {
     .await
 }
 
+pub async fn save_defaults(session: &SessionHandle) -> Result<()> {
+    let data = session.snapshot().await?;
+    let project = Project::load(&data.workspace).await?;
+    let mut config = project.config.clone();
+    config.profile = Some(data.profile.name);
+    config.tools = Some(data.profile.tools);
+    config.skills = Some(data.profile.skills);
+    project.save(&data.workspace, &config).await?;
+    save_policy(&data.workspace, data.policy).await
+}
+
+pub const COMMAND_HELP: &str = "/permissions reads|writes|process deny|ask|allow [session|project]\n/permissions mode manual|edits|readonly [session|project]\nExamples: /permissions writes allow project · /permissions mode manual session\nDefault scope: session + project. Changes also enable the required tools.";
+
+pub async fn permission_command(session: &SessionHandle, command: &str) -> Result<String> {
+    let args: Vec<_> = command.split_whitespace().collect();
+    if !(3..=4).contains(&args.len()) {
+        return Err(WorkerError::new("permission_command", COMMAND_HELP));
+    }
+    let mut editor = Editor::open(session).await?;
+    editor.save_project = match args.get(3).copied().unwrap_or("project") {
+        "project" => true,
+        "session" => false,
+        _ => return Err(WorkerError::new("permission_command", COMMAND_HELP)),
+    };
+    if args[1] == "mode" && ["manual", "edits", "readonly"].contains(&args[2]) {
+        editor.set_mode(args[2]);
+    } else {
+        let effect = match args[1] {
+            "reads" => Effect::Read,
+            "writes" => Effect::Write,
+            "process" => Effect::Process,
+            _ => return Err(WorkerError::new("permission_command", COMMAND_HELP)),
+        };
+        let permission = match args[2] {
+            "deny" => ToolPermission::Deny,
+            "ask" => ToolPermission::Ask,
+            "allow" => ToolPermission::Allow,
+            _ => return Err(WorkerError::new("permission_command", COMMAND_HELP)),
+        };
+        editor.set_group(effect, permission);
+    }
+    editor.apply(session).await?;
+    Ok(format!("{command}\n{}", editor.status))
+}
+
 pub fn policy_label(policy: &HostPolicy) -> String {
+    if !policy.tool_permissions.is_empty() || !policy.remembered_grants.is_empty() {
+        return format!(
+            "{} tool rules; {} remembered approvals; workspace writes {}",
+            policy.tool_permissions.len(),
+            policy.remembered_grants.len(),
+            if policy.workspace_writable {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
     if policy.request_approvals {
         format!(
             "Ask before each action; workspace writes {}",
@@ -84,6 +141,7 @@ pub struct Editor {
     skills: Vec<skills::Skill>,
     project: Project,
     workspace: PathBuf,
+    saved_draft: String,
 }
 
 impl Editor {
@@ -94,8 +152,8 @@ impl Editor {
             .parent()
             .expect("config parent")
             .to_path_buf();
-        // Selecting a preset restores its own tool/skill set; project overrides
-        // remain the initial draft until a preset is explicitly selected.
+        // Start from each preset's tool/skill set; explicit permission choices
+        // are retained when the user later activates a preset.
         let mut presets = project.clone();
         presets.config.tools = None;
         presets.config.skills = None;
@@ -110,10 +168,11 @@ impl Editor {
             .iter()
             .position(|p| p.name == data.profile.name)
             .unwrap_or(0);
+        let saved_draft = fingerprint(&(&data.profile, &data.policy));
         Ok(Self {
             profile: data.profile,
             policy: data.policy,
-            tab: 0,
+            tab: 1,
             selected: [selected, 0, 0, 0],
             save_project: true,
             status: String::new(),
@@ -122,6 +181,7 @@ impl Editor {
             skills: session.available_skills(),
             project,
             workspace: data.workspace,
+            saved_draft,
         })
     }
 
@@ -142,15 +202,25 @@ impl Editor {
                     )
                 })
                 .collect(),
-            1 => std::iter::once(format!("Keep current: {}", policy_label(&self.policy)))
-                .chain(Access::ALL.iter().map(|a| a.label().to_string()))
-                .collect(),
+            1 => vec![
+                format!("Workspace reads: {}", self.group_label(Effect::Read)),
+                format!("Workspace writes: {}", self.group_label(Effect::Write)),
+                format!("Sandbox processes: {}", self.group_label(Effect::Process)),
+                "Preset: Manual".into(),
+                "Preset: Accept edits".into(),
+                "Preset: Read only".into(),
+                "Preset: Ask before every action (all tools)".into(),
+                format!(
+                    "Forget remembered approvals ({})",
+                    self.policy.remembered_grants.len()
+                ),
+            ],
             2 => self
                 .tools
                 .iter()
                 .map(|t| {
                     format!(
-                        "[{}] {}{}",
+                        "[{}] {}{} · {}",
                         if self.profile.tools.contains(&t.name) {
                             "x"
                         } else {
@@ -161,7 +231,8 @@ impl Editor {
                             " (hard denied)"
                         } else {
                             ""
-                        }
+                        },
+                        self.tool_label(t),
                     )
                 })
                 .collect(),
@@ -201,13 +272,41 @@ impl Editor {
             0 => {
                 if let Some(profile) = self.profiles.get(selected) {
                     self.profile = profile.clone();
+                    // Keep tool access the user explicitly enabled in this
+                    // editor; a later profile choice must not silently undo it.
+                    for (name, permission) in &self.policy.tool_permissions {
+                        if *permission != ToolPermission::Deny && !self.profile.tools.contains(name)
+                        {
+                            self.profile.tools.push(name.clone());
+                        }
+                    }
                 }
             }
             1 => {
-                if let Some(access) = selected.checked_sub(1).and_then(|i| Access::ALL.get(i)) {
+                if selected == 6 {
                     let denied = self.policy.hard_denied_tools.clone();
-                    self.policy = access.policy();
+                    self.policy = Access::Ask.policy();
                     self.policy.hard_denied_tools = denied;
+                    for tool in &self.tools {
+                        if (self.policy.request_approvals
+                            || self.policy.grants.iter().any(|g| g.tool == tool.name))
+                            && !self.profile.tools.contains(&tool.name)
+                        {
+                            self.profile.tools.push(tool.name.clone());
+                        }
+                    }
+                } else if selected <= 2 {
+                    let effect = [Effect::Read, Effect::Write, Effect::Process][selected];
+                    let permission = match self.group_label(effect).as_str() {
+                        "deny" | "disabled" | "mixed" => ToolPermission::Ask,
+                        "ask" => ToolPermission::Allow,
+                        _ => ToolPermission::Deny,
+                    };
+                    self.set_group(effect, permission);
+                } else if (3..=5).contains(&selected) {
+                    self.set_mode(["manual", "edits", "readonly"][selected - 3]);
+                } else if selected == 7 {
+                    self.policy.remembered_grants.clear();
                 }
             }
             2 => {
@@ -237,9 +336,9 @@ impl Editor {
     pub fn details(&self) -> String {
         let selected = self.selected[self.tab];
         let detail = match self.tab {
-            0 => self.profiles.get(selected).map(|p| format!("{}\n\nTools: {}\nSkills: {}\n\n{}", p.name, p.tools.join(", "), p.skills.join(", "), p.prompt)),
-            1 => Some("Select an access level with Enter/Space. This replaces scoped grants with the selected preset. Hard denies stay in force. Tools and skills are selected separately; enabling a tool does not itself grant access.".into()),
-            2 => self.tools.get(selected).map(|t| format!("{}\nEffect: {:?}\n\n{}", t.name, t.effect, t.description)),
+            0 => self.profiles.get(selected).map(|p| format!("{}\n\nProfiles choose tools and skills. Change workspace writes and sandbox processes in the Permissions tab. Explicitly enabled tool permissions are retained when selecting a profile.\n\nTools: {}\nSkills: {}\n\n{}", p.name, p.tools.join(", "), p.skills.join(", "), p.prompt)),
+            1 => Some("Workspace reads / writes / processes: Enter cycles deny → ask → allow. Enabling access also enables the matching tools in this profile.\n\nManual: reads run directly; writes and commands ask.\nAccept edits: workspace reads/writes run directly; commands ask.\nRead only: reads run directly; writes and commands are blocked.\n\nCtrl-S applies the draft. P switches session-only / project defaults. Saved approvals can be cleared here. Hard denies remain authoritative.".into()),
+            2 => self.tools.get(selected).map(|t| format!("{}\nEffect: {:?}\nPermission: {}\n\nEnter: enable/disable tool\nA: cycle deny / ask / allow (whole tool)\n\n{}", t.name, t.effect, self.tool_label(t), t.description)),
             _ => self.skills.get(selected).map(|s| format!("{}\n{}\n\n{}", s.name, s.description, s.body)),
         }.unwrap_or_default();
         format!(
@@ -256,6 +355,120 @@ impl Editor {
             detail,
             self.status
         )
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        fingerprint(&(&self.profile, &self.policy)) != self.saved_draft
+    }
+
+    fn tool_label(&self, tool: &ToolDefinition) -> String {
+        if self.policy.hard_denied_tools.contains(&tool.name) {
+            return "hard denied".into();
+        }
+        if !self.profile.tools.contains(&tool.name) {
+            return "disabled".into();
+        }
+        if tool.effect == Effect::Write && !self.policy.workspace_writable {
+            return "deny".into();
+        }
+        if let Some(rule) = self.policy.tool_permissions.get(&tool.name) {
+            return format!("{rule:?}").to_lowercase();
+        }
+        if self
+            .policy
+            .remembered_grants
+            .iter()
+            .any(|g| g.tool == tool.name)
+        {
+            return "remembered scope".into();
+        }
+        match self
+            .policy
+            .evaluate(tool, &serde_json::json!({"path": "."}), &[])
+        {
+            PolicyDecision::Allow => "allow",
+            PolicyDecision::Ask => "ask",
+            PolicyDecision::Deny => "deny",
+        }
+        .into()
+    }
+
+    fn group_label(&self, effect: Effect) -> String {
+        if effect == Effect::Write && !self.policy.workspace_writable {
+            return "deny".into();
+        }
+        let labels: std::collections::BTreeSet<_> = self
+            .tools
+            .iter()
+            .filter(|t| t.effect == effect)
+            .map(|t| self.tool_label(t))
+            .collect();
+        if labels.len() == 1 {
+            labels.into_iter().next().unwrap()
+        } else {
+            "mixed".into()
+        }
+    }
+
+    fn set_tool(&mut self, name: &str, permission: ToolPermission) {
+        self.policy.remembered_grants.retain(|g| g.tool != name);
+        self.policy.tool_permissions.insert(name.into(), permission);
+        if permission != ToolPermission::Deny && !self.profile.tools.iter().any(|t| t == name) {
+            self.profile.tools.push(name.into());
+        }
+    }
+
+    pub fn set_group(&mut self, effect: Effect, permission: ToolPermission) {
+        let names: Vec<_> = self
+            .tools
+            .iter()
+            .filter(|t| t.effect == effect)
+            .map(|t| t.name.clone())
+            .collect();
+        for name in names {
+            self.set_tool(&name, permission);
+        }
+        if effect == Effect::Write {
+            self.policy.workspace_writable = permission != ToolPermission::Deny;
+        }
+    }
+
+    pub fn cycle_tool_permission(&mut self) {
+        if self.tab != 2 {
+            return;
+        }
+        if let Some(tool) = self.tools.get(self.selected[2]).cloned() {
+            let permission = match self.tool_label(&tool).as_str() {
+                "deny" | "disabled" => ToolPermission::Ask,
+                "ask" => ToolPermission::Allow,
+                _ => ToolPermission::Deny,
+            };
+            self.set_tool(&tool.name, permission);
+            if tool.effect == Effect::Write && permission != ToolPermission::Deny {
+                self.policy.workspace_writable = true;
+            }
+            self.status = "Draft permission changed. Ctrl-S saves.".into();
+        }
+    }
+
+    pub fn set_mode(&mut self, mode: &str) {
+        self.set_group(Effect::Read, ToolPermission::Allow);
+        self.set_group(
+            Effect::Write,
+            match mode {
+                "readonly" => ToolPermission::Deny,
+                "edits" => ToolPermission::Allow,
+                _ => ToolPermission::Ask,
+            },
+        );
+        self.set_group(
+            Effect::Process,
+            if mode == "readonly" {
+                ToolPermission::Deny
+            } else {
+                ToolPermission::Ask
+            },
+        );
     }
 
     pub async fn apply(&mut self, session: &SessionHandle) -> Result<()> {
@@ -288,6 +501,7 @@ impl Editor {
             "Saved: current session. Esc returns to chat."
         }
         .into();
+        self.saved_draft = fingerprint(&(&self.profile, &self.policy));
         Ok(())
     }
 }

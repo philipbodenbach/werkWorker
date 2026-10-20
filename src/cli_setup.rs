@@ -1,5 +1,5 @@
 //! Interactive host setup. Credentials are deliberately separate from saved settings.
-use crate::cli_tui::{BG, BRAND, MUTED, Restore, TEXT, banner, clean, panel};
+use crate::cli_tui::{BG, BRAND, Restore, TEXT, banner, choice_line, clean, panel, shortcut_text};
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use ratatui::{
     layout::{Constraint, Layout},
     style::Style,
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
@@ -418,25 +418,26 @@ fn draw(frame: &mut ratatui::Frame, form: &Form) {
     }
     let fields = form.fields();
     let mut lines = vec![
-        Line::from(match form.stage {
-            0 => "Choose how to connect",
-            1 => "Server and credentials",
-            _ => "Model and agent settings",
-        }),
+        Line::styled(
+            match form.stage {
+                0 => "Choose how to connect",
+                1 => "Server and credentials",
+                _ => "Model and agent settings",
+            },
+            Style::default().fg(BRAND[0]).bold(),
+        ),
         Line::from(""),
     ];
     for (i, (label, value)) in fields.iter().enumerate() {
-        lines.push(Line::from(vec![
-            Span::styled(
+        lines.push(choice_line(
+            format!(
+                "{}{label}: {}",
                 if i == form.field { " › " } else { "   " },
-                Style::default().fg(BRAND[4]),
+                clean(value)
             ),
-            Span::styled(
-                format!("{label}: "),
-                Style::default().fg(if i == form.field { BRAND[0] } else { MUTED }),
-            ),
-            Span::raw(clean(value)),
-        ]));
+            i == form.field,
+            rows[1].width.saturating_sub(2),
+        ));
         lines.push(Line::from(""));
     }
     if form.stage == 2 {
@@ -476,13 +477,12 @@ fn draw(frame: &mut ratatui::Frame, form: &Form) {
         }
     };
     frame.render_widget(
-        Paragraph::new(clean(&footer))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(if form.error.is_empty() {
-                MUTED
-            } else {
-                BRAND[4]
-            })),
+        Paragraph::new(if form.error.is_empty() {
+            shortcut_text(&footer)
+        } else {
+            ratatui::text::Text::styled(clean(&footer), Style::default().fg(BRAND[4]).bold())
+        })
+        .wrap(Wrap { trim: false }),
         rows[2],
     );
 }

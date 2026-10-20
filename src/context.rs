@@ -100,9 +100,46 @@ impl ContextBuilder for DefaultContextBuilder {
             session.policy.grants.iter().map(|g| g.tool.as_str()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "),
             session.policy.hard_denied_tools.join(", "),
             ));
-            prompt.push_str("If tools or rights are missing, explain the blocker and direct the user to /permissions. An ordinary interaction.ask answer cannot change host policy.\n");
+            prompt.push_str("Missing rights: user can use F5 or /permissions mode manual project during questions. Model answers cannot grant access; do not retry blocked calls.\n");
+        }
+        if !session.policy.tool_permissions.is_empty()
+            || !session.policy.remembered_grants.is_empty()
+        {
+            prompt.push_str(&format!(
+                "\nTool permission overrides: {}. Remembered approval tools: {}.\n",
+                serde_json::to_string(&session.policy.tool_permissions).unwrap_or_default(),
+                session
+                    .policy
+                    .remembered_grants
+                    .iter()
+                    .map(|g| g.tool.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
         }
         prompt.push_str("For implementation tasks, use the permitted file/process tools to make and verify changes. Code shown in chat is only a proposal, not a file change. Report tests as executed only when tool results prove they ran.\n");
+        let mut repeated = BTreeSet::new();
+        for invocation in &run.invocations {
+            let count = run
+                .invocations
+                .iter()
+                .filter(|i| {
+                    i.call.name == invocation.call.name
+                        && i.call.arguments == invocation.call.arguments
+                })
+                .count();
+            if count >= 2
+                && count >= run.limits.max_repeated_calls.saturating_sub(1)
+                && repeated.insert(invocation.call.name.clone())
+            {
+                prompt.push_str(&format!(
+                    "Loop warning: {} has already been called with identical arguments {count} times in this run (limit {}). Reuse the existing result; do not repeat it to solve a permission blocker.\n",
+                    invocation.call.name, run.limits.max_repeated_calls,
+                ));
+            }
+        }
         if let Some(schema) = &run.output_schema {
             prompt.push_str(&format!(
                 "\nFinal output must be JSON satisfying this schema: {schema}\n"

@@ -47,7 +47,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         routes = {
             '/werk/v1/info': {'service': 'werk1112', 'protocol': {'major': 1, 'minor': 0}, 'active_backend': 'fixture'},
-            '/werk/v1/capabilities': {'capabilities': []},
+            '/werk/v1/capabilities': {'capabilities': [
+                {'id': 'runtime.state.persistence', 'status': 'unsupported',
+                 'detail': 'fixture backend does not expose this operation'}]},
             '/v1/capabilities': {'models': [{'id': 'fixture-model', 'available_tasks': ['text_generation']}]},
             '/v1/models': {'data': [{'id': 'fixture-model'}]},
             '/v1/parameters?task=text-generation': {'parameters': []},

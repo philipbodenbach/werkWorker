@@ -21,6 +21,42 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
     }
 }
 #[tokio::test]
+async fn discovery_accepts_capabilities_without_operations() {
+    let server = Server::start(|request| {
+        if request.path == "/werk/v1/capabilities" {
+            control(json!({"capabilities":[
+                {"id":"runtime.state.persistence","status":"unsupported","detail":"not exposed by backend"},
+                {"id":"runtime.memory.reservations","status":"unavailable","detail":"no bounded estimates"},
+                {"id":"runtime.memory.telemetry.host","status":"supported","detail":"sampled dynamically","operations":["read"]}
+            ]}))
+        } else {
+            werk(request)
+        }
+    }).await;
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    assert_eq!(provider.runtime_capabilities.len(), 3);
+    for capability in &provider.runtime_capabilities[..2] {
+        assert!(capability.operations.is_empty());
+        assert!(!capability.status.executable(true));
+    }
+    assert_eq!(provider.runtime_capabilities[2].operations, ["read"]);
+    assert_eq!(
+        provider.discovery["models"]["data"][0]["id"],
+        "fixture-model"
+    );
+    assert!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request.method == "GET")
+    );
+}
+
+#[tokio::test]
 async fn native_discovery_then_chat_and_correct_tool_pairs() {
     let server=Server::start(|request|{
         if request.path=="/v1/chat/completions"&&!request.body["messages"].as_array().unwrap().iter().any(|m|m["role"]=="tool"){

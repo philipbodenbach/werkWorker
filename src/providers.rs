@@ -308,6 +308,7 @@ pub struct RuntimeCapability {
     pub id: String,
     pub status: CapabilityStatus,
     pub detail: String,
+    #[serde(default)]
     pub operations: Vec<String>,
 }
 /// Credentials are resolved separately and never serialized with configuration.

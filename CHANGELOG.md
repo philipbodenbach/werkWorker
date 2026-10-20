@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Accept omitted empty capability operation lists from Werk during connection
+  discovery, fixing the setup's `invalid_json` failure with Werk 1.9.1.
 - Automatically load interactive connection defaults and optional local API keys
   from the selected workspace's `.werkworker/werk-config.json` and `secrets.json`.
 - Interactive TUI server/authentication/model setup, masked key entry, persistent

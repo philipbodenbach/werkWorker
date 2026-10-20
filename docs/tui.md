@@ -42,18 +42,38 @@ Indentation is retained; an unfinished code fence is styled while streaming.
 | Up / Down, Enter (empty input, pending request) | Select and send a suggested answer or approval decision |
 | Ctrl-U | Clear a draft answer to use the selection again |
 | F4 / `/view` | Choose and remember Compact or Cockpit |
+| F5 / `/settings` | Edit the current profile, permissions, enabled tools and skills |
 | `/sessions` | Choose a new chat or a previous conversation in this workspace |
-| F2 / `/permissions` | Inspect tools/skills/grants; Enter opens confirmation to enable approval requests |
+| F2 / `/permissions` | Inspect tools/skills/grants; E opens settings, Enter opens the all-tools approval shortcut |
 | F3 / `/agents` | Open the subagent inspector; Up/Down selects a child, Page Up/Down scrolls its details, Esc returns |
-| Ctrl-C | Cancel the active run; press again consecutively to quit (any other key resets this) |
+| Left-button drag, Ctrl-C | Select visible text within one pane and copy it; Esc clears the selection |
+| Ctrl-V / Shift-Insert | Paste clipboard text into the draft; Enter sends it |
+| Right-click | Copy selected text, otherwise paste (one click) |
+| F6 | Toggle native terminal selection for terminal-provided copy/paste shortcuts |
+| Ctrl-C (without selection) | Cancel the active run; press again consecutively to quit (any other key resets this) |
 | Ctrl-Q | Cancel/clean up managed work, close the session and restore the terminal |
 | Page Up / Page Down | Scroll conversation history |
-| Mouse wheel | Scroll chat or inspector under the pointer (Shift selects terminal text in most terminals) |
+| Mouse wheel | Independently scroll the pane under the pointer: chat, request details, session sidebar, agent list/details, permissions or input |
 | Home / End | Jump to oldest visible history / latest output and resume following |
-| Alt-Up / Alt-Down | Scroll full approval details, question or session information |
+| Alt-Up / Alt-Down | Scroll pending approval/question details, or the session sidebar when no request is pending |
+
+Clipboard paste preserves Unicode and line breaks in the draft. Bracketed paste
+also works with the terminal's paste shortcut (usually Ctrl-Shift-V); pasted
+newlines never submit a message or approval. Input is limited to 16 KiB, with a
+visible notice if a bracketed paste is truncated. Multiline drafts expand up to
+four visible rows and can be scrolled with the mouse wheel.
+
+Direct clipboard access uses PowerShell on Windows/WSL, `pbcopy`/`pbpaste` on
+macOS, or `wl-copy`/`wl-paste` and `xclip`/`xsel` on Linux. If these helpers are
+unavailable, copying falls back to the terminal's OSC 52 support; for pasting,
+use the terminal's paste shortcut. F6 releases mouse capture so native terminal
+selection and context menus work, then restores pane scrolling when pressed
+again. Shift-drag also bypasses mouse capture in many terminals.
+While an application selection is active, the visible frame stays still so new
+output cannot change the text being copied; output continues in the background.
 
 Slash commands: `/help` shows commands and shortcuts, `/clear` clears only the
-visible conversation, `/cancel` cancels the active run, `/agents` opens live child details, `/permissions` explains current tools and rights, `/setup` reconnects through the configuration wizard when no run is active, and `/quit` closes the
+visible conversation, `/cancel` cancels the active run, `/agents` opens live child details, `/permissions` explains current tools and rights, `/settings` edits session/project configuration, `/setup` reconnects through the configuration wizard when no run is active, and `/quit` closes the
 session with the same cleanup as Ctrl-Q. Commands work without a connected model.
 Known commands also work while answering a pending question. Other slash-prefixed
 input is treated as an answer. F2/F3 preserve any draft answer.
@@ -83,7 +103,8 @@ restricted access. The model and the bundled task/coding skills direct permissio
 requests through the actual tool, so the host can show a real action approval.
 
 New interactive setups default to **All tools; explicit approval for each action**,
-exposing all registered tools and skills, including the bundled coding skill.
+exposing registered tools and skills, including the bundled coding skill, unless
+the project explicitly selects a subset.
 To upgrade an existing restricted chat, open **F2**, press **Enter**, select
 **Enable all tools; ask before actions** with Up, and confirm with Enter.
 The default choice keeps current permissions. Enabling requests itself executes
@@ -94,13 +115,46 @@ session; new children inherit the mode and ask for their own actions.
 Access is not
 changed when reopening an existing session: it retains its stored profile and
 policy. **Continue previous** shows and reuses the access selected in the last
-saved setup for this workspace when creating a new session. **Connect new** starts
+saved setup or settings editor for this workspace when creating a new session. **Connect new** starts
 with all tools and explicit approvals. An explicit `--grants` file controls newly created sessions;
 opening an old session retains that session's stored grants.
 Questions are answered through their durable request IDs. Typing another message
 after completion starts a new run in the same session. Display history is bounded;
 full committed events remain in SQLite. Untrusted text cannot emit terminal control
 characters. Redraws happen only after changes, at most 20 times per second.
+
+## Edit profiles, permissions, tools and skills
+
+Open **F5** or **`/settings`** (also **E** from F2). Use **Tab/Shift-Tab** or
+**Left/Right** to switch between Profiles, Permissions, Tools and Skills.
+**Up/Down** selects an entry; **Space/Enter** chooses a profile or access preset,
+or toggles an individual tool/skill. Profiles include bundled and project/user
+profiles. Choosing a profile restores that preset's tool and skill selection;
+permissions are chosen separately. The details pane shows descriptions, profile
+instructions and skill contents. Both panes scroll independently with the wheel;
+Page Up/Down scrolls the details.
+
+**Ctrl-S** applies the draft to the current session and saves project defaults.
+**P** switches to saving only the current session. **Esc** closes the editor and
+discards unapplied changes. Applying requires an idle root session: finish or
+cancel active work first, including interrupted runs and subagents. The session
+ID and conversation history are preserved.
+
+Profile, tool and skill selections are saved in `.werkworker/config.json`,
+preserving other project settings and checking for concurrent changes. Host
+access is saved separately under the user's `werkworker/workspace-access`
+configuration directory, bound to the workspace identity. A project file alone
+cannot grant access. Defaults apply to **New session** through `/sessions` and
+after restarting; previously saved chats keep their own settings. Explicit
+`--grants` continues to override defaults for new sessions. Selecting a new
+access level in connection setup supersedes saved access for that connection.
+
+Disabled tools remain disabled even in approval-request mode. Disabled skills
+are no longer advertised or loadable in subsequent runs; historical snapshots
+remain recorded. Hard-denied tools stay denied. Permission presets replace
+scoped grants with the selected scope and require approval for external actions.
+If saving defaults fails after the session update, the editor reports that
+partial save explicitly; resolve the error before retrying Ctrl-S.
 
 ## Previous sessions
 

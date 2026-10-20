@@ -51,6 +51,181 @@ async fn answer(run: &RunHandle, request: &ApprovalRequest, allow: bool) {
 }
 
 #[tokio::test]
+async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_history() {
+    let workspace = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let path = storage.path().join("sessions.sqlite");
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::text("original response"),
+        call("skills.load", json!({"name":"coding-basic"})),
+        ScriptedTurn::text("done"),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .store(Arc::new(SqliteStore::open(&path).await.unwrap()))
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile::bundled("coding-basic").unwrap(),
+            workspace.path(),
+            HostPolicy {
+                hard_denied_tools: vec!["files.write".into()],
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    session
+        .submit("hello", "first", Limits::default(), None)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let before = session.snapshot().await.unwrap();
+    let mut profile = AgentProfile::bundled("general-readonly").unwrap();
+    profile.skills.clear();
+    profile.tools = vec!["skills.load".into()];
+    let policy = werk_worker::project::Access::Ask.policy();
+    session
+        .configure(profile.clone(), policy.clone(), "configure")
+        .await
+        .unwrap();
+    assert!(matches!(
+        session
+            .configure(profile, policy, "configure")
+            .await
+            .unwrap()
+            .status,
+        ReceiptStatus::Duplicate
+    ));
+    let state = session.snapshot().await.unwrap();
+    assert_eq!(state.id, before.id);
+    assert_eq!(
+        serde_json::to_value(&state.messages).unwrap(),
+        serde_json::to_value(&before.messages).unwrap()
+    );
+    assert!(
+        state
+            .policy
+            .hard_denied_tools
+            .contains(&"files.write".into())
+    );
+    assert_eq!(state.profile_hash, fingerprint(&state.profile));
+    assert!(
+        state.skill_snapshots.contains_key("coding-basic"),
+        "Historical version is retained"
+    );
+    let run = session
+        .submit("load disabled skill", "second", Limits::default(), None)
+        .await
+        .unwrap();
+    run.wait().await.unwrap();
+    let state = run.status().await.unwrap();
+    assert_eq!(
+        state.invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .error_code
+            .as_deref(),
+        Some("unknown_skill")
+    );
+    let requests = provider.requests();
+    assert!(
+        !serde_json::to_string(&requests[1].messages[0])
+            .unwrap()
+            .contains("coding-basic:")
+    );
+    assert_eq!(
+        requests[1]
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["skills.load"]
+    );
+    let session_id = session.id().await;
+    engine.close().await.unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![])))
+        .store(Arc::new(SqliteStore::open(&path).await.unwrap()))
+        .build()
+        .await
+        .unwrap();
+    let restored = engine
+        .open_session(&session_id)
+        .await
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+    assert_eq!(restored.profile.name, "general-readonly");
+    assert!(restored.profile.skills.is_empty());
+    assert!(restored.policy.request_approvals);
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn configure_rejects_unknown_names_and_active_runs_without_partial_changes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![call(
+        "interaction.ask",
+        json!({"question":"wait","choices":[]}),
+    )])))
+    .build()
+    .await
+    .unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile::bundled("general-readonly").unwrap(),
+            workspace.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let mut profile = AgentProfile::bundled("coding-basic").unwrap();
+    profile.tools.push("not.registered".into());
+    assert!(
+        session
+            .configure(profile, HostPolicy::default(), "bad-tool")
+            .await
+            .is_err()
+    );
+    let mut profile = AgentProfile::bundled("coding-basic").unwrap();
+    profile.skills.push("not-registered".into());
+    assert!(
+        session
+            .configure(profile, HostPolicy::default(), "bad-skill")
+            .await
+            .is_err()
+    );
+    assert!(session.snapshot().await.unwrap().commands.is_empty());
+    let run = session
+        .submit("wait", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let error = session
+        .configure(
+            AgentProfile::bundled("coding-basic").unwrap(),
+            werk_worker::project::Access::Ask.policy(),
+            "busy",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "session_busy");
+    let snapshot = session.snapshot().await.unwrap();
+    assert_eq!(snapshot.profile.name, "general-readonly");
+    assert!(!snapshot.policy.workspace_writable);
+    assert!(!snapshot.commands.contains_key("busy"));
+    run.cancel("test done", "cancel").await.unwrap();
+    run.wait().await.unwrap();
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn host_upgrade_during_question_enables_real_writes_and_persists_in_same_session() {
     let workspace = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();

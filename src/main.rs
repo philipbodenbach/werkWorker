@@ -1,3 +1,5 @@
+#[path = "cli_config.rs"]
+mod cli_config;
 #[path = "cli_setup.rs"]
 mod cli_setup;
 #[path = "cli_start.rs"]
@@ -224,6 +226,8 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     execution.validate()?;
     let mut setup_limits = Limits::default();
     let mut setup_profile = None;
+    let mut reuse_project_access = true;
+    let explicit_policy = cli.grants.is_some();
     let mut setup_access = if matches!(&command, Command::Tui { .. }) {
         project::Access::Ask
     } else {
@@ -263,6 +267,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         setup_limits = connected.limits;
         setup_profile = Some(connected.profile);
         setup_access = connected.access;
+        reuse_project_access = connected.reuse_project_access;
         connected.provider
     } else if let Some(path) = &cli.werk_config {
         let config: WerkConfig = serde_json::from_slice(&tokio::fs::read(path).await?)?;
@@ -337,7 +342,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             run_id,
             ..
         } => {
-            let mut profile = match setup_profile {
+            let profile = match setup_profile {
                 Some(profile) => profile,
                 None => {
                     project
@@ -353,10 +358,6 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                         .await?
                 }
             };
-            if policy.request_approvals {
-                profile.tools = engine.tools().into_iter().map(|t| t.name).collect();
-                profile.skills = engine.skills().into_iter().map(|s| s.name).collect();
-            }
             let mut choice = match session_id {
                 Some(id) => cli_start::SessionChoice::Previous(id),
                 None if input.is_none() && !cli.setup => {
@@ -366,6 +367,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             };
             let mut explicit_run = run_id;
             let mut current: Option<SessionHandle> = None;
+            let mut first_new_session = true;
             loop {
                 let session = match choice {
                     cli_start::SessionChoice::Back => match current.take() {
@@ -373,11 +375,42 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                         None => break Ok(()),
                     },
                     cli_start::SessionChoice::New => {
+                        // Reload defaults after /sessions as well as after restart.
+                        let project = project::Project::load(&cli.workspace).await?;
+                        let mut next_profile = if first_new_session {
+                            profile.clone()
+                        } else {
+                            project
+                                .profile(
+                                    project.config.profile.as_deref().unwrap_or(&profile.name),
+                                    &cli.workspace,
+                                    cli_setup::settings_path()?.parent().expect("config parent"),
+                                )
+                                .await?
+                        };
+                        let next_policy =
+                            if !explicit_policy && (!first_new_session || reuse_project_access) {
+                                cli_config::load_policy(&cli.workspace)
+                                    .await?
+                                    .unwrap_or_else(|| policy.clone())
+                            } else {
+                                policy.clone()
+                            };
+                        if next_policy.request_approvals {
+                            if project.config.tools.is_none() {
+                                next_profile.tools =
+                                    engine.tools().into_iter().map(|t| t.name).collect();
+                            }
+                            if project.config.skills.is_none() {
+                                next_profile.skills =
+                                    engine.skills().into_iter().map(|s| s.name).collect();
+                            }
+                        }
                         engine
                             .create_session(
-                                profile.clone(),
+                                next_profile,
                                 &cli.workspace,
-                                policy.clone(),
+                                next_policy,
                                 project.metadata(),
                             )
                             .await?
@@ -449,6 +482,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                         break Ok(());
                     }
                     cli_tui::Exit::Sessions => {
+                        first_new_session = false;
                         current = Some(session);
                         choice = cli_start::sessions(store.as_ref(), &cli.workspace, true).await?;
                     }

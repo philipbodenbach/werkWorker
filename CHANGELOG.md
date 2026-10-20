@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- F5 `/settings` editor for session profiles, access presets, individual tools
+  and skills, with optional project defaults for new chats and separate
+  host-owned workspace permissions. Session reconfiguration preserves history
+  and rejects changes during active or interrupted work.
+- TUI text selection with Ctrl-C/right-click copy, Ctrl-V/right-click paste,
+  safe multiline bracketed paste, native terminal selection via F6, and
+  independent mouse-wheel scrolling for conversation, request, sidebar,
+  inspector and input panes.
 - Compact chat layout by default, with inline magenta question/approval cards,
   keyboard-selectable answers, freeform replies and a persisted F4 `/view` menu
   switching between Compact and the existing Cockpit layout.

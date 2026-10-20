@@ -72,6 +72,7 @@ pub struct Connected {
     pub limits: Limits,
     pub profile: AgentProfile,
     pub access: Access,
+    pub reuse_project_access: bool,
 }
 struct Pending(Option<tokio::task::JoinHandle<Result<WerkProvider>>>);
 impl std::ops::Deref for Pending {
@@ -109,7 +110,7 @@ pub(crate) fn settings_path() -> Result<PathBuf> {
     root.map(|p| p.join("werkworker/config.json"))
         .ok_or_else(|| WorkerError::new("config_path", "No user configuration directory available"))
 }
-async fn read_settings(path: &Path) -> std::io::Result<Vec<u8>> {
+pub(crate) async fn read_settings(path: &Path) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
     let file = tokio::fs::File::open(path).await?;
     let mut bytes = Vec::new();
@@ -122,7 +123,7 @@ async fn read_settings(path: &Path) -> std::io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-async fn save(path: &Path, settings: &impl Serialize) -> Result<()> {
+pub(crate) async fn save(path: &Path, settings: &impl Serialize) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| WorkerError::new("config_path", "Invalid configuration path"))?;
@@ -625,9 +626,14 @@ pub async fn show(
         };
         let mut form = Form::new(settings, custom_policy);
         form.key = key;
-        if let Some(profile) = explicit_profile {
+        if let Some(profile) = explicit_profile.or(project.config.profile.as_deref()) {
             form.settings.profile = profile.into();
         }
+        let saved_access = crate::cli_config::load_policy(workspace).await?;
+        let access_label = saved_access
+            .as_ref()
+            .map(crate::cli_config::policy_label)
+            .unwrap_or_else(|| previous_access.label().into());
         let mut error = String::new();
         loop {
             let detail = format!(
@@ -638,7 +644,7 @@ pub async fn show(
                 if custom_policy {
                     "explicit grants file"
                 } else {
-                    previous_access.label()
+                    &access_label
                 },
                 error
             );
@@ -715,6 +721,7 @@ pub async fn show(
                         limits: form.settings.limits,
                         profile,
                         access: previous_access,
+                        reuse_project_access: true,
                     }));
                 }
             }
@@ -766,7 +773,11 @@ pub async fn show(
                                 && let Err(error)=save(&previous_path,&PreviousConnection{settings:form.settings.clone(),access:form.access}).await {
                                     form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=7;continue;
                             }
-                            result=Some(Connected{provider:Arc::new(provider),limits:form.settings.limits.clone(),profile:project.profile(&form.settings.profile,workspace,global).await?,access:form.access});break;
+                            if form.save < 2 && !custom_policy
+                                && let Err(error) = crate::cli_config::save_policy(workspace, form.access.policy()).await {
+                                form.error=format!("Cannot save workspace access: {error}");continue;
+                            }
+                            result=Some(Connected{provider:Arc::new(provider),limits:form.settings.limits.clone(),profile:project.profile(&form.settings.profile,workspace,global).await?,access:form.access,reuse_project_access:false});break;
                         }
                     }
                 }
@@ -800,7 +811,7 @@ pub async fn show(
                             KeyCode::Char(c) if !ctrl && !c.is_control()=>{if let Some(field)=form.edit(){if field.len()+c.len_utf8()<=4096{field.push(c);}}else if c==' ' {form.cycle(true);}},
                             KeyCode::Enter=>{
                                 if form.stage==0 {
-                                    if form.target==2 {result=Some(Connected{provider:Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("werkWorker offline demo. No server or model is connected.")])),limits:Limits::default(),profile:AgentProfile::bundled("general-readonly")?,access:Access::None});break;}
+                                    if form.target==2 {result=Some(Connected{provider:Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("werkWorker offline demo. No server or model is connected.")])),limits:Limits::default(),profile:AgentProfile::bundled("general-readonly")?,access:Access::None,reuse_project_access:false});break;}
                                     if form.target==1 && form.settings.werk.base_url.starts_with("http://127."){form.settings.werk.base_url="https://".into();}
                                     form.stage=1;form.field=0;form.error.clear();continue;
                                 }

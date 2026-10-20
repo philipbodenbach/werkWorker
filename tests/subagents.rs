@@ -426,6 +426,24 @@ async fn nested_children_obey_depth_and_cancel_with_root() {
     run.wait().await.unwrap();
     assert!(grandchild.status().await.unwrap().status.terminal());
     assert_eq!(engine.execution_status()["free_subagent_slots"], 4);
+    let child_session = engine.open_session(&children[0].session_id).await.unwrap();
+    assert_eq!(
+        child_session
+            .configure(profile(false), HostPolicy::default(), "child-config")
+            .await
+            .unwrap_err()
+            .code,
+        "root_required"
+    );
+    // Configuration must inspect durable child links without deadlocking the
+    // admission lock used to reopen those child sessions.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        session.configure(profile(false), HostPolicy::default(), "root-config"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     engine.close().await.unwrap();
 }
 #[cfg(target_os = "linux")]

@@ -1,8 +1,10 @@
 //! Interactive CLI client. Engine policy and lifecycle stay in the public SDK.
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-    KeyModifiers, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
+#[path = "cli_tui_input.rs"]
+mod text_input;
 use futures_util::{Stream, StreamExt};
 use ratatui::{
     Frame,
@@ -44,7 +46,7 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r"\____/ "];
-const COMMANDS: [(&str, &str); 9] = [
+const COMMANDS: [(&str, &str); 10] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
@@ -57,6 +59,7 @@ const COMMANDS: [(&str, &str); 9] = [
     ("/setup", "Configure server, model and credentials"),
     ("/view", "Choose Compact or Cockpit layout"),
     ("/sessions", "Start a new chat or open a previous session"),
+    ("/settings", "Edit profile, permissions, tools and skills"),
 ];
 const RESUME_REQUIRED: &str =
     "Resume the interrupted run via /sessions before sending another message.";
@@ -101,7 +104,11 @@ pub(crate) async fn input() -> tokio::sync::MutexGuard<'static, EventStream> {
 }
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste
+        );
         ratatui::restore();
     }
 }
@@ -118,6 +125,7 @@ enum Screen {
     Permissions,
     PermissionConsent,
     Appearance,
+    Settings,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +172,33 @@ struct AgentView {
     label: String,
     details: String,
 }
+#[derive(Clone, Copy)]
+enum Pane {
+    Request,
+    Session,
+    Permissions,
+    AgentList,
+    AgentDetails,
+    Input,
+    SettingsList,
+    SettingsDetails,
+}
+#[derive(Clone, Copy, Default)]
+struct ScrollPane {
+    area: Rect,
+    offset: usize,
+    max: usize,
+    page: usize,
+}
+impl ScrollPane {
+    fn scroll(&mut self, up: bool, rows: usize) {
+        self.offset = if up {
+            self.offset.saturating_sub(rows)
+        } else {
+            self.offset.saturating_add(rows).min(self.max)
+        };
+    }
+}
 #[derive(Default)]
 struct View {
     transcript: String,
@@ -178,7 +213,12 @@ struct View {
     chat_max_scroll: usize,
     chat_page: usize,
     chat_area: Rect,
-    detail_scroll: u16,
+    panes: [ScrollPane; 8],
+    settings: Option<crate::cli_config::Editor>,
+    selection: Option<text_input::Selection>,
+    rendered: Option<ratatui::buffer::Buffer>,
+    selectable: Vec<Rect>,
+    native_selection: bool,
     error: String,
     model_requests: u32,
     tools: u32,
@@ -192,7 +232,6 @@ struct View {
     screen: Screen,
     agent_views: Vec<AgentView>,
     agent_selected: usize,
-    agent_scroll: u16,
     permissions: String,
     access_summary: String,
     access_hint: String,
@@ -202,12 +241,86 @@ struct View {
     choice_selected: usize,
 }
 impl View {
+    async fn open_settings(&mut self, session: Option<&SessionHandle>) {
+        match session {
+            Some(session) => match crate::cli_config::Editor::open(session).await {
+                Ok(editor) => {
+                    self.settings = Some(editor);
+                    self.screen = Screen::Settings;
+                    self.pane(Pane::SettingsList).offset = 0;
+                    self.pane(Pane::SettingsDetails).offset = 0;
+                    self.error.clear();
+                }
+                Err(error) => self.error = error.to_string(),
+            },
+            None => self.error = "Connect a session before editing settings.".into(),
+        }
+    }
+    fn pane(&mut self, pane: Pane) -> &mut ScrollPane {
+        &mut self.panes[pane as usize]
+    }
+    fn paste(&mut self, text: &str) {
+        if !matches!(self.screen, Screen::Conversation) {
+            return;
+        }
+        self.selection = None;
+        self.quit_armed = false;
+        let complete = text_input::append_paste(&mut self.input, text);
+        self.edited_input();
+        self.error = if complete {
+            String::new()
+        } else {
+            "Input limited to 16 KiB; paste was truncated.".into()
+        };
+    }
+    async fn paste_clipboard(&mut self) {
+        if !matches!(self.screen, Screen::Conversation) {
+            return;
+        }
+        match text_input::paste().await {
+            Ok(text) => self.paste(&text),
+            Err(error) => {
+                self.error = format!(
+                    "Cannot paste: {error}. Use the terminal paste shortcut (Ctrl-Shift-V)."
+                )
+            }
+        }
+    }
+    async fn copy_selection(&mut self) -> bool {
+        let (Some(selection), Some(buffer)) = (&self.selection, &self.rendered) else {
+            return false;
+        };
+        let text = selection.text(buffer);
+        match text_input::copy(&text).await {
+            Ok(()) => {
+                self.selection = None;
+                self.error.clear();
+            }
+            Err(error) => {
+                self.error = format!("Cannot copy: {error}. Use F6 for terminal text selection.")
+            }
+        }
+        self.quit_armed = false;
+        true
+    }
+    fn scroll_at(&mut self, x: u16, y: u16, up: bool) {
+        self.selection = None;
+        if matches!(self.screen, Screen::Conversation) && self.chat_area.contains((x, y).into()) {
+            self.scroll_chat(up, 3);
+        } else if let Some(pane) = self
+            .panes
+            .iter_mut()
+            .find(|pane| pane.area.contains((x, y).into()))
+        {
+            pane.scroll(up, 3);
+        }
+    }
     fn refresh_permissions(&mut self, data: &SessionData) {
         (self.access_summary, self.permissions) = permission_details(data);
         self.access_hint = if data.policy.request_approvals {
-            " All tools can request approval · ja/yes or Allow once executes the displayed action · F2 permissions".into()
+            " Selected tools can request approval · ja/yes approves the displayed action · F2 permissions · F5 settings".into()
         } else {
-            " Restricted tool access · F2 then Enter: enable approval requests without reconnecting"
+            " Restricted tool access · F5 settings: edit profile, permissions, tools and skills"
                 .into()
         };
     }
@@ -266,6 +379,7 @@ impl View {
             .collect()
     }
     fn edited_input(&mut self) {
+        self.pane(Pane::Input).offset = usize::MAX;
         self.command_selected = 0;
         self.commands_dismissed = false;
     }
@@ -382,7 +496,7 @@ fn permission_details(data: &SessionData) -> (String, String) {
         .collect::<Vec<_>>()
         .join("\n");
     let details = format!(
-        "Enter: review enabling all tools with explicit approval\n\n{summary}\nWorkspace: {}\n\nAvailable profile tools:\n{}\n\nHost grants:\n{}\n\nHard-denied tools: {}\n\nAvailable skills: {}\n\nApproval requests expose the actual tool, file diff or command before execution.\nChoose Allow once, Ctrl-Y, or type ja/yes to approve that action; Deny, Ctrl-N or nein/no rejects it.\nA normal agent question is not an action approval.\nNew subagents inherit access and ask for their own addressed approvals.\nFinish or cancel existing subagents before changing this session's access.",
+        "E / F5: edit profile, permissions, tools and skills\nEnter: review enabling all tools with explicit approval\n\n{summary}\nWorkspace: {}\n\nAvailable profile tools:\n{}\n\nHost grants:\n{}\n\nHard-denied tools: {}\n\nAvailable skills: {}\n\nApproval requests expose the actual tool, file diff or command before execution.\nChoose Allow once, Ctrl-Y, or type ja/yes to approve that action; Deny, Ctrl-N or nein/no rejects it.\nA normal agent question is not an action approval.\nNew subagents inherit access and ask for their own addressed approvals.\nFinish or cancel existing subagents before changing this session's access.",
         data.workspace.display(),
         data.profile.tools.join(", "),
         if grants.is_empty() { "None" } else { &grants },
@@ -473,7 +587,39 @@ fn wrapped_lines(text: &str, width: u16) -> usize {
         .line_count(width.max(1))
 }
 
-fn draw_request(frame: &mut Frame, view: &View, area: Rect) {
+fn draw_scrolled(frame: &mut Frame, state: &mut ScrollPane, paragraph: Paragraph<'_>, area: Rect) {
+    state.area = area;
+    state.page = usize::from(area.height).max(1);
+    state.max = paragraph
+        .line_count(area.width.max(1))
+        .saturating_sub(area.height as usize)
+        .min(u16::MAX as usize);
+    state.offset = state.offset.min(state.max);
+    frame.render_widget(paragraph.scroll((state.offset as u16, 0)), area);
+}
+
+fn draw_text_panel(
+    frame: &mut Frame,
+    view: &mut View,
+    pane: Pane,
+    text: String,
+    title: &str,
+    color: Color,
+    area: Rect,
+) {
+    let block = panel(title, color);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    view.selectable.push(inner);
+    draw_scrolled(
+        frame,
+        view.pane(pane),
+        Paragraph::new(text).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
     let (title, body) = if let Some(request) = &view.approval {
         (
             " Approval ",
@@ -503,10 +649,11 @@ fn draw_request(frame: &mut Frame, view: &View, area: Rect) {
         Constraint::Length(1),
     ])
     .split(inner);
-    frame.render_widget(
-        Paragraph::new(clean(&body))
-            .wrap(Wrap { trim: false })
-            .scroll((view.detail_scroll, 0)),
+    view.selectable.push(rows[0]);
+    draw_scrolled(
+        frame,
+        view.pane(Pane::Request),
+        Paragraph::new(clean(&body)).wrap(Wrap { trim: false }),
         rows[0],
     );
     let selected = view.choice_selected.min(options.len().saturating_sub(1));
@@ -582,6 +729,7 @@ fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
     view.chat_max_scroll = offset;
     view.chat_page = height.max(1);
     view.chat_area = chat;
+    view.selectable.push(panel("", MUTED).inner(chat));
     if let Some(position) = &mut view.scroll {
         *position = (*position).min(offset);
     }
@@ -624,7 +772,7 @@ fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
     }
 }
 
-fn draw_agents(frame: &mut Frame, view: &View, area: Rect) {
+fn draw_agents(frame: &mut Frame, view: &mut View, area: Rect) {
     let split = if view.layout == LayoutMode::Cockpit {
         Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).split(area)
     } else {
@@ -647,7 +795,7 @@ fn draw_agents(frame: &mut Frame, view: &View, area: Rect) {
                     format!(
                         "{} {}",
                         if i == view.agent_selected { ">" } else { " " },
-                        agent.label
+                        clean(&agent.label)
                     ),
                     if i == view.agent_selected {
                         Style::default().fg(BG).bg(BRAND[4])
@@ -658,13 +806,15 @@ fn draw_agents(frame: &mut Frame, view: &View, area: Rect) {
             })
             .collect()
     };
-    let list_scroll =
-        (view.agent_selected + 1).saturating_sub(split[0].height.saturating_sub(2) as usize);
-    frame.render_widget(
-        Paragraph::new(items)
-            .scroll((list_scroll.min(u16::MAX as usize) as u16, 0))
-            .block(panel(" Subagents · Up/Down select ", BRAND[4])),
-        split[0],
+    let block = panel(" Subagents · Up/Down select ", BRAND[4]);
+    let inner = block.inner(split[0]);
+    frame.render_widget(block, split[0]);
+    view.selectable.push(inner);
+    draw_scrolled(
+        frame,
+        view.pane(Pane::AgentList),
+        Paragraph::new(items),
+        inner,
     );
     let details = view
         .agent_views
@@ -672,21 +822,115 @@ fn draw_agents(frame: &mut Frame, view: &View, area: Rect) {
         .map(|a| a.details.as_str())
         .unwrap_or(
             "Subagent progress and tool results appear here.\nEsc returns to the conversation.",
-        );
-    frame.render_widget(
-        Paragraph::new(details)
-            .wrap(Wrap { trim: false })
-            .scroll((view.agent_scroll, 0))
-            .block(panel(
-                " Agent details · PgUp/PgDn scroll · Esc close ",
-                BRAND[3],
-            )),
+        )
+        .to_string();
+    draw_text_panel(
+        frame,
+        view,
+        Pane::AgentDetails,
+        clean(&details),
+        " Agent details · PgUp/PgDn scroll · Esc close ",
+        BRAND[3],
         split[1],
     );
 }
 
+fn draw_settings(frame: &mut Frame, view: &mut View, area: Rect) {
+    let Some(editor) = &view.settings else {
+        return;
+    };
+    let tab = editor.tab;
+    let selected = editor.selected[tab];
+    let details = editor.details();
+    let status = clean(&editor.status);
+    let items = editor
+        .items()
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            Line::styled(
+                format!("{} {}", if i == selected { "›" } else { " " }, clean(&text)),
+                if i == selected {
+                    Style::default().fg(BG).bg(BRAND[4])
+                } else {
+                    Style::default().fg(TEXT)
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(
+            crate::cli_config::TABS
+                .iter()
+                .enumerate()
+                .map(|(i, title)| {
+                    Span::styled(
+                        format!(" {title} "),
+                        if i == tab {
+                            Style::default().fg(BG).bg(BRAND[0]).bold()
+                        } else {
+                            Style::default().fg(TEXT)
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(status)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(BRAND[0])),
+        rows[1],
+    );
+    let split = if area.width >= 80 {
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(rows[2])
+    } else {
+        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).split(rows[2])
+    };
+    let block = panel(crate::cli_config::TABS[tab], BRAND[4]);
+    let inner = block.inner(split[0]);
+    frame.render_widget(block, split[0]);
+    draw_scrolled(
+        frame,
+        view.pane(Pane::SettingsList),
+        Paragraph::new(items),
+        inner,
+    );
+    draw_text_panel(
+        frame,
+        view,
+        Pane::SettingsDetails,
+        clean(&details),
+        " Settings · details ",
+        BRAND[3],
+        split[1],
+    );
+    frame.render_widget(Paragraph::new("Tab/←/→ sections · ↑/↓ select · Space/Enter change\nCtrl-S save · P toggle project defaults · Esc close").style(Style::default().fg(MUTED)), rows[3]);
+}
+
 fn draw(frame: &mut Frame, view: &mut View) {
     let area = frame.area();
+    // Keep the selected text stable while model output continues in the background.
+    if let (Some(selection), Some(buffer)) = (&view.selection, &view.rendered)
+        && buffer.area == area
+    {
+        *frame.buffer_mut() = buffer.clone();
+        selection.highlight(frame.buffer_mut());
+        return;
+    }
+    view.selection = None;
+    view.selectable.clear();
+    for pane in &mut view.panes {
+        pane.area = Rect::default();
+    }
     frame.render_widget(
         Block::default().style(Style::default().bg(BG).fg(TEXT)),
         area,
@@ -695,7 +939,11 @@ fn draw(frame: &mut Frame, view: &mut View) {
     let rows = Layout::vertical([
         Constraint::Length(if wide_banner { 8 } else { 2 }),
         Constraint::Min(1),
-        Constraint::Length(3),
+        Constraint::Length(
+            (wrapped_lines(&format!("› {}", view.input), area.width.saturating_sub(2)) as u16)
+                .clamp(1, 4)
+                + 2,
+        ),
         Constraint::Length(2),
     ])
     .split(area);
@@ -738,7 +986,7 @@ fn draw(frame: &mut Frame, view: &mut View) {
                         .split(rows[1]);
                 draw_chat(frame, view, columns[0]);
                 let details = format!(
-                    "Status: {}\n{}\n{}\n\n{}\n{}\n\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nF2 permissions · F3 agents\nF4 view menu",
+                    "Status: {}\n{}\n{}\n\n{}\n{}\n\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nF2 permissions · F3 agents\nF4 view menu · F5 settings",
                     view.status,
                     view.session_id,
                     view.run_id,
@@ -749,10 +997,13 @@ fn draw(frame: &mut Frame, view: &mut View) {
                     view.model_requests,
                     view.tools
                 );
-                frame.render_widget(
-                    Paragraph::new(clean(&details))
-                        .wrap(Wrap { trim: false })
-                        .block(panel(" Session ", BRAND[3])),
+                draw_text_panel(
+                    frame,
+                    view,
+                    Pane::Session,
+                    clean(&details),
+                    " Session ",
+                    BRAND[3],
                     columns[1],
                 );
             } else {
@@ -760,15 +1011,15 @@ fn draw(frame: &mut Frame, view: &mut View) {
             }
         }
         Screen::Agents => draw_agents(frame, view, rows[1]),
+        Screen::Settings => draw_settings(frame, view, rows[1]),
         Screen::Permissions => {
-            frame.render_widget(
-                Paragraph::new(clean(&view.permissions))
-                    .wrap(Wrap { trim: false })
-                    .scroll((view.detail_scroll, 0))
-                    .block(panel(
-                        " Permissions · PgUp/PgDn scroll · Esc close ",
-                        BRAND[3],
-                    )),
+            draw_text_panel(
+                frame,
+                view,
+                Pane::Permissions,
+                clean(&view.permissions),
+                " Permissions · PgUp/PgDn scroll · Esc close ",
+                BRAND[3],
                 rows[1],
             );
         }
@@ -871,28 +1122,23 @@ fn draw(frame: &mut Frame, view: &mut View) {
     } else {
         " Message · Enter to send "
     };
-    let tail: String = view
-        .input
-        .chars()
-        .rev()
-        .take(usize::from(rows[2].width.saturating_sub(4)))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    frame.render_widget(
-        Paragraph::new(format!("› {tail}")).block(panel(
-            input_title,
-            if pending { BRAND[4] } else { BRAND[1] },
-        )),
+    draw_text_panel(
+        frame,
+        view,
+        Pane::Input,
+        format!("› {}", view.input),
+        input_title,
+        if pending { BRAND[4] } else { BRAND[1] },
         rows[2],
     );
     let footer = if view.quit_armed {
         " Press Ctrl-C again to quit. Any other key continues."
     } else if !view.error.is_empty() {
         &view.error
+    } else if view.native_selection {
+        " Terminal selection: drag to select · terminal copy/paste shortcuts · F6: return to pane scrolling"
     } else {
-        " Wheel/PgUp/PgDn scroll · Home/End · F2 permissions · F3 agents · F4 view · / commands · Ctrl-Q quit"
+        " Ctrl-C copy selection · Ctrl-V paste · Right-click copy/paste · Wheel scroll pane · F6 terminal selection · /help"
     };
     frame.render_widget(
         Paragraph::new(format!("{}\n{}", clean(footer), view.access_hint)).style(
@@ -941,8 +1187,10 @@ fn draw(frame: &mut Frame, view: &mut View) {
                 )),
                 popup,
             );
+            view.selectable.insert(0, panel("", MUTED).inner(popup));
         }
     }
+    view.rendered = Some(frame.buffer_mut().clone());
 }
 
 // Surface the first pending addressed request across the bounded agent tree.
@@ -1044,7 +1292,7 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
         || view.interaction.as_ref().map(|q| &q.request_id)
             != interaction.as_ref().map(|q| &q.request_id);
     if changed {
-        view.detail_scroll = 0;
+        view.pane(Pane::Request).offset = 0;
         view.choice_selected = usize::from(approval.is_some());
         if interaction.is_some() {
             view.input.clear();
@@ -1246,7 +1494,7 @@ pub async fn show(
     };
     let mut terminal = ratatui::try_init()?;
     let _restore = Restore;
-    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+    crossterm::execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let mut keys = input().await;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut dirty = true;
@@ -1283,15 +1531,42 @@ pub async fn show(
                 let Some(key) = key else { break; };
                 dirty = true;
                 let event = key?;
+                if let Event::Paste(text) = &event {
+                    view.paste(text);
+                    continue;
+                }
                 if let Event::Mouse(mouse) = event {
-                    if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-                        let up = mouse.kind == MouseEventKind::ScrollUp;
-                        match view.screen {
-                            Screen::Conversation if view.chat_area.contains((mouse.column, mouse.row).into()) => view.scroll_chat(up, 3),
-                            Screen::Agents => view.agent_scroll = if up { view.agent_scroll.saturating_sub(3) } else { view.agent_scroll.saturating_add(3) },
-                            Screen::Permissions => view.detail_scroll = if up { view.detail_scroll.saturating_sub(3) } else { view.detail_scroll.saturating_add(3) },
-                            _ => {}
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                            view.scroll_at(mouse.column, mouse.row, mouse.kind == MouseEventKind::ScrollUp);
                         }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let list = *view.pane(Pane::SettingsList);
+                            if matches!(view.screen, Screen::Settings) && list.area.contains((mouse.column, mouse.row).into()) {
+                                if let Some(editor) = &mut view.settings {
+                                    let selected = list.offset + usize::from(mouse.row - list.area.y);
+                                    if selected < editor.items().len() {
+                                        editor.selected[editor.tab] = selected;
+                                    }
+                                }
+                                view.pane(Pane::SettingsDetails).offset = 0;
+                                continue;
+                            }
+                            view.selection = view.selectable.iter()
+                                .find(|area| area.contains((mouse.column, mouse.row).into()))
+                                .map(|area| text_input::Selection {
+                                    area: *area, start: (mouse.column, mouse.row), end: (mouse.column, mouse.row),
+                                });
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
+                            if let Some(selection) = &mut view.selection {
+                                selection.extend(mouse.column, mouse.row);
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Right) if !view.copy_selection().await => {
+                            view.paste_clipboard().await;
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -1299,6 +1574,27 @@ pub async fn show(
                 if key.kind == KeyEventKind::Release { continue; }
                 if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter { continue; }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) && view.copy_selection().await {
+                    continue;
+                }
+                if (ctrl && matches!(key.code, KeyCode::Char('v' | 'V')))
+                    || (key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Insert) {
+                    if key.kind != KeyEventKind::Repeat { view.paste_clipboard().await; }
+                    continue;
+                }
+                // Reveal live requests before allowing keys to act on a frame
+                // that was frozen for copying.
+                if view.selection.take().is_some() { continue; }
+                if key.code == KeyCode::F(6) {
+                    view.quit_armed = false;
+                    view.native_selection = !view.native_selection;
+                    if view.native_selection {
+                        crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+                    } else {
+                        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+                    }
+                    continue;
+                }
                 if ctrl && key.code == KeyCode::Char('q') { break; }
                 if ctrl && key.code == KeyCode::Char('c') {
                     if key.kind == KeyEventKind::Repeat { continue; }
@@ -1308,15 +1604,58 @@ pub async fn show(
                     view.quit_armed = false;
                 }
                 if key.code == KeyCode::F(2) {
-                    view.screen = Screen::Permissions; view.detail_scroll = 0; continue;
+                    view.screen = Screen::Permissions; view.pane(Pane::Permissions).offset = 0; continue;
                 }
                 if key.code == KeyCode::F(3) {
-                    view.screen = Screen::Agents; view.agent_scroll = 0; continue;
+                    view.screen = Screen::Agents; view.pane(Pane::AgentDetails).offset = 0; continue;
                 }
                 if key.code == KeyCode::F(4) { view.open_appearance(); continue; }
+                if key.code == KeyCode::F(5) {
+                    if !matches!(view.screen, Screen::Settings) { view.open_settings(session.as_ref()).await; }
+                    continue;
+                }
+                if matches!(view.screen, Screen::Permissions) && key.code == KeyCode::Char('e') {
+                    view.open_settings(session.as_ref()).await;
+                    continue;
+                }
+                if matches!(view.screen, Screen::Settings) && !(ctrl && key.code == KeyCode::Char('c')) {
+                    if ctrl && key.code == KeyCode::Char('s') {
+                        if let (Some(session), Some(editor)) = (&session, &mut view.settings) {
+                            let result = editor.apply(session).await;
+                            if let Err(error) = &result { editor.status = error.to_string(); }
+                            view.error = result.err().map(|e| e.to_string()).unwrap_or_default();
+                            view.refresh_permissions(&session.snapshot().await?);
+                        }
+                    } else if key.code == KeyCode::Esc {
+                        view.settings = None;
+                        view.screen = Screen::Conversation;
+                    } else if let Some(editor) = &mut view.settings {
+                        match key.code {
+                            KeyCode::Tab | KeyCode::Right => editor.tab = (editor.tab + 1) % 4,
+                            KeyCode::BackTab | KeyCode::Left => editor.tab = (editor.tab + 3) % 4,
+                            KeyCode::Up | KeyCode::Down => editor.move_selection(key.code == KeyCode::Up),
+                            KeyCode::Char(' ') | KeyCode::Enter => editor.activate(),
+                            KeyCode::Char('p') => editor.save_project = !editor.save_project,
+                            KeyCode::PageUp | KeyCode::PageDown => {
+                                let state = view.pane(Pane::SettingsDetails);
+                                state.scroll(key.code == KeyCode::PageUp, state.page.saturating_sub(1).max(1));
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(editor) = &view.settings {
+                        let selected = editor.selected[editor.tab];
+                        let state = view.pane(Pane::SettingsList);
+                        if selected < state.offset { state.offset = selected; }
+                        else if selected >= state.offset + state.page { state.offset = (selected + 1).saturating_sub(state.page); }
+                    }
+                    view.pane(Pane::SettingsDetails).offset = 0;
+                    continue;
+                }
                 if !matches!(view.screen, Screen::Conversation) && !(ctrl && key.code == KeyCode::Char('c')) {
                     match key.code {
-                        KeyCode::Esc => { view.screen = Screen::Conversation; view.detail_scroll = 0; },
+                        KeyCode::Esc => { view.screen = Screen::Conversation; },
                         KeyCode::Enter if matches!(view.screen, Screen::Permissions) => {
                             view.permission_selected = 1;
                             view.screen = Screen::PermissionConsent;
@@ -1354,11 +1693,16 @@ pub async fn show(
                         KeyCode::Up | KeyCode::Down if matches!(view.screen, Screen::Agents) && !view.agent_views.is_empty() => {
                             let count = view.agent_views.len();
                             view.agent_selected = if key.code == KeyCode::Up { (view.agent_selected + count - 1) % count } else { (view.agent_selected + 1) % count };
-                            view.agent_scroll = 0;
+                            view.pane(Pane::AgentDetails).offset = 0;
+                            let selected = view.agent_selected;
+                            let list = view.pane(Pane::AgentList);
+                            if selected < list.offset { list.offset = selected; }
+                            else if selected >= list.offset + list.page { list.offset = (selected + 1).saturating_sub(list.page); }
                         },
                         KeyCode::PageUp | KeyCode::PageDown => {
-                            let scroll = if matches!(view.screen, Screen::Agents) { &mut view.agent_scroll } else { &mut view.detail_scroll };
-                            *scroll = if key.code == KeyCode::PageUp { scroll.saturating_sub(10) } else { scroll.saturating_add(10) };
+                            let pane = if matches!(view.screen, Screen::Agents) { Pane::AgentDetails } else { Pane::Permissions };
+                            let state = view.pane(pane);
+                            state.scroll(key.code == KeyCode::PageUp, state.page.saturating_sub(1).max(1));
                         },
                         _ => {}
                     }
@@ -1409,14 +1753,15 @@ pub async fn show(
                             answer_question(&mut view, run, &answer).await?;
                         }
                     } else if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Up | KeyCode::Down) {
-                        view.detail_scroll = if key.code == KeyCode::Up { view.detail_scroll.saturating_sub(3) } else { view.detail_scroll.saturating_add(3) };
+                        let pane = if view.approval.is_some() || view.interaction.is_some() { Pane::Request } else { Pane::Session };
+                        view.pane(pane).scroll(key.code == KeyCode::Up, 3);
                     } else { match key.code {
                         KeyCode::PageUp => view.scroll_chat(true, view.chat_page.saturating_sub(1).max(1)),
                         KeyCode::PageDown => view.scroll_chat(false, view.chat_page.saturating_sub(1).max(1)),
                         KeyCode::Home => view.scroll = Some(0),
                         KeyCode::End => view.scroll = None,
                         KeyCode::Backspace => { view.input.pop(); view.edited_input(); },
-                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.input.len() < 16_384 => { view.input.push(c); view.edited_input(); },
+                        KeyCode::Char(c) if !ctrl && !c.is_control() && view.input.len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.input.push(c); view.edited_input(); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
                             if COMMANDS.iter().any(|(name, _)| *name == input) || (view.interaction.is_none() && input.starts_with('/')) {
@@ -1424,12 +1769,13 @@ pub async fn show(
                                     "/help" => {
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
-                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit\nQuestion: ↑/↓ + Enter, or type an answer\nCtrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel/PgUp/PgDn scroll\nHome: oldest · End: latest and follow output\nAlt-Up/Down scroll request details · Ctrl-U clears input\n");
+                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Shift-Insert: paste · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nPgUp/PgDn scroll chat · Home: oldest · End: latest and follow output\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
                                     },
                                     "/clear" => view.transcript.clear(),
-                                    "/agents" => { view.screen = Screen::Agents; view.agent_scroll = 0; },
-                                    "/permissions" => { view.screen = Screen::Permissions; view.detail_scroll = 0; },
+                                    "/agents" => { view.screen = Screen::Agents; view.pane(Pane::AgentDetails).offset = 0; },
+                                    "/permissions" => { view.screen = Screen::Permissions; view.pane(Pane::Permissions).offset = 0; },
                                     "/view" => view.open_appearance(),
+                                    "/settings" => view.open_settings(session.as_ref()).await,
                                     "/cancel" => { if let Some(run) = &active && !run.status().await?.status.terminal() { run.cancel("TUI /cancel", &id("cancel")).await?; } },
                                     _ => return Err(WorkerError::new("unknown_command", "Unknown command. Type / for suggestions or /help.")),
                                 }
@@ -1478,6 +1824,113 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paste_stays_in_the_draft_and_does_not_answer_hidden_requests() {
+        let mut view = View::default();
+        view.paste("ja\r\n/quit\r\n");
+        assert_eq!(view.input, "ja\n/quit\n");
+        assert!(view.transcript.is_empty());
+        view.screen = Screen::Permissions;
+        view.paste("hidden answer");
+        assert_eq!(view.input, "ja\n/quit\n");
+    }
+
+    #[test]
+    fn wheel_scrolls_each_pane_independently_and_clamps_to_content() {
+        for layout in [LayoutMode::Compact, LayoutMode::Cockpit] {
+            let mut view = View {
+                layout,
+                transcript: "chat row\n".repeat(100),
+                capacity: "session row\n".repeat(100),
+                permissions: "permission row\n".repeat(100),
+                input: "input row\n".repeat(20),
+                interaction: Some(InteractionRequest {
+                    request_id: "q".into(),
+                    question: "question row\n".repeat(100),
+                    choices: vec![],
+                    answer: None,
+                }),
+                agent_views: (0..30)
+                    .map(|n| AgentView {
+                        run_id: n.to_string(),
+                        label: format!("child {n}"),
+                        details: "agent details\n".repeat(100),
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+            for (screen, panes) in [
+                (
+                    Screen::Conversation,
+                    vec![Pane::Request, Pane::Input, Pane::Session],
+                ),
+                (Screen::Agents, vec![Pane::AgentList, Pane::AgentDetails]),
+                (Screen::Permissions, vec![Pane::Permissions]),
+            ] {
+                view.screen = screen;
+                terminal.draw(|f| draw(f, &mut view)).unwrap();
+                for pane in panes {
+                    let state = *view.pane(pane);
+                    if state.area.is_empty() {
+                        continue;
+                    }
+                    assert!(state.max > 3);
+                    let before = view.panes.map(|p| p.offset);
+                    let chat_before = view.scroll;
+                    view.scroll_at(state.area.x, state.area.y, false);
+                    terminal.draw(|f| draw(f, &mut view)).unwrap();
+                    assert_eq!(view.pane(pane).offset, 3);
+                    assert_eq!(view.scroll, chat_before);
+                    for (i, previous) in before.iter().enumerate() {
+                        if i != pane as usize {
+                            assert_eq!(view.panes[i].offset, *previous);
+                        }
+                    }
+                    view.pane(pane).scroll(false, usize::MAX);
+                    terminal.draw(|f| draw(f, &mut view)).unwrap();
+                    let state = view.pane(pane);
+                    assert_eq!(state.offset, state.max);
+                    view.pane(pane).scroll(true, usize::MAX);
+                    assert_eq!(view.pane(pane).offset, 0);
+                }
+            }
+            // Invisible pane hit boxes cannot intercept another screen's wheel.
+            assert!(view.pane(Pane::Request).area.is_empty());
+            assert!(view.pane(Pane::Session).area.is_empty());
+        }
+    }
+
+    #[test]
+    fn selected_frame_stays_stable_during_output_and_is_cleared_on_resize() {
+        let mut view = View {
+            transcript: "selected text".into(),
+            ..Default::default()
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let area = view.selectable[0];
+        view.selection = Some(text_input::Selection {
+            area,
+            start: (area.x, area.y),
+            end: (area.x + 12, area.y),
+        });
+        view.append(&"\nnew output".repeat(30));
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert_eq!(
+            view.selection
+                .as_ref()
+                .unwrap()
+                .text(view.rendered.as_ref().unwrap()),
+            "selected text"
+        );
+        terminal.backend_mut().resize(30, 12);
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(view.selection.is_none());
+    }
+
     #[test]
     fn scrolling_uses_rendered_rows_and_holds_position_during_streaming() {
         let mut view = View::default();
@@ -1647,6 +2100,7 @@ mod tests {
                         Screen::Permissions => "Workspace writes: disabled",
                         Screen::PermissionConsent => "Enable tool approval requests",
                         Screen::Appearance => "Choose your layout",
+                        Screen::Settings => "Settings",
                     }));
                 }
             }

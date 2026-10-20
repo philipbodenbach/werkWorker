@@ -454,6 +454,102 @@ impl SessionHandle {
     pub async fn export(&self) -> Result<Value> {
         Ok(serde_json::to_value(self.snapshot().await?)?)
     }
+    pub fn available_tools(&self) -> Vec<ToolDefinition> {
+        self.engine.tools()
+    }
+    pub fn available_skills(&self) -> Vec<crate::skills::Skill> {
+        self.engine.skills()
+    }
+    /// Trusted host configuration for an idle root session. This is not a model
+    /// tool. Historical messages/skill versions and hard denies are retained.
+    pub async fn configure(
+        &self,
+        profile: AgentProfile,
+        policy: HostPolicy,
+        command_id: &str,
+    ) -> Result<CommandReceipt> {
+        self.engine.ensure_open()?;
+        AgentProfile::parse(
+            &toml::to_string(&profile)
+                .map_err(|e| WorkerError::new("invalid_profile", e.to_string()))?,
+        )?;
+        for name in &profile.tools {
+            self.engine.inner.tools.get(name)?;
+        }
+        let _delegation = self.engine.inner.delegation.lock().await;
+        let mut data = self.snapshot().await?;
+        let payload = json!({"method":"configure","profile":profile,"policy":policy});
+        if data.commands.contains_key(command_id) {
+            return data.command(command_id, &payload, None);
+        }
+        if data.parent.is_some() {
+            return Err(WorkerError::new(
+                "root_required",
+                "Configure the root session",
+            ));
+        }
+        if data
+            .runs
+            .iter()
+            .any(|r| !r.status.terminal() || r.status == RunStatus::Interrupted)
+        {
+            return Err(WorkerError::new(
+                "session_busy",
+                "Finish or cancel the active/interrupted run before applying settings.",
+            ));
+        }
+        for run in &data.runs {
+            if self
+                .children(&run.id)
+                .await?
+                .iter()
+                .any(|c| c.run.as_ref().is_none_or(|r| !r.status.terminal()))
+            {
+                return Err(WorkerError::new(
+                    "agents_active",
+                    "Finish or cancel active subagents before applying settings.",
+                ));
+            }
+        }
+        let mut skills = data.skill_snapshots.clone();
+        for name in &profile.skills {
+            if !skills.contains_key(name) {
+                skills.insert(name.clone(), self.engine.inner.skills.get(name)?.clone());
+            }
+        }
+        let _admission = self.engine.inner.admission.lock().await;
+        self.engine.ensure_open()?;
+        self.update(|d| {
+            if d.runs
+                .iter()
+                .any(|r| !r.status.terminal() || r.status == RunStatus::Interrupted)
+            {
+                return Err(WorkerError::new(
+                    "session_busy",
+                    "Finish or cancel the active/interrupted run before applying settings.",
+                ));
+            }
+            let receipt = d.command(command_id, &payload, None)?;
+            let mut policy = policy;
+            for tool in &d.policy.hard_denied_tools {
+                if !policy.hard_denied_tools.contains(tool) {
+                    policy.hard_denied_tools.push(tool.clone());
+                }
+            }
+            d.profile = profile;
+            d.profile_hash = fingerprint(&d.profile);
+            d.policy = policy;
+            d.skill_snapshots = skills;
+            d.emit(
+                None,
+                EventKind::Diagnostic {
+                    code: "session_configuration_updated".into(),
+                },
+            );
+            Ok(receipt)
+        })
+        .await
+    }
     /// Explicit trusted-host action, never exposed as a model tool. Makes the
     /// registered catalogue available in this root session; every external
     /// action still needs a prepared, addressed approval. Existing hard denies
@@ -1527,7 +1623,11 @@ impl SessionHandle {
                 })
                 .filter_map(|r| r.data["result"]["id"].as_str().map(str::to_owned))
                 .collect(),
-            skills: data.skill_snapshots,
+            skills: data
+                .skill_snapshots
+                .into_iter()
+                .filter(|(name, _)| data.profile.skills.contains(name))
+                .collect(),
             workspace_lease: None,
         })
     }

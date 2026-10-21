@@ -60,9 +60,16 @@ fn open_beneath(root: &File, path: &str, flags: i32, mode: u32) -> Result<File> 
         )
     };
     if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOENT) {
+            return Err(WorkerError::new(
+                "not_found",
+                "Workspace file or parent directory does not exist",
+            ));
+        }
         return Err(WorkerError::new(
             "path_denied",
-            "Workspace path missing, unsafe or inaccessible",
+            "Workspace path is unsafe or inaccessible",
         ));
     }
     // SAFETY: successful syscall returns a newly owned descriptor.

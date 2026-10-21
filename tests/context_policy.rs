@@ -751,3 +751,85 @@ async fn small_context_overflow_borrows_output_reserve_without_losing_constraint
         engine.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn followup_retains_prior_write_plan_and_read_page_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = "first line\nsecond line\n";
+    let call = |name: &str, arguments: Value| {
+        ScriptedTurn::calls(
+            "",
+            vec![ToolCall {
+                id: id("call"),
+                name: name.into(),
+                arguments,
+            }],
+        )
+    };
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        call(
+            "task.plan",
+            json!({"steps":[{"id":"1","description":"Build then verify the existing game","status":"in_progress"}]}),
+        ),
+        call("files.write", json!({"path":"game.html","content":content})),
+        call(
+            "files.read",
+            json!({"path":"game.html","start_line":1,"end_line":1}),
+        ),
+        call(
+            "files.read",
+            json!({"path":"game.html","start_line":2,"end_line":2}),
+        ),
+        ScriptedTurn::text("Implementation saved; verification remains."),
+        ScriptedTurn::text("Continued from the observed file."),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(
+            profile(&["task.plan", "files.write", "files.read"]),
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                request_approvals: true,
+                tool_permissions: ["files.write", "files.read"]
+                    .into_iter()
+                    .map(|n| (n.into(), ToolPermission::Allow))
+                    .collect(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let first = session
+        .submit("Build the game", "first", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(first.wait().await.unwrap().status, RunStatus::Completed);
+    let second = session
+        .submit("Continue verification", "second", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(second.wait().await.unwrap().status, RunStatus::Completed);
+    let requests = provider.requests();
+    let prompt = &requests.last().unwrap().messages[0].content;
+    assert!(prompt.contains("Successful file changes in this session"));
+    assert!(prompt.contains(&hash(content)));
+    assert!(prompt.contains("game.html"));
+    assert!(prompt.contains("Build then verify the existing game"));
+    assert!(prompt.contains("\"lines\":[1,1]"));
+    assert!(prompt.contains("\"lines\":[2,2]"));
+    assert!(prompt.contains("\"total_lines\":2"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.html")).unwrap(),
+        content
+    );
+    assert_eq!(
+        session.snapshot().await.unwrap().runs[0].invocations.len(),
+        4
+    );
+    engine.close().await.unwrap();
+}

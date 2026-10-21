@@ -361,7 +361,7 @@ async fn truncated_generation_recovers_into_one_file_without_user_steering() {
     );
     assert_ne!(fingerprint(&requests[0]), fingerprint(&requests[1]));
     let final_prompt = &requests.last().unwrap().messages[0].content;
-    assert!(final_prompt.contains("These files already exist"));
+    assert!(final_prompt.contains("Successful file changes in this session"));
     assert!(final_prompt.contains(&hash(&complete)));
     for request in requests {
         assert_eq!(request.max_output_tokens, 4096);

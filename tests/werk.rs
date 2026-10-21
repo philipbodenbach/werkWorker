@@ -929,6 +929,247 @@ async fn coding_image_budget_uses_native_text_without_repeating_unsupported_coun
 }
 
 #[tokio::test]
+async fn observed_image_overhead_is_bounded_scoped_and_never_an_exact_count() {
+    let server = Server::start(|r| {
+        if r.path == "/werk/v1/capabilities" {
+            return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"native text counter","operations":["count_tokens"]}]}));
+        }
+        if r.path == "/werk/v1/chat/count_tokens" {
+            if r.body["messages"].as_array().unwrap().iter().any(|m| m["content"].is_array()) {
+                let mut response = control(Value::Null);
+                response.status = 501;
+                response.body = json!({"protocol":{"major":1,"minor":0},"request_id":"req_test","error":{"code":"unsupported","message":"No image counter","retryable":false}}).to_string().into_bytes();
+                return response;
+            }
+            return control(json!({"model":"fixture-model","input_tokens":2800}));
+        }
+        werk(r)
+    }).await;
+    let provider = WerkProvider::connect(config(&server.origin, true), None)
+        .await
+        .unwrap();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(677, 680)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+    let mut user = Message::text(Role::User, "Use this reference");
+    user.images.push(picture);
+    let request = ModelRequest {
+        messages: vec![user],
+        tools: vec![],
+        max_output_tokens: 4096,
+        output_schema: None,
+    };
+    let usage = |input| Usage {
+        input_tokens: input,
+        output_tokens: Some(30),
+        cached_tokens: Some(3200),
+    };
+    provider.observe_completed_usage(&request, &usage(Some(3243)));
+    assert_eq!(
+        provider.estimated_image_tokens(&request),
+        None,
+        "no native baseline yet"
+    );
+    assert_eq!(
+        provider.estimate_input_tokens(&request).await.unwrap(),
+        11248
+    );
+    for input in [None, Some(0), Some(2700), Some(u64::MAX)] {
+        provider.observe_completed_usage(&request, &usage(input));
+        assert_eq!(provider.estimated_image_tokens(&request), None);
+    }
+    provider.observe_completed_usage(&request, &usage(Some(3243)));
+    assert_eq!(
+        provider.estimate_input_tokens(&request).await.unwrap(),
+        3755
+    );
+    assert_eq!(provider.count_input_tokens(&request).await.unwrap(), None);
+    assert_eq!(provider.cached_input_tokens(&request), None);
+    // New text shares only the image reserve; its native count is still taken.
+    let mut next = request.clone();
+    next.messages
+        .push(Message::text(Role::Assistant, "Continue implementing."));
+    assert_eq!(provider.estimate_input_tokens(&next).await.unwrap(), 3755);
+    let mut moved = request.clone();
+    moved
+        .messages
+        .insert(0, Message::text(Role::System, "Different placement"));
+    assert_eq!(provider.estimated_image_tokens(&moved), None);
+    let mut doubled = request.clone();
+    doubled.messages[0]
+        .images
+        .push(request.messages[0].images[0].clone());
+    assert_eq!(provider.estimated_image_tokens(&doubled), None);
+    let mut other = request.clone();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        677,
+        680,
+        image::Rgb([255, 0, 0]),
+    ))
+    .write_to(&mut encoded, image::ImageFormat::Png)
+    .unwrap();
+    other.messages[0].images[0] =
+        attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+    assert_eq!(
+        provider.estimated_image_tokens(&other),
+        None,
+        "same dimensions are insufficient"
+    );
+    provider.observe_completed_usage(&request, &usage(Some(6000)));
+    provider.observe_completed_usage(&request, &usage(Some(3243)));
+    assert_eq!(
+        provider.estimate_input_tokens(&request).await.unwrap(),
+        7056,
+        "never lower the highest observation"
+    );
+    let reconnected = WerkProvider::connect(config(&server.origin, true), None)
+        .await
+        .unwrap();
+    assert_eq!(reconnected.estimated_image_tokens(&request), None);
+}
+
+#[tokio::test]
+async fn image_inspection_keeps_file_hash_missing_file_and_listing_until_edit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for (streaming, report_usage) in [(false, true), (true, true), (true, false)] {
+        let original = "<html>\n<script src=\"main.js\"></script>\n</html>";
+        let edited = original.replace("src=\"main.js\"", "type=\"module\"");
+        let step = AtomicUsize::new(0);
+        let server = Server::start(move |r| {
+            if r.path == "/werk/v1/capabilities" {
+                return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"native text counter","operations":["count_tokens"]}]}));
+            }
+            let text_count = |body: &Value| {
+                let mut messages = body["messages"].clone();
+                for m in messages.as_array_mut().unwrap() {
+                    if m["content"].is_array() { m["content"] = m["content"][0]["text"].clone(); }
+                }
+                2100 + serde_json::to_vec(&messages).unwrap().len()/4
+            };
+            if r.path == "/werk/v1/chat/count_tokens" {
+                if r.body["messages"].as_array().unwrap().iter().any(|m| m["content"].is_array()) {
+                    let mut response = control(Value::Null);
+                    response.status = 501;
+                    response.body = json!({"protocol":{"major":1,"minor":0},"request_id":"req_test","error":{"code":"unsupported","message":"No image counter","retryable":false}}).to_string().into_bytes();
+                    return response;
+                }
+                return control(json!({"model":"fixture-model","input_tokens":text_count(&r.body)}));
+            }
+            if r.path != "/v1/chat/completions" { return werk(r); }
+            let n = step.fetch_add(1, Ordering::SeqCst);
+            if n == 4 {
+                let results: Vec<ToolResult> = r.body["messages"].as_array().unwrap().iter()
+                    .filter(|m| m["role"] == "tool")
+                    .map(|m| serde_json::from_str(m["content"].as_str().unwrap()).unwrap()).collect();
+                assert!(results.iter().any(|r| r.data["content"] == original && r.data["sha256"] == hash(original)), "read and edit base must survive the missing-file check");
+                assert!(results.iter().any(|r| r.error_code.as_deref() == Some("not_found")));
+                assert!(results.iter().any(|r| r.data["entries"] == json!(["index.html"])));
+                assert!(results.iter().any(|r| r.data["steps"][0]["description"] == "Inspect then implement and verify"));
+            }
+            let action = match n {
+                0 => Some(("task.plan",json!({"steps":[{"id":"1","description":"Inspect then implement and verify","status":"in_progress"}]}))),
+                1 => Some(("files.list",json!({"path":"."}))),
+                2 => Some(("files.read",json!({"path":"index.html"}))),
+                3 => Some(("files.read",json!({"path":"main.js"}))),
+                4 => Some(("files.edit",json!({"path":"index.html","old":"src=\"main.js\"","new":"type=\"module\"","expected_hash":hash(original)}))),
+                5 => Some(("files.read",json!({"path":"index.html"}))),
+                _ => None,
+            };
+            let finish = if action.is_some() { "tool_calls" } else { "stop" };
+            let mut message = json!({"role":"assistant","content":if action.is_some(){""}else{"Verified the changed file."}});
+            if let Some((name,args)) = action {
+                message["tool_calls"] = json!([{"index":0,"id":format!("call_{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]);
+            }
+            let usage = json!({"prompt_tokens":text_count(&r.body)+443,"completion_tokens":30,"prompt_tokens_details":{"cached_tokens":3000}});
+            if streaming {
+                let mut body = format!("data: {}\n\ndata: {}\n\n",json!({"choices":[{"delta":message}]}),json!({"choices":[{"delta":{},"finish_reason":finish}]}));
+                if report_usage {body.push_str(&format!("data: {}\n\n",json!({"choices":[],"usage":usage})));}
+                body.push_str("data: [DONE]\n\n");
+                Response {status:200,headers:vec![("content-type".into(),"text/event-stream".into())],body:body.into_bytes()}
+            } else {
+                Response::json(json!({"choices":[{"message":message,"finish_reason":finish}],"usage":usage}))
+            }
+        }).await;
+        let mut configuration = config(&server.origin, streaming);
+        configuration.capabilities.context_tokens = Some(16384);
+        let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
+        let engine = WorkerEngine::builder(provider).build().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), original).unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile::bundled("coding-basic").unwrap(),
+                dir.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    request_approvals: true,
+                    tool_permissions: ["files.list", "files.read", "files.edit"]
+                        .into_iter()
+                        .map(|n| (n.to_owned(), policy::ToolPermission::Allow))
+                        .collect(),
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(677, 680)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let image = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+        let run = session
+            .submit_with_images(
+                "Complete the game based on this image.",
+                vec![image.clone()],
+                "start",
+                Limits {
+                    context_tokens: 16384,
+                    reserve_output_tokens: 4096,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(
+            result.status,
+            RunStatus::Completed,
+            "{streaming}/{report_usage}: {:?}",
+            result.error
+        );
+        let state = run.status().await.unwrap();
+        assert_eq!(result.metrics.model_requests, 7);
+        assert!(
+            state.contexts[..5]
+                .iter()
+                .all(|c| c.omitted_messages.is_empty())
+        );
+        if report_usage {
+            assert!(state.contexts.iter().all(|c| c.omitted_messages.is_empty()));
+            assert!(
+                state.contexts[1..]
+                    .iter()
+                    .all(|c| c.estimated_tokens < 6000)
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("index.html")).unwrap(),
+            edited
+        );
+        assert_eq!(
+            session.snapshot().await.unwrap().messages[0].images,
+            vec![image]
+        );
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn image_coding_continues_through_failed_write_edits_and_verification() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut contents = "<html><!--next--></html>".to_owned();
@@ -1045,7 +1286,7 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
         saved
             .messages
             .iter()
-            .any(|m| m.content.contains("path_denied"))
+            .any(|m| m.content.contains("not_found"))
     );
     assert!(
         run.status()

@@ -76,7 +76,10 @@ rate/total-token quotas cannot be inferred from concurrency telemetry.
 ## Automatic rolling compaction
 
 Compaction is enabled by default without an extra model request. Before **each**
-ordinary inference, the default builder targets 80% of available input capacity.
+ordinary inference, the default builder checks whether input capacity is exceeded.
+Only then does it compact toward 80% of the space left after the fixed system/user
+prefix, images and schemas. A large image reserve must not make the compaction
+target smaller than the non-compactable prefix and erase evidence on every turn.
 It replaces complete earlier assistant/tool groups with bounded extractive
 excerpts, including groups completed earlier in the same long-running task.
 The latest assistant/tool group **within the current run** and every user/system
@@ -102,10 +105,20 @@ tools. If the fixed excerpt allowance would crowd out current work, older
 excerpts are further removed to fit the available budget. Canonical messages,
 outcomes and approvals are never deleted.
 
-Small setup/skill results receive bounded retention. A separate receipt summary
+Small setup/skill results, file reads (including their hashes and errors) and task
+plans receive bounded retention. Before discarding this evidence the builder can
+use the bounded output-reserve adjustment described above. A separate receipt summary
 keeps the latest successful changes for up to eight paths within 2 KiB, so losing
 earlier code from the prompt does not make the agent restart file creation.
 It records observed hashes and sizes, not a claim that external files never change.
+These receipts include earlier runs in the session, so a follow-up can continue
+after interruption. A separate 2 KiB ledger retains up to eight distinct recent
+read observations with path, hash, line range, next-page cursor and error code.
+The latest bounded task plan also survives a run boundary, explicitly subordinate
+to the current user request. These ledgers inspect at most 128 recent invocations;
+they preserve evidence, not current filesystem guarantees or new permissions.
+Read excerpts put hash/range/cursor metadata before code text so truncating an
+excerpt cannot preferentially hide the edit base or pagination instructions.
 
 Each durable `ContextSnapshot` records its hash, estimated size, omitted source
 indices and excerpt/summary. Compaction is recalculated from canonical history,
@@ -168,3 +181,16 @@ native-count cache. Encoded base64 is not counted as text. This is a conservativ
 image estimate, not a model-specific
 measurement. Server context admission remains authoritative. The regular body
 size, context and run limits still apply to messages containing images.
+
+After a complete validated response, WerkProvider can refine this reserve from
+the server's total input usage minus the native text count for that exact request.
+The native baseline comes from werkProtocol; cached-token usage is never subtracted.
+The observed image overhead receives at least 256 tokens or 25% extra margin,
+in addition to the 256-token framing reserve. The largest observation is retained
+for the identical ordered images, roles and message positions on this connection.
+Different images/placement or reconnect start with the conservative fallback.
+Missing, invalid or partial-response usage and an evicted native text baseline do
+not establish a measurement. The bounded cache holds only fingerprints and counts.
+These derived values remain estimates: native multimodal counts take precedence,
+and no estimated value enters the exact token-count cache. Providers that do not
+implement the optional observation hook retain the original fallback behavior.

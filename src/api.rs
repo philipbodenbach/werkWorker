@@ -1825,7 +1825,7 @@ impl SessionHandle {
                 .await
                 .map_err(|_| WorkerError::new("closed", "Inference scheduler closed"))?;
             self.charge_tree_request(run_id).await?;
-            let mut stream = self.engine.inner.provider.stream(request).await?;
+            let mut stream = self.engine.inner.provider.stream(request.clone()).await?;
             let mut assembler = ResponseAssembler::default();
             let limit = self.snapshot().await?.run(run_id)?.limits.max_output_bytes;
             let mut pending = Vec::new();
@@ -1899,7 +1899,14 @@ impl SessionHandle {
                 }
             }
             self.flush_model_events(run_id, &mut pending).await?;
-            assembler.finish()
+            let result = assembler.finish()?;
+            if let Some(usage) = &result.1 {
+                self.engine
+                    .inner
+                    .provider
+                    .observe_completed_usage(&request, usage);
+            }
+            Ok(result)
         };
         tokio::pin!(operation);
         loop {

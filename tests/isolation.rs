@@ -9,13 +9,27 @@ async fn filesystem_traversal_symlinks_and_special_files_are_denied() {
     let outside = TempDir::new().unwrap();
     std::fs::write(outside.path().join("sentinel"), "secret").unwrap();
     let root = Workspace::open(temp.path()).await.unwrap();
+    assert_eq!(
+        root.read("missing.js", 100).await.unwrap_err().code,
+        "not_found"
+    );
+    assert_eq!(
+        root.write("missing/index.html", b"x".to_vec(), None)
+            .await
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
     for path in ["../sentinel", "/etc/passwd", "a/../../sentinel", "a\\..\\x"] {
         assert!(root.read(path, 100).await.is_err());
     }
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(outside.path(), temp.path().join("escape")).unwrap();
-        assert!(root.read("escape/sentinel", 100).await.is_err());
+        assert_eq!(
+            root.read("escape/sentinel", 100).await.unwrap_err().code,
+            "path_denied"
+        );
         assert!(
             root.write("escape/new", b"bad".to_vec(), None)
                 .await

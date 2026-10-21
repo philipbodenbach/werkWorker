@@ -68,13 +68,22 @@ pub trait ModelProvider: Send + Sync {
     async fn count_input_tokens(&self, _request: &ModelRequest) -> Result<Option<usize>> {
         Ok(None)
     }
+    /// Optional, connection-local estimate for these exact image inputs. This
+    /// never substitutes an estimate into the native/exact count cache.
+    fn estimated_image_tokens(&self, _request: &ModelRequest) -> Option<usize> {
+        None
+    }
+    /// Called only after a complete, validated response, never partial streams.
+    fn observe_completed_usage(&self, _request: &ModelRequest, _usage: &Usage) {}
     /// Admission estimate: prefer an exact count, then native text/tool tokens
     /// plus an image reserve. Never advertise the latter as an exact count.
     async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
         if let Some(count) = self.count_input_tokens(request).await? {
             return Ok(count);
         }
-        let image_reserve = crate::context::image_token_reserve(request);
+        let image_reserve = self
+            .estimated_image_tokens(request)
+            .unwrap_or_else(|| crate::context::image_token_reserve(request));
         if image_reserve > 0 {
             let mut text_request = request.clone();
             for message in &mut text_request.messages {
@@ -648,8 +657,19 @@ pub struct WerkProvider {
     token_counts: Mutex<BTreeMap<String, usize>>,
     token_count_unavailable: std::sync::atomic::AtomicBool,
     image_token_count_unavailable: std::sync::atomic::AtomicBool,
+    image_estimates: Mutex<BTreeMap<String, usize>>,
 }
 impl WerkProvider {
+    fn image_key(request: &ModelRequest) -> Option<String> {
+        let images: Vec<_> = request
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.images.is_empty())
+            .map(|(i, m)| (i, &m.role, &m.images))
+            .collect();
+        (!images.is_empty()).then(|| fingerprint(&images))
+    }
     fn chat_body(&self, request: &ModelRequest) -> Result<Value> {
         if request.messages.iter().any(|m| !m.images.is_empty())
             && self.config.capabilities.images == Support::Unsupported
@@ -772,6 +792,7 @@ impl WerkProvider {
             token_counts: Mutex::new(BTreeMap::new()),
             token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             image_token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
+            image_estimates: Mutex::new(BTreeMap::new()),
             runtime_capabilities,
             discovery: json!({"info":info,"models":models}),
         })
@@ -799,6 +820,48 @@ pub fn wire_message(message: &Message) -> Value {
 }
 #[async_trait]
 impl ModelProvider for WerkProvider {
+    fn estimated_image_tokens(&self, request: &ModelRequest) -> Option<usize> {
+        let key = Self::image_key(request)?;
+        self.image_estimates.lock().unwrap().get(&key).copied()
+    }
+    fn observe_completed_usage(&self, request: &ModelRequest, usage: &Usage) {
+        let Some(key) = Self::image_key(request) else {
+            return;
+        };
+        let Some(input) = usage.input_tokens.and_then(|n| usize::try_from(n).ok()) else {
+            return;
+        };
+        let limit = self
+            .context_limit
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if input == 0 || input > limit {
+            return;
+        }
+        let mut text = request.clone();
+        for message in &mut text.messages {
+            message.images.clear();
+        }
+        // Only a native text count for this exact request can establish image
+        // overhead. Never subtract byte estimates, cached-token usage, or counts
+        // from another request. Eviction safely leaves the fallback in place.
+        let Some(text_tokens) = self.cached_input_tokens(&text) else {
+            return;
+        };
+        let Some(overhead) = input.checked_sub(text_tokens).filter(|n| *n > 0) else {
+            return;
+        };
+        let reserve = overhead.saturating_add(overhead.div_ceil(4).max(256));
+        let mut estimates = self.image_estimates.lock().unwrap();
+        if estimates.len() >= 64 && !estimates.contains_key(&key) {
+            estimates.clear();
+        }
+        // Keep the largest observation for this ordered image set and placement.
+        // Model/options are fixed for the connection; reconnect discards it.
+        estimates
+            .entry(key)
+            .and_modify(|n| *n = (*n).max(reserve))
+            .or_insert(reserve);
+    }
     fn concurrency(&self) -> InferenceConcurrency {
         self.inference_concurrency.clone()
     }

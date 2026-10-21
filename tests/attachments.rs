@@ -50,9 +50,10 @@ async fn image_only_input_is_durable_idempotent_and_reaches_the_model() {
             .await
             .unwrap(),
     );
-    let provider = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text(
-        "image received",
-    )]));
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::text("image received"),
+        ScriptedTurn::text("follow-up received"),
+    ]));
     let engine = WorkerEngine::builder(provider.clone())
         .store(store.clone())
         .build()
@@ -86,6 +87,20 @@ async fn image_only_input_is_durable_idempotent_and_reaches_the_model() {
     assert_eq!(run.id, repeated.id);
     assert_eq!(
         provider.requests()[0].messages.last().unwrap().images,
+        vec![picture.clone()]
+    );
+    let followup = session
+        .submit("Use the same image", "followup", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(followup.wait().await.unwrap().status, RunStatus::Completed);
+    assert_eq!(
+        provider.requests()[1]
+            .messages
+            .iter()
+            .find(|m| m.role == Role::User)
+            .unwrap()
+            .images,
         vec![picture.clone()]
     );
     let snapshot = session.snapshot().await.unwrap();

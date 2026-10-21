@@ -54,9 +54,15 @@ async fn model_compaction_is_budgeted_preserves_user_constraints_and_raw_history
         .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
         .await
         .unwrap();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
     let first = session
-        .submit(
+        .submit_with_images(
             "Never change customer identifiers",
+            vec![picture.clone()],
             "first",
             Limits::default(),
             None,
@@ -86,6 +92,16 @@ async fn model_compaction_is_budgeted_preserves_user_constraints_and_raw_history
             .any(|m| m.content == "Never change customer identifiers")
     );
     assert!(!requests[2].messages.iter().any(|m| m.content == long));
+    assert_eq!(
+        requests[2]
+            .messages
+            .iter()
+            .find(|m| m.role == Role::User)
+            .unwrap()
+            .images,
+        vec![picture.clone()]
+    );
+    assert_eq!(state.messages[0].images, vec![picture]);
     assert!(
         requests[2].messages[0]
             .content

@@ -14,6 +14,15 @@ during chat setup: the catalogue probes installed models/backends and can be
 slow on a cold server. Explicit media tools discover their own task support.
 Bounded deployment/observability checks still establish context and concurrency.
 
+Image input defaults to **Auto** (`capabilities.images: "unknown"`), including
+the shipped Werk/Qwen presets. Images are sent as structured image parts and
+the server validates whether the selected model/backend can process them.
+`"unsupported"` is an explicit local disable: it prevents any image request,
+even when the server has a working vision model. Older copies of the presets
+may still contain this value in `.werkworker/werk-config.json` or a saved
+connection. Set **Image input** to **Auto** in `/setup` and reconnect; server
+flags cannot override a client-side disable.
+
 1. Choose a local Werk server, a remote Werk server, or the explicit offline demo.
 2. Enter the server origin (local default `http://127.0.0.1:11434`). Remote
    servers require HTTPS. URL credentials, queries and non-root paths are rejected.

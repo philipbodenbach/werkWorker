@@ -765,8 +765,14 @@ async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_coun
         }
         werk(r)
     }).await;
-    let mut configuration = config(&server.origin, false);
-    configuration.capabilities.images = Support::Supported;
+    // Exercise the shipped Qwen preset: its former `unsupported` value blocked
+    // image requests before the vision-capable server could receive them.
+    let mut configuration: WerkConfig =
+        serde_json::from_str(include_str!("../examples/werk-qwen27b.json")).unwrap();
+    configuration.base_url = server.origin.clone();
+    configuration.model = "fixture-model".into();
+    configuration.stream = false;
+    assert_eq!(configuration.capabilities.images, Support::Unknown);
     let provider = WerkProvider::connect(configuration, None).await.unwrap();
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(2, 2)
@@ -798,4 +804,126 @@ async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_coun
             .unwrap(),
         Some(42)
     );
+}
+
+#[tokio::test]
+async fn coding_image_budget_uses_native_text_without_repeating_unsupported_counts() {
+    for (native_images, image_count, expected_status) in [
+        (None, 1, RunStatus::Completed),
+        (None, 2, RunStatus::Failed),
+        (Some(900), 1, RunStatus::Completed),
+        (Some(16000), 1, RunStatus::Failed),
+    ] {
+        let server = Server::start(move |r| {
+            if r.path == "/werk/v1/capabilities" {
+                return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"counter","operations":["count_tokens"]}]}));
+            }
+            if r.path == "/werk/v1/chat/count_tokens" {
+                let has_images = r.body["messages"].as_array().unwrap().iter().any(|m| m["content"].is_array());
+                if has_images && native_images.is_none() {
+                    let mut response = control(Value::Null);
+                    response.status = 501;
+                    response.body = json!({"protocol":{"major":1,"minor":0},"request_id":"req_test","error":{"code":"unsupported","message":"Image counting unavailable","retryable":false}}).to_string().into_bytes();
+                    return response;
+                }
+                assert!(r.body["tools"].as_array().unwrap().len() >= 15);
+                return control(json!({"model":"fixture-model","input_tokens":if has_images { native_images.unwrap() } else {2800}}));
+            }
+            werk(r)
+        }).await;
+        let mut configuration = config(&server.origin, false);
+        configuration.capabilities.context_tokens = Some(16384);
+        let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile::bundled("coding-basic").unwrap(),
+                dir.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    request_approvals: true,
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(677, 680)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+        let input = "Build a retro Tetris game using the attached reference image.";
+        let run = session
+            .submit_with_images(
+                input,
+                vec![picture.clone(); image_count],
+                "start",
+                Limits {
+                    context_tokens: 16384,
+                    reserve_output_tokens: 4096,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, expected_status, "{:?}", result.error);
+        if expected_status == RunStatus::Completed {
+            assert_eq!(
+                result.metrics.estimated_input_tokens,
+                native_images.unwrap_or(2800 + 8192 + 256)
+            );
+        } else {
+            assert_eq!(result.error.unwrap().code, "context_overflow");
+        }
+        let snapshot = session.snapshot().await.unwrap();
+        assert_eq!(snapshot.messages[0].images, vec![picture; image_count]);
+        assert_eq!(snapshot.messages[0].content, input);
+        let requests = server.requests.lock().unwrap().clone();
+        let counts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.path == "/werk/v1/chat/count_tokens")
+            .collect();
+        assert_eq!(
+            counts
+                .iter()
+                .filter(|r| r.body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["content"].is_array()))
+                .count(),
+            1
+        );
+        assert_eq!(
+            counts.len(),
+            if native_images.is_some() { 1 } else { 2 },
+            "only one unsupported image count and one cached text/tool count"
+        );
+        let generations: Vec<_> = requests
+            .iter()
+            .filter(|r| r.path == "/v1/chat/completions")
+            .collect();
+        assert_eq!(
+            generations.len(),
+            usize::from(expected_status == RunStatus::Completed)
+        );
+        if let Some(request) = generations.first() {
+            assert_eq!(request.body["messages"][1]["content"][0]["text"], input);
+            assert!(
+                request.body["messages"][1]["content"][1]["image_url"]["url"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/jpeg;base64,")
+            );
+            assert_eq!(request.body["max_completion_tokens"], 4096);
+        }
+        engine.close().await.unwrap();
+    }
 }

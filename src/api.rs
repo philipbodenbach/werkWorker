@@ -764,7 +764,7 @@ impl SessionHandle {
         {
             return Err(WorkerError::new(
                 "images_unsupported",
-                "This connection declares image input unsupported. Select a vision-capable model/connection; the image draft is retained.",
+                "Image input is disabled locally. Reconnect with /setup and set Image input to Auto. The image draft is retained.",
             ));
         }
         for image in images {
@@ -1644,9 +1644,8 @@ impl SessionHandle {
                 .engine
                 .inner
                 .provider
-                .count_input_tokens(&request)
-                .await?
-                .unwrap_or_else(|| crate::context::estimate_request(&request));
+                .estimate_input_tokens(&request)
+                .await?;
             if request.max_output_tokens == 0
                 || request.max_output_tokens > limits.reserve_output_tokens
                 || input_tokens

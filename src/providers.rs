@@ -68,6 +68,26 @@ pub trait ModelProvider: Send + Sync {
     async fn count_input_tokens(&self, _request: &ModelRequest) -> Result<Option<usize>> {
         Ok(None)
     }
+    /// Admission estimate: prefer an exact count, then native text/tool tokens
+    /// plus an image reserve. Never advertise the latter as an exact count.
+    async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
+        if let Some(count) = self.count_input_tokens(request).await? {
+            return Ok(count);
+        }
+        let image_reserve = crate::context::image_token_reserve(request);
+        if image_reserve > 0 {
+            let mut text_request = request.clone();
+            for message in &mut text_request.messages {
+                message.images.clear();
+            }
+            if let Some(text_tokens) = self.count_input_tokens(&text_request).await? {
+                return Ok(text_tokens
+                    .saturating_add(image_reserve)
+                    .saturating_add(256));
+            }
+        }
+        Ok(crate::context::estimate_request(request))
+    }
     fn cached_input_tokens(&self, _request: &ModelRequest) -> Option<usize> {
         None
     }
@@ -627,6 +647,7 @@ pub struct WerkProvider {
     pub context_limit_source: String,
     token_counts: Mutex<BTreeMap<String, usize>>,
     token_count_unavailable: std::sync::atomic::AtomicBool,
+    image_token_count_unavailable: std::sync::atomic::AtomicBool,
 }
 impl WerkProvider {
     fn chat_body(&self, request: &ModelRequest) -> Result<Value> {
@@ -635,7 +656,7 @@ impl WerkProvider {
         {
             return Err(WorkerError::new(
                 "images_unsupported",
-                "Selected connection does not support image input",
+                "Image input is disabled locally (capabilities.images=unsupported). Set Image input to Auto (unknown) and reconnect.",
             ));
         }
         let mut body = json!({"model":self.config.model,"messages":request.messages.iter().map(wire_message).collect::<Vec<_>>(),"stream":self.config.stream,"max_completion_tokens":request.max_output_tokens});
@@ -750,6 +771,7 @@ impl WerkProvider {
             context_limit_source,
             token_counts: Mutex::new(BTreeMap::new()),
             token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
+            image_token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             runtime_capabilities,
             discovery: json!({"info":info,"models":models}),
         })
@@ -800,9 +822,12 @@ impl ModelProvider for WerkProvider {
         if let Some(count) = self.cached_input_tokens(request) {
             return Ok(Some(count));
         }
-        if self
-            .token_count_unavailable
-            .load(std::sync::atomic::Ordering::Relaxed)
+        let unavailable = if request.messages.iter().any(|m| !m.images.is_empty()) {
+            &self.image_token_count_unavailable
+        } else {
+            &self.token_count_unavailable
+        };
+        if unavailable.load(std::sync::atomic::Ordering::Relaxed)
             || !self.runtime_capabilities.iter().any(|cap| {
                 cap.id == "api.chat.token_count"
                     && cap.status == CapabilityStatus::Supported
@@ -829,11 +854,10 @@ impl ModelProvider for WerkProvider {
             match result {
                 Ok(value) => break value,
                 Err(error) if error.code == "werk_protocol_unsupported" => {
-                    // A text counter can still be useful after an unsupported image request.
-                    if request.messages.iter().all(|m| m.images.is_empty()) {
-                        self.token_count_unavailable
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    // Cache unsupported separately by modality. Image counting
+                    // must not disable the useful text/tool counter, nor be
+                    // retried for every context-planning/admission pass.
+                    unavailable.store(true, std::sync::atomic::Ordering::Relaxed);
                     return Ok(None);
                 }
                 Err(error) if error.retryable && retries < 2 => {
@@ -868,9 +892,8 @@ impl ModelProvider for WerkProvider {
         let limit = self.capabilities().context_tokens.ok_or_else(|| WorkerError::new("context_limit_unknown", "Set capabilities.context_tokens to the server's per-request context limit; discovery could not establish it"))?;
         if request.max_output_tokens == 0
             || self
-                .count_input_tokens(&request)
+                .estimate_input_tokens(&request)
                 .await?
-                .unwrap_or_else(|| crate::context::estimate_request(&request))
                 .saturating_add(request.max_output_tokens)
                 .saturating_add(512)
                 > limit

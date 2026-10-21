@@ -308,7 +308,7 @@ impl Form {
                 (
                     "Image input".into(),
                     match self.settings.werk.capabilities.images {
-                        Support::Unsupported => "Disabled",
+                        Support::Unsupported => "Disabled locally; images will not be sent",
                         Support::Unknown => "Auto; server validates model support",
                         Support::Supported => "Enabled; requires a vision model",
                     }

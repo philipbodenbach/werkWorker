@@ -5,6 +5,15 @@ use crate::{
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) fn image_token_reserve(request: &ModelRequest) -> usize {
+    request
+        .messages
+        .iter()
+        .map(|m| m.images.len())
+        .sum::<usize>()
+        .saturating_mul(crate::attachments::IMAGE_TOKEN_RESERVE)
+}
+
 /// Conservative serialized wire bytes plus template margin, not a tokenizer count.
 pub fn estimate_request(request: &ModelRequest) -> usize {
     let wire = serde_json::json!({
@@ -19,15 +28,10 @@ pub fn estimate_request(request: &ModelRequest) -> usize {
     // Base64 bytes are transport, not text tokens. Normalized images are at most
     // 1024px; reserve 8192 tokens each when no native image counter exists.
     // This is an estimate; server admission remains authoritative.
-    let images = request
-        .messages
-        .iter()
-        .map(|m| m.images.len())
-        .sum::<usize>();
     serde_json::to_vec(&wire).map_or(usize::MAX, |b| {
         b.len()
             .saturating_add(256)
-            .saturating_add(images.saturating_mul(crate::attachments::IMAGE_TOKEN_RESERVE))
+            .saturating_add(image_token_reserve(request))
     })
 }
 pub fn effective_limits(limits: &Limits, provider_context: Option<usize>) -> Result<Limits> {
@@ -306,10 +310,8 @@ impl DefaultContextBuilder {
                 output_schema: run.output_schema.clone(),
             };
             async move {
-                if let Some(provider) = provider
-                    && let Some(count) = provider.count_input_tokens(&request).await?
-                {
-                    return Ok::<usize, WorkerError>(count);
+                if let Some(provider) = provider {
+                    return provider.estimate_input_tokens(&request).await;
                 }
                 Ok(estimate_request(&request))
             }
@@ -489,7 +491,10 @@ impl DefaultContextBuilder {
         if estimated > available {
             return Err(WorkerError::new(
                 "context_overflow",
-                "Context cannot fit without dropping current work or constraints",
+                format!(
+                    "Context needs {estimated} input tokens (counted/estimated), but only {available} fit after reserving {} output tokens and 512 safety tokens within the {}-token limit. Current work and constraints were retained",
+                    run.limits.reserve_output_tokens, run.limits.context_tokens
+                ),
             ));
         }
         validate_messages(&messages)?;

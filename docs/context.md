@@ -143,8 +143,17 @@ by the existing estimator and retained during compaction. See [setup](setup.md)
 and [project rules](project-configuration.md) for configuration and size bounds.
 
 For image attachments, a native multimodal count is used when available. An
-unsupported image count does not disable the native counter for text requests.
-Otherwise normalized images reserve 8,192 input tokens each; encoded base64 is
-not counted as text. This is a conservative image estimate, not a model-specific
+unsupported image count is remembered separately for this connection and does
+not disable the native counter for text requests. In that case, the worker
+counts the unchanged text and tool schemas natively with image parts removed,
+then adds 8,192 input tokens per normalized image and 256 tokens for image
+framing. Only the counting copy omits images: the actual model request and saved
+history retain every attachment. If text counting is unavailable too, the
+serialized text/schema byte estimate remains the fallback. Context planning,
+agent admission and transport admission use the same calculation; repeated
+planning passes reuse the text count instead of repeating unsupported image
+requests. The combined value remains an estimate, separate from the exact
+native-count cache. Encoded base64 is not counted as text. This is a conservative
+image estimate, not a model-specific
 measurement. Server context admission remains authoritative. The regular body
 size, context and run limits still apply to messages containing images.

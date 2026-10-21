@@ -7,7 +7,7 @@
     "streaming": "supported",
     "parallel_tools": "unknown",
     "structured_output": "unknown",
-    "images": "unsupported",
+    "images": "unknown",
     "reasoning": "unknown",
     "context_tokens": 32768
   },

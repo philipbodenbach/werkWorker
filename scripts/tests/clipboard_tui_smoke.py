@@ -12,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix='ww-clipboard-test-') as tmp:
  (root/'clipboard').write_bytes(b' clipboard text')
  (root/'delay').write_text('0')
  helper=helpers/'wl-paste';helper.write_text(f'#!{sys.executable}\nimport time,os,sys\nfrom pathlib import Path\nr=Path(os.environ["CLIP_TEST_ROOT"])\ntime.sleep(float((r/"delay").read_text()))\nsys.stdout.buffer.write((r/"clipboard").read_bytes())\n');helper.chmod(0o755)
- script=root/'turns.json';script.write_text(json.dumps([{'deltas':[{'type':'text','text':text},{'type':'finish','reason':'stop'},{'type':'done'}],'error':None} for text in ['Image received by model']]))
+ script=root/'turns.json';script.write_text(json.dumps([{'deltas':[{'type':'text','text':text},{'type':'finish','reason':'stop'},{'type':'done'}],'error':None,'delay_ms':800} for text in ['Image received by model']]))
  master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,130,0,0))
  env=dict(os.environ,TERM='xterm-256color',WAYLAND_DISPLAY='test',CLIP_TEST_ROOT=str(root),XDG_CONFIG_HOME=str(root/'config'),PATH=str(helpers)+os.pathsep+os.environ['PATH'])
  for key in ['WSL_DISTRO_NAME','WSL_INTEROP','DISPLAY']:env.pop(key,None)
@@ -26,6 +26,17 @@ with tempfile.TemporaryDirectory(prefix='ww-clipboard-test-') as tmp:
     screen.feed(os.read(master,65536))
    if proc.poll() is not None:break
   raise AssertionError((token,screen.text().decode()))
+ def animated(label):
+  wait(label)
+  def glyph():
+   line=next((line for line in screen.text().decode().splitlines() if label.decode() in line),'')
+   return next((c for c in line if c in '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'),None)
+  first=glyph();assert first,screen.text().decode()
+  deadline=time.monotonic()+.6
+  while time.monotonic()<deadline:
+   if select.select([master],[],[],.02)[0]:screen.feed(os.read(master,65536))
+   if glyph() not in (None,first):return
+  raise AssertionError(('Spinner did not animate',screen.text().decode()))
  try:
   wait(b'Message')
   payload=b'x'*32000+b'END_OF_BURST'
@@ -44,21 +55,42 @@ with tempfile.TemporaryDirectory(prefix='ww-clipboard-test-') as tmp:
    print(f'32 KiB bracketed paste visible in {time.monotonic()-start:.3f}s',flush=True)
    os.write(master,b'\x15');wait(b'[Pasted text #1',present=False)
    (root/'delay').write_text('1.5');os.write(master,b'\x16');wait(b'Reading clipboard')
+   animated(b'Reading clipboard')
    start=time.monotonic();os.write(master,b'during');wait(b'during',.7)
    print(f'Typing during slow clipboard visible in {time.monotonic()-start:.3f}s',flush=True)
    os.write(master,b'\r');wait(b'wait before sending',.7)
    wait(b'during clipboard text');os.write(master,b'\x15');wait(b'during clipboard text',present=False)
-   (root/'delay').write_text('0');(root/'clipboard').write_bytes(png)
-   os.write(master,b'Describe \x16');wait(b'[Image #2')
-   os.write(master,b'\x7f');wait(b'[Image #2',present=False)
-   os.write(master,b'\x16');wait(b'[Image #3');os.write(master,b'\r');wait(b'Image received by model')
+   (root/'delay').write_text('0');(root/'clipboard').write_bytes(b'')
+   os.write(master,b'\x16');wait(b'Clipboard is empty')
+   (root/'clipboard').write_bytes(b'\x03\x1b');os.write(master,b'\x16');wait(b'Nothing to paste')
+   (root/'clipboard').write_bytes(b'after timeout');(root/'delay').write_text('4')
+   os.write(master,b'\x16');animated(b'Reading clipboard');wait(b'Clipboard helper timed out')
+   (root/'delay').write_text('1.2');os.write(master,b'\x16');wait(b'Reading clipboard')
+   os.write(master,b'\x16');wait(b'Clipboard is still loading')
+   os.write(master,b'\x15');wait(b'pending paste cancelled');wait(b'Reading clipboard',present=False)
+   os.write(master,b'\x1bOQ');wait(b'Permissions')
+   os.write(master,b'\x16');wait(b'Paste is available in the chat')
+   os.write(master,b'\x1b');wait(b'Message')
+   (root/'clipboard').write_bytes(b'L'*32000);(root/'delay').write_text('1.2')
+   os.write(master,b'\x16');animated(b'Reading clipboard');wait(b'Pasted 32000 characters')
+   wait(b'[Pasted text #2');os.write(master,b'\x15');wait(b'[Pasted text #2',present=False)
+   (root/'clipboard').write_bytes(png)
+   os.write(master,b'Describe \x16');animated(b'Reading clipboard');wait(b'[Image #1')
+   wait(b'Image #1 added to the draft');wait(b'Images')
+   os.write(master,b'\x7f');wait(b'[Image #1',present=False)
+   os.write(master,b'\x16');wait(b'[Image #2');os.write(master,b'\r');animated(b'Processing prompt');wait(b'Image received by model')
+   wait(b'Images');wait(b'1 in session');wait(b'sent');wait(b'Completed');wait(b'Processing prompt',present=False)
    db=sqlite3.connect(root/'state.sqlite');state=json.loads(db.execute('SELECT data FROM sessions').fetchone()[0]);db.close()
    user=next(m for m in reversed(state['messages']) if m['role']=='user')
    assert user['content']=='Describe ',user['content']
    assert len(user['images'])==1 and user['images'][0]['mime_type']=='image/jpeg'
    assert user['images'][0]['width']==2
    assert base64.b64decode(user['images'][0]['data_base64']).startswith(b'\xff\xd8')
-   print('PNG paste, atomic removal, image+text submission and durable image payload: passed',flush=True)
+   os.write(master,b'\x11');proc.wait(timeout=5)
+   screen=Screen()
+   proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'state.sqlite'),'--script',str(script),'tui','--session',state['id']],stdin=slave,stdout=slave,stderr=slave,env=env)
+   wait(b'Opened saved session');wait(b'1 in session');wait(b'sent')
+   print('Animated text/image paste and model wait, empty/filtered clipboard feedback, persistent image sidebar and durable payload: passed',flush=True)
  finally:
   proc.terminate()
   try:proc.wait(timeout=5)

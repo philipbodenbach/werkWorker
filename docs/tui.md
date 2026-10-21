@@ -69,6 +69,23 @@ sent; deleting a block removes its complete pasted text. Oversized pastes are
 rejected with a visible notice. Multiline drafts expand and keep the editing
 cursor visible; the mouse wheel can also scroll the input.
 
+Clipboard imports show an animated indicator immediately, including while image
+decoding/resizing is running. Typing remains available; Enter waits until the
+import finishes, and Ctrl-U cancels it. A completion notice reports the pasted
+character count or image number. Empty, unsupported, failed and timed-out reads
+show an error instead of silently doing nothing. Pasting from an inspector asks
+you to return to chat first. If the terminal intercepts Ctrl-V itself, use
+**Alt-V** or Shift-Insert to invoke WerkWorker's clipboard reader; an intercepted
+key that produces no terminal input cannot be detected by the application.
+
+Images appear as `Image #1`, `Image #2`, etc. with dimensions in the right sidebar:
+`draft` before sending and `sent` after the session accepts the message. Sent
+images remain listed during follow-ups and are restored from saved history when
+reopening the session. Compact mode also shows this sidebar when images are
+present and the terminal is at least 70 columns wide. Image numbering is separate
+from pasted text blocks. The prompt border also animates while sending a message
+and waiting for the model to process it, including long text-only prompts.
+
 Direct clipboard access uses PowerShell on Windows/WSL, `osascript` (AppKit), `pbcopy`/`pbpaste` on
 macOS, or `wl-copy`/`wl-paste` and `xclip`/`xsel` on Linux. If these helpers are
 unavailable, copying falls back to the terminal's OSC 52 support; for pasting,

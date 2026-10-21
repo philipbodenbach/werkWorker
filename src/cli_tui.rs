@@ -390,7 +390,12 @@ struct View {
     input_scroll_manual: bool,
     pasted_texts: Vec<text_input::PastedText>,
     pasted_images: Vec<(String, attachments::ImageAttachment)>,
+    session_images: Vec<String>,
+    image_number: usize,
     clipboard: Option<tokio::task::JoinHandle<std::io::Result<text_input::Clipboard>>>,
+    submitting: bool,
+    waiting_attempts: std::collections::BTreeSet<String>,
+    spinner_frame: usize,
     paste_number: usize,
     status: String,
     session_id: String,
@@ -414,6 +419,7 @@ struct View {
     selectable: Vec<Rect>,
     native_selection: bool,
     error: String,
+    paste_notice: String,
     model_requests: u32,
     tools: u32,
     command_selected: usize,
@@ -435,6 +441,52 @@ struct View {
     choice_selected: usize,
 }
 impl View {
+    fn processing(&self) -> Option<String> {
+        let label = if self.clipboard.is_some() {
+            "Reading clipboard · preparing image/text"
+        } else if self.submitting {
+            "Sending prompt and attachments"
+        } else if self.approval.is_some() || self.interaction.is_some() {
+            return None;
+        } else if !self.waiting_attempts.is_empty() {
+            "Processing prompt · waiting for model"
+        } else if self.status == "Queued" {
+            "Preparing prompt"
+        } else if self.status == "Running" {
+            "Working"
+        } else {
+            return None;
+        };
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        Some(format!(
+            "{} {label}",
+            frames[self.spinner_frame % frames.len()]
+        ))
+    }
+
+    fn image_details(&self) -> String {
+        let mut lines = vec![format!("Images · {} in session", self.session_images.len())];
+        lines.extend(
+            self.session_images
+                .iter()
+                .map(|label| format!("{label} · sent")),
+        );
+        lines.extend(
+            self.pasted_images
+                .iter()
+                .map(|(label, _)| format!("{label} · draft")),
+        );
+        if self.clipboard.is_some() {
+            lines.push("Preparing clipboard attachment…".into());
+        }
+        lines.join("\n")
+    }
+
+    fn remember_images(&mut self) {
+        self.session_images
+            .extend(self.pasted_images.iter().map(|(label, _)| label.clone()));
+    }
+
     async fn open_settings(&mut self, session: Option<&SessionHandle>) {
         match session {
             Some(session) => match crate::cli_config::Editor::open(session).await {
@@ -498,18 +550,31 @@ impl View {
     fn paste(&mut self, text: &str) {
         if matches!(self.screen, Screen::Conversation) {
             self.paste_into_draft(text);
+        } else {
+            self.selection = None;
+            self.error =
+                "Paste is available in the chat. Press Esc to return; then paste again.".into();
         }
     }
     fn paste_into_draft(&mut self, text: &str) {
         self.selection = None;
         self.quit_armed = false;
+        self.paste_notice.clear();
         let mut normalized = String::new();
         let complete = text_input::append_paste(&mut normalized, text);
         if !complete || self.expanded_input_len() + normalized.len() > text_input::INPUT_LIMIT {
             self.error = "Paste exceeds the 64 KiB message limit; nothing was added.".into();
             return;
         }
+        if normalized.is_empty() {
+            self.error = "Nothing to paste: clipboard is empty or contains no supported text/image. Copy content and retry with Alt-V.".into();
+            return;
+        }
         let lines = normalized.lines().count().max(1);
+        self.paste_notice = format!(
+            "Pasted {} characters · {lines} lines into the draft.",
+            normalized.chars().count()
+        );
         if lines >= 5 || normalized.len() > 512 {
             self.paste_number += 1;
             let marker = format!("[Pasted text #{} +{lines} lines]", self.paste_number);
@@ -536,14 +601,15 @@ impl View {
             })
     }
     fn paste_image(&mut self, image: attachments::ImageAttachment) {
+        self.paste_notice.clear();
         if self.pasted_images.len() >= attachments::MAX_IMAGES {
             self.error = "At most four images per message.".into();
             return;
         }
-        self.paste_number += 1;
+        self.image_number += 1;
         let marker = format!(
             "[Image #{} · {}×{}]",
-            self.paste_number, image.width, image.height
+            self.image_number, image.width, image.height
         );
         self.insert_input(&marker);
         self.pasted_texts.push(text_input::PastedText {
@@ -551,6 +617,10 @@ impl View {
             text: String::new(),
         });
         self.pasted_images.push((marker, image));
+        self.paste_notice = format!(
+            "Image #{} added to the draft · Enter sends it.",
+            self.image_number
+        );
         self.error.clear();
     }
     fn cursor(&self) -> usize {
@@ -662,12 +732,19 @@ impl View {
         self.input_cursor = (next < self.input.len()).then_some(next);
     }
     fn paste_clipboard(&mut self) {
+        self.selection = None;
+        self.paste_notice.clear();
         if !matches!(self.screen, Screen::Conversation) {
+            self.error =
+                "Paste is available in the chat. Press Esc to return; then paste again.".into();
             return;
         }
         if self.clipboard.is_none() {
             self.clipboard = Some(tokio::spawn(text_input::paste()));
-            self.error = "Reading clipboard… You can keep editing.".into();
+            self.error.clear();
+        } else {
+            self.paste_notice =
+                "Clipboard is still loading · you can keep editing · Ctrl-U cancels.".into();
         }
     }
     async fn copy_selection(&mut self) -> bool {
@@ -815,6 +892,21 @@ impl View {
     fn event(&mut self, event: WorkerEvent) {
         if let Some(id) = event.run_id {
             self.run_id = id;
+        }
+        match &event.event {
+            EventKind::ModelRequest { attempt_id, .. } => {
+                self.waiting_attempts.insert(attempt_id.clone());
+            }
+            EventKind::TextDelta { attempt_id, text } if !text.is_empty() => {
+                self.waiting_attempts.remove(attempt_id);
+            }
+            EventKind::ToolDelta { attempt_id, .. }
+            | EventKind::ModelCompleted { attempt_id, .. }
+            | EventKind::AttemptFailed { attempt_id, .. } => {
+                self.waiting_attempts.remove(attempt_id);
+            }
+            EventKind::RunState { status } if status.terminal() => self.waiting_attempts.clear(),
+            _ => {}
         }
         match event.event {
             EventKind::TextDelta { text, .. } => self.append(&text),
@@ -1452,12 +1544,13 @@ fn draw(frame: &mut Frame, view: &mut View) {
     }
     match view.screen {
         Screen::Conversation => {
-            if view.layout == LayoutMode::Cockpit {
+            let show_images = !view.session_images.is_empty() || !view.pasted_images.is_empty();
+            if view.layout == LayoutMode::Cockpit || (show_images && area.width >= 70) {
                 let columns =
                     Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
                         .split(rows[1]);
                 draw_chat(frame, view, columns[0]);
-                let details = format!(
+                let session_details = format!(
                     "Status: {}\n{}\n{}\n\n{}\n{}\n\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nF2 permissions · F3 agents\nF4 view menu · F5 settings",
                     view.status,
                     view.session_id,
@@ -1469,12 +1562,21 @@ fn draw(frame: &mut Frame, view: &mut View) {
                     view.model_requests,
                     view.tools
                 );
+                let details = if view.layout == LayoutMode::Compact {
+                    view.image_details()
+                } else {
+                    format!("{}\n\n{session_details}", view.image_details())
+                };
                 draw_text_panel(
                     frame,
                     view,
                     Pane::Session,
                     clean(&details),
-                    " Session ",
+                    if view.layout == LayoutMode::Compact {
+                        " Images "
+                    } else {
+                        " Session "
+                    },
                     BRAND[3],
                     columns[1],
                 );
@@ -1594,7 +1696,15 @@ fn draw(frame: &mut Frame, view: &mut View) {
     } else {
         " Message · Enter send · Alt-Enter newline "
     };
-    let block = panel(input_title, if pending { BRAND[4] } else { BRAND[1] });
+    let processing = view.processing();
+    let busy_title = processing
+        .as_ref()
+        .filter(|_| matches!(view.screen, Screen::Conversation) && !pending)
+        .map(|label| format!(" {label} "));
+    let block = panel(
+        busy_title.as_deref().unwrap_or(input_title),
+        if pending { BRAND[4] } else { BRAND[1] },
+    );
     let inner = block.inner(rows[2]);
     frame.render_widget(block, rows[2]);
     view.selectable.push(inner);
@@ -1638,6 +1748,10 @@ fn draw(frame: &mut Frame, view: &mut View) {
         &view.error
     } else if view.native_selection {
         " Terminal selection: drag to select · terminal copy/paste shortcuts · F6: return to pane scrolling"
+    } else if busy_title.is_none() && processing.is_some() {
+        processing.as_deref().unwrap()
+    } else if !view.paste_notice.is_empty() {
+        &view.paste_notice
     } else {
         " Ctrl-C copy selection · Ctrl-V / Alt-V paste · Right-click copy/paste · Wheel scroll pane · F6 terminal selection · /help"
     };
@@ -1905,13 +2019,14 @@ fn restore_history(view: &mut View, data: &SessionData) {
         match message.role {
             Role::User => {
                 view.append(&format!("\n\nyou › {}\n", message.content));
-                for (index, image) in message.images.iter().enumerate() {
-                    view.append(&format!(
-                        "[Image {} · {}×{}]\n",
-                        index + 1,
-                        image.width,
-                        image.height
-                    ));
+                for image in &message.images {
+                    view.image_number += 1;
+                    let label = format!(
+                        "[Image #{} · {}×{}]",
+                        view.image_number, image.width, image.height
+                    );
+                    view.append(&format!("{label}\n"));
+                    view.session_images.push(label);
                 }
             }
             Role::Assistant => {
@@ -2052,10 +2167,18 @@ pub async fn show(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
     let mut agents_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut animation_tick = tokio::time::interval(Duration::from_millis(100));
+    animation_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut addressed: Option<RunHandle> = None;
     let mut exit = Exit::Quit;
     loop {
         tokio::select! {
+            _ = animation_tick.tick() => {
+                if view.processing().is_some() {
+                    view.spinner_frame = view.spinner_frame.wrapping_add(1);
+                    dirty = true;
+                }
+            },
             result = async { match &mut view.clipboard { Some(task) => task.await, None => std::future::pending().await } } => {
                 view.clipboard = None;
                 match result {
@@ -2095,7 +2218,7 @@ pub async fn show(
                 dirty = true;
                 let event = key?;
                 if let Event::Paste(text) = &event {
-                    if matches!(view.screen, Screen::Conversation) { view.paste(text); }
+                    view.paste(text);
                     continue;
                 }
                 if let Event::Mouse(mouse) = event {
@@ -2153,6 +2276,7 @@ pub async fn show(
                         }
                         MouseEventKind::Down(MouseButton::Right) if !view.copy_selection().await => {
                             view.paste_clipboard();
+                            terminal.draw(|frame| draw(frame, &mut view))?;
                         }
                         _ => {}
                     }
@@ -2168,7 +2292,10 @@ pub async fn show(
                 if (ctrl && matches!(key.code, KeyCode::Char('v' | 'V')))
                     || (key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Char('v' | 'V')))
                     || (key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Insert) {
-                    if key.kind != KeyEventKind::Repeat { view.paste_clipboard(); }
+                    if key.kind != KeyEventKind::Repeat {
+                        view.paste_clipboard();
+                        terminal.draw(|frame| draw(frame, &mut view))?;
+                    }
                     continue;
                 }
                 // Reveal live requests before allowing keys to act on a frame
@@ -2370,6 +2497,7 @@ pub async fn show(
                         }
                     } else if ctrl && key.code == KeyCode::Char('u') {
                         if let Some(task) = view.clipboard.take() { task.abort(); }
+                        view.paste_notice = "Draft cleared · pending paste cancelled.".into();
                         view.input.clear(); view.edited_input();
                     } else if key.code == KeyCode::Enter && view.input.is_empty() && view.interaction.is_some() {
                         let answer = view.interaction.as_ref().and_then(|q| q.choices.get(view.choice_selected)).cloned();
@@ -2446,11 +2574,33 @@ pub async fn show(
                                 if let Some(run) = &active && run.status().await?.status == RunStatus::Interrupted {
                                     return Err(WorkerError::new("resume_required", RESUME_REQUIRED));
                                 }
-                                if let Some(run) = &active && !run.status().await?.status.terminal() {
-                                    run.steer_with_images(&input, images, &id("steer")).await?;
-                                } else {
-                                    active = Some(session.submit_with_images(&input, images, &id("tui"), limits.clone(), None).await?);
-                                }
+                                let send = async {
+                                    if let Some(run) = &active && !run.status().await?.status.terminal() {
+                                        run.steer_with_images(&input, images, &id("steer")).await?;
+                                        Ok(run.clone())
+                                    } else {
+                                        session.submit_with_images(&input, images, &id("tui"), limits.clone(), None).await
+                                    }
+                                };
+                                view.submitting = true;
+                                view.error.clear();
+                                terminal.draw(|frame| draw(frame, &mut view))?;
+                                let outcome = {
+                                    tokio::pin!(send);
+                                    loop {
+                                        tokio::select! {
+                                            result = &mut send => break result,
+                                            _ = animation_tick.tick() => {
+                                                view.spinner_frame = view.spinner_frame.wrapping_add(1);
+                                                terminal.draw(|frame| draw(frame, &mut view))?;
+                                            }
+                                        }
+                                    }
+                                };
+                                view.submitting = false;
+                                active = Some(outcome?);
+                                view.remember_images();
+                                view.paste_notice.clear();
                             } else { return Err(WorkerError::new("provider_required", "Connect Werk or start ww tui --demo")); }
                             view.append(&format!("\n\nyou › {display_input}\n")); view.input.clear(); view.edited_input(); view.scroll = None;
                         },
@@ -2477,6 +2627,89 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_image() -> attachments::ImageAttachment {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 3)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap()
+    }
+
+    #[test]
+    fn images_remain_in_the_sidebar_after_sending_and_draft_removal() {
+        for layout in [LayoutMode::Compact, LayoutMode::Cockpit] {
+            let mut view = View {
+                layout,
+                ..Default::default()
+            };
+            view.paste(&"long prompt\n".repeat(12));
+            view.paste_image(test_image());
+            assert!(view.input.contains("[Image #1"));
+            assert!(view.image_details().contains("[Image #1 · 2×3] · draft"));
+            view.remember_images();
+            view.input.clear();
+            view.edited_input();
+            view.paste_image(test_image());
+            view.backspace_input();
+            assert_eq!(view.session_images.len(), 1);
+            assert!(view.pasted_images.is_empty());
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 36)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut view)).unwrap();
+            let sidebar = view.panes[Pane::Session as usize].area;
+            assert!(sidebar.x > view.chat_area.x);
+            let text = (sidebar.y..sidebar.bottom())
+                .map(|y| {
+                    (sidebar.x..sidebar.right())
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("[Image #1 · 2×3] · sent"));
+            assert!(!text.contains("draft"));
+            assert!(!text.contains("base64"));
+        }
+    }
+
+    #[test]
+    fn prompt_spinner_tracks_attempts_and_stops_on_failure() {
+        let mut view = View::default();
+        let event = |event| WorkerEvent {
+            schema_version: 1,
+            event_id: "event".into(),
+            session_id: "session".into(),
+            run_id: Some("run".into()),
+            cursor: 1,
+            timestamp_ms: 0,
+            event,
+        };
+        view.event(event(EventKind::ModelRequest {
+            attempt_id: "attempt".into(),
+            step_id: "step".into(),
+            context_hash: "hash".into(),
+        }));
+        let first = view.processing().unwrap();
+        assert!(first.contains("Processing prompt"));
+        view.spinner_frame += 1;
+        assert_ne!(view.processing().unwrap(), first);
+        view.event(event(EventKind::TextDelta {
+            attempt_id: "attempt".into(),
+            text: String::new(),
+        }));
+        assert!(view.processing().is_some());
+        view.event(event(EventKind::AttemptFailed {
+            attempt_id: "attempt".into(),
+            code: "error".into(),
+        }));
+        assert!(view.processing().is_none());
+        view.submitting = true;
+        assert!(view.processing().unwrap().contains("Sending prompt"));
+        view.submitting = false;
+        assert!(view.processing().is_none());
+    }
+
     #[test]
     fn prompt_edits_at_cursor_with_unicode_words_and_atomic_pastes() {
         let mut view = View::default();

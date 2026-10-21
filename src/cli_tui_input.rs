@@ -303,6 +303,11 @@ async fn transfer_bytes(
 }
 
 fn decode_clipboard(bytes: Vec<u8>) -> io::Result<Clipboard> {
+    if bytes.is_empty() {
+        return Err(io::Error::other(
+            "Clipboard is empty or contains no supported text/image",
+        ));
+    }
     let image = if let Some(encoded) = bytes.strip_prefix(b"WERK_IMAGE_PNG:") {
         Some(
             STANDARD
@@ -351,7 +356,11 @@ pub(super) async fn paste() -> io::Result<Clipboard> {
                     .await
                     .map_err(io::Error::other)?;
             }
-            Err(error) => last = error,
+            // An absent fallback must not hide the real helper's timeout or failure.
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                last = io::Error::new(error.kind(), format!("{program}: {error}"));
+            }
+            Err(_) => {}
         }
     }
     Err(last)

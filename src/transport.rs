@@ -22,6 +22,8 @@ pub const METHODS: &[&str] = &[
     "session.create",
     "session.open",
     "session.list",
+    "session.rename",
+    "session.delete",
     "session.fork",
     "run.submit",
     "run.status",
@@ -105,6 +107,23 @@ impl RpcHost {
                 Ok(json!({"session_id":id}))
             }
             "session.list" => Ok(json!(self.engine.list_sessions().await?)),
+            "session.rename" => {
+                self.engine
+                    .rename_session(text(p, "session_id")?, text(p, "title")?)
+                    .await?;
+                Ok(json!({"renamed":true}))
+            }
+            "session.delete" => {
+                if p["confirm"] != true {
+                    return Err(WorkerError::new(
+                        "confirmation_required",
+                        "session.delete requires confirm: true",
+                    ));
+                }
+                let deleted = self.engine.delete_session(text(p, "session_id")?).await?;
+                self.sessions.retain(|id, _| !deleted.contains(id));
+                Ok(json!({"deleted":deleted}))
+            }
             "shutdown" => {
                 self.engine.close().await?;
                 Ok(json!({"closed":true}))

@@ -31,6 +31,7 @@ fn configuration_allowed(status: RunStatus) -> bool {
 }
 
 struct SessionRuntime {
+    deleted: AtomicBool,
     data: Arc<Mutex<SessionData>>,
     workspace: Workspace,
     changed: watch::Sender<u64>,
@@ -229,6 +230,7 @@ impl WorkerEngine {
         let workspace = Workspace::open(workspace).await?;
         self.validate_workspace(&workspace)?;
         let mut data = SessionData {
+            title: None,
             schema_version: 1,
             parent: None,
             id: id("session"),
@@ -251,6 +253,7 @@ impl WorkerEngine {
         data.emit(None, EventKind::SessionCreated);
         self.inner.store.save(&data, None).await?;
         let runtime = Arc::new(SessionRuntime {
+            deleted: AtomicBool::new(false),
             data: Arc::new(Mutex::new(data.clone())),
             workspace,
             changed: watch::channel(0).0,
@@ -268,6 +271,150 @@ impl WorkerEngine {
     pub async fn list_sessions(&self) -> Result<Vec<String>> {
         self.ensure_open()?;
         self.inner.store.list().await
+    }
+    /// Rename without opening a workspace, connecting a model or resuming work.
+    pub async fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
+        self.ensure_open()?;
+        validate_id(session_id)?;
+        let title = title.trim().to_owned();
+        if title.is_empty() || title.chars().count() > 80 || title.chars().any(char::is_control) {
+            return Err(WorkerError::new(
+                "invalid_title",
+                "Use 1..80 characters without control characters",
+            ));
+        }
+        let _admission = self.inner.admission.lock().await;
+        let mut data = self.inner.store.load(session_id).await?;
+        if data.principal != self.inner.principal {
+            return Err(WorkerError::new(
+                "principal_conflict",
+                "Session belongs to another host principal",
+            ));
+        }
+        let runtime = self.inner.sessions.lock().await.get(session_id).cloned();
+        if let Some(runtime) = runtime {
+            SessionHandle {
+                engine: self.clone(),
+                runtime,
+            }
+            .update(|data| {
+                data.title = Some(title);
+                Ok(())
+            })
+            .await
+        } else {
+            let previous = data.revision;
+            data.title = Some(title);
+            data.revision += 1;
+            self.inner.store.save(&data, Some(previous)).await
+        }
+    }
+
+    /// Delete a root conversation and its descendants. Workspace files and
+    /// shared artifact blobs are deliberately not garbage-collected here.
+    pub async fn delete_session(&self, session_id: &str) -> Result<Vec<String>> {
+        self.ensure_open()?;
+        validate_id(session_id)?;
+        let engine = self.clone();
+        let session_id = session_id.to_owned();
+        // Complete store commit + runtime invalidation even if a caller drops
+        // its future after SQLite commits.
+        tokio::spawn(async move {
+            let _delegation = engine.inner.delegation.lock().await;
+            let _admission = engine.inner.admission.lock().await;
+            engine.ensure_open()?;
+            let root = engine.inner.store.load(&session_id).await?;
+            if root.parent.is_some() {
+                return Err(WorkerError::new(
+                    "root_required",
+                    "Delete the parent conversation to remove its subagents",
+                ));
+            }
+            let mut all = Vec::new();
+            struct DeletionEntry {
+                id: String,
+                revision: u64,
+                parent: Option<String>,
+                principal: String,
+            }
+            for id in engine.inner.store.list().await? {
+                let data = engine.inner.store.load(&id).await?;
+                // Do not retain every conversation's images and history just
+                // to identify the subtree being deleted.
+                all.push(DeletionEntry {
+                    id: data.id,
+                    revision: data.revision,
+                    parent: data.parent.map(|p| p.session_id),
+                    principal: data.principal,
+                });
+            }
+            let mut ids = std::collections::BTreeSet::from([session_id]);
+            loop {
+                let before = ids.len();
+                for data in &all {
+                    if data.parent.as_ref().is_some_and(|p| ids.contains(p)) {
+                        ids.insert(data.id.clone());
+                    }
+                }
+                if ids.len() == before {
+                    break;
+                }
+            }
+            let selected: Vec<_> = all.iter().filter(|d| ids.contains(&d.id)).collect();
+            if selected
+                .iter()
+                .any(|d| d.principal != engine.inner.principal)
+            {
+                return Err(WorkerError::new(
+                    "principal_conflict",
+                    "Session belongs to another host principal",
+                ));
+            }
+            if engine
+                .inner
+                .active
+                .lock()
+                .await
+                .iter()
+                .any(|(id, active)| ids.contains(id) && !active.task.is_finished())
+            {
+                return Err(WorkerError::new(
+                    "session_busy",
+                    "Cancel or finish active work before deleting this conversation",
+                ));
+            }
+            let runtimes: Vec<_> = engine
+                .inner
+                .sessions
+                .lock()
+                .await
+                .iter()
+                .filter(|(id, _)| ids.contains(*id))
+                .map(|(_, r)| r.clone())
+                .collect();
+            let mut guards = Vec::new();
+            for runtime in &runtimes {
+                guards.push(runtime.data.lock().await);
+            }
+            let revisions: Vec<_> = selected
+                .iter()
+                .map(|d| (d.id.clone(), d.revision))
+                .collect();
+            engine.inner.store.delete(&revisions).await?;
+            for runtime in &runtimes {
+                runtime.deleted.store(true, Ordering::Release);
+                runtime.changed.send_replace(u64::MAX);
+            }
+            engine
+                .inner
+                .sessions
+                .lock()
+                .await
+                .retain(|id, _| !ids.contains(id));
+            Ok(ids.into_iter().collect())
+        })
+        .await
+        .map_err(|_| WorkerError::new("store_error", "Session deletion task failed"))?
     }
     pub async fn open_session(&self, session_id: &str) -> Result<SessionHandle> {
         self.ensure_open()?;
@@ -333,6 +480,7 @@ impl WorkerEngine {
         data.revision += 1;
         self.inner.store.save(&data, Some(previous)).await?;
         let runtime = Arc::new(SessionRuntime {
+            deleted: AtomicBool::new(false),
             data: Arc::new(Mutex::new(data)),
             workspace,
             changed: watch::channel(0).0,
@@ -454,7 +602,11 @@ impl SessionHandle {
         self.runtime.data.lock().await.id.clone()
     }
     pub async fn snapshot(&self) -> Result<SessionData> {
-        Ok(self.runtime.data.lock().await.clone())
+        let data = self.runtime.data.lock().await;
+        if self.runtime.deleted.load(Ordering::Acquire) {
+            return Err(WorkerError::new("not_found", "Session was deleted"));
+        }
+        Ok(data.clone())
     }
     pub async fn export(&self) -> Result<Value> {
         Ok(serde_json::to_value(self.snapshot().await?)?)
@@ -674,6 +826,9 @@ impl SessionHandle {
         op: impl FnOnce(&mut SessionData) -> Result<T>,
     ) -> Result<T> {
         let mut locked = self.runtime.data.clone().lock_owned().await;
+        if self.runtime.deleted.load(Ordering::Acquire) {
+            return Err(WorkerError::new("not_found", "Session was deleted"));
+        }
         let mut next = locked.clone();
         let result = op(&mut next)?;
         if next.events.len() > 100_000 {
@@ -898,7 +1053,11 @@ impl SessionHandle {
         })
     }
     pub async fn run(&self, run_id: &str) -> Result<RunHandle> {
-        self.runtime.data.lock().await.run(run_id)?;
+        let data = self.runtime.data.lock().await;
+        if self.runtime.deleted.load(Ordering::Acquire) {
+            return Err(WorkerError::new("not_found", "Session was deleted"));
+        }
+        data.run(run_id)?;
         Ok(RunHandle {
             session: self.clone(),
             id: run_id.into(),

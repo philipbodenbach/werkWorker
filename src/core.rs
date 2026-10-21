@@ -543,6 +543,8 @@ pub struct WorkerEvent {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub parent: Option<crate::agents::ParentLink>,
     pub schema_version: u32,

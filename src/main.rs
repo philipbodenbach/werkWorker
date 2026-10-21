@@ -108,8 +108,23 @@ enum Command {
 #[derive(Clone, Subcommand)]
 enum SessionCommand {
     List,
-    Inspect { id: String },
-    Export { id: String },
+    Inspect {
+        id: String,
+    },
+    Export {
+        id: String,
+    },
+    /// Rename a saved conversation (1..80 characters).
+    Rename {
+        id: String,
+        title: String,
+    },
+    /// Delete a conversation and its subagent sessions; keep workspace files.
+    Delete {
+        id: String,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 #[derive(Clone, Subcommand)]
 enum ListCommand {
@@ -174,6 +189,10 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             "terminal_required",
             "TUI requires an interactive terminal; use run or rpc for pipes",
         ));
+    }
+    if let Command::Sessions { action } = &command {
+        manage_sessions(cli.store.clone().unwrap_or(default_store_path()?), action).await?;
+        return Ok(false);
     }
     if let Command::Profiles { action } = &command {
         match action {
@@ -361,7 +380,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             let mut choice = match session_id {
                 Some(id) => cli_start::SessionChoice::Previous(id),
                 None if input.is_none() && !cli.setup => {
-                    cli_start::sessions(store.as_ref(), &cli.workspace, false).await?
+                    cli_start::sessions(store.as_ref(), &engine, &cli.workspace, false).await?
                 }
                 None => cli_start::SessionChoice::New,
             };
@@ -429,8 +448,13 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                                 {
                                     break Ok(());
                                 }
-                                choice = cli_start::sessions(store.as_ref(), &cli.workspace, true)
-                                    .await?;
+                                choice = cli_start::sessions(
+                                    store.as_ref(),
+                                    &engine,
+                                    &cli.workspace,
+                                    true,
+                                )
+                                .await?;
                                 continue;
                             }
                         }
@@ -484,7 +508,13 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                     cli_tui::Exit::Sessions => {
                         first_new_session = false;
                         current = Some(session);
-                        choice = cli_start::sessions(store.as_ref(), &cli.workspace, true).await?;
+                        choice = cli_start::sessions(store.as_ref(), &engine, &cli.workspace, true)
+                            .await?;
+                        if let Some(previous) = &current
+                            && previous.snapshot().await.is_err()
+                        {
+                            current = None;
+                        }
                     }
                 }
             }
@@ -525,25 +555,52 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             let run = engine.resume_run(&session_id, &run_id).await?;
             display(&run).await
         }
-        Command::Sessions { action } => {
-            match action {
-                SessionCommand::List => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&engine.list_sessions().await?)?
-                ),
-                SessionCommand::Inspect { id } | SessionCommand::Export { id } => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&engine.open_session(&id).await?.export().await?)?
-                ),
-            }
-            Ok(())
-        }
         _ => Ok(()),
     };
     engine.close().await?;
     result?;
     Ok(configure)
 }
+async fn manage_sessions(path: PathBuf, action: &SessionCommand) -> Result<()> {
+    use werk_worker::sessions::SessionStore;
+    let store = Arc::new(SqliteStore::open(path).await?);
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![])))
+        .store(store.clone())
+        .build()
+        .await?;
+    let result: Result<()> = async {
+        match action {
+            SessionCommand::List => println!("{}", serde_json::to_string_pretty(&store.list().await?)?),
+            SessionCommand::Inspect { id } | SessionCommand::Export { id } => {
+                validate_id(id)?;
+                println!("{}", serde_json::to_string_pretty(&store.load(id).await?)?);
+            }
+            SessionCommand::Rename { id, title } => {
+                engine.rename_session(id, title).await?;
+                println!("{}", serde_json::json!({"session_id":id,"title":title.trim()}));
+            }
+            SessionCommand::Delete { id, yes } => {
+                validate_id(id)?;
+                let data = store.load(id).await?;
+                if !yes {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(WorkerError::new("confirmation_required", "Deletion requires --yes outside an interactive terminal"));
+                    }
+                    let detail = format!("{}\n{}\nDelete conversation history, images and subagent sessions permanently? Workspace files and shared artifacts remain.", data.title.as_deref().unwrap_or("Saved conversation"), id);
+                    if cli_start::choose("Delete session?", &detail, &["Cancel".into(), "Delete permanently".into()]).await? != Some(1) {
+                        println!("{}", serde_json::json!({"deleted":false}));
+                        return Ok(());
+                    }
+                }
+                println!("{}", serde_json::json!({"deleted":engine.delete_session(id).await?}));
+            }
+        }
+        Ok(())
+    }.await;
+    engine.close().await?;
+    result
+}
+
 async fn display(run: &RunHandle) -> Result<()> {
     eprintln!("run {}", run.id);
     let mut events = run.events(0);

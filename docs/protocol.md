@@ -32,6 +32,8 @@ does not mean completion. Events are notifications:
 | session.create | optional profile and metadata |
 | session.open, session.export | session_id |
 | session.list | none |
+| session.rename | session_id, title (1–80 characters) |
+| session.delete | session_id, confirm=true; removes root conversation and descendants, rejects active work |
 | session.fork | session_id; uses explicit startup host policy for new scope |
 | run.submit | session_id, input, command_id; optional limits/output_schema/images |
 | run.status | session_id, run_id |
@@ -50,6 +52,11 @@ does not mean completion. Events are notifications:
 | shutdown | none |
 
 Approval decisions serialize as `allow_once`, `deny`, `allow_same_arguments`.
+
+Session deletion is a host operation, never a model tool. It returns deleted
+session IDs and removes their cached handles. Project files, independent forks
+and shared artifact blobs remain. Repeating deletion of an absent session
+returns `not_found`; renaming to the same title has the same visible result.
 
 `images` is an optional array of up to four attachments with `mime_type`
 (`image/jpeg`), `data_base64`, `width` and `height`. Use the SDK's

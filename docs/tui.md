@@ -182,12 +182,38 @@ partial save explicitly; resolve the error before retrying Ctrl-S.
 ## Previous sessions
 
 After connecting, the startup list offers **New session** and previous chats
-from the current workspace, most recently used first. Titles use the first
-prompt, with age, status, profile and session ID. Empty chats and internal
-subagent sessions are omitted. With no previous chats, the first chat opens
+from the current workspace, most recently used first. Titles use a saved name or
+the first prompt, with age, status, profile, turns, image count and session ID.
+Empty chats can also be managed; internal subagent sessions are omitted.
+With no previous chats, the first chat opens
 directly. An initial CLI prompt starts a new session unless `--session` is given.
 `/sessions` opens the list after the active run finishes or is cancelled;
 Esc returns to the current conversation. On startup, Esc exits.
+
+In the session list, **R** renames the selected conversation (1–80 characters),
+**/** filters by title, status or ID, and **F5** refreshes. **Delete** or **D**
+opens a permanent-deletion confirmation with **Cancel** selected by default.
+Use arrows and Enter to confirm. Deletion removes the conversation history,
+inline images and all descendant subagent sessions atomically. Active work must
+finish or be cancelled first. Independent forks, project files and shared
+artifact blobs remain. There is no undo. After deletion, the list updates
+immediately; deleting the currently open conversation also invalidates its old
+handle. Esc exits if that conversation no longer exists.
+
+CLI management works without a model connection or an existing workspace:
+
+```sh
+ww sessions list
+ww sessions rename SESSION_ID "New title"
+ww sessions export SESSION_ID > session-backup.json
+ww sessions delete SESSION_ID
+ww sessions delete SESSION_ID --yes
+```
+
+Interactive CLI deletion asks for confirmation; scripts must supply `--yes`.
+Use `--store PATH` before `sessions` for a different database. The exclusive
+store lock still applies: close another `ww` process using that database before
+managing it from a separate CLI process. Within the TUI, use `/sessions`.
 
 Opening a completed conversation restores its committed messages and permits
 follow-up messages in the **same session**. The model receives the stored history,

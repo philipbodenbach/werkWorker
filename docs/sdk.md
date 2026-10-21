@@ -10,6 +10,8 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | `engine.create_session(profile, workspace, policy, metadata).await` | Pinned profile/skills, workspace identity, host principal |
 | `engine.open_session(id).await` | Recover durable state; no automatic external dispatch |
 | `engine.list_sessions().await` | Stored session IDs |
+| `engine.rename_session(id, title).await` | Persist a 1–80 character display title; no model or workspace startup |
+| `engine.delete_session(id).await` | Delete root + descendants atomically; returns removed IDs; rejects active work and invalidates old handles |
 | `session.submit(input, command_id, limits, output_schema).await` | Early `RunHandle`, busy if same session active |
 | `session.follow_up(input, command_id, limits).await` | Persist a run in FIFO order; queue limit 16 |
 | `session.run(run_id).await` | Address a persisted run |

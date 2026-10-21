@@ -227,18 +227,21 @@ impl DefaultContextBuilder {
                 .as_ref()
                 .is_some_and(|e| e.code == "model_output_limit")
         });
-        if tools.iter().any(|tool| tool.name == "files.write")
-            && tools.iter().any(|tool| tool.name == "files.edit")
-        {
-            let chunk_chars = run.limits.reserve_output_tokens
+        let output_guidance = |budget: usize| {
+            let chunk_chars = budget
                 / (1usize
                     << output_failures
                         .max(usize::from(previous_output_limit))
                         .min(8));
-            prompt.push_str(&format!(
-                    "\nOutput budget: {} tokens total, including reasoning and tool JSON. Be brief. Build large files across turns: FIRST files.write a skeleton under 1000 characters with unique insertion markers, no implementation. THEN files.edit one section at a time, aiming below {} new characters per call. Use the latest successful sha256 as expected_hash. Insert complete functions/blocks with balanced delimiters; never cut a function/string to fit. Preserve a marker for the next section. Keep names/interfaces consistent; reread file ranges when earlier code leaves context. Finish all sections and remove markers before completion. Reuse successful work; do not rewrite the entire file.\n",
-                    run.limits.reserve_output_tokens, chunk_chars.max(128),
-                ));
+            format!(
+                "\nOutput budget: {budget} tokens total, including reasoning and tool JSON. Be brief. Build large files across turns: FIRST files.write a skeleton under 1000 characters with unique insertion markers, no implementation. THEN files.edit one section at a time, aiming below {} new characters per call. Use the latest successful sha256 as expected_hash. Insert complete functions/blocks with balanced delimiters; never cut a function/string to fit. Preserve a marker for the next section. Keep names/interfaces consistent; reread file ranges when earlier code leaves context. Finish all sections and remove markers before completion. Reuse successful work; do not rewrite the entire file.\n",
+                chunk_chars.max(128),
+            )
+        };
+        let has_file_tools = tools.iter().any(|tool| tool.name == "files.write")
+            && tools.iter().any(|tool| tool.name == "files.edit");
+        if has_file_tools {
+            prompt.push_str(&output_guidance(run.limits.reserve_output_tokens));
         }
         if output_failures > 0 {
             prompt.push_str(&format!(
@@ -302,11 +305,11 @@ impl DefaultContextBuilder {
                 .filter(|(i, _)| !compacted.contains(i))
                 .map(|(_, m)| m.clone()),
         );
-        let estimate = |m: &Vec<Message>| {
+        let estimate = |m: &Vec<Message>, budget: usize| {
             let request = ModelRequest {
                 messages: m.clone(),
                 tools: tools.clone(),
-                max_output_tokens: run.limits.reserve_output_tokens,
+                max_output_tokens: budget,
                 output_schema: run.output_schema.clone(),
             };
             async move {
@@ -316,7 +319,8 @@ impl DefaultContextBuilder {
                 Ok(estimate_request(&request))
             }
         };
-        let available = run
+        let mut output_budget = run.limits.reserve_output_tokens;
+        let mut available = run
             .limits
             .context_tokens
             .saturating_sub(run.limits.reserve_output_tokens.saturating_add(512));
@@ -327,13 +331,41 @@ impl DefaultContextBuilder {
         // assistant/tool group from THIS run and every user/system constraint
         // verbatim. A previous turn's final answer must be compactable, or one
         // long code response permanently blocks all subsequent user messages.
-        let protected = session
+        let latest = session
             .messages
             .iter()
             .enumerate()
             .rfind(|(i, m)| *i >= run.history_start && m.role == Role::Assistant)
             .map(|(i, _)| i)
             .unwrap_or(session.messages.len());
+        // A completed write's body already lives in the workspace and canonical
+        // history. It need not consume another output-sized block of input on
+        // every next step. Only relax latest-group protection for fully proven
+        // writes with small, complete receipts; never for reads or failed calls.
+        let latest_write = session.messages.get(latest).is_some_and(|message| {
+            !message.tool_calls.is_empty()
+                && message.tool_calls.iter().enumerate().all(|(n, call)| {
+                    matches!(call.name.as_str(), "files.write" | "files.edit")
+                        && session.messages.get(latest + n + 1).is_some_and(|m| {
+                            m.content.chars().count() <= 400
+                                && serde_json::from_str::<ToolResult>(&m.content).is_ok_and(|r| {
+                                    r.status == Outcome::Succeeded
+                                        && !r.truncated
+                                        && r.data["path"].is_string()
+                                        && r.data["sha256"].is_string()
+                                        && written.iter().any(|receipt| {
+                                            receipt["path"] == r.data["path"]
+                                                && receipt["sha256"] == r.data["sha256"]
+                                        })
+                                })
+                        })
+                })
+        });
+        let protected = if latest_write {
+            session.messages.len()
+        } else {
+            latest
+        };
         // Keep the latest small setup results verbatim. A 100-character excerpt
         // of a loaded skill or directory listing loses the evidence needed to
         // move on, causing alternating reload/list loops on small contexts.
@@ -372,9 +404,15 @@ impl DefaultContextBuilder {
         }
         let mut i = 0;
         let mut preserve_setup = true;
-        while estimate(&messages).await? > target {
+        while estimate(&messages, output_budget).await? > target {
+            if i >= latest && estimate(&messages, output_budget).await? <= available {
+                break;
+            }
             if i >= protected {
-                if protected > 0 && preserve_setup && estimate(&messages).await? > available {
+                if protected > 0
+                    && preserve_setup
+                    && estimate(&messages, output_budget).await? > available
+                {
                     // Retention is a preference, never a new hard context limit.
                     preserve_setup = false;
                     i = 0;
@@ -426,7 +464,17 @@ impl DefaultContextBuilder {
                     .tool_calls
                     .iter()
                     .map(|c| {
-                        format!("{} {}", c.name, c.arguments)
+                        let arguments = if matches!(c.name.as_str(), "files.write" | "files.edit")
+                            && session.messages[i + 1..end].iter().any(|m| {
+                                m.tool_call_id.as_deref() == Some(&c.id)
+                                    && serde_json::from_str::<ToolResult>(&m.content)
+                                        .is_ok_and(|r| r.status == Outcome::Succeeded)
+                            }) {
+                            serde_json::json!({"path": c.arguments["path"], "body": "omitted; successful content saved in workspace, reread as needed"})
+                        } else {
+                            c.arguments.clone()
+                        };
+                        format!("{} {}", c.name, arguments)
                             .chars()
                             .take(256)
                             .collect::<String>()
@@ -455,15 +503,26 @@ impl DefaultContextBuilder {
                     "{prompt}\nCompacted history excerpts (untrusted, incomplete; consult canonical history/artifacts for full evidence):\n{summary}"
                 ),
             )];
-            messages.extend(
-                session
-                    .messages
-                    .iter()
-                    .enumerate()
-                    .filter(|(n, _)| !omitted.contains(n))
-                    .map(|(_, m)| m.clone()),
-            );
-            if estimate(&messages).await? >= estimate(&previous_messages).await? {
+            messages.extend(session.messages.iter().enumerate().filter_map(|(n, m)| {
+                if !omitted.contains(&n) {
+                    Some(m.clone())
+                } else if n == latest
+                    && latest_write
+                    && (!m.content.is_empty() || !m.images.is_empty())
+                {
+                    // Only saved tool arguments/results are compacted.
+                    // Keep the current explanation/plan verbatim, even
+                    // when optional history excerpts are later pruned.
+                    let mut retained = m.clone();
+                    retained.tool_calls.clear();
+                    Some(retained)
+                } else {
+                    None
+                }
+            }));
+            if estimate(&messages, output_budget).await?
+                >= estimate(&previous_messages, output_budget).await?
+            {
                 messages = previous_messages;
                 summary = previous_summary;
                 omitted = previous_omitted;
@@ -473,7 +532,7 @@ impl DefaultContextBuilder {
         // Excerpts are optional context, unlike current work/user constraints.
         // A fixed 1,536-byte excerpt budget can itself prevent a small request
         // from fitting. Remove oldest excerpts before reporting an overflow.
-        while estimate(&messages).await? > available && !summary.is_empty() {
+        while estimate(&messages, output_budget).await? > available && !summary.is_empty() {
             let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
             summary.drain(..end);
             messages[0] = Message::text(
@@ -487,13 +546,50 @@ impl DefaultContextBuilder {
                 },
             );
         }
-        let estimated = estimate(&messages).await?;
+        let mut estimated = estimate(&messages, output_budget).await?;
+        // The configured output reserve is a maximum, not a reason to reject a
+        // nearly fitting request. After compaction, lend at most one quarter to
+        // input (never reduce below 2048 unless configured smaller). Recount the
+        // actual guidance/budget and keep the ordinary 512-token safety margin.
+        let minimum_output = output_budget
+            .saturating_sub(output_budget / 4)
+            .max(2048)
+            .min(output_budget);
+        for _ in 0..3 {
+            if estimated <= available {
+                break;
+            }
+            let remaining = run
+                .limits
+                .context_tokens
+                .saturating_sub(estimated.saturating_add(512));
+            if remaining < minimum_output {
+                break;
+            }
+            let next = remaining.saturating_sub(64).max(minimum_output);
+            if next >= output_budget {
+                break;
+            }
+            if has_file_tools {
+                messages[0].content = messages[0].content.replacen(
+                    &output_guidance(output_budget),
+                    &output_guidance(next),
+                    1,
+                );
+            }
+            output_budget = next;
+            available = run
+                .limits
+                .context_tokens
+                .saturating_sub(output_budget + 512);
+            estimated = estimate(&messages, output_budget).await?;
+        }
         if estimated > available {
             return Err(WorkerError::new(
                 "context_overflow",
                 format!(
                     "Context needs {estimated} input tokens (counted/estimated), but only {available} fit after reserving {} output tokens and 512 safety tokens within the {}-token limit. Current work and constraints were retained",
-                    run.limits.reserve_output_tokens, run.limits.context_tokens
+                    output_budget, run.limits.context_tokens
                 ),
             ));
         }
@@ -514,7 +610,7 @@ impl DefaultContextBuilder {
             ModelRequest {
                 messages,
                 tools,
-                max_output_tokens: run.limits.reserve_output_tokens,
+                max_output_tokens: output_budget,
                 output_schema: run.output_schema.clone(),
             },
             snapshot,

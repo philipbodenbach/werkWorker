@@ -927,3 +927,187 @@ async fn coding_image_budget_uses_native_text_without_repeating_unsupported_coun
         engine.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn image_coding_continues_through_failed_write_edits_and_verification() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut contents = "<html><!--next--></html>".to_owned();
+    let mut turns = vec![
+        (
+            "files.write",
+            json!({"path":"missing/index.html","content":contents}),
+        ),
+        (
+            "files.write",
+            json!({"path":"index.html","content":contents}),
+        ),
+    ];
+    // A single completed edit exceeds available input if its saved body is
+    // pinned forever as the latest group. Exercise several such continuations.
+    for n in 0..8 {
+        let addition = format!("<!-- section {n}: {} -->\n<!--next-->", "code ".repeat(900));
+        turns.push(("files.edit", json!({"path":"index.html","old":"<!--next-->","new":addition,"expected_hash":hash(&contents)})));
+        contents = contents.replace("<!--next-->", &addition);
+    }
+    turns.push((
+        "files.read",
+        json!({"path":"index.html","start_line":9,"end_line":9}),
+    ));
+    let expected = contents.clone();
+    let count = turns.len();
+    let step = AtomicUsize::new(0);
+    let server = Server::start(move |r| {
+        if r.path == "/werk/v1/capabilities" {
+            return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"native text counter","operations":["count_tokens"]}]}));
+        }
+        if r.path == "/werk/v1/chat/count_tokens" {
+            let messages = r.body["messages"].as_array().unwrap();
+            if messages.iter().any(|m| m["content"].is_array()) {
+                let mut response = control(Value::Null);
+                response.status = 501;
+                response.body = json!({"protocol":{"major":1,"minor":0},"request_id":"req_test","error":{"code":"unsupported","message":"No image counter","retryable":false}}).to_string().into_bytes();
+                return response;
+            }
+            // Deterministic native-counter fixture: templates/tools plus actual
+            // text/history length. Images are budgeted by WerkProvider itself.
+            let tokens = 2100 + serde_json::to_vec(messages).unwrap().len() / 4;
+            return control(json!({"model":"fixture-model","input_tokens":tokens}));
+        }
+        if r.path == "/v1/chat/completions" {
+            let n = step.fetch_add(1, Ordering::SeqCst);
+            if let Some((name, args)) = turns.get(n) {
+                return Response::json(json!({"choices":[{"message":{"role":"assistant","content":format!("Step {n}: preserve existing functions while implementing the next section."),"tool_calls":[{"id":format!("call_{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}]}));
+            }
+            return werk(r);
+        }
+        werk(r)
+    }).await;
+    let mut configuration = config(&server.origin, false);
+    configuration.capabilities.context_tokens = Some(16384);
+    let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile::bundled("coding-basic").unwrap(),
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                request_approvals: true,
+                tool_permissions: ["files.write", "files.edit", "files.read"]
+                    .into_iter()
+                    .map(|name| (name.to_owned(), policy::ToolPermission::Allow))
+                    .collect(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(677, 680)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+    let input = "Build the game using this reference; preserve all requirements.";
+    let run = session
+        .submit_with_images(
+            input,
+            vec![picture.clone()],
+            "start",
+            Limits {
+                context_tokens: 16384,
+                reserve_output_tokens: 4096,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(result.metrics.tool_invocations as usize, count);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("index.html")).unwrap(),
+        expected
+    );
+    let saved = session.snapshot().await.unwrap();
+    assert_eq!(saved.messages[0].images, vec![picture]);
+    assert_eq!(
+        saved
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .count(),
+        count
+    );
+    assert!(
+        saved
+            .messages
+            .iter()
+            .any(|m| m.content.contains("path_denied"))
+    );
+    assert!(
+        run.status()
+            .await
+            .unwrap()
+            .contexts
+            .iter()
+            .any(|c| !c.omitted_messages.is_empty())
+    );
+    let requests = server.requests.lock().unwrap().clone();
+    let generations: Vec<_> = requests
+        .iter()
+        .filter(|r| r.path == "/v1/chat/completions")
+        .collect();
+    assert_eq!(generations.len(), count + 1);
+    for (n, r) in generations.iter().enumerate() {
+        let messages = r.body["messages"].as_array().unwrap();
+        if n > 0 {
+            assert!(messages.iter().any(|m| m["role"] == "assistant"
+                && m["content"]
+                    == format!(
+                        "Step {}: preserve existing functions while implementing the next section.",
+                        n - 1
+                    )));
+        }
+        let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+        assert_eq!(user["content"][0]["text"], input);
+        assert!(
+            user["content"][1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/")
+        );
+        let budget = r.body["max_completion_tokens"].as_u64().unwrap();
+        assert!((3072..=4096).contains(&budget));
+        assert!(
+            messages[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("Output budget: {budget} tokens"))
+        );
+    }
+    // A read is evidence, not a saved-write body: keep the latest verification.
+    let final_messages = generations.last().unwrap().body["messages"]
+        .as_array()
+        .unwrap();
+    assert!(
+        final_messages
+            .iter()
+            .any(|m| m["role"] == "tool" && m["tool_call_id"] == format!("call_{}", count - 1))
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path == "/werk/v1/chat/count_tokens"
+                && r.body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["content"].is_array()))
+            .count(),
+        1
+    );
+    engine.close().await.unwrap();
+}

@@ -160,7 +160,7 @@ impl Tool for Builtin {
             ),
             "files.write" => (
                 Effect::Write,
-                "Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
+                "Write a relative workspace path; parent directory must already exist (use process.run to create directories). Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
                 object(
                     json!({"path":string(),"content":string(),"expected_hash":string()}),
                     &["path", "content"],

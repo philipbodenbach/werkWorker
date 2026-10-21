@@ -294,6 +294,11 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         wait_for('New / Previous sessions')
         wait_for('Hello from configured TUI')
         assert b'Hidden other workspace' not in screen.text()
+        # Session management also lists the empty conversations created during
+        # setup. Select the intended history by ID instead of assuming it is
+        # the newest row after "New conversation".
+        send('/' + original['id'] + '\r')
+        wait_for('1 shown')
         send('\x1b[B\r')
         wait_for('Opened saved session')
         wait_for('Setup connected successfully')

@@ -20,6 +20,8 @@
         "session.create",
         "session.open",
         "session.list",
+        "session.rename",
+        "session.delete",
         "session.fork",
         "run.submit",
         "run.status",

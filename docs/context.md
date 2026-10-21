@@ -4,6 +4,11 @@ Every model attempt, including children, retries and optional model summaries,
 passes an engine preflight. The effective context is the minimum of the run's
 `Limits.context_tokens` and the provider's known context size. Output reservation
 is capped by the requested reserve and one quarter of the provider context.
+After compaction, a nearly fitting request may borrow up to one quarter of that
+output reserve for input, keeping at least 2,048 output tokens (or the smaller
+configured reserve). The builder updates its output guidance, recounts the
+actual request and keeps the full safety margin. This adjustment applies only
+to that request; later steps can use the full configured output reserve again.
 The input estimate, reserved output and 512-token safety margin must fit before
 any provider dispatch. A custom `ContextBuilder` cannot bypass this check.
 Zero output budgets and arithmetic-overflow-sized limits are rejected.
@@ -75,7 +80,13 @@ ordinary inference, the default builder targets 80% of available input capacity.
 It replaces complete earlier assistant/tool groups with bounded extractive
 excerpts, including groups completed earlier in the same long-running task.
 The latest assistant/tool group **within the current run** and every user/system
-constraint are retained. After a run finishes, its final answer becomes eligible
+constraint are retained. Under pressure, a latest group consisting solely of
+successful file writes/edits may also be compacted if
+complete, bounded path/hash receipts are available. Its implementation already
+lives in the workspace and canonical history; the receipt summary instructs the
+model to reread code when needed. Any accompanying assistant text/images remain
+verbatim in the request. Failed writes and the latest reads/checks
+retain their ordinary protection. After a run finishes, its final answer becomes eligible
 for compaction on the next turn. A long code answer therefore does not permanently
 block follow-up messages in the same session. This trims the next request, not
 the saved conversation, and does not require a server restart or cache reset.

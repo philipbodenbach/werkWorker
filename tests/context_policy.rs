@@ -655,3 +655,99 @@ async fn oversized_constraints_fail_before_provider_and_output_reserve_is_clampe
         .is_err()
     );
 }
+
+#[tokio::test]
+async fn small_context_overflow_borrows_output_reserve_without_losing_constraints() {
+    struct Counted {
+        inner: Arc<ScriptedProvider>,
+        input: usize,
+    }
+    #[async_trait::async_trait]
+    impl ModelProvider for Counted {
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities {
+                context_tokens: Some(16384),
+                ..self.inner.capabilities()
+            }
+        }
+        fn identity(&self) -> String {
+            "counted".into()
+        }
+        async fn count_input_tokens(&self, _: &ModelRequest) -> Result<Option<usize>> {
+            Ok(Some(self.input))
+        }
+        async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+            assert!(self.input + request.max_output_tokens + 512 <= 16384);
+            self.inner.stream(request).await
+        }
+    }
+    for (input, output) in [(11776, Some(4096)), (11866, Some(3942)), (13000, None)] {
+        let scripted = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("done")]));
+        let engine = WorkerEngine::builder(Arc::new(Counted {
+            inner: scripted.clone(),
+            input,
+        }))
+        .build()
+        .await
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile::bundled("coding-basic").unwrap(),
+                dir.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    request_approvals: true,
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let original = "Keep all requirements, including the reference image.";
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(677, 680)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+        let run = session
+            .submit_with_images(
+                original,
+                vec![picture.clone()],
+                "start",
+                Limits {
+                    context_tokens: 16384,
+                    reserve_output_tokens: 4096,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        if let Some(output) = output {
+            assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+            let requests = scripted.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].max_output_tokens, output);
+            assert!(
+                requests[0].messages[0]
+                    .content
+                    .contains(&format!("Output budget: {output} tokens"))
+            );
+            assert_eq!(requests[0].messages[1].content, original);
+            assert_eq!(requests[0].messages[1].images, vec![picture.clone()]);
+        } else {
+            assert_eq!(result.error.unwrap().code, "context_overflow");
+            assert!(scripted.requests().is_empty());
+        }
+        assert_eq!(
+            run.status().await.unwrap().limits.reserve_output_tokens,
+            4096
+        );
+        let saved = session.snapshot().await.unwrap();
+        assert_eq!(saved.messages[0].content, original);
+        assert_eq!(saved.messages[0].images, vec![picture]);
+        engine.close().await.unwrap();
+    }
+}

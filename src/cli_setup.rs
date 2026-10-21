@@ -713,7 +713,7 @@ pub async fn show(
                         continue;
                     }
                     let profile = match project
-                        .profile(&form.settings.profile, workspace, global)
+                        .scoped_profile(&form.settings.profile, workspace, global)
                         .await
                     {
                         Ok(profile) => profile,
@@ -794,7 +794,7 @@ pub async fn show(
                                 && let Err(error) = crate::cli_config::save_policy(workspace, form.access.policy()).await {
                                 form.error=format!("Cannot save workspace access: {error}");continue;
                             }
-                            result=Some(Connected{provider:Arc::new(provider),limits:form.settings.limits.clone(),profile:project.profile(&form.settings.profile,workspace,global).await?,access:form.access,reuse_project_access:false});break;
+                            result=Some(Connected{provider:Arc::new(provider),limits:form.settings.limits.clone(),profile:project.scoped_profile(&form.settings.profile,workspace,global).await?,access:form.access,reuse_project_access:false});break;
                         }
                     }
                 }
@@ -836,7 +836,7 @@ pub async fn show(
                                 let secret=match form.secret(){Ok(secret)=>secret,Err(error)=>{form.error=error_message(&error);form.field=2;continue;}};
                                 let mut config=form.settings.werk.clone();
                                 if form.stage==2 {
-                                    let profile=match project.profile(&form.settings.profile,workspace,global).await {Ok(profile)=>profile,Err(error)=>{form.error=format!("Profile/project settings invalid ({}). Check the configured tools, skills and profile.",error.code);form.field=3;continue;}};
+                                    let profile=match project.scoped_profile(&form.settings.profile,workspace,global).await {Ok(profile)=>profile,Err(error)=>{form.error=format!("Profile/project settings invalid ({}). Check the configured tools, skills and profile.",error.code);form.field=3;continue;}};
                                     config.model=form.models[form.selected].clone();
                                     config.capabilities.context_tokens=if form.context.trim().is_empty(){None}else{match form.context.parse::<usize>(){Ok(n) if (1024..=2_000_000).contains(&n)=>Some(n),_=>{form.error="Context tokens must be 1024..2000000, or empty for discovery.".into();form.field=1;continue;}}};
                                     let output=match form.output.parse::<usize>(){Ok(n) if (1..=500_000).contains(&n)=>n,_=>{form.error="Enter a positive output token budget.".into();form.field=2;continue;}};

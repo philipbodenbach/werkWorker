@@ -1124,6 +1124,11 @@ impl SessionHandle {
     }
     pub async fn fork(&self, policy: HostPolicy) -> Result<SessionHandle> {
         let data = self.snapshot().await?;
+        let mut metadata = crate::project::inherited_metadata(&data)?;
+        if metadata.is_null() {
+            metadata = json!({});
+        }
+        metadata["parent_session"] = json!(data.id);
         if data.runs.iter().any(|r| !r.status.terminal())
             || data.runs.iter().any(|r| {
                 r.invocations.iter().any(|i| {
@@ -1141,12 +1146,7 @@ impl SessionHandle {
         }
         let fork = self
             .engine
-            .create_session(
-                data.profile,
-                &data.workspace,
-                policy,
-                json!({"parent_session":data.id}),
-            )
+            .create_session(data.profile, &data.workspace, policy, metadata)
             .await?;
         fork.update(|d| {
             d.messages = data.messages;
@@ -1440,6 +1440,7 @@ impl SessionHandle {
                 r.metrics.estimated_input_tokens = snapshot.estimated_tokens;
                 r.contexts.push(snapshot.clone());
                 crate::harness::delivered(d, run_id, &step_id, &request)?;
+                crate::project::delivered(d, &step_id, &request)?;
                 d.emit(
                     Some(run_id),
                     EventKind::Diagnostic {
@@ -1567,6 +1568,10 @@ impl SessionHandle {
                     ));
                 }
                 let mut invocations = Vec::new();
+                // Resolve the whole proposal atomically before any preparation,
+                // approval or execution. A newly loaded rule may change every
+                // call in a batch, not just the call that revealed its scope.
+                let missing = crate::project::require_for_calls(d, &step_id, &message.tool_calls)?;
                 for call in &message.tool_calls {
                     let definition = if d.profile.tools.contains(&call.name) {
                         self.engine
@@ -1585,19 +1590,33 @@ impl SessionHandle {
                         message_index: d.messages.len(),
                         call: call.clone(),
                         definition,
-                        status: InvocationStatus::Prepared,
+                        status: if missing.is_empty() {
+                            InvocationStatus::Prepared
+                        } else {
+                            InvocationStatus::Finished
+                        },
                         prepared: Value::Null,
-                        result: None,
+                        result: (!missing.is_empty())
+                            .then(|| crate::project::deferred_result(&missing)),
                         approval: None,
                         interaction: None,
                     });
                     d.emit(
                         Some(run_id),
                         EventKind::ToolPrepared {
-                            invocation_id,
+                            invocation_id: invocation_id.clone(),
                             name: call.name.clone(),
                         },
                     );
+                    if !missing.is_empty() {
+                        d.emit(
+                            Some(run_id),
+                            EventKind::ToolCompleted {
+                                invocation_id,
+                                result: crate::project::deferred_result(&missing),
+                            },
+                        );
+                    }
                 }
                 let r = d.run_mut(run_id)?;
                 r.metrics.tool_invocations += invocations.len() as u32;
@@ -1747,13 +1766,36 @@ impl SessionHandle {
         if let Some(def) = &definition {
             crate::harness::validate_check_tool(def)?;
         }
-        let invocation_id = id("invocation");
-        let step_id = id("check");
-        let call = ToolCall {
+        let check_call = ToolCall {
             id: id("call"),
             name: check.tool.clone(),
             arguments: check.arguments.clone(),
         };
+        // A host completion probe can also touch the workspace. Give the model
+        // its rules before accepting the candidate; do not spend a correction
+        // or execute the probe under missing project context.
+        let model_step = run
+            .attempts
+            .iter()
+            .rev()
+            .find(|a| a.completed)
+            .map(|a| a.step_id.clone())
+            .unwrap_or_default();
+        let deferred = self.update(|d| {
+            let missing = crate::project::require_for_calls(d, &model_step, std::slice::from_ref(&check_call))?;
+            if missing.is_empty() { return Ok(false); }
+            d.run_mut(run_id)?.final_text = None;
+            crate::harness::push_feedback(d, run_id, "project_instructions_required", json!({
+                "sources":missing,"detail":"The configured completion check has not executed. Reconsider the final candidate using the newly loaded project rules before the check can proceed."
+            }))?;
+            Ok(true)
+        }).await?;
+        if deferred {
+            return Ok(false);
+        }
+        let invocation_id = id("invocation");
+        let step_id = id("check");
+        let call = check_call;
         state.checks.push(crate::harness::CheckRecord {
             candidate,
             invocation_id: invocation_id.clone(),

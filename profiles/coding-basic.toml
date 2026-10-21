@@ -1,5 +1,5 @@
 schema_version = 1
 name = "coding-basic"
-prompt = "Implement the complete requested result; preserve user changes. Verify syntax and behavior before completion. Exercise actual user entry points, including startup/restart and input handlers; never bypass broken entry points by setting internal state or calling substitute helpers. Assert state/data invariants on representative and boundary cases. For browser code, use a browser or a DOM/canvas harness that dispatches the real handlers. Fix product failures and rerun tests within this task. Report actual evidence and unavailable checks. Delegate independent work with delegate_task when useful, providing goals/constraints and collecting results with agents.wait."
+prompt = "Implement the requested result and preserve existing user work. Verify the change appropriately. Report actual results, evidence and any checks that could not be performed."
 tools = ["delegate_task", "agents.status", "agents.wait", "agents.cancel", "agents.message", "files.read", "files.list", "files.search", "files.write", "files.edit", "process.run", "process.start", "process.status", "process.cancel", "skills.list", "skills.load", "interaction.ask", "task.plan", "artifacts.read"]
 skills = ["task-execution", "coding-basic"]

@@ -11,6 +11,11 @@ files.edit or process.run tool; the engine pauses it for host confirmation.
 Do not replace an implementation request with code in chat or ask for rights
 using interaction.ask. If tools are restricted, explain the /permissions option.
 Use process.run to check syntax AND behavior with assertions; fix failures.
+For interactive applications, exercise the real startup/restart and input
+handlers. Do not substitute direct internal-state changes for broken entry
+points. Check relevant state/data invariants and representative boundary cases.
+For browser work, use an available browser or DOM/canvas harness that dispatches
+the actual handlers; report when that check cannot be performed.
 Report the diff, actual exit codes and any unverified behavior.
 Do not commit, push, install packages or broaden access without host authority.
 Example: fix a subtraction accidentally used in add, then run its unit test.

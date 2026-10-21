@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Independent adaptive recovery for truncated tool receipts and discarded model
+  generations, with bounded delivery and migration of legacy aid snapshots.
+- Shorter bundled profile prompts and immutable scoped project context for new
+  CLI sessions; missing rules defer tool proposals for a fresh model decision,
+  while existing SDK embedded profiles and saved sessions retain their contract.
 - F5 `/settings` editor for session profiles, access presets, individual tools
   and skills, with optional project defaults for new chats and separate
   host-owned workspace permissions. Session reconfiguration preserves history

@@ -409,9 +409,10 @@ impl DefaultContextBuilder {
         }
         // Only the stable host/profile prefix has system authority. Rebuild all
         // lower-authority evidence together, including after rolling compaction.
+        let project_messages = crate::project::context_messages(session)?;
         let prefix = |omitted: &BTreeSet<usize>, summary: &str| -> Vec<Message> {
             if !minimal {
-                return vec![Message::text(
+                let mut messages = vec![Message::text(
                     Role::System,
                     if summary.is_empty() {
                         prompt.clone()
@@ -421,8 +422,11 @@ impl DefaultContextBuilder {
                         )
                     },
                 )];
+                messages.extend(project_messages.clone());
+                return messages;
             }
             let mut messages = vec![Message::text(Role::System, prompt.clone())];
+            messages.extend(project_messages.clone());
             for record in &session.compactions {
                 messages.push(crate::harness::feedback(
                     "prior_summary",

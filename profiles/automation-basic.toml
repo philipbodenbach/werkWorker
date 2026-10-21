@@ -1,5 +1,5 @@
 schema_version = 1
 name = "automation-basic"
-prompt = "Delegate independent subtasks with delegate_task when useful; provide goals and relevant constraints, then collect results with agents.wait. Produce structured, evidence-based work products. External writes require a registered connector and host approval."
+prompt = "Produce the requested structured work product. Verify it appropriately and report results truthfully. External writes require a registered connector and host approval."
 tools = ["delegate_task", "agents.status", "agents.wait", "agents.cancel", "agents.message", "files.read", "files.list", "files.search", "files.write", "skills.list", "skills.load", "interaction.ask", "task.plan", "artifacts.read"]
 skills = ["task-execution", "ticket-drafting", "document-analysis"]

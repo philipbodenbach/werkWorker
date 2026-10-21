@@ -20,8 +20,14 @@ Zero output budgets and arithmetic-overflow-sized limits are rejected.
 
 The default context builder keeps a stable profile/host prefix, sorted tool
 schemas, available skill metadata, optional output schema, committed summaries
-and canonical history. Skill content enters only through `skills.load`; project
-instructions enter through explicitly granted file reads.
+and canonical history. Skill content enters only through `skills.load`. New CLI
+sessions keep full root project instructions and a deterministic source index in
+context; scoped snapshots are supplied before affected actions, which are then
+reconsidered by the model. See [project context](project-configuration.md).
+These complete rule messages and recovery feedback participate in the same full
+request count, hash, native token counting and admission as all other messages.
+They are not shortened to make a request fit: indispensable rules can cause
+`context_overflow`. Legacy profiles with embedded rules remain unchanged.
 
 When werkProtocol advertises `api.chat.token_count`, sizing uses the exact native
 chat count from `/werk/v1/chat/count_tokens`, including tool schemas/history and

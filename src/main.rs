@@ -384,7 +384,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                 Some(profile) => profile,
                 None => {
                     project
-                        .profile(
+                        .scoped_profile(
                             if profile == "general-readonly" {
                                 project.config.profile.as_deref().unwrap_or(&profile)
                             } else {
@@ -419,7 +419,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                             profile.clone()
                         } else {
                             project
-                                .profile(
+                                .scoped_profile(
                                     project.config.profile.as_deref().unwrap_or(&profile.name),
                                     &cli.workspace,
                                     cli_setup::settings_path()?.parent().expect("config parent"),
@@ -449,7 +449,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                                 next_profile,
                                 &cli.workspace,
                                 next_policy,
-                                project.metadata(),
+                                project.scoped_metadata(),
                             )
                             .await?
                     }
@@ -550,7 +550,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             let session = engine
                 .create_session(
                     project
-                        .profile(
+                        .scoped_profile(
                             if profile == "general-readonly" {
                                 project.config.profile.as_deref().unwrap_or(&profile)
                             } else {
@@ -562,7 +562,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                         .await?,
                     cli.workspace,
                     policy,
-                    project.metadata(),
+                    project.scoped_metadata(),
                 )
                 .await?;
             let run = session

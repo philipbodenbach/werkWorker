@@ -1,0 +1,11 @@
+{
+  "base_revision": "3c35c67e8d9aad18034889f838eb3d41fd9a0e86",
+  "baseline_method": "Original bundled profile and unchanged legacy Project::profile embedding path, evaluated by the patched runtime; no old binary checkout",
+  "sha256": {
+    "tests/fixtures/coding-basic-before.toml": "56050a5cf92285c758679d0f957b977d1c7e24c21cf941000c4cc7651ddad979",
+    "profiles/coding-basic.toml": "7707ed242572ace61470c2b22b5e92439879e8a54cd5b31f5c6d364227c2fbf8",
+    "profiles/automation-basic.toml": "8ca28966a5920d49e22c535b7c1b69e24a109b482a73076cc45b5859fdc26aae",
+    "profiles/general-readonly.toml": "2a54665f45ec56ed26ca126b8d23dccbf8692c40b397b305922c9e6652b58691",
+    "skills/coding-basic/SKILL.md": "7d71786bd8706a9eebd7d9b42c14f92037c69165cca204656dee2c57f43dca7e"
+  }
+}

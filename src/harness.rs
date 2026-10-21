@@ -93,7 +93,7 @@ pub(crate) fn state(session: &SessionData, run_id: &str) -> Result<HarnessState>
     match session.metadata.get(KEY).and_then(|v| v.get(run_id)) {
         Some(value) => {
             let mut value = value.clone();
-            if value.get("version").and_then(Value::as_u64).unwrap_or(1) > 2 {
+            if value.get("version").and_then(Value::as_u64).unwrap_or(1) > 3 {
                 return Err(WorkerError::new(
                     "harness_version",
                     "Unsupported harness state version",
@@ -103,7 +103,9 @@ pub(crate) fn state(session: &SessionData, run_id: &str) -> Result<HarnessState>
             if let Some(config) = value.get_mut("config").and_then(Value::as_object_mut) {
                 config.entry("mode").or_insert_with(|| json!("classic"));
             }
-            Ok(serde_json::from_value(value)?)
+            let mut state: HarnessState = serde_json::from_value(value)?;
+            migrate_output_aid(&mut state, session.run(run_id).ok());
+            Ok(state)
         }
         None => Ok(HarnessState {
             config: HarnessConfig {
@@ -148,7 +150,7 @@ pub(crate) fn bind(session: &mut SessionData, run_id: &str, config: HarnessConfi
         session,
         run_id,
         &HarnessState {
-            version: 2,
+            version: 3,
             config,
             ..Default::default()
         },
@@ -292,10 +294,20 @@ pub(crate) fn migrate(session: &mut SessionData) -> Result<()> {
     let ids: Vec<_> = session.runs.iter().map(|r| r.id.clone()).collect();
     for id in ids {
         let mut state = state(session, &id)?;
-        if state.version != 2 {
-            state.version = 2;
+        if state.version != 3 {
+            state.version = 3;
             save(session, &id, &state)?;
             diagnostic(session, &id, "migration", "legacy_contract_preserved");
+            if let Some(aid) = state.adaptive.aids.get("generation_output_limit")
+                && aid.reason == "legacy_suppressed_generation"
+            {
+                diagnostic(
+                    session,
+                    &id,
+                    "generation_output_limit",
+                    &format!("restored_legacy_suppression:{}", aid.trigger),
+                );
+            }
         }
     }
     Ok(())
@@ -306,7 +318,7 @@ pub(crate) fn new_config(mut config: HarnessConfig) -> HarnessConfig {
     config
 }
 
-/// Five bounded aid slots, independent of model identity or technical capability.
+/// Independent bounded aid slots, independent of model identity or technical capability.
 /// A hint is delivered once per episode. Two successful model responses separate
 /// episodes; at most three episodes per kind are allowed during one run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -328,6 +340,96 @@ struct Aid {
     rearm_at: usize,
     delivered_step: Option<String>,
     reason: String,
+}
+
+// Rename only proven provenance. Keep ambiguous legacy records verbatim and
+// reserve their spent episode allowance in both new slots. No historical event,
+// delivery marker, observation cursor or run budget is rewritten.
+fn migrate_output_aid(state: &mut HarnessState, run: Option<&Run>) {
+    if state.version >= 3 {
+        return;
+    }
+    let Some(mut old) = state.adaptive.aids.get("output_limit").cloned() else {
+        return;
+    };
+    let generation = old.scope == "generation_limit"
+        || run.is_some_and(|r| {
+            r.attempts.iter().any(|a| {
+                a.attempt_id == old.trigger
+                    && a.error
+                        .as_ref()
+                        .is_some_and(|e| e.code == "model_output_limit")
+            })
+        });
+    let tool = old.scope.ends_with(":truncated")
+        || run.is_some_and(|r| {
+            r.invocations.iter().any(|i| {
+                i.invocation_id == old.trigger && i.result.as_ref().is_some_and(|r| r.truncated)
+            })
+        });
+    let kind = match (generation, tool) {
+        (true, false) => Some("generation_output_limit"),
+        (false, true) => Some("tool_result_truncated"),
+        // Conflicting scope and receipt evidence is ambiguous too.
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        if !state.adaptive.aids.contains_key(kind) {
+            if kind == "tool_result_truncated" {
+                old.detail = "The recorded tool receipt was truncated. Consult that receipt for actual artifact references, or use a narrower query for missing details. This notice does not establish that a full-output artifact exists.".into();
+            }
+            state.adaptive.aids.remove("output_limit");
+            state.adaptive.aids.insert(kind.into(), old);
+            if kind == "tool_result_truncated"
+                && !state.adaptive.aids.contains_key("generation_output_limit")
+                && let Some(attempt) = run.filter(|run| !run.status.terminal()).and_then(|run| {
+                    run.attempts
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .take_while(|(_, attempt)| !attempt.completed)
+                        .filter(|(index, attempt)| {
+                            *index < state.adaptive.attempts
+                                && attempt
+                                    .error
+                                    .as_ref()
+                                    .is_some_and(|error| error.code == "model_output_limit")
+                        })
+                        .last()
+                        .map(|(_, attempt)| attempt)
+                })
+            {
+                // The old shared slot already observed this failure, but still
+                // retained tool provenance: generation feedback was suppressed.
+                // Restore that pending episode without rewinding observations or
+                // changing the persisted run/retry budgets. Version 3 persists it
+                // once; normal delivery tracking prevents restart redelivery.
+                activate(
+                    &mut state.adaptive,
+                    "generation_output_limit",
+                    &attempt.attempt_id,
+                    &attempt.attempt_id,
+                    "The limited generation was discarded; none of its calls ran. Retain prior successful work and use a smaller complete action.",
+                    &mut Vec::new(),
+                );
+                state
+                    .adaptive
+                    .aids
+                    .get_mut("generation_output_limit")
+                    .unwrap()
+                    .reason = "legacy_suppressed_generation".into();
+            }
+        }
+    } else {
+        for kind in ["generation_output_limit", "tool_result_truncated"] {
+            state.adaptive.aids.entry(kind.into()).or_insert_with(|| {
+                let mut reserved = old.clone();
+                reserved.active = false;
+                reserved.reason = "legacy_unknown_provenance".into();
+                reserved
+            });
+        }
+    }
 }
 fn diagnostic(session: &mut SessionData, run_id: &str, kind: &str, decision: &str) {
     session.emit(
@@ -413,7 +515,12 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
     for attempt in run.attempts.iter().skip(a.attempts) {
         if attempt.completed {
             a.successes += 1;
-            resolve(a, "output_limit", "complete_response", &mut events);
+            resolve(
+                a,
+                "generation_output_limit",
+                "complete_response",
+                &mut events,
+            );
             let expired: Vec<_> = a
                 .aids
                 .iter()
@@ -427,9 +534,9 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
             if error.code == "model_output_limit" {
                 activate(
                     a,
-                    "output_limit",
+                    "generation_output_limit",
                     &attempt.attempt_id,
-                    "generation_limit",
+                    &attempt.attempt_id,
                     "The limited generation was discarded; none of its calls ran. Retain prior successful work and use a smaller complete action.",
                     &mut events,
                 );
@@ -465,10 +572,14 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
         if result.truncated {
             activate(
                 a,
-                "output_limit",
+                "tool_result_truncated",
                 &i.invocation_id,
                 &format!("{}:truncated", i.call.name),
-                "This tool receipt reached its output limit. Use its artifact or a narrower query for needed details; do not repeat the same oversized read.",
+                if result.artifacts.is_empty() {
+                    "This tool receipt is truncated. No full-output artifact is recorded for it. Use a narrower query or the next unread range for needed details; do not repeat the same oversized read."
+                } else {
+                    "This tool receipt is truncated and lists artifacts. Consult the recorded artifact references when relevant, or use a narrower query for needed details; artifact availability and contents must be verified."
+                },
                 &mut events,
             );
         }
@@ -555,7 +666,11 @@ pub(crate) fn adaptive_feedback(session: &SessionData, run: &Run) -> Result<Vec<
         .map(|(kind, aid)| {
             feedback(
                 kind,
-                json!({"trigger":aid.trigger,"scope":aid.scope,"detail":aid.detail}),
+                json!({"trigger":aid.trigger,"scope":aid.scope,"detail":
+                    if kind == "output_limit" {
+                        "Legacy output-limit notice with ambiguous provenance. Consult the recorded attempts and tool receipts; this notice establishes no execution outcome or available full output."
+                    } else { &aid.detail }
+                }),
             )
         })
         .collect())
@@ -601,4 +716,61 @@ pub(crate) fn finish(session: &mut SessionData, run_id: &str) -> Result<()> {
         diagnostic(session, run_id, &kind, &decision);
     }
     save(session, run_id, &state)
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn ambiguous_legacy_provenance_preserves_delivery_and_reserves_spent_episodes() {
+        let old = Aid {
+            active: true,
+            trigger: "unknown-legacy-trigger".into(),
+            scope: "unknown".into(),
+            detail: "Unverified legacy claim".into(),
+            episodes: 2,
+            activated_at: 4,
+            rearm_at: 9,
+            delivered_step: Some("consumed-step".into()),
+            reason: "observed".into(),
+        };
+        let mut state = HarnessState {
+            version: 2,
+            ..Default::default()
+        };
+        state.adaptive.successes = 6;
+        state.adaptive.attempts = 7;
+        state
+            .adaptive
+            .aids
+            .insert("output_limit".into(), old.clone());
+        migrate_output_aid(&mut state, None);
+        assert_eq!(
+            serde_json::to_value(&state.adaptive.aids["output_limit"]).unwrap(),
+            serde_json::to_value(old).unwrap()
+        );
+        for kind in ["generation_output_limit", "tool_result_truncated"] {
+            let reserved = &state.adaptive.aids[kind];
+            assert!(!reserved.active);
+            assert_eq!(reserved.episodes, 2);
+            assert_eq!(reserved.rearm_at, 9);
+            assert_eq!(reserved.delivered_step.as_deref(), Some("consumed-step"));
+        }
+        let first = serde_json::to_value(&state).unwrap();
+        migrate_output_aid(&mut state, None);
+        assert_eq!(serde_json::to_value(&state).unwrap(), first);
+        let mut events = vec![];
+        activate(
+            &mut state.adaptive,
+            "generation_output_limit",
+            "attempt",
+            "attempt",
+            "detail",
+            &mut events,
+        );
+        assert!(!state.adaptive.aids["generation_output_limit"].active);
+        assert!(events[0].1.starts_with("suppressed_cooldown"));
+        assert_eq!(state.adaptive.attempts, 7);
+    }
 }

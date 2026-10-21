@@ -500,7 +500,8 @@ async fn truncated_generation_recovers_into_one_file_without_user_steering() {
         requests[1]
             .messages
             .iter()
-            .any(|m| m.role == Role::Assistant && m.content.contains("\"event\":\"output_limit\""))
+            .any(|m| m.role == Role::Assistant
+                && m.content.contains("\"event\":\"generation_output_limit\""))
     );
     assert_ne!(fingerprint(&requests[0]), fingerprint(&requests[1]));
     assert_eq!(requests[0].messages[0], requests[1].messages[0]);

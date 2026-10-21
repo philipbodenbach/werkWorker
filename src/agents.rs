@@ -317,7 +317,12 @@ impl SessionHandle {
             }
             let child = self
                 .engine
-                .create_session(profile, &data.workspace, policy, Value::Null)
+                .create_session(
+                    profile,
+                    &data.workspace,
+                    policy,
+                    crate::project::inherited_metadata(&data)?,
+                )
                 .await?;
             let child_id = child.id().await;
             let command = id("child");

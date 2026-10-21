@@ -21,7 +21,7 @@ Old `classic` / `minimal` config values and the hidden legacy `--harness` flag
 remain readable. New root runs normalize these values to `adaptive` and emit
 `harness_migration_new_run_adaptive`. Already enqueued or running runs retain
 their stored classic/minimal contract, including completion rules and guidance.
-Opening a session migrates absent or version-1 harness records to version 2,
+Opening a session migrates absent, version-1 or version-2 harness records to version 3,
 emitting `harness_migration_legacy_contract_preserved`. Absent legacy state or
 an omitted legacy mode means classic. Unsupported future versions are rejected.
 New follow-ups are adaptive even in an old session. A child inherits its active
@@ -40,7 +40,7 @@ Use `harness::config(&session, &run)` to inspect the effective saved contract.
 
 Adaptive decisions use durable host observations, never assertions in generated
 text, documents, skill bodies or child output. The system prefix contains the
-short task instruction, full profile/project requirements, available skill
+short task instruction, full profile requirements, scoped project snapshots, available skill
 metadata and requested output schema. Tools and their schemas retain their
 normal authority. Missing AGENTS.md, skill directories or SKILL.md are optional;
 unavailable configured skills are omitted from snapshots and `skills.load`
@@ -51,7 +51,7 @@ validation. Missing optional guidance does not trigger stronger control.
 | --- | --- | --- |
 | Tool validation error | Reference the exact invocation, tool and error; consult its schema and correct the rejected call | Same tool succeeds, or two complete responses |
 | Model output limit | Reference the discarded attempt; preserve earlier results and use one smaller complete action | A complete model response |
-| Truncated tool result | Reference the receipt; use its artifact or a narrower query | A complete model response |
+| Truncated tool result | Reference the receipt; use recorded artifacts only when present, or a narrower query | Notice expires after two complete responses; this does not prove missing content was read |
 | Actual context compaction or verified context-limit error | Use retained evidence and retrieve only necessary omitted details | History fits again, or two complete responses |
 | Missing requested information (`not_found`, `file_not_found`, `missing_information`) | Reference the failed receipt; consult a relevant source or ask for that input | Same tool succeeds, or two complete responses |
 | Repeated identical action without new evidence | Reuse the receipt or select a different relevant action | New evidence, or two complete responses |
@@ -64,6 +64,30 @@ at most three episodes of each kind are allowed in a run. This also bounds
 alternating-error behavior. Terminal runs deactivate any remaining help.
 Repetition, missing information and context pressure never enable a general
 "strict" mode. Output/schema/completion recovery retains its existing budget.
+
+Tool truncation uses `tool_result_truncated`; a discarded model generation uses
+`generation_output_limit`. Each has its own trigger, scope, delivery step,
+episode allowance, cooldown and expiry. A still-active or cooling-down tool
+notice cannot consume the generation recovery. The generation trigger identifies
+the discarded attempt: no calls from that attempt executed, while earlier
+confirmed work remains valid. No skeleton-file or insertion-marker workflow is
+required. Successful generation resolves generation recovery, not missing file
+content. The tool notice's `scope_expired` reason denotes expiry, not completion
+of the underlying information task.
+
+Version-2 `output_limit` states migrate using `generation_limit` or
+`<tool>:truncated` scope, with a matching durable attempt/result trigger as a
+fallback. Delivery markers, observation cursors, episode counts and cooldowns
+survive the rename. If the retained tool notice suppressed an already observed
+generation failure in the unfinished error sequence, migration restores that
+pending generation episode from its durable attempt without rewinding cursors
+or resetting retry budgets. Ambiguous records, including conflicting scope and
+receipt evidence, remain under `output_limit`, verbatim in
+metadata; any still-pending notice uses neutral uncertainty text instead of
+repeating unverified execution/artifact claims. Their spent episode allowance
+and cooldown are reserved in both new slots. Reopening cannot rearm a consumed
+notice. Historical events are never rewritten; session/event schema stays at
+version 1. Unsupported future harness versions still fail closed.
 
 Aids, observation cursors, delivery steps, success counters, cooldowns and removal
 reasons persist atomically in the ordinary session store. `Diagnostic.code`
@@ -165,4 +189,5 @@ No automatic rollback or claim of external exactly-once execution is introduced.
 
 See [Werk capability decisions](reuse-matrix.md), [context limits](context.md),
 [recovery](recovery.md), and the fixture measurements in
-[the validation record](benchmarks/2026-10-21-harness/README.md).
+[the validation record](benchmarks/2026-10-21-harness/README.md) and
+[the follow-up measurements](benchmarks/2026-10-21-harness-followup/README.md).

@@ -222,7 +222,7 @@ async fn output_limit_feedback_is_transient_and_does_not_execute_discarded_calls
         request
             .messages
             .iter()
-            .any(|m| m.content.contains("\"event\":\"output_limit\""))
+            .any(|m| m.content.contains("\"event\":\"generation_output_limit\""))
     };
     assert!(!feedback(&requests[1]));
     assert!(feedback(&requests[2]));
@@ -918,6 +918,273 @@ fn hints(request: &ModelRequest, kind: &str) -> usize {
 }
 
 #[tokio::test]
+async fn truncated_tool_then_limited_generation_have_independent_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("large"),
+        "original evidence line\n".repeat(3000),
+    )
+    .unwrap();
+    let mut limited = call("files.write", json!({"path":"discarded","content":"never"}));
+    limited.deltas[2] = ModelDelta::Finish {
+        reason: "length".into(),
+    };
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        call("files.write", json!({"path":"saved","content":"confirmed"})),
+        call("files.read", json!({"path":"large"})),
+        limited,
+        call(
+            "files.read",
+            json!({"path":"large","start_line":2000,"end_line":2001}),
+        ),
+        ScriptedTurn::text("Done"),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(
+            profile(&["files.read", "files.write"]),
+            dir.path(),
+            policy(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Inspect while preserving saved work",
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    let data = session.snapshot().await.unwrap();
+    let state = &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"];
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(hints(&requests[2], "tool_result_truncated"), 1);
+    assert_eq!(hints(&requests[3], "tool_result_truncated"), 0);
+    assert_eq!(hints(&requests[3], "generation_output_limit"), 1);
+    assert_eq!(hints(&requests[4], "generation_output_limit"), 0);
+    let r = &data.runs[0];
+    assert!(r.invocations[1].result.as_ref().unwrap().truncated);
+    assert_eq!(
+        state["tool_result_truncated"]["trigger"],
+        r.invocations[1].invocation_id
+    );
+    assert_eq!(
+        state["generation_output_limit"]["trigger"],
+        r.attempts[2].attempt_id
+    );
+    assert_ne!(
+        state["tool_result_truncated"]["delivered_step"],
+        state["generation_output_limit"]["delivered_step"]
+    );
+    assert_eq!(state["tool_result_truncated"]["episodes"], 1);
+    assert_eq!(state["generation_output_limit"]["episodes"], 1);
+    assert_eq!(r.metrics.tool_invocations, 3);
+    assert!(!dir.path().join("discarded").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("saved")).unwrap(),
+        "confirmed"
+    );
+    for request in &requests {
+        validate_messages(&request.messages).unwrap();
+    }
+    let estimates: Vec<_> = requests.iter().map(estimate_request).collect();
+    let serialized_bytes: Vec<_> = requests
+        .iter()
+        .map(|request| serde_json::to_vec(request).unwrap().len())
+        .collect();
+    let tool_schema_bytes: Vec<_> = requests
+        .iter()
+        .map(|request| serde_json::to_vec(&request.tools).unwrap().len())
+        .collect();
+    assert_eq!(
+        r.contexts
+            .iter()
+            .map(|snapshot| snapshot.estimated_tokens)
+            .collect::<Vec<_>>(),
+        estimates
+    );
+    println!(
+        "FOLLOWUP_RECOVERY_MEASURE {}",
+        json!({"request_estimates":estimates,"total_estimate":estimates.iter().sum::<usize>(),"serialized_request_bytes":serialized_bytes,"total_serialized_request_bytes":serialized_bytes.iter().sum::<usize>(),"tool_schema_bytes":tool_schema_bytes,"model_requests":r.metrics.model_requests,"tool_proposals":r.metrics.tool_invocations,"executed_tools":r.invocations.iter().filter(|i| i.result.as_ref().is_some_and(|result| result.status == Outcome::Succeeded)).count(),"status":"completed","verification":"prior write preserved; discarded call absent; both hints reference actual receipts; context snapshots match complete request estimates"})
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_output_aids_migrate_across_crash_without_redelivery_or_budget_reset() {
+    for (generation, consumed, observed, conflicting) in [
+        (false, false, false, false),
+        (false, true, false, false),
+        (false, true, true, false),
+        (true, false, false, false),
+        (true, true, false, false),
+        (true, false, false, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("large"), "line of evidence\n".repeat(3000)).unwrap();
+        let store = Arc::new(InMemoryStore::default());
+        let limited = ScriptedTurn {
+            deltas: vec![
+                ModelDelta::Finish {
+                    reason: "length".into(),
+                },
+                ModelDelta::Done,
+            ],
+            delay_ms: 0,
+            error: None,
+        };
+        let mut slow = ScriptedTurn::text("in flight");
+        slow.delay_ms = 60_000;
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            if generation {
+                limited
+            } else {
+                call("files.read", json!({"path":"large"}))
+            },
+            slow,
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .store(store.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(&["files.read"]), dir.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit("Inspect", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while provider.requests().len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut saved = session.snapshot().await.unwrap();
+        engine.close().await.unwrap();
+        let kind = if generation {
+            "generation_output_limit"
+        } else {
+            "tool_result_truncated"
+        };
+        let state = &mut saved.metadata["_werkworker_harness"][&run.id];
+        state["version"] = json!(2);
+        let mut old = state["adaptive"]["aids"]
+            .as_object_mut()
+            .unwrap()
+            .remove(kind)
+            .unwrap();
+        if generation {
+            old["scope"] = json!(if conflicting {
+                "files.read:truncated"
+            } else if consumed {
+                "unknown_scope"
+            } else {
+                "generation_limit"
+            });
+        } else if consumed {
+            old["active"] = json!(false);
+            old["rearm_at"] = json!(999);
+        } else {
+            old["scope"] = json!("unknown_scope");
+        }
+        state["adaptive"]["aids"]["output_limit"] = old.clone();
+        let in_flight = saved.runs[0].attempts.last_mut().unwrap();
+        if consumed {
+            in_flight.error = Some(WorkerError::new(
+                "model_output_limit",
+                "discarded at crash boundary",
+            ));
+        } else {
+            saved.runs[0].attempts.pop();
+        }
+        if observed {
+            // The legacy refresh already consumed the failed attempt and
+            // suppressed it against the tool hint before the crash.
+            saved.metadata["_werkworker_harness"][&run.id]["adaptive"]["attempts"] =
+                json!(saved.runs[0].attempts.len());
+        }
+        let previous_requests = saved.runs[0].metrics.model_requests;
+        let revision = store.load(&saved.id).await.unwrap().revision;
+        saved.revision = revision + 1;
+        store.save(&saved, Some(revision)).await.unwrap();
+        let next = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("Done")]));
+        let reopened = WorkerEngine::builder(next.clone())
+            .store(store.clone())
+            .build()
+            .await
+            .unwrap();
+        let result = reopened
+            .resume_run(&saved.id, &run.id)
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        let request = &next.requests()[0];
+        assert_eq!(hints(request, kind), usize::from(!consumed && !conflicting));
+        if conflicting {
+            let notice = request
+                .messages
+                .iter()
+                .filter_map(|message| serde_json::from_str::<Value>(&message.content).ok())
+                .find(|message| message["event"] == "output_limit")
+                .unwrap();
+            assert!(
+                notice["data"]["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("ambiguous provenance")
+            );
+            assert_eq!(hints(request, "tool_result_truncated"), 0);
+        }
+        if !generation && consumed {
+            assert_eq!(hints(request, "generation_output_limit"), 1);
+        }
+        let data = reopened
+            .open_session(&saved.id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        let migrated = &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"][kind];
+        assert_eq!(migrated["episodes"], old["episodes"]);
+        assert_eq!(migrated["trigger"], old["trigger"]);
+        assert_eq!(data.runs[0].metrics.model_requests, previous_requests + 1);
+        assert_eq!(
+            data.runs[0].limits.max_retries,
+            saved.runs[0].limits.max_retries
+        );
+        if observed {
+            let attempt = &saved.runs[0].attempts.last().unwrap().attempt_id;
+            let code =
+                format!("harness_generation_output_limit_restored_legacy_suppression:{attempt}");
+            assert!(data.events.iter().any(|event| {
+                matches!(&event.event, EventKind::Diagnostic { code: actual } if actual == &code)
+            }));
+        }
+        assert_eq!(
+            serde_json::to_value(&data.events[..saved.events.len()]).unwrap(),
+            serde_json::to_value(&saved.events).unwrap()
+        );
+        reopened.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn adaptive_validation_is_scoped_then_removed_without_oscillation() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("note"), "evidence").unwrap();
@@ -965,7 +1232,7 @@ async fn adaptive_validation_is_scoped_then_removed_without_oscillation() {
         "old scalar metadata"
     );
     let state = &data.metadata["_werkworker_harness"][&run.id];
-    assert_eq!(state["version"], 2);
+    assert_eq!(state["version"], 3);
     assert_eq!(state["config"]["mode"], "adaptive");
     assert_eq!(
         state["adaptive"]["aids"]["tool_validation"]["active"],
@@ -1253,7 +1520,7 @@ async fn legacy_snapshots_keep_execution_contract_but_new_followups_are_adaptive
                 HarnessMode::Classic
             }
         );
-        assert_eq!(state.metadata["_werkworker_harness"][&run.id]["version"], 2);
+        assert_eq!(state.metadata["_werkworker_harness"][&run.id]["version"], 3);
         assert_eq!(state.metadata["host"], "preserved");
         assert!(state.events.iter().any(|e| matches!(&e.event,EventKind::Diagnostic{code} if code == "harness_migration_legacy_contract_preserved")));
         let first = &provider.requests()[0].messages[0].content;
@@ -1329,7 +1596,7 @@ async fn repeated_output_limits_do_not_reinject_the_hint_or_expand_recovery_budg
         provider
             .requests()
             .iter()
-            .map(|r| hints(r, "output_limit"))
+            .map(|r| hints(r, "generation_output_limit"))
             .collect::<Vec<_>>(),
         [0, 1, 0]
     );

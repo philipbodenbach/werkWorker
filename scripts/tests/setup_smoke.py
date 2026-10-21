@@ -69,7 +69,12 @@ class Handler(BaseHTTPRequestHandler):
         assert KEY not in json.dumps(body)
         assert body['max_completion_tokens'] == 4096
         assert body['model'] == 'fixture-model'
-        assert 'fixture project instruction' in body['messages'][0]['content']
+        sources = [json.loads(m['content']) for m in body['messages']
+                   if m['role'] == 'system' and m['content'].startswith('{')]
+        assert sum(source.get('source') == 'werk_worker.project'
+                   and source.get('path') == 'AGENTS.md'
+                   and source.get('text') == 'fixture project instruction'
+                   for source in sources) == 1
         if not any(m['role'] == 'tool' for m in body['messages']):
             self.respond({'choices': [{'message': {'role': 'assistant', 'content': 'Read approved fixture', 'tool_calls': [{'id': 'read1', 'type': 'function', 'function': {'name': 'files.read', 'arguments': json.dumps({'path': 'notes.md'})}}]}, 'finish_reason': 'tool_calls'}]})
             return
@@ -228,7 +233,10 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert all(data['policy']['workspace_writable'] for data in sessions)
         assert all('process.run' in data['profile']['tools'] and 'files.write' in data['profile']['tools'] for data in sessions)
         assert all(all(not g['preapproved'] and g['tool'].startswith('files.') for g in data['policy']['grants']) for data in sessions)
-        assert all('fixture project instruction' in data['profile']['prompt'] for data in sessions)
+        assert all('fixture project instruction' not in data['profile']['prompt']
+                   and data['metadata']['project_instructions'][0]['text'] == 'fixture project instruction'
+                   and data['metadata']['_werkworker_project_context']['version'] == 1
+                   for data in sessions)
         assert len(requests) == 2, 'Setup and suggested test commands must not run inference/processes'
         assert termios.tcgetattr(slave) == before
         assert KEY.encode() not in capture and KEY not in json.dumps(sessions)

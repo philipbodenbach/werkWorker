@@ -155,11 +155,26 @@ impl Editor {
         // Start from each preset's tool/skill set; explicit permission choices
         // are retained when the user later activates a preset.
         let mut presets = project.clone();
+        // Profile selection must not silently import changed on-disk rules into
+        // an existing session. Scoped sessions retain their separate snapshots;
+        // embedded legacy sessions keep the original snapshot text in presets.
+        let scoped = data.metadata.get("_werkworker_project_context").is_some();
+        if let Some(rules) = data.metadata.get("project_instructions") {
+            presets.instructions = serde_json::from_value(rules.clone())?;
+        } else {
+            presets.instructions.clear();
+        }
         presets.config.tools = None;
         presets.config.skills = None;
         let mut profiles = Vec::new();
         for name in Project::profile_names(&data.workspace, &global).await? {
-            profiles.push(presets.profile(&name, &data.workspace, &global).await?);
+            profiles.push(if scoped {
+                presets
+                    .scoped_profile(&name, &data.workspace, &global)
+                    .await?
+            } else {
+                presets.profile(&name, &data.workspace, &global).await?
+            });
         }
         if !profiles.iter().any(|p| p.name == data.profile.name) {
             profiles.push(data.profile.clone());
@@ -511,5 +526,92 @@ fn toggle(items: &mut Vec<String>, name: &str) {
         items.retain(|s| s != name);
     } else {
         items.push(name.into());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use werk_worker::providers::{ScriptedProvider, ScriptedTurn};
+
+    #[tokio::test]
+    async fn profile_switch_keeps_saved_project_rules_for_scoped_and_legacy_sessions() {
+        for scoped in [false, true] {
+            let workspace = tempfile::tempdir().unwrap();
+            let global = tempfile::tempdir().unwrap();
+            let path = workspace.path().join("AGENTS.md");
+            std::fs::write(&path, "Original immutable project requirement.").unwrap();
+            let project = Project::load(workspace.path()).await.unwrap();
+            let profile = if scoped {
+                project
+                    .scoped_profile("coding-basic", workspace.path(), global.path())
+                    .await
+            } else {
+                project
+                    .profile("coding-basic", workspace.path(), global.path())
+                    .await
+            }
+            .unwrap();
+            let prompt = profile.prompt.clone();
+            let provider = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("done")]));
+            let engine = WorkerEngine::builder(provider.clone())
+                .build()
+                .await
+                .unwrap();
+            let session = engine
+                .create_session(
+                    profile,
+                    workspace.path(),
+                    HostPolicy::default(),
+                    if scoped {
+                        project.scoped_metadata()
+                    } else {
+                        project.metadata()
+                    },
+                )
+                .await
+                .unwrap();
+            let original = session.snapshot().await.unwrap();
+            std::fs::write(
+                &path,
+                "Changed external requirement must await a new session.",
+            )
+            .unwrap();
+
+            let mut editor = Editor::open(&session).await.unwrap();
+            assert_eq!(editor.profile.prompt, prompt);
+            assert!(!editor.is_dirty());
+            editor.tab = 0;
+            editor.selected[0] = editor
+                .profiles
+                .iter()
+                .position(|p| p.name == "general-readonly")
+                .unwrap();
+            editor.activate();
+            editor.save_project = false;
+            editor.apply(&session).await.unwrap();
+            let saved = session.snapshot().await.unwrap();
+            assert_eq!(saved.profile.name, "general-readonly");
+            assert_eq!(saved.metadata, original.metadata);
+            assert_eq!(saved.profile.prompt.contains("Original immutable"), !scoped);
+            session
+                .submit("Inspect the saved rules.", "check", Limits::default(), None)
+                .await
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            let requests = provider.requests();
+            let content = requests[0]
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(content.matches("Original immutable").count(), 1);
+            assert!(!content.contains("Changed external requirement"));
+            engine.close().await.unwrap();
+        }
     }
 }

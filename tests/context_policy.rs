@@ -333,10 +333,11 @@ async fn large_output_has_owned_artifact_and_context_excerpt() {
         provider.requests()[1]
             .messages
             .iter()
-            .any(|m| m.content.contains("\"event\":\"output_limit\""))
+            .any(|m| m.content.contains("\"event\":\"tool_result_truncated\""))
     );
     let data = session.snapshot().await.unwrap();
-    let aid = &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["output_limit"];
+    let aid =
+        &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["tool_result_truncated"];
     assert_eq!(aid["active"], false);
     assert_eq!(aid["scope"], "files.read:truncated");
     engine.close().await.unwrap();

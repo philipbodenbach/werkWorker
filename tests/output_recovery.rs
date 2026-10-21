@@ -165,6 +165,145 @@ async fn repeated_tests_after_workspace_changes_are_allowed_but_no_progress_is_b
 }
 
 #[tokio::test]
+async fn workspace_aliases_support_long_edit_validate_repair_cycles() {
+    let sandbox = runtime::Sandbox::default();
+    if let Err(error) = sandbox.doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let mut turns = vec![
+        call(
+            "process.run",
+            json!({"argv":["mkdir","-p","/workspace/src"]}),
+        ),
+        call(
+            "files.write",
+            json!({"path":"/workspace/src/counter","content":"0"}),
+        ),
+        call("files.list", json!({"path":"/workspace/src"})),
+        call("files.search", json!({"path":"/workspace/src","query":"0"})),
+    ];
+    let mut previous = "0".to_string();
+    for index in 1..=12 {
+        // The fourth test fails, then the next edit repairs it. Every test uses
+        // exactly the same argv and must be allowed after each file revision.
+        let next = if index == 4 {
+            "-4".to_string()
+        } else {
+            index.to_string()
+        };
+        turns.extend([
+            call("files.read", json!({"path":"/workspace/src/counter"})),
+            call("files.edit", json!({"path":"/workspace/src/counter", "old":previous,
+                "new":next,"expected_hash":hash(&previous)})),
+            call("process.run", json!({"argv":["/bin/sh","-c",
+                "value=$(cat /workspace/src/counter); printf '%s\\n' \"$value\"; test \"$value\" -ge 0"],"cwd":"/workspace/src"})),
+        ]);
+        previous = next;
+    }
+    turns.push(ScriptedTurn::text("Verified after repair."));
+    let provider = Arc::new(ScriptedProvider::new(turns));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let names = [
+        "files.write",
+        "files.edit",
+        "files.read",
+        "files.list",
+        "files.search",
+        "process.run",
+    ];
+    let mut agent = profile();
+    agent.tools = names.iter().map(|s| s.to_string()).collect();
+    let policy = HostPolicy {
+        workspace_writable: true,
+        grants: names
+            .iter()
+            .map(|name| CapabilityGrant {
+                tool: name.to_string(),
+                version: "1".into(),
+                resource: if *name == "process.run" {
+                    "workspace"
+                } else {
+                    "src"
+                }
+                .into(),
+                arguments_hash: None,
+                expires_at_ms: None,
+                preapproved: true,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let session = engine
+        .create_session(agent, workspace.path(), policy, Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement, validate and repair",
+            "start",
+            Limits {
+                max_repeated_calls: 1,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(45), run.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(result.metrics.steps, 41);
+    let state = session.snapshot().await.unwrap();
+    let invocations = &state.runs[0].invocations;
+    for invocation in invocations {
+        assert_eq!(
+            invocation.result.as_ref().unwrap().status,
+            Outcome::Succeeded,
+            "{:?}",
+            invocation.result
+        );
+        if invocation.call.name.starts_with("files.") {
+            assert!(
+                invocation.prepared["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("src")
+            );
+        }
+    }
+    let checks: Vec<_> = invocations
+        .iter()
+        .filter(|i| i.call.name == "process.run")
+        .skip(1)
+        .map(|i| &i.result.as_ref().unwrap().data)
+        .collect();
+    assert_eq!(checks.len(), 12);
+    for (index, check) in checks.iter().enumerate() {
+        assert_eq!(check["exit_code"], if index == 3 { 1 } else { 0 });
+        assert_eq!(
+            check["stdout"],
+            format!(
+                "{}\n",
+                if index == 3 {
+                    "-4".into()
+                } else {
+                    (index + 1).to_string()
+                }
+            )
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("src/counter")).unwrap(),
+        "12"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn file_conflicts_explain_stale_hash_and_missing_match_without_writing() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("game.html"), "<!--SCRIPT-->").unwrap();

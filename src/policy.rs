@@ -73,13 +73,24 @@ pub fn relative_path(path: &str) -> Result<()> {
     }
     Ok(())
 }
+/// The sandbox mount names the same confined workspace as a relative tool path.
+/// This is a lexical alias only; traversal and arbitrary absolute paths stay denied.
+pub fn workspace_path(path: &str) -> Result<&str> {
+    let relative = if path == "/workspace" || path == "/workspace/" {
+        "."
+    } else {
+        path.strip_prefix("/workspace/").unwrap_or(path)
+    };
+    relative_path(relative)?;
+    Ok(relative)
+}
 pub fn resource(def: &ToolDefinition, args: &Value) -> Result<String> {
     match def.effect {
         Effect::Internal => Ok("internal".into()),
         Effect::Process => Ok("workspace".into()),
         Effect::Read | Effect::Write => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-            relative_path(path)?;
+            let path = workspace_path(path)?;
             Ok(path.trim_start_matches("./").to_string())
         }
         Effect::NetworkRead | Effect::ExternalWrite => {

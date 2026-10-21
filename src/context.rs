@@ -184,6 +184,13 @@ impl DefaultContextBuilder {
             ));
         }
         prompt.push_str("Implement with permitted tools; chat code is only a proposal. Before completion, run syntax/build and smoke checks with process.run; fix failures and recheck. Claim tests only with tool evidence; disclose unavailable checks.\n");
+        prompt
+            .push_str("File paths: relative or /workspace/... name the same confined workspace.\n");
+        prompt.push_str(&format!(
+            "Remaining: {} steps, {} tool calls, including implementation, repeated checks and final report.\n",
+            run.limits.max_steps.saturating_sub(run.metrics.steps),
+            run.limits.max_tool_invocations.saturating_sub(run.metrics.tool_invocations),
+        ));
         let recent: Vec<_> = std::iter::once(run)
             .chain(
                 session

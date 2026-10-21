@@ -52,6 +52,92 @@ async fn approval(run: &RunHandle) -> ApprovalRequest {
     .unwrap()
 }
 #[tokio::test]
+async fn invalid_file_paths_explain_the_path_error_without_claiming_missing_permissions() {
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::calls(
+            "",
+            vec![call("files.read", json!({"path":"/workspace/../secret"}))],
+        ),
+        ScriptedTurn::text("Correct the path"),
+    ]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let session = engine
+        .create_session(
+            profile(&["files.read"]),
+            dir.path(),
+            HostPolicy {
+                grants: vec![grant("files.read", true)],
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("read", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(finish(&run).await.status, RunStatus::Completed);
+    let data = session.snapshot().await.unwrap();
+    let result = data.runs[0].invocations[0].result.as_ref().unwrap();
+    assert_eq!(result.status, Outcome::ValidationError);
+    assert_eq!(result.error_code.as_deref(), Some("path_denied"));
+    assert!(
+        result.data["message"]
+            .as_str()
+            .unwrap()
+            .contains("relative workspace path")
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sandbox_file_alias_requests_approval_for_the_prepared_relative_path() {
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::calls(
+            "",
+            vec![call(
+                "files.write",
+                json!({"path":"/workspace/result.txt", "content":"approved"}),
+            )],
+        ),
+        ScriptedTurn::text("done"),
+    ]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let session = engine
+        .create_session(
+            profile(&["files.write"]),
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                grants: vec![grant("files.write", false)],
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("write", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let request = approval(&run).await;
+    assert_eq!(request.description["arguments"]["path"], "result.txt");
+    assert!(!dir.path().join("result.txt").exists());
+    run.respond_to_approval(&request.request_id, ApprovalDecision::AllowOnce, "approve")
+        .await
+        .unwrap();
+    assert_eq!(finish(&run).await.status, RunStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("result.txt")).unwrap(),
+        "approved"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn text_submit_dedupe_and_command_conflict() {
     let dir = TempDir::new().unwrap();
     let provider = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("hello")]));

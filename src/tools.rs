@@ -160,7 +160,7 @@ impl Tool for Builtin {
             ),
             "files.write" => (
                 Effect::Write,
-                "Write a relative workspace path; parent directory must already exist (use process.run to create directories). Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
+                "Write a workspace path (relative or /workspace/...); parent directory must already exist (use process.run to create directories). Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
                 object(
                     json!({"path":string(),"content":string(),"expected_hash":string()}),
                     &["path", "content"],
@@ -246,6 +246,12 @@ impl Tool for Builtin {
         }
     }
     async fn prepare(&self, mut args: Value, ctx: &ToolContext) -> Result<Value> {
+        if matches!(
+            self.name.as_str(),
+            "files.read" | "files.list" | "files.search" | "files.write" | "files.edit"
+        ) {
+            args["path"] = json!(crate::policy::workspace_path(field(&args, "path")?)?);
+        }
         match self.name.as_str() {
             "files.edit" => {
                 let bytes = ctx.workspace.read(field(&args, "path")?, 1_048_576).await?;
@@ -350,13 +356,7 @@ impl Tool for Builtin {
 /// The fixed sandbox mount is a logical workspace path, never a host path.
 /// Normalize before approvals so equivalent cwd spellings have one receipt.
 fn process_cwd(path: &str) -> Result<&str> {
-    let relative = if path == "/workspace" || path == "/workspace/" {
-        "."
-    } else {
-        path.strip_prefix("/workspace/").unwrap_or(path)
-    };
-    crate::policy::relative_path(relative)?;
-    Ok(relative)
+    crate::policy::workspace_path(path)
 }
 
 /// Small example connector. The fixed endpoint and token are host-owned, never

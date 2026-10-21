@@ -331,6 +331,9 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('/sessions\r')
         wait_for('New / Previous sessions')
         send('\r')
+        # Ready may still be visible behind the session picker. Wait for the
+        # new chat frame before sending a key across the terminal transition.
+        wait_for('New / Previous sessions', present=False)
         wait_for('Ready')
         send('\x11')
         assert exited() == 0

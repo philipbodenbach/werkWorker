@@ -157,6 +157,17 @@ Processes are conservatively treated as potential workspace changes, including
 shell edits. The overall step, request and time budgets still bound alternating
 processes.
 
+The model sees the remaining step and tool-call budgets on every turn so it can
+plan implementation and repeated verification within the configured limits.
+Current defaults allow 48 steps and 60 model requests; saved connections retain
+their explicitly stored limits rather than silently adopting new defaults.
+
+File tools accept both relative paths and the sandbox alias `/workspace/...`.
+Both resolve to the same workspace scope before policy checks, and prepared
+actions use relative paths. Other absolute paths and traversal return a path
+validation error, not a misleading missing-permission result. Scoped grants,
+hard denies, symlink isolation and hash-bound edits still apply.
+
 The connection wizard defaults to 4,096 output tokens including reasoning. It
 checks the effective per-request context and requires an output reserve no larger
 than one quarter of it before opening the session. Headless/direct CLI paths keep

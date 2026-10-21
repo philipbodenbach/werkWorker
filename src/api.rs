@@ -2114,6 +2114,15 @@ impl SessionHandle {
         // Check the host capability before preparation reads; connectors reveal only
         // their host-fixed origin during preparation, never perform I/O there.
         let preliminary = self.snapshot().await?;
+        if matches!(
+            def.name.as_str(),
+            "files.read" | "files.list" | "files.search" | "files.write" | "files.edit"
+        ) && let Err(error) = crate::policy::resource(def, &invocation.call.arguments)
+        {
+            let mut result = ToolResult::error(Outcome::ValidationError, &error.code);
+            result.data = json!({"message": "Use a relative workspace path or /workspace/... without traversal. Other absolute paths are not accessible."});
+            return self.outcome(run_id, invocation_id, result).await;
+        }
         if matches!(def.effect, Effect::Read | Effect::Write | Effect::Process)
             && (preliminary
                 .policy

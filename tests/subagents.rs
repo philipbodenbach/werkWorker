@@ -71,10 +71,10 @@ impl ModelProvider for Probe {
             .iter()
             .any(|m| m.role == Role::System && m.content.contains("delegated worker"));
         let has_tool = request.messages.iter().any(|m| m.role == Role::Tool);
-        let collected = request
-            .messages
-            .iter()
-            .any(|m| m.content.starts_with("Subagent results"));
+        let collected = request.messages.iter().any(|m| {
+            m.content.starts_with("Subagent results")
+                || m.content.contains("\"event\":\"subagent_results\"")
+        });
         self.seen.lock().unwrap().push(request);
         let deltas = if child && self.write && !has_tool {
             tool_turn(
@@ -566,4 +566,83 @@ async fn durable_child_links_survive_reopen_and_cannot_bypass_admission_by_resub
     );
     assert!(provider.seen.lock().unwrap().is_empty());
     reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn minimal_children_inherit_behavior_and_results_keep_harness_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Probe::new(Some(4), 20, false);
+    let engine = WorkerEngine::builder(provider.clone())
+        .harness(harness::HarnessConfig {
+            completion: Some(harness::CompletionCheck {
+                tool: "agents.status".into(),
+                arguments: json!({}),
+                result_schema: json!({"required":["agents"]}),
+                max_corrections: 0,
+            }),
+            ..harness::HarnessConfig::minimal()
+        })
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(
+            profile(false),
+            dir.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("Parent task", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), run.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(result.text.as_deref(), Some("synthesized"));
+    for child in run.subagents().await.unwrap() {
+        let data = engine
+            .open_session(&child.session_id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        assert_eq!(
+            harness::config(&data, &data.runs[0]).unwrap().mode,
+            harness::HarnessMode::Adaptive
+        );
+        assert!(
+            harness::config(&data, &data.runs[0])
+                .unwrap()
+                .completion
+                .is_none()
+        );
+    }
+    let data = session.snapshot().await.unwrap();
+    assert_eq!(
+        data.messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .count(),
+        1
+    );
+    let message = data
+        .messages
+        .iter()
+        .position(|m| m.content.contains("\"event\":\"subagent_results\""))
+        .unwrap();
+    assert_eq!(data.messages[message].role, Role::Assistant);
+    assert!(
+        data.metadata["_werkworker_harness"][&run.id]["messages"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(message))
+    );
+    context::validate_messages(&data.messages).unwrap();
+    engine.close().await.unwrap();
 }

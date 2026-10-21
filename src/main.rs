@@ -42,6 +42,12 @@ struct Cli {
     /// Host-owned inference and subagent limits JSON.
     #[arg(long)]
     execution_config: Option<PathBuf>,
+    /// Legacy option, migrated to adaptive for new runs.
+    #[arg(long, hide = true, value_parser = ["classic", "minimal", "adaptive"])]
+    harness: Option<String>,
+    /// Optional completion criteria and explicit host guidance JSON.
+    #[arg(long, conflicts_with = "harness")]
+    harness_config: Option<PathBuf>,
     /// Bubblewrap executable; defaults to the system or per-user installation.
     #[arg(long)]
     bubblewrap: Option<PathBuf>,
@@ -345,7 +351,20 @@ async fn execute_once(cli: Cli) -> Result<bool> {
             .join("artifacts"),
     )
     .await?;
+    let harness = if let Some(path) = &cli.harness_config {
+        serde_json::from_slice(&tokio::fs::read(path).await?)?
+    } else if cli.harness.as_deref() == Some("minimal") {
+        harness::HarnessConfig::minimal()
+    } else if cli.harness.as_deref() == Some("classic") {
+        harness::HarnessConfig {
+            mode: harness::HarnessMode::Classic,
+            ..Default::default()
+        }
+    } else {
+        harness::HarnessConfig::default()
+    };
     let engine = WorkerEngine::builder(provider)
+        .harness(harness)
         .execution(execution)
         .store(store.clone())
         .sandbox(sandbox)

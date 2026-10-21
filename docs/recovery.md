@@ -59,3 +59,16 @@ it copies conversational history, not active grants, jobs or requests.
 
 Graceful `close` cancels the engine and reaps owned processes/jobs. `Drop` offers
 no asynchronous cleanup guarantee; embedding hosts must call `close().await`.
+
+## Configured completion checks
+
+An optional [harness completion check](harness.md) makes saved final text a
+candidate, not proof of acceptance. Normal execution and resume share the gate.
+The exact check configuration, candidate, invocation and verdict persist in
+`metadata._werkworker_harness[run_id]`. A prepared invocation follows ordinary
+approval recovery; a finished one is evaluated without replay; a running one
+without a receipt is unknown and requires reconciliation. A failed check's
+correction allowance is persisted and remains bounded after restart. Old runs
+without this metadata explicitly migrate to a preserved classic contract. New
+runs are adaptive; their trigger scopes, episode counts, delivery steps, observation
+cursors and cooldowns persist in the same namespace for resume.

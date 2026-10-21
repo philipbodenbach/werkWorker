@@ -100,6 +100,15 @@ pub trait ModelProvider: Send + Sync {
     fn cached_input_tokens(&self, _request: &ModelRequest) -> Option<usize> {
         None
     }
+    /// Provenance for the last estimate of this request, without another count.
+    /// Providers with custom estimates can optionally refine this diagnostic.
+    fn input_token_source(&self, request: &ModelRequest) -> &'static str {
+        if self.cached_input_tokens(request).is_some() {
+            "native_exact"
+        } else {
+            "provider_unspecified"
+        }
+    }
     /// Verified server capacity, independent of parallel tool-call support.
     fn concurrency(&self) -> InferenceConcurrency {
         InferenceConcurrency::default()
@@ -881,6 +890,34 @@ impl ModelProvider for WerkProvider {
             .get(&fingerprint(request))
             .copied()
     }
+    fn input_token_source(&self, request: &ModelRequest) -> &'static str {
+        if self.cached_input_tokens(request).is_some() {
+            return "native_exact";
+        }
+        if request.messages.iter().any(|m| !m.images.is_empty()) {
+            let mut text = request.clone();
+            for message in &mut text.messages {
+                message.images.clear();
+            }
+            if self.cached_input_tokens(&text).is_some() {
+                return "native_text_plus_image_estimate";
+            }
+        }
+        // A custom context builder or an eviction may not have counted this
+        // request yet. Absence from an exact cache is not evidence of fallback.
+        if !self
+            .token_count_unavailable
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && self.runtime_capabilities.iter().any(|cap| {
+                cap.id == "api.chat.token_count"
+                    && cap.status == CapabilityStatus::Supported
+                    && cap.operations.iter().any(|op| op == "count_tokens")
+            })
+        {
+            return "provider_unspecified";
+        }
+        "wire_bytes_estimate"
+    }
     async fn count_input_tokens(&self, request: &ModelRequest) -> Result<Option<usize>> {
         if let Some(count) = self.cached_input_tokens(request) {
             return Ok(Some(count));
@@ -1155,6 +1192,33 @@ fn usage(v: &Value) -> Option<Usage> {
         })
     }
 }
+// Public Werk chat extension. Persist only documented numeric measurements,
+// never arbitrary backend diagnostics or error text as runtime control signals.
+fn runtime_measurements(value: &Value) -> Option<Value> {
+    let mut timings = serde_json::Map::new();
+    for key in [
+        "cached_prompt_tokens",
+        "load_seconds",
+        "warmup_seconds",
+        "first_token_seconds",
+        "prompt_seconds",
+        "decode_seconds",
+        "total_seconds",
+    ] {
+        let measurement = &value["werk"]["timings"][key];
+        let valid = if key == "cached_prompt_tokens" {
+            measurement.as_u64().is_some()
+        } else {
+            measurement
+                .as_f64()
+                .is_some_and(|n| n.is_finite() && n >= 0.0)
+        };
+        if valid {
+            timings.insert(key.into(), value["werk"]["timings"][key].clone());
+        }
+    }
+    (!timings.is_empty()).then(|| json!({"werk":{"timings":timings}}))
+}
 fn check_provider_error(v: &Value) -> Result<()> {
     if let Some(error) = v.get("error").filter(|error| !error.is_null()) {
         let message = error["message"]
@@ -1193,6 +1257,9 @@ pub fn decode_completion(v: &Value) -> Result<Vec<ModelDelta>> {
     }
     if let Some(usage) = usage(&v["usage"]) {
         out.push(ModelDelta::Usage { usage });
+    }
+    if let Some(value) = runtime_measurements(v) {
+        out.push(ModelDelta::Metadata { value });
     }
     out.push(ModelDelta::Finish {
         reason: choice["finish_reason"].as_str().unwrap_or("").into(),
@@ -1255,6 +1322,9 @@ impl SseDecoder {
         let v: Value = serde_json::from_str(data)?;
         check_provider_error(&v)?;
         let mut out = Vec::new();
+        if let Some(value) = runtime_measurements(&v) {
+            out.push(ModelDelta::Metadata { value });
+        }
         if let Some(usage) = usage(&v["usage"]) {
             out.push(ModelDelta::Usage { usage });
         }

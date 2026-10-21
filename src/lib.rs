@@ -4,6 +4,7 @@ pub mod api;
 pub mod attachments;
 pub mod context;
 pub mod core;
+pub mod harness;
 pub mod parallel;
 pub mod policy;
 pub mod profiles;

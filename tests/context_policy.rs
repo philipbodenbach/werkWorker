@@ -39,75 +39,93 @@ fn policy(similar: bool) -> HostPolicy {
 
 #[tokio::test]
 async fn model_compaction_is_budgeted_preserves_user_constraints_and_raw_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let long = "Historical evidence. ".repeat(100);
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        ScriptedTurn::text(&long),
-        ScriptedTurn::text("Earlier evidence summary."),
-        ScriptedTurn::text("Final answer."),
-    ]));
-    let engine = WorkerEngine::builder(provider.clone())
-        .build()
-        .await
-        .unwrap();
-    let session = engine
-        .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
-        .await
-        .unwrap();
-    let mut encoded = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::new_rgb8(2, 2)
-        .write_to(&mut encoded, image::ImageFormat::Png)
-        .unwrap();
-    let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
-    let first = session
-        .submit_with_images(
-            "Never change customer identifiers",
-            vec![picture.clone()],
-            "first",
-            Limits::default(),
-            None,
-        )
-        .await
-        .unwrap();
-    first.wait().await.unwrap();
-    let limits = Limits {
-        model_compaction: true,
-        ..Default::default()
-    };
-    let second = session
-        .submit("Summarize next", "second", limits, None)
-        .await
-        .unwrap();
-    assert_eq!(second.wait().await.unwrap().status, RunStatus::Completed);
-    let state = session.snapshot().await.unwrap();
-    assert_eq!(state.compactions.len(), 1);
-    assert_eq!(state.compactions[0].message_indices, vec![1]);
-    assert!(state.messages.iter().any(|m| m.content == long));
-    assert_eq!(second.status().await.unwrap().metrics.model_requests, 2);
-    let requests = provider.requests();
-    assert!(
-        requests[2]
-            .messages
-            .iter()
-            .any(|m| m.content == "Never change customer identifiers")
-    );
-    assert!(!requests[2].messages.iter().any(|m| m.content == long));
-    assert_eq!(
-        requests[2]
-            .messages
-            .iter()
-            .find(|m| m.role == Role::User)
-            .unwrap()
-            .images,
-        vec![picture.clone()]
-    );
-    assert_eq!(state.messages[0].images, vec![picture]);
-    assert!(
-        requests[2].messages[0]
-            .content
-            .contains("Earlier evidence summary")
-    );
-    engine.close().await.unwrap();
+    for mode in [harness::HarnessMode::Classic, harness::HarnessMode::Minimal] {
+        let dir = tempfile::tempdir().unwrap();
+        let long = "Historical evidence. ".repeat(100);
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ScriptedTurn::text(&long),
+            ScriptedTurn::text("Earlier evidence summary."),
+            ScriptedTurn::text("Final answer."),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .harness(harness::HarnessConfig {
+                mode,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
+            .await
+            .unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let picture = attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap();
+        let first = session
+            .submit_with_images(
+                "Never change customer identifiers",
+                vec![picture.clone()],
+                "first",
+                Limits::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        first.wait().await.unwrap();
+        let limits = Limits {
+            model_compaction: true,
+            ..Default::default()
+        };
+        let second = session
+            .submit("Summarize next", "second", limits, None)
+            .await
+            .unwrap();
+        assert_eq!(second.wait().await.unwrap().status, RunStatus::Completed);
+        let state = session.snapshot().await.unwrap();
+        assert_eq!(state.compactions.len(), 1);
+        assert_eq!(state.compactions[0].message_indices, vec![1]);
+        assert!(state.messages.iter().any(|m| m.content == long));
+        assert_eq!(second.status().await.unwrap().metrics.model_requests, 2);
+        let requests = provider.requests();
+        assert!(
+            requests[2]
+                .messages
+                .iter()
+                .any(|m| m.content == "Never change customer identifiers")
+        );
+        assert!(!requests[2].messages.iter().any(|m| m.content == long));
+        assert_eq!(
+            requests[2]
+                .messages
+                .iter()
+                .find(|m| m.role == Role::User)
+                .unwrap()
+                .images,
+            vec![picture.clone()]
+        );
+        assert_eq!(state.messages[0].images, vec![picture]);
+        if harness::config(&state, &state.runs[1]).unwrap().mode == harness::HarnessMode::Classic {
+            assert!(
+                requests[2].messages[0]
+                    .content
+                    .contains("Earlier evidence summary")
+            );
+        } else {
+            assert!(!requests[1].messages.iter().any(|m| m.role == Role::User));
+            assert!(
+                !requests[2].messages[0]
+                    .content
+                    .contains("Earlier evidence summary")
+            );
+            assert!(requests[2].messages.iter().any(
+                |m| m.role == Role::Assistant && m.content.contains("Earlier evidence summary")
+            ));
+        }
+        engine.close().await.unwrap();
+    }
 }
 #[tokio::test]
 async fn same_scope_approval_is_exact_explicit_and_does_not_cross_session() {
@@ -288,7 +306,7 @@ async fn large_output_has_owned_artifact_and_context_excerpt() {
         read("large"),
         ScriptedTurn::text("done"),
     ]));
-    let engine = WorkerEngine::builder(provider)
+    let engine = WorkerEngine::builder(provider.clone())
         .artifacts(ArtifactStore::open(artifacts.path()).await.unwrap())
         .build()
         .await
@@ -311,6 +329,16 @@ async fn large_output_has_owned_artifact_and_context_excerpt() {
     assert_eq!(result.data["path"], "large");
     assert_eq!(result.data["sha256"], hash("a".repeat(20_000)));
     assert!(result.data.to_string().len() < 9000);
+    assert!(
+        provider.requests()[1]
+            .messages
+            .iter()
+            .any(|m| m.content.contains("\"event\":\"output_limit\""))
+    );
+    let data = session.snapshot().await.unwrap();
+    let aid = &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["output_limit"];
+    assert_eq!(aid["active"], false);
+    assert_eq!(aid["scope"], "files.read:truncated");
     engine.close().await.unwrap();
 }
 
@@ -432,7 +460,7 @@ async fn followups_compact_previous_final_code_and_keep_the_session_usable() {
     assert!(
         requests[0].messages[0]
             .content
-            .contains("Workspace writes enabled: false")
+            .contains("respect host policy")
     );
     engine.close().await.unwrap();
 }
@@ -525,9 +553,15 @@ async fn compaction_retains_loaded_skill_and_directory_evidence() {
     );
     for request in &scripted.requests()[3..] {
         assert!(
-            request.messages[0]
+            !request.messages[0]
                 .content
                 .contains("Skills already loaded successfully")
+        );
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|m| m.role != Role::System && m.content.contains("coding-basic"))
         );
         let results: Vec<ToolResult> = request
             .messages
@@ -555,65 +589,90 @@ async fn compaction_retains_loaded_skill_and_directory_evidence() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn automatic_compaction_keeps_long_tool_runs_inside_provider_context() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("evidence"), "Evidence 世界. ".repeat(130)).unwrap();
-    let mut turns = (0..10).map(|_| read("evidence")).collect::<Vec<_>>();
-    turns.push(ScriptedTurn::text("done"));
-    let scripted = Arc::new(ScriptedProvider::new(turns));
-    let provider = Arc::new(BoundedProvider {
-        inner: scripted.clone(),
-        limit: 8192,
-    });
-    let engine = WorkerEngine::builder(provider).build().await.unwrap();
-    let mut granted = policy(false);
-    granted.grants[0].preapproved = true;
-    let session = engine
-        .create_session(profile(&["files.read"]), dir.path(), granted, Value::Null)
-        .await
-        .unwrap();
-    let run = session
-        .submit(
-            "Never alter customer identifiers",
-            "long",
-            Limits {
-                max_repeated_calls: 20,
+    for mode in [harness::HarnessMode::Classic, harness::HarnessMode::Minimal] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("evidence"), "Evidence 世界. ".repeat(130)).unwrap();
+        let mut turns = (0..10).map(|_| read("evidence")).collect::<Vec<_>>();
+        turns.push(ScriptedTurn::text("done"));
+        let scripted = Arc::new(ScriptedProvider::new(turns));
+        let provider = Arc::new(BoundedProvider {
+            inner: scripted.clone(),
+            limit: 8192,
+        });
+        let engine = WorkerEngine::builder(provider)
+            .harness(harness::HarnessConfig {
+                mode,
                 ..Default::default()
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    let result = run.wait().await.unwrap();
-    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
-    let state = run.status().await.unwrap();
-    assert!(
-        state
-            .contexts
-            .iter()
-            .any(|c| !c.omitted_messages.is_empty() && c.summary.is_some())
-    );
-    assert_eq!(
-        session
-            .snapshot()
+            })
+            .build()
             .await
-            .unwrap()
-            .messages
-            .iter()
-            .filter(|m| m.role == Role::Tool)
-            .count(),
-        10
-    );
-    for request in scripted.requests() {
-        werk_worker::context::validate_messages(&request.messages).unwrap();
+            .unwrap();
+        let mut granted = policy(false);
+        granted.grants[0].preapproved = true;
+        let session = engine
+            .create_session(profile(&["files.read"]), dir.path(), granted, Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Never alter customer identifiers",
+                "long",
+                Limits {
+                    max_repeated_calls: 20,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        let state = run.status().await.unwrap();
         assert!(
-            request
+            state
+                .contexts
+                .iter()
+                .any(|c| !c.omitted_messages.is_empty() && c.summary.is_some())
+        );
+        assert_eq!(
+            session
+                .snapshot()
+                .await
+                .unwrap()
                 .messages
                 .iter()
-                .any(|m| m.content == "Never alter customer identifiers")
+                .filter(|m| m.role == Role::Tool)
+                .count(),
+            10
         );
-        assert!(request.max_output_tokens <= 2048);
+        let data = session.snapshot().await.unwrap();
+        let aid =
+            &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["context_pressure"];
+        assert_eq!(aid["active"], false);
+        assert_eq!(aid["episodes"], 1);
+        assert_eq!(
+            scripted
+                .requests()
+                .iter()
+                .filter(|r| r
+                    .messages
+                    .iter()
+                    .any(|m| m.content.contains("\"event\":\"context_pressure\"")))
+                .count(),
+            1
+        );
+        for request in scripted.requests() {
+            werk_worker::context::validate_messages(&request.messages).unwrap();
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .any(|m| m.content == "Never alter customer identifiers")
+            );
+            assert!(request.max_output_tokens <= 2048);
+        }
+        engine.close().await.unwrap();
     }
-    engine.close().await.unwrap();
 }
 #[tokio::test]
 async fn oversized_constraints_fail_before_provider_and_output_reserve_is_clamped() {
@@ -730,11 +789,7 @@ async fn small_context_overflow_borrows_output_reserve_without_losing_constraint
             let requests = scripted.requests();
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].max_output_tokens, output);
-            assert!(
-                requests[0].messages[0]
-                    .content
-                    .contains(&format!("Output budget: {output} tokens"))
-            );
+            assert!(!requests[0].messages[0].content.contains("Output budget:"));
             assert_eq!(requests[0].messages[1].content, original);
             assert_eq!(requests[0].messages[1].images, vec![picture.clone()]);
         } else {
@@ -815,13 +870,20 @@ async fn followup_retains_prior_write_plan_and_read_page_receipts() {
         .unwrap();
     assert_eq!(second.wait().await.unwrap().status, RunStatus::Completed);
     let requests = provider.requests();
-    let prompt = &requests.last().unwrap().messages[0].content;
-    assert!(prompt.contains("Successful file changes in this session"));
+    let prompt = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .filter(|m| m.role != Role::System)
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(prompt.contains(&hash(content)));
     assert!(prompt.contains("game.html"));
     assert!(prompt.contains("Build then verify the existing game"));
-    assert!(prompt.contains("\"lines\":[1,1]"));
-    assert!(prompt.contains("\"lines\":[2,2]"));
+    assert!(prompt.contains("\"start_line\":1"));
+    assert!(prompt.contains("\"start_line\":2"));
     assert!(prompt.contains("\"total_lines\":2"));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("game.html")).unwrap(),

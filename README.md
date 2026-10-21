@@ -243,3 +243,7 @@ werkWorker SDK and both CLI commands share release version **0.1.0**.
 - Initial agent engine, native packaging and interactive terminal.
 
 See [build, install and release](docs/releases.md).
+
+New runs use the [adaptive harness](docs/harness.md): a lean default with bounded
+help triggered by observed runtime problems. Resume preserves existing execution
+contracts. Optional completion checks use existing rights and recovery boundaries.

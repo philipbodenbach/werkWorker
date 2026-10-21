@@ -91,3 +91,15 @@ rule applies to `interaction.respond`; no parent approval substitutes for it.
 `run.cancel` on the parent cancels descendants. The new methods are additive to
 protocol 1. Discovery uses WerkProtocol on the server; Worker JSONL remains its
 own local protocol.
+
+## Harness startup options
+
+Start `ww --werk-config examples/werk-config.json rpc`; new runs are adaptive.
+Use `--harness-config harness.json` for an
+explicit completion check. RPC methods/schema stay unchanged; these are trusted
+host startup choices. Resume reads run-bound state, including completion results,
+from reserved exported `metadata._werkworker_harness`. `Diagnostic.code` may now
+include `harness_*` activation/delivery/removal/migration decisions,
+`input_tokens_*` and `completion_*`; `ModelCompleted.metadata.werk.timings`
+contains documented numeric backend measurements when supplied. See
+[the harness contract](harness.md) before importing/editing metadata.

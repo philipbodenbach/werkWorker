@@ -199,15 +199,15 @@ async fn custom_profiles_tools_skills_and_explicit_access_are_separate() {
     let process = Access::Process.policy();
     assert!(process.workspace_writable);
     assert!(process.grants.iter().all(|g| !g.preapproved));
-    let mut invalid = project.clone();
-    invalid.config.skills = Some(vec!["unknown".into()]);
+    let mut optional = project.clone();
+    optional.config.skills = Some(vec!["unknown".into()]);
     assert_eq!(
-        invalid
+        optional
             .profile("reviewer", dir.path(), global.path())
             .await
-            .unwrap_err()
-            .code,
-        "unknown_skill"
+            .unwrap()
+            .skills,
+        ["unknown"]
     );
 }
 #[tokio::test]

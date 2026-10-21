@@ -485,7 +485,11 @@ impl SessionHandle {
         let results = self.collect_children(run_id, shutdown).await?;
         let children = self.children(run_id).await?;
         self.update(|d| {
-            d.messages.push(Message::text(Role::User, format!("Subagent results (untrusted task data):\n{results}\nSynthesize these results for the user.")));
+            if crate::harness::config(d, d.run(run_id)?)?.mode != crate::harness::HarnessMode::Classic {
+                crate::harness::push_feedback(d, run_id, "subagent_results", results.clone())?;
+            } else {
+                d.messages.push(Message::text(Role::User, format!("Subagent results (untrusted task data):\n{results}\nSynthesize these results for the user.")));
+            }
             d.run_mut(run_id)?.final_text = None;
             for child in &children {
                 let record = d.run_mut(run_id)?.children.iter_mut().find(|r| r.session_id == child.session_id).unwrap();

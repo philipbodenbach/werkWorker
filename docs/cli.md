@@ -33,6 +33,8 @@ Options:
 
       --execution-config <EXECUTION_CONFIG>
           Host-owned inference and subagent limits JSON
+      --harness-config <HARNESS_CONFIG>
+          Optional completion criteria and explicit host guidance JSON
       --bubblewrap <BUBBLEWRAP>
           Bubblewrap executable; defaults to the system or per-user installation
       --werk-config <WERK_CONFIG>
@@ -101,6 +103,8 @@ Commands:
   list
   inspect
   export
+  rename   Rename a saved conversation (1..80 characters)
+  delete   Delete a conversation and its subagent sessions; keep workspace files
   help     Print this message or the help of the given subcommand(s)
 
 Options:

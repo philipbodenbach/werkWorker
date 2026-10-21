@@ -40,6 +40,10 @@ fn bundled_profile_tool_skill_references_and_cli_help_are_consistent() {
             .contains("Usage: ww")
     );
     let text = String::from_utf8(help.stdout).unwrap();
+    assert!(!text.contains("--harness <"));
+    assert!(text.contains("--harness-config"));
+    assert!(!text.contains("classic"));
+    assert!(!text.contains("minimal"));
     for command in [
         "tui", "run", "resume", "sessions", "tools", "skills", "profiles", "sandbox", "rpc",
     ] {

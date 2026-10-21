@@ -162,7 +162,11 @@ async fn deletion_refuses_active_work_and_atomic_batches_roll_back() {
         );
         assert!(store.load(&ad.id).await.is_ok());
         run.cancel("test", "cancel").await.unwrap();
-        run.wait().await.unwrap();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), run.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.status, RunStatus::Cancelled);
         // Await actor cleanup as well as the durable terminal run state.
         for _ in 0..100 {
             match engine.delete_session(&ad.id).await {

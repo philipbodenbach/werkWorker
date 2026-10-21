@@ -373,69 +373,75 @@ async fn patch_approval_binds_base_and_conflict_preserves_user_change() {
 }
 #[tokio::test]
 async fn interaction_steering_followup_and_busy() {
-    let dir = TempDir::new().unwrap();
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        ScriptedTurn::calls(
-            "",
-            vec![call(
-                "interaction.ask",
-                json!({"question":"Which format?","choices":["JSON","text"]}),
-            )],
-        ),
-        ScriptedTurn::text("first"),
-        ScriptedTurn::text("second"),
-    ]));
-    let engine = WorkerEngine::builder(provider.clone())
-        .build()
-        .await
-        .unwrap();
-    let session = engine
-        .create_session(
-            profile(&["interaction.ask"]),
-            dir.path(),
-            HostPolicy::default(),
-            Value::Null,
-        )
-        .await
-        .unwrap();
-    let run = session
-        .submit("work", "first", Limits::default(), None)
-        .await
-        .unwrap();
-    let mut events = run.events(0);
-    let request = loop {
-        if let EventKind::InteractionRequested { request } =
-            events.next().await.unwrap().unwrap().event
-        {
-            break request;
-        }
-    };
-    assert_eq!(
-        session
-            .submit("collision", "bad", Limits::default(), None)
+    for mode in [harness::HarnessMode::Classic, harness::HarnessMode::Minimal] {
+        let dir = TempDir::new().unwrap();
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ScriptedTurn::calls(
+                "",
+                vec![call(
+                    "interaction.ask",
+                    json!({"question":"Which format?","choices":["JSON","text"]}),
+                )],
+            ),
+            ScriptedTurn::text("first"),
+            ScriptedTurn::text("second"),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .harness(harness::HarnessConfig {
+                mode,
+                ..Default::default()
+            })
+            .build()
             .await
-            .err()
-            .unwrap()
-            .code,
-        "busy"
-    );
-    run.steer("Keep citations", "steer").await.unwrap();
-    let next = session
-        .follow_up("then summarize", "follow", Limits::default())
-        .await
-        .unwrap();
-    run.respond_to_interaction(&request.request_id, "JSON", "answer")
-        .await
-        .unwrap();
-    assert_eq!(finish(&run).await.status, RunStatus::Completed);
-    assert_eq!(finish(&next).await.status, RunStatus::Completed);
-    assert!(
-        provider.requests()[1]
-            .messages
-            .iter()
-            .any(|m| m.content == "Keep citations")
-    );
-    engine.close().await.unwrap();
+            .unwrap();
+        let session = engine
+            .create_session(
+                profile(&["interaction.ask"]),
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit("work", "first", Limits::default(), None)
+            .await
+            .unwrap();
+        let mut events = run.events(0);
+        let request = loop {
+            if let EventKind::InteractionRequested { request } =
+                events.next().await.unwrap().unwrap().event
+            {
+                break request;
+            }
+        };
+        assert_eq!(
+            session
+                .submit("collision", "bad", Limits::default(), None)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "busy"
+        );
+        run.steer("Keep citations", "steer").await.unwrap();
+        let next = session
+            .follow_up("then summarize", "follow", Limits::default())
+            .await
+            .unwrap();
+        run.respond_to_interaction(&request.request_id, "JSON", "answer")
+            .await
+            .unwrap();
+        assert_eq!(finish(&run).await.status, RunStatus::Completed);
+        assert_eq!(finish(&next).await.status, RunStatus::Completed);
+        assert!(
+            provider.requests()[1]
+                .messages
+                .iter()
+                .any(|m| m.content == "Keep citations")
+        );
+        engine.close().await.unwrap();
+    }
 }
 #[tokio::test]
 async fn cancellation_while_streaming_and_approval_does_not_continue() {

@@ -44,3 +44,13 @@ Parent/child links commit before child dispatch. Completion waits for descendant
 and managed jobs; automatic result delivery and its message commit together.
 TUI/RPC use the same SDK and addressed child requests. See [subagents](subagents.md)
 for the contract, partial-creation recovery boundary and resource limits.
+
+## Adaptive run-bound harness — 2026-10-21
+
+The existing model/tool loop uses one adaptive harness for new runs, with a lean
+default and persisted, bounded assistance triggered by runtime observations.
+`harness` owns small configuration/state helpers in the reserved session metadata
+namespace; `api` shares one completion gate between normal execution and resume.
+There is no supervisor or second executor. Explicit completion checks use the
+ordinary durable tool path. Stable instructions and lower-authority event data
+are separated in `context`. See [activation and contracts](harness.md).

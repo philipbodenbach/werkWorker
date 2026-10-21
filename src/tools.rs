@@ -339,7 +339,7 @@ impl Tool for Builtin {
             "process.status"|"process.cancel"=>ctx.jobs.status(&ctx.run_id,field(&args,"job_id")?,self.name=="process.cancel").await?,
             "http.fetch"=>fetch(field(&args,"url")?,args["method"].as_str().unwrap_or("GET"),None).await?,
             "skills.list"=>json!(ctx.skills.values().map(|s|json!({"name":s.name,"description":s.description,"hash":s.hash,"source":s.source})).collect::<Vec<_>>()),
-            "skills.load"=>serde_json::to_value(ctx.skills.get(field(&args,"name")?).ok_or_else(||WorkerError::new("unknown_skill","Skill not available in this session"))?)?,
+            "skills.load"=>match ctx.skills.get(field(&args,"name")?) { Some(skill) => serde_json::to_value(skill)?, None => json!({"available":false,"name":field(&args,"name")?}) },
             "task.plan"=>args,
             "interaction.ask"=>return Err(WorkerError::new("interaction_required","Interaction must be handled by the engine")),
             "artifacts.read"=>{

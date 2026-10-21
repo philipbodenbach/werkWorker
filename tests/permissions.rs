@@ -317,14 +317,11 @@ async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_
         .unwrap();
     run.wait().await.unwrap();
     let state = run.status().await.unwrap();
+    let unavailable = state.invocations[0].result.as_ref().unwrap();
+    assert_eq!(unavailable.status, Outcome::Succeeded);
     assert_eq!(
-        state.invocations[0]
-            .result
-            .as_ref()
-            .unwrap()
-            .error_code
-            .as_deref(),
-        Some("unknown_skill")
+        unavailable.data,
+        json!({"available":false,"name":"coding-basic"})
     );
     let requests = provider.requests();
     assert!(
@@ -361,7 +358,7 @@ async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_
 }
 
 #[tokio::test]
-async fn configure_rejects_unknown_names_and_active_runs_without_partial_changes() {
+async fn configure_accepts_optional_missing_skills_but_rejects_unknown_tools_and_busy_changes() {
     let workspace = tempfile::tempdir().unwrap();
     let mut slow = ScriptedTurn::text("slow response");
     slow.delay_ms = 10_000;
@@ -386,15 +383,21 @@ async fn configure_rejects_unknown_names_and_active_runs_without_partial_changes
             .await
             .is_err()
     );
-    let mut profile = AgentProfile::bundled("coding-basic").unwrap();
-    profile.skills.push("not-registered".into());
-    assert!(
-        session
-            .configure(profile, HostPolicy::default(), "bad-skill")
-            .await
-            .is_err()
-    );
     assert!(session.snapshot().await.unwrap().commands.is_empty());
+    let mut profile = AgentProfile::bundled("general-readonly").unwrap();
+    profile.skills.push("not-registered".into());
+    session
+        .configure(profile, HostPolicy::default(), "optional-skill")
+        .await
+        .unwrap();
+    assert!(
+        !session
+            .snapshot()
+            .await
+            .unwrap()
+            .skill_snapshots
+            .contains_key("not-registered")
+    );
     let run = session
         .submit("wait", "start", Limits::default(), None)
         .await

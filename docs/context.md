@@ -1,5 +1,10 @@
 # Context limits and automatic compaction
 
+This document describes shared admission/compaction behavior. Prompt guidance
+and the per-turn workspace ledgers below describe preserved legacy `classic` runs;
+the default [adaptive harness](harness.md) keeps dynamic evidence out of the system
+prefix and restores omitted loaded skills as lower-authority data.
+
 Every model attempt, including children, retries and optional model summaries,
 passes an engine preflight. The effective context is the minimum of the run's
 `Limits.context_tokens` and the provider's known context size. Output reservation
@@ -157,7 +162,7 @@ Processes are conservatively treated as potential workspace changes, including
 shell edits. The overall step, request and time budgets still bound alternating
 processes.
 
-The model sees the remaining step and tool-call budgets on every turn so it can
+In classic mode the model sees the remaining step and tool-call budgets on every turn so it can
 plan implementation and repeated verification within the configured limits.
 Current defaults allow 48 steps and 60 model requests; saved connections retain
 their explicitly stored limits rather than silently adopting new defaults.
@@ -205,3 +210,12 @@ not establish a measurement. The bounded cache holds only fingerprints and count
 These derived values remain estimates: native multimodal counts take precedence,
 and no estimated value enters the exact token-count cache. Providers that do not
 implement the optional observation hook retain the original fallback behavior.
+
+`Diagnostic` events distinguish `input_tokens_native_exact`,
+`input_tokens_native_text_plus_image_estimate`, `input_tokens_wire_bytes_estimate`,
+and `input_tokens_provider_unspecified`. Reporting the source makes no additional
+count request. Native count/cache/admission logic remains shared across modes;
+cache hits never subtract from context occupancy. Validated numeric Werk chat
+`werk.timings` measurements also survive JSON/SSE in `ModelCompleted.metadata`;
+usage (including cached tokens) remains separate and optional. Arbitrary backend
+diagnostics are not copied into these metrics.

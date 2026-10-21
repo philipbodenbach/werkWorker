@@ -85,3 +85,24 @@ stale approvals, persistence/restart, hard denies, read-only scopes and actual
 Bubblewrap process execution (`REQUIRE_SANDBOX=1` makes missing isolation fatal).
 The PTY tests exercise F2 confirmation and typed `ja`, including real writes by
 two subagents without preconfigured grants or a coding profile.
+
+## Adaptive harness
+
+`tests/harness.rs` covers explicit legacy migration, quiet operation without Markdown,
+scoped activation/removal, duplicate suppression, adaptive resume, stable authority, truncation,
+completion/approval/restart boundaries, polling and reproducible whole-request
+fixture comparisons. Context, steering and subagent fixtures exercise the adaptive
+default. The initial two-mode implementation is recorded historically in
+[the 2026-10-21 validation record](benchmarks/2026-10-21-harness/README.md)
+for commands, actual measurements and limits. Fixtures prove runtime contracts,
+not live model quality. The `untrusted-document` infrastructure eval explicitly
+expects the existing `ValidationError/path_denied` contract for absolute host
+paths; it does not confuse path validation with a missing permission grant.
+
+
+Adaptive revision validation (2026-10-21, Linux): 166 Rust test executions with
+`REQUIRE_SANDBOX=1` and the installed Bubblewrap backend, no skips; all eight
+infrastructure evals; 9 Python tests; CLI migration/default/completion smoke and
+six PTY suites (TUI, subagents, permissions, setup, sessions, selection). Formatting,
+Clippy with warnings denied, the library without default features and generated
+CLI-reference checks also pass. No live-model inference or quality claim.

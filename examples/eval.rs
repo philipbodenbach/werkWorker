@@ -252,6 +252,17 @@ async fn evaluate(f: &Value) -> Result<Value> {
     if let Some(n) = expected["denied"].as_u64() {
         checks.push(("denied", count(Outcome::Denied) == n as usize));
     }
+    if let Some(codes) = expected["validation_errors"].as_array() {
+        let actual: Vec<_> = run
+            .invocations
+            .iter()
+            .filter_map(|i| i.result.as_ref())
+            .filter(|r| r.status == Outcome::ValidationError)
+            .filter_map(|r| r.error_code.as_ref())
+            .map(|code| json!(code))
+            .collect();
+        checks.push(("validation_errors", &actual == codes));
+    }
     if let Some(n) = expected["unknown"].as_u64() {
         checks.push(("unknown", count(Outcome::OutcomeUnknown) == n as usize));
     }

@@ -6,7 +6,7 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | Operation | Result and meaning |
 |---|---|
 | `WorkerEngine::builder(Arc<dyn ModelProvider>)` | Explicit composition, no import-time effects |
-| `.store(...).tools(...).skills(...).sandbox(...).artifacts(...).context(...).execution(...).principal(...).build().await` | Open a host with chosen components |
+| `.store(...).tools(...).skills(...).sandbox(...).artifacts(...).context(...).execution(...).harness(...).principal(...).build().await` | Open a host with chosen components |
 | `engine.create_session(profile, workspace, policy, metadata).await` | Pinned profile/skills, workspace identity, host principal |
 | `engine.open_session(id).await` | Recover durable state; no automatic external dispatch |
 | `engine.list_sessions().await` | Stored session IDs |
@@ -100,3 +100,14 @@ The tree shares the root's total `Limits.max_model_requests`; each run retains
 its own metrics. `Run.children`, `Run.tree_model_requests`, `SessionData.parent`
 and `EventKind::Subagent` expose durable orchestration state. See
 [subagent semantics and examples](subagents.md) before implementing a host UI.
+
+New root runs are adaptive by default. `EngineBuilder::harness(harness::HarnessConfig)`
+optionally configures completion criteria and explicit host guidance. Legacy mode
+values are migrated for new roots; existing run contracts are preserved. Existing struct literals and provider implementations remain
+compatible. Run-bound configuration, completion records and generated-message
+provenance occupy the reserved `SessionData.metadata._werkworker_harness` object;
+old sessions without it remain classic on resume. See [adaptive harness](harness.md)
+for exact examples, limits, completion semantics and metadata requirements.
+`ModelProvider::input_token_source(&request)` is an optional, non-I/O diagnostic
+method; its default reports native cached evidence or an unspecified provider
+estimate. It does not replace `count_input_tokens` / `estimate_input_tokens`.

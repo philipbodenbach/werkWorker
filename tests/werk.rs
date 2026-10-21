@@ -597,12 +597,17 @@ async fn protocol_native_count_keeps_large_current_file_work_in_context() {
         output_schema: None,
     };
     provider.count_input_tokens(&original).await.unwrap();
+    assert_eq!(provider.input_token_source(&original), "native_exact");
     for reserve in 512..577 {
         let mut other = original.clone();
         other.max_output_tokens = reserve;
         provider.count_input_tokens(&other).await.unwrap();
     }
     assert_eq!(provider.cached_input_tokens(&original), None);
+    assert_eq!(
+        provider.input_token_source(&original),
+        "provider_unspecified"
+    );
     let mut stream = provider.stream(original).await.unwrap();
     let mut assembler = ResponseAssembler::default();
     while let Some(delta) = stream.next().await {
@@ -788,6 +793,11 @@ async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_coun
         max_output_tokens: 128,
         output_schema: None,
     };
+    provider.estimate_input_tokens(&request).await.unwrap();
+    assert_eq!(
+        provider.input_token_source(&request),
+        "native_text_plus_image_estimate"
+    );
     let mut stream = provider.stream(request).await.unwrap();
     while let Some(delta) = stream.next().await {
         delta.unwrap();
@@ -1323,10 +1333,10 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
         let budget = r.body["max_completion_tokens"].as_u64().unwrap();
         assert!((3072..=4096).contains(&budget));
         assert!(
-            messages[0]["content"]
+            !messages[0]["content"]
                 .as_str()
                 .unwrap()
-                .contains(&format!("Output budget: {budget} tokens"))
+                .contains("Output budget:")
         );
     }
     // A read is evidence, not a saved-write body: keep the latest verification.

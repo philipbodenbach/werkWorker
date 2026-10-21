@@ -463,7 +463,7 @@
       ],
       "expected": {
         "successful_tools": 1,
-        "denied": 1,
+        "validation_errors": ["path_denied"],
         "text": "no access expansion"
       }
     },

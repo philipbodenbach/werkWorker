@@ -200,3 +200,12 @@ live child-approval PTY scenario were not established by those original Linux re
 The subsequent `scripts/tests/subagents_tui_smoke.py` regression exercises two
 children, inspector selection, addressed approvals/questions and completed results
 against a local HTTP fixture, without a real model.
+
+## Run-bound harness inheritance
+
+A child inherits its parent's persisted harness mode and local-model guidance,
+not the reopening engine's defaults. Root completion checks are specific to the
+root goal and are not applied to child goals. In adaptive and preserved minimal runs automatic child
+delivery uses a low-authority assistant data envelope with separately persisted
+harness provenance, rather than appearing as a new user request. The parent
+continues through the same synthesis loop and tree budget. See [harness](harness.md).

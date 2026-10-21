@@ -86,8 +86,11 @@ async fn repeated_tests_after_workspace_changes_are_allowed_but_no_progress_is_b
                 ),
             ]);
         } else {
-            // Reads and failed writes must not disguise an unproductive loop.
+            // A new read is evidence once; unchanged reads and failed writes
+            // must not disguise an unproductive loop.
             turns.extend([
+                call("files.read", json!({"path":"counter"})),
+                check(),
                 call("files.read", json!({"path":"counter"})),
                 call(
                     "files.write",
@@ -489,19 +492,26 @@ async fn truncated_generation_recovers_into_one_file_without_user_steering() {
     }
     let requests = provider.requests();
     assert!(
-        requests[0].messages[0]
+        !requests[0].messages[0]
             .content
             .contains("Build large files across turns")
     );
     assert!(
-        requests[1].messages[0]
-            .content
-            .contains("Output-limit recovery 1")
+        requests[1]
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && m.content.contains("\"event\":\"output_limit\""))
     );
     assert_ne!(fingerprint(&requests[0]), fingerprint(&requests[1]));
-    let final_prompt = &requests.last().unwrap().messages[0].content;
-    assert!(final_prompt.contains("Successful file changes in this session"));
-    assert!(final_prompt.contains(&hash(&complete)));
+    assert_eq!(requests[0].messages[0], requests[1].messages[0]);
+    assert!(
+        requests
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.role != Role::System && m.content.contains(&hash(&complete)))
+    );
     for request in requests {
         assert_eq!(request.max_output_tokens, 4096);
         validate_messages(&request.messages).unwrap();

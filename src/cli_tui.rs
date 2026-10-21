@@ -1485,15 +1485,15 @@ fn draw_settings(frame: &mut Frame, view: &mut View, area: Rect) {
 
 fn draw(frame: &mut Frame, view: &mut View) {
     let area = frame.area();
-    // Keep the selected text stable while model output continues in the background.
-    if let (Some(selection), Some(buffer)) = (&view.selection, &view.rendered)
-        && buffer.area == area
+    // A selection may retain its own pane, never the complete frame: approvals,
+    // status and errors must remain live while the user copies streamed text.
+    if view
+        .rendered
+        .as_ref()
+        .is_none_or(|buffer| buffer.area != area)
     {
-        *frame.buffer_mut() = buffer.clone();
-        selection.highlight(frame.buffer_mut());
-        return;
+        view.selection = None;
     }
-    view.selection = None;
     view.selectable.clear();
     for pane in &mut view.panes {
         pane.area = Rect::default();
@@ -1803,7 +1803,26 @@ fn draw(frame: &mut Frame, view: &mut View) {
             view.selectable.insert(0, panel("", MUTED).inner(popup));
         }
     }
+    if let Some(selection) = &view.selection {
+        if !view.selectable.contains(&selection.area) {
+            // A request or layout change moved the selected pane.
+            view.selection = None;
+        } else if selection.start != selection.end
+            && let Some(buffer) = &view.rendered
+        {
+            for y in selection.area.y..selection.area.bottom() {
+                for x in selection.area.x..selection.area.right() {
+                    frame.buffer_mut()[(x, y)] = buffer[(x, y)].clone();
+                }
+            }
+        }
+    }
     view.rendered = Some(frame.buffer_mut().clone());
+    if let Some(selection) = &view.selection
+        && selection.start != selection.end
+    {
+        selection.highlight(frame.buffer_mut());
+    }
 }
 
 // Surface the first pending addressed request across the bounded agent tree.
@@ -1822,6 +1841,9 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
     let mut owner = String::new();
     while let Some((run, goal, depth)) = pending.pop() {
         let state = run.status().await?;
+        if depth == 0 {
+            view.status = format!("{:?}", state.status);
+        }
         if depth > 0 {
             lines.push(format!(
                 "{}{:?} · {}",
@@ -1905,6 +1927,8 @@ async fn refresh_agents(root: &RunHandle, view: &mut View) -> Result<Option<RunH
         || view.interaction.as_ref().map(|q| &q.request_id)
             != interaction.as_ref().map(|q| &q.request_id);
     if changed {
+        // Never let a stale selection cover a newly actionable request.
+        view.selection = None;
         view.pane(Pane::Request).offset = 0;
         view.choice_selected = usize::from(approval.is_some());
         if interaction.is_some() && view.pasted_images.is_empty() {
@@ -2191,9 +2215,9 @@ pub async fn show(
             },
             _ = agents_tick.tick() => {
                 if let Some(run) = &active {
-                    let previous = (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
+                    let previous = (view.status.clone(), view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
                     addressed = refresh_agents(run, &mut view).await?;
-                    dirty |= previous != (view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
+                    dirty |= previous != (view.status.clone(), view.agents.clone(), view.approval.as_ref().map(|a|a.request_id.clone()), view.interaction.as_ref().map(|a|a.request_id.clone()), view.agent_views.clone());
                 }
             },
             _ = tick.tick() => { if dirty { terminal.draw(|frame| draw(frame, &mut view))?; dirty = false; } },
@@ -2272,6 +2296,11 @@ pub async fn show(
                         MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
                             if let Some(selection) = &mut view.selection {
                                 selection.extend(mouse.column, mouse.row);
+                            }
+                            if mouse.kind == MouseEventKind::Up(MouseButton::Left)
+                                && view.selection.as_ref().is_some_and(|s| s.start == s.end)
+                            {
+                                view.selection = None;
                             }
                         }
                         MouseEventKind::Down(MouseButton::Right) if !view.copy_selection().await => {
@@ -2873,7 +2902,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_frame_stays_stable_during_output_and_is_cleared_on_resize() {
+    fn selected_text_stays_stable_but_status_and_errors_remain_live() {
         let mut view = View {
             transcript: "selected text".into(),
             ..Default::default()
@@ -2888,7 +2917,18 @@ mod tests {
             end: (area.x + 12, area.y),
         });
         view.append(&"\nnew output".repeat(30));
+        view.status = "WaitingApproval".into();
+        view.error = "A new error must remain visible".into();
         terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("WaitingApproval"));
+        assert!(rendered.contains("A new error must remain visible"));
         assert_eq!(
             view.selection
                 .as_ref()
@@ -2899,6 +2939,33 @@ mod tests {
         terminal.backend_mut().resize(30, 12);
         terminal.draw(|f| draw(f, &mut view)).unwrap();
         assert!(view.selection.is_none());
+    }
+
+    #[test]
+    fn mouse_down_without_drag_does_not_freeze_output() {
+        let mut view = View {
+            transcript: "before".into(),
+            ..Default::default()
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let area = view.selectable[0];
+        view.selection = Some(text_input::Selection {
+            area,
+            start: (area.x, area.y),
+            end: (area.x, area.y),
+        });
+        view.append("\nafter click");
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("after click"));
     }
 
     #[test]

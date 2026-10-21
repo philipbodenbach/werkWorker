@@ -92,8 +92,10 @@ unavailable, copying falls back to the terminal's OSC 52 support; for pasting,
 use the terminal's paste shortcut. F6 releases mouse capture so native terminal
 selection and context menus work, then restores pane scrolling when pressed
 again. Shift-drag also bypasses mouse capture in many terminals.
-While an application selection is active, the visible frame stays still so new
-output cannot change the text being copied; output continues in the background.
+While dragging an application selection, only the selected pane stays still so
+new output cannot change the text being copied. Status, errors and the rest of
+the interface stay live. A simple click does not pause output. New approvals or
+questions clear the selection and appear immediately.
 
 Slash commands: `/help` shows commands and shortcuts, `/clear` clears only the
 visible conversation, `/cancel` cancels the active run, `/agents` opens live child details, `/permissions` explains current tools and rights, `/settings` edits session/project configuration, `/setup` reconnects through the configuration wizard when no run is active, and `/quit` closes the

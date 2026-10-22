@@ -207,13 +207,15 @@ whole task. A different successful write or process call resets that comparison,
 so an edit/test/fix/test cycle can reuse the same test command. Failed writes and
 read-only setup calls do not reset it; identical processes cannot reset themselves.
 Processes are conservatively treated as potential workspace changes, including
-shell edits. The overall step, request and time budgets still bound alternating
-processes.
+shell edits. Explicit overall step, request and time budgets still bound alternating
+processes. Interactive runs use continuous aggregate budgets by default.
 
 In classic mode the model sees the remaining step and tool-call budgets on every turn so it can
 plan implementation and repeated verification within the configured limits.
-Current defaults allow 48 steps and 60 model requests; saved connections retain
-their explicitly stored limits rather than silently adopting new defaults.
+SDK/headless finite defaults allow 48 steps and 60 model requests. TUI runs
+remove aggregate cutoffs unless `--limits` is supplied; headless `--continuous`
+and `Limits::continuous()` provide the same behavior. The persisted `continuous` flag disables aggregate cutoffs without reinterpreting
+older numeric budgets. Saved runs retain their persisted limits.
 
 File tools accept both relative paths and the sandbox alias `/workspace/...`.
 Both resolve to the same workspace scope before policy checks, and prepared
@@ -224,7 +226,7 @@ hard denies, symlink isolation and hash-bound edits still apply.
 The connection wizard defaults to 4,096 output tokens including reasoning. It
 checks the effective per-request context and requires an output reserve no larger
 than one quarter of it before opening the session. Headless/direct CLI paths keep
-`Limits::default()` (2,048 output tokens). Setup applies its selected limits to
+`Limits::default()` (2,048 output tokens). Setup applies its selected context/output limits to
 each new TUI run; existing recovered runs retain their original persisted limits.
 Project instructions are immutable profile constraints in the request, counted
 by the existing estimator and retained during compaction. See [setup](setup.md)
@@ -290,3 +292,8 @@ These mechanisms do not establish application correctness. The isolated live
 acceptance in `scripts/tests/live_tetris.py` can require a real truncation with
 `--expect-output-recovery`; its completion and syntax checks still require a
 separate browser gameplay check.
+
+Current coding plans and the latest host-produced verification evidence are
+projected from durable run state even when their original messages are compacted.
+The prompt excerpts are bounded; full evidence remains available to the completion
+gate. See [coding acceptance](harness.md#coding-acceptance-and-continuous-work).

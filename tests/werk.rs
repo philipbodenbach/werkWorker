@@ -1,3 +1,5 @@
+// Infrastructure fixtures explicitly opt out of coding acceptance checks.
+// Behavioral completion is exercised in tests/completion.rs.
 mod support;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -505,6 +507,10 @@ async fn timed_out_inference_is_not_retried_and_shared_connection_blocks_followu
         configuration.timeout_ms = 150;
         let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
         let engine = WorkerEngine::builder(provider.clone())
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
             .build()
             .await
             .unwrap();
@@ -919,6 +925,10 @@ async fn native_discovery_then_chat_and_correct_tool_pairs() {
         CapabilityStatus::ExternallyManaged
     );
     let engine = WorkerEngine::builder(Arc::new(provider))
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -1234,6 +1244,10 @@ async fn protocol_native_count_keeps_large_current_file_work_in_context() {
     configuration.capabilities.context_tokens = Some(4096);
     let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
     let engine = WorkerEngine::builder(provider.clone())
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -1385,6 +1399,10 @@ async fn smaller_server_context_is_learned_and_rebuilt_without_identical_retry()
             .unwrap(),
     );
     let engine = WorkerEngine::builder(provider.clone())
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -1540,6 +1558,10 @@ async fn coding_image_budget_uses_native_text_without_repeating_unsupported_coun
         configuration.capabilities.context_tokens = Some(16384);
         let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
         let engine = WorkerEngine::builder(provider.clone())
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
             .build()
             .await
             .unwrap();
@@ -1801,7 +1823,14 @@ async fn image_inspection_keeps_file_hash_missing_file_and_listing_until_edit() 
         let mut configuration = config(&server.origin, streaming);
         configuration.capabilities.context_tokens = Some(16384);
         let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
-        let engine = WorkerEngine::builder(provider).build().await.unwrap();
+        let engine = WorkerEngine::builder(provider)
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), original).unwrap();
         let session = engine
@@ -1965,7 +1994,15 @@ async fn image_coding_compaction_fixture(prior_turn: bool) {
     let mut configuration = config(&server.origin, false);
     configuration.capabilities.context_tokens = Some(16384);
     let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
-    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    // Completion gates are tested separately; this fixture isolates image compaction.
+    let engine = WorkerEngine::builder(provider)
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
+        .build()
+        .await
+        .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let session = engine
         .create_session(
@@ -2188,4 +2225,39 @@ async fn image_coding_compaction_fixture(prior_turn: bool) {
         generations.len()
     );
     engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn configured_protocol_capacity_survives_missing_observability_and_refreshes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let slots = Arc::new(AtomicUsize::new(2));
+    let reported = slots.clone();
+    let server=Server::start(move |request| match request.path.as_str() {
+        "/werk/v1/capabilities" => control(json!({"capabilities":[{"id":"api.chat.limits","status":"supported","detail":"fixture","operations":["limits"]}]})),
+        path if path.starts_with("/werk/v1/chat/limits?") => control(json!({"schema_version":1,"model":"fixture-model","context_tokens":32768,"max_output_tokens":8192,"max_concurrent_requests":(match reported.load(Ordering::SeqCst) {0 => None,value => Some(value)})})),
+        _ => werk(request),
+    }).await;
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    assert_eq!(provider.concurrency().max_requests, Some(2));
+    assert_eq!(provider.concurrency().source, "werk_protocol_limits");
+    slots.store(1, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+    provider.refresh_concurrency().await;
+    assert_eq!(provider.concurrency().max_requests, Some(1));
+    for (reported, expected) in [(0, None), (2, Some(2))] {
+        slots.store(reported, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+        provider.refresh_concurrency().await;
+        assert_eq!(provider.concurrency().max_requests, expected);
+    }
+    assert!(
+        !server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path == "/v1/chat/completions")
+    );
 }

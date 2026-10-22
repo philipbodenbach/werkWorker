@@ -1,3 +1,5 @@
+// Infrastructure fixtures explicitly opt out of coding acceptance checks.
+// Behavioral completion is exercised in tests/completion.rs.
 #![cfg(target_os = "linux")]
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -136,6 +138,10 @@ async fn scope_gate_reconfirmed_write_uses_one_repetition_with_and_without_resum
         let provider = Arc::new(ScriptedProvider::new(turns));
         let mut engine = WorkerEngine::builder(provider.clone())
             .store(Arc::new(SqliteStore::open(&database).await.unwrap()))
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
             .build()
             .await
             .unwrap();
@@ -182,6 +188,10 @@ async fn scope_gate_reconfirmed_write_uses_one_repetition_with_and_without_resum
             let next = Arc::new(ScriptedProvider::new(confirmed()));
             engine = WorkerEngine::builder(next.clone())
                 .store(store)
+                .harness(werk_worker::harness::HarnessConfig {
+                    coding_checks: false,
+                    ..Default::default()
+                })
                 .build()
                 .await
                 .unwrap();
@@ -283,6 +293,7 @@ async fn scope_gate_redecides_whole_batch_and_preserves_rules_across_compaction_
         .store(store.clone())
         .harness(HarnessConfig {
             local_guidance: Some("HOST: preserve identifiers".into()),
+            coding_checks: false,
             ..Default::default()
         })
         .build()
@@ -355,6 +366,10 @@ async fn scope_gate_redecides_whole_batch_and_preserves_rules_across_compaction_
     ]));
     let reopened = WorkerEngine::builder(next.clone())
         .store(store.clone())
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -405,6 +420,10 @@ async fn shell_scope_is_workspace_wide_and_cannot_execute_before_new_decision() 
         ScriptedTurn::text("Reconsidered under all workspace rules; no command needed."),
     ]));
     let engine = WorkerEngine::builder(provider.clone())
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -467,6 +486,10 @@ async fn directory_inspection_loads_only_its_own_rules_and_normalizes_source_ali
             .insert(name.into(), ToolPermission::Allow);
     }
     let engine = WorkerEngine::builder(provider.clone())
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -542,6 +565,10 @@ async fn scope_gate_preserves_host_denials_and_only_requests_approval_for_recons
         host.tool_permissions
             .insert("files.write".into(), permission);
         let engine = WorkerEngine::builder(provider.clone())
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
             .build()
             .await
             .unwrap();
@@ -623,6 +650,10 @@ async fn legacy_embedded_project_contract_survives_reopening_without_reinterpret
         "Ready",
     )])))
     .store(store.clone())
+    .harness(werk_worker::harness::HarnessConfig {
+        coding_checks: false,
+        ..Default::default()
+    })
     .build()
     .await
     .unwrap();
@@ -658,6 +689,10 @@ async fn legacy_embedded_project_contract_survives_reopening_without_reinterpret
     ]));
     let reopened = WorkerEngine::builder(provider.clone())
         .store(store)
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -716,6 +751,10 @@ async fn scoped_rules_are_indispensable_and_custom_profile_text_is_verbatim() {
     let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text(
         "seed",
     )])))
+    .harness(werk_worker::harness::HarnessConfig {
+        coding_checks: false,
+        ..Default::default()
+    })
     .build()
     .await
     .unwrap();
@@ -822,6 +861,10 @@ async fn deferred_actions_cannot_reset_request_or_tool_budgets() {
             ),
         ]));
         let engine = WorkerEngine::builder(provider.clone())
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
             .build()
             .await
             .unwrap();
@@ -880,6 +923,10 @@ async fn new_project_context_needs_no_optional_markdown_or_skills() {
     ]));
     let engine = WorkerEngine::builder(provider.clone())
         .skills(skills::SkillRegistry::default())
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -990,6 +1037,10 @@ async fn measure_complete_requests_with_real_profiles_and_project_loader() {
             ]);
             let provider = Arc::new(ScriptedProvider::new(turns));
             let engine = WorkerEngine::builder(provider.clone())
+                .harness(werk_worker::harness::HarnessConfig {
+                    coding_checks: false,
+                    ..Default::default()
+                })
                 .build()
                 .await
                 .unwrap();

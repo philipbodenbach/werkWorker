@@ -133,6 +133,12 @@ async fn setup(
     std::fs::write(dir.path().join("result.txt"), "original").unwrap();
     let engine = WorkerEngine::builder(provider)
         .execution(config)
+        // These probes exercise delegation/permission mechanics with legacy
+        // replacement writes, not the coding acceptance contract.
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -471,14 +477,15 @@ async fn revoking_parent_grants_denies_child_writes() {
         "original"
     );
     for child in run.subagents().await.unwrap() {
+        let child_run = child.run.unwrap();
         assert!(
-            child
-                .run
-                .unwrap()
+            child_run
                 .invocations
                 .iter()
                 .filter(|i| i.call.name == "files.write")
-                .all(|i| i.result.as_ref().unwrap().status == Outcome::Denied)
+                .all(|i| i.result.as_ref().unwrap().status == Outcome::Denied),
+            "{:?}",
+            child_run.invocations
         );
     }
     engine.close().await.unwrap();
@@ -644,5 +651,182 @@ async fn minimal_children_inherit_behavior_and_results_keep_harness_provenance()
             .contains(&json!(message))
     );
     context::validate_messages(&data.messages).unwrap();
+    engine.close().await.unwrap();
+}
+
+struct CodingReviewProbe {
+    capacity: usize,
+    root: ScriptedProvider,
+    child: ScriptedProvider,
+    seen: Mutex<Vec<ModelRequest>>,
+}
+#[async_trait]
+impl ModelProvider for CodingReviewProbe {
+    fn identity(&self) -> String {
+        "coding-review-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+    fn concurrency(&self) -> InferenceConcurrency {
+        InferenceConcurrency {
+            max_requests: Some(self.capacity),
+            source: "fixture".into(),
+            detail: "configured".into(),
+        }
+    }
+    async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        let child = request
+            .messages
+            .iter()
+            .any(|m| m.role == Role::System && m.content.contains("delegated worker"));
+        self.seen.lock().unwrap().push(request.clone());
+        if child {
+            self.child.stream(request).await
+        } else {
+            self.root.stream(request).await
+        }
+    }
+}
+#[tokio::test]
+async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
+    use werk_worker::policy::ToolPermission;
+    for capacity in [1, 2] {
+        let plan = json!({"steps":[
+            {"id":"shell","description":"Create shell","status":"completed"},
+            {"id":"behavior","description":"Implement behavior","status":"completed"},
+            {"id":"verify","description":"Verify behavior","status":"completed"}
+        ]});
+        let mut turns = vec![
+            tool_turn("plan", "task.plan", plan),
+            tool_turn(
+                "write",
+                "files.write",
+                json!({"path":"game.txt","content":"incomplete"}),
+            ),
+        ];
+        turns.extend((0..6).map(|_| ScriptedTurn::text("Everything is done")));
+        let provider = Arc::new(CodingReviewProbe {
+            capacity,
+            root: ScriptedProvider::new(turns),
+            child: ScriptedProvider::new(vec![
+                tool_turn("inspect", "files.read", json!({"path":"game.txt"})),
+                ScriptedTurn::text("The implementation lacks a behavior test."),
+            ]),
+            seen: Mutex::new(vec![]),
+        });
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    name: "coding-basic".into(),
+                    schema_version: 1,
+                    prompt: "Implement and verify".into(),
+                    skills: vec![],
+                    tools: ["files.read", "files.write", "task.plan", "delegate_task"]
+                        .map(str::to_owned)
+                        .to_vec(),
+                },
+                dir.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    tool_permissions: ["files.read", "files.write"]
+                        .map(|n| (n.into(), ToolPermission::Allow))
+                        .into(),
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit("Build game", "start", Limits::continuous(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Failed, "{:?}", result.error);
+        assert_eq!(result.error.unwrap().code, "completion_stalled");
+        let children = run.subagents().await.unwrap();
+        assert_eq!(children.len(), usize::from(capacity == 2));
+        if let Some(child) = children.first() {
+            assert_eq!(child.run.as_ref().unwrap().status, RunStatus::Completed);
+            let saved = engine
+                .open_session(&child.session_id)
+                .await
+                .unwrap()
+                .snapshot()
+                .await
+                .unwrap();
+            assert!(!saved.policy.workspace_writable);
+            assert_eq!(saved.profile.tools, vec!["files.read"]);
+        }
+        assert!(result.text.is_none());
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn code_created_only_by_a_child_process_requires_parent_verification() {
+    use werk_worker::policy::ToolPermission;
+    if let Err(error) = werk_worker::runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let mut turns = vec![tool_turn(
+        "delegate",
+        "delegate_task",
+        json!({"tasks":[{"goal":"Implement core","tools":["process.run"]}]}),
+    )];
+    turns.extend((0..6).map(|_| ScriptedTurn::text("Done")));
+    let provider = Arc::new(CodingReviewProbe {
+        capacity: 2,
+        root: ScriptedProvider::new(turns),
+        child: ScriptedProvider::new(vec![
+            tool_turn(
+                "shell",
+                "process.run",
+                json!({"argv":["/bin/sh","-c","printf incomplete > game.txt"]}),
+            ),
+            ScriptedTurn::text("Created code"),
+        ]),
+        seen: Mutex::new(vec![]),
+    });
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                name: "coding-basic".into(),
+                schema_version: 1,
+                prompt: "Implement and verify".into(),
+                skills: vec![],
+                tools: vec!["delegate_task".into(), "process.run".into()],
+            },
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                tool_permissions: [("process.run".into(), ToolPermission::Allow)].into(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("Build game", "start", Limits::continuous(), None)
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "incomplete"
+    );
+    assert_eq!(result.status, RunStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "completion_stalled");
+    assert!(result.text.is_none());
     engine.close().await.unwrap();
 }

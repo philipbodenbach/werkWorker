@@ -1,3 +1,5 @@
+// Infrastructure fixtures explicitly opt out of coding acceptance checks.
+// Behavioral completion is exercised in tests/completion.rs.
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -30,7 +32,10 @@ async fn approval(run: &RunHandle, after: u64) -> ApprovalRequest {
                 return request;
             }
         }
-        panic!("No approval request");
+        panic!(
+            "No approval request; run error: {:?}",
+            run.status().await.unwrap().error
+        );
     })
     .await
     .unwrap()
@@ -73,6 +78,10 @@ async fn configure_during_question_and_remember_workspace_write_approval() {
     ]));
     let engine = WorkerEngine::builder(provider)
         .store(store)
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -167,6 +176,10 @@ async fn configure_during_question_and_remember_workspace_write_approval() {
                 .await
                 .unwrap(),
         ))
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -255,6 +268,10 @@ async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_
     ]));
     let engine = WorkerEngine::builder(provider.clone())
         .store(Arc::new(SqliteStore::open(&path).await.unwrap()))
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -341,6 +358,10 @@ async fn configure_persists_profile_and_revokes_disabled_skills_without_erasing_
     engine.close().await.unwrap();
     let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![])))
         .store(Arc::new(SqliteStore::open(&path).await.unwrap()))
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -363,6 +384,10 @@ async fn configure_accepts_optional_missing_skills_but_rejects_unknown_tools_and
     let mut slow = ScriptedTurn::text("slow response");
     slow.delay_ms = 10_000;
     let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![slow])))
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -443,6 +468,10 @@ async fn host_upgrade_during_question_enables_real_writes_and_persists_in_same_s
     ]));
     let engine = WorkerEngine::builder(provider.clone())
         .store(Arc::new(SqliteStore::open(&path).await.unwrap()))
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();
@@ -461,7 +490,8 @@ async fn host_upgrade_during_question_enables_real_writes_and_persists_in_same_s
             "Create files",
             "start",
             Limits {
-                context_tokens: 16384,
+                // This fixture tests approvals, not prompt-size admission.
+                context_tokens: 32768,
                 reserve_output_tokens: 4096,
                 ..Default::default()
             },
@@ -555,6 +585,10 @@ async fn host_upgrade_during_question_enables_real_writes_and_persists_in_same_s
         ScriptedTurn::text("done"),
     ])))
     .store(Arc::new(SqliteStore::open(&path).await.unwrap()))
+    .harness(werk_worker::harness::HarnessConfig {
+        coding_checks: false,
+        ..Default::default()
+    })
     .build()
     .await
     .unwrap();
@@ -683,6 +717,10 @@ async fn explicit_process_approval_runs_in_the_real_workspace_sandbox() {
     ]));
     let engine = WorkerEngine::builder(provider)
         .sandbox(sandbox)
+        .harness(werk_worker::harness::HarnessConfig {
+            coding_checks: false,
+            ..Default::default()
+        })
         .build()
         .await
         .unwrap();

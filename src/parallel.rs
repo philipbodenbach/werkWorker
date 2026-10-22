@@ -43,6 +43,51 @@ impl ExecutionConfig {
             .min(info.max_requests.unwrap_or(1).max(1))
     }
 }
+
+/// A lowered capacity prevents new admissions until existing requests drain;
+/// raising it wakes waiters without cancelling any in-flight inference.
+pub(crate) struct InferenceSlots {
+    state: Mutex<(usize, usize)>,
+    changed: tokio::sync::Notify,
+}
+pub(crate) struct InferencePermit(Arc<InferenceSlots>);
+impl InferenceSlots {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((0, limit.max(1))),
+            changed: tokio::sync::Notify::new(),
+        })
+    }
+    pub fn set_limit(&self, limit: usize) {
+        self.state.lock().unwrap().1 = limit.max(1);
+        self.changed.notify_waiters();
+    }
+    pub fn available_permits(&self) -> usize {
+        let (active, limit) = *self.state.lock().unwrap();
+        limit.saturating_sub(active)
+    }
+    pub async fn acquire(self: &Arc<Self>) -> InferencePermit {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let mut state = self.state.lock().unwrap();
+                if state.0 < state.1 {
+                    state.0 += 1;
+                    return InferencePermit(self.clone());
+                }
+            }
+            changed.await;
+        }
+    }
+}
+impl Drop for InferencePermit {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().0 -= 1;
+        self.0.changed.notify_waiters();
+    }
+}
 #[derive(Default)]
 pub(crate) struct WorkspaceAccess {
     leases: Mutex<Vec<(String, PathBuf, bool)>>,
@@ -97,5 +142,32 @@ mod tests {
         assert!(access.try_acquire(&path.join("child"), false).is_none());
         drop(write);
         assert!(access.try_acquire(path, false).is_some());
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[tokio::test]
+    async fn capacity_changes_drain_inflight_requests_and_wake_waiters() {
+        let slots = InferenceSlots::new(2);
+        let first = slots.acquire().await;
+        let second = slots.acquire().await;
+        slots.set_limit(1);
+        drop(first);
+        assert_eq!(slots.available_permits(), 0);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), slots.acquire())
+                .await
+                .is_err()
+        );
+        drop(second);
+        let first = slots.acquire().await;
+        slots.set_limit(2);
+        let second = tokio::time::timeout(std::time::Duration::from_millis(100), slots.acquire())
+            .await
+            .unwrap();
+        drop((first, second));
+        assert_eq!(slots.available_permits(), 2);
     }
 }

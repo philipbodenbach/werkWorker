@@ -145,6 +145,9 @@ impl RunStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
+    /// Ignore aggregate run cutoffs; keep per-request/process limits and all
+    /// cancellation/recovery checks. Old snapshots default to finite budgets.
+    pub continuous: bool,
     pub max_steps: u32,
     pub max_model_requests: u32,
     pub max_tool_invocations: u32,
@@ -163,6 +166,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            continuous: false,
             max_steps: 48,
             max_model_requests: 60,
             max_tool_invocations: 64,
@@ -178,6 +182,25 @@ impl Default for Limits {
     }
 }
 impl Limits {
+    /// No automatic aggregate run cutoff. Per-request, sandbox, retry and
+    /// cancellation limits still apply; explicit legacy budgets keep their meaning.
+    pub fn continuous() -> Self {
+        let mut limits = Self::default();
+        limits.remove_run_cutoffs();
+        limits
+    }
+    pub fn remove_run_cutoffs(&mut self) {
+        self.continuous = true;
+    }
+    pub(crate) fn steps_exhausted(&self, used: u32) -> bool {
+        !self.continuous && used >= self.max_steps
+    }
+    pub(crate) fn requests_exhausted(&self, used: u32) -> bool {
+        !self.continuous && used >= self.max_model_requests
+    }
+    pub(crate) fn tools_exceeded(&self, used: u32) -> bool {
+        !self.continuous && used > self.max_tool_invocations
+    }
     pub fn validate(&self) -> Result<()> {
         if self.max_steps == 0
             || self.max_steps > 1000
@@ -423,7 +446,9 @@ impl Run {
         if let Some(started) = self.approval_wait_started_at_ms.take() {
             let elapsed = now.saturating_sub(started);
             self.metrics.approval_wait_ms = self.metrics.approval_wait_ms.saturating_add(elapsed);
-            self.deadline_ms = self.deadline_ms.saturating_add(elapsed);
+            if self.deadline_ms != 0 {
+                self.deadline_ms = self.deadline_ms.saturating_add(elapsed);
+            }
         }
     }
     /// Count repetitions in the current workspace revision. A different successful

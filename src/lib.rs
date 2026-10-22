@@ -2,6 +2,7 @@
 pub mod agents;
 pub mod api;
 pub mod attachments;
+mod completion;
 pub mod context;
 pub mod core;
 pub mod harness;

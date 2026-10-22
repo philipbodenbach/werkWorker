@@ -122,6 +122,8 @@ pub trait ModelProvider: Send + Sync {
     fn concurrency(&self) -> InferenceConcurrency {
         InferenceConcurrency::default()
     }
+    /// Optional, throttled refresh of model capacity. No generation or loading.
+    async fn refresh_concurrency(&self) {}
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -738,10 +740,15 @@ pub struct GenerationLimits {
     pub model: String,
     pub context_tokens: Option<usize>,
     pub max_output_tokens: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_requests: Option<usize>,
 }
 impl GenerationLimits {
     fn validate(&self, model: &str) -> Result<()> {
         if self.schema_version != 1
+            || self
+                .max_concurrent_requests
+                .is_some_and(|n| !(1..=65536).contains(&n))
             || self.model != model
             || [self.context_tokens, self.max_output_tokens]
                 .into_iter()
@@ -768,6 +775,9 @@ pub struct WerkProvider {
     pub discovery: Value,
     pub reasoning_defaults: BTreeMap<String, ReasoningDefaults>,
     pub inference_concurrency: InferenceConcurrency,
+    refreshed_concurrency: Mutex<InferenceConcurrency>,
+    capacity_refresh_at: std::sync::atomic::AtomicU64,
+    capacity_refresh_gate: tokio::sync::Mutex<()>,
     context_limit: std::sync::atomic::AtomicUsize,
     output_limit: Option<usize>,
     pub context_limit_source: String,
@@ -959,15 +969,21 @@ impl WerkProvider {
         // Prefer fresh, model-matched Werk Protocol evidence. This samples only
         // running workers; it does not probe/load every installed backend.
         let snapshot = tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_secs(4),
             client.control("/werk/v1/observability"),
         )
         .await
         .ok()
         .and_then(std::result::Result::ok);
-        let protocol_capacity = snapshot
+        let protocol_capacity = generation_limits
             .as_ref()
-            .and_then(|value| observability_concurrency(value, &config.model));
+            .and_then(|limits| limits.max_concurrent_requests)
+            .map(configured_concurrency)
+            .or_else(|| {
+                snapshot
+                    .as_ref()
+                    .and_then(|value| observability_concurrency(value, &config.model))
+            });
         let protocol_limit = snapshot
             .as_ref()
             .and_then(|value| observability_context(value, &config.model));
@@ -1033,6 +1049,9 @@ impl WerkProvider {
         Ok(Self {
             client,
             config,
+            refreshed_concurrency: Mutex::new(inference_concurrency.clone()),
+            capacity_refresh_at: std::sync::atomic::AtomicU64::new(now_ms()),
+            capacity_refresh_gate: tokio::sync::Mutex::new(()),
             inference_concurrency,
             context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
             output_limit: generation_limits.as_ref().and_then(|l| l.max_output_tokens),
@@ -1176,7 +1195,56 @@ impl ModelProvider for WerkProvider {
             .or_insert(reserve);
     }
     fn concurrency(&self) -> InferenceConcurrency {
-        self.inference_concurrency.clone()
+        self.refreshed_concurrency.lock().unwrap().clone()
+    }
+    async fn refresh_concurrency(&self) {
+        use std::sync::atomic::Ordering;
+        if now_ms().saturating_sub(self.capacity_refresh_at.load(Ordering::Relaxed)) < 5000 {
+            return;
+        }
+        let Ok(_gate) = self.capacity_refresh_gate.try_lock() else {
+            return;
+        };
+        if now_ms().saturating_sub(self.capacity_refresh_at.load(Ordering::Relaxed)) < 5000 {
+            return;
+        }
+        let mut capacity = None;
+        let mut authoritative_unknown = false;
+        if self
+            .runtime_capabilities
+            .iter()
+            .any(|c| c.id == "api.chat.limits" && c.status == CapabilityStatus::Supported)
+            && let Ok(url) = reqwest::Url::parse_with_params(
+                "http://localhost/",
+                &[("model", &self.config.model)],
+            )
+            && let Ok(Ok(value)) = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.client
+                    .control(&format!("/werk/v1/chat/limits?{}", url.query().unwrap())),
+            )
+            .await
+            && let Ok(limits) = serde_json::from_value::<GenerationLimits>(value)
+            && limits.validate(&self.config.model).is_ok()
+        {
+            capacity = limits.max_concurrent_requests.map(configured_concurrency);
+            authoritative_unknown = capacity.is_none();
+        }
+        if capacity.is_none()
+            && let Ok(Ok(value)) = tokio::time::timeout(
+                Duration::from_secs(4),
+                self.client.control("/werk/v1/observability"),
+            )
+            .await
+        {
+            capacity = observability_concurrency(&value, &self.config.model);
+        }
+        if let Some(capacity) = capacity {
+            *self.refreshed_concurrency.lock().unwrap() = capacity;
+        } else if authoritative_unknown {
+            *self.refreshed_concurrency.lock().unwrap() = InferenceConcurrency::default();
+        }
+        self.capacity_refresh_at.store(now_ms(), Ordering::Relaxed);
     }
     fn capabilities(&self) -> ModelCapabilities {
         let mut caps = self.config.capabilities.clone();
@@ -1736,6 +1804,16 @@ impl SseDecoder {
 }
 
 /// Match the chat routing alias/exact ID, never sum unrelated models or free slots.
+fn configured_concurrency(slots: usize) -> InferenceConcurrency {
+    InferenceConcurrency {
+        max_requests: Some(slots),
+        source: "werk_protocol_limits".into(),
+        detail: format!(
+            "{slots} configured model slots from Werk Protocol; capacity refreshes during execution"
+        ),
+    }
+}
+
 fn deployment_concurrency(value: &Value, model: &str) -> InferenceConcurrency {
     let Some(profiles) = value
         .pointer("/deployments/profiles")

@@ -241,8 +241,8 @@ impl DefaultContextBuilder {
             .push_str("File paths: relative or /workspace/... name the same confined workspace.\n");
         prompt.push_str(&format!(
             "Remaining: {} steps, {} tool calls, including implementation, repeated checks and final report.\n",
-            run.limits.max_steps.saturating_sub(run.metrics.steps),
-            run.limits.max_tool_invocations.saturating_sub(run.metrics.tool_invocations),
+            if run.limits.continuous { "unlimited".into() } else { run.limits.max_steps.saturating_sub(run.metrics.steps).to_string() },
+            if run.limits.continuous { "unlimited".into() } else { run.limits.max_tool_invocations.saturating_sub(run.metrics.tool_invocations).to_string() },
         ));
         let recent: Vec<_> = std::iter::once(run)
             .chain(
@@ -431,6 +431,15 @@ impl DefaultContextBuilder {
                 dynamic.extend(crate::harness::minimal_feedback(session, run)?);
             }
             dynamic.extend(crate::harness::adaptive_feedback(session, run)?);
+        }
+        if crate::completion::enabled(session, run)? {
+            prompt.push_str("\nComplete every plan step honestly. Keep changes incremental; create files once, then edit unique observed anchors.\n");
+            if crate::harness::config(session, run)?.completion.is_some() {
+                prompt.push_str("A host-configured acceptance command will check each final candidate. Fix reported failures before claiming completion.\n");
+            } else {
+                prompt.push_str("Completion requires recorded behavioral checks on current files. Use process.run verification:{criteria:[requirements actually exercised],paths:[relevant source/test files]}; commands without verification are not completion evidence. Never mark a plan step complete merely to bypass a failed check.\n");
+            }
+            dynamic.extend(crate::completion::observation(session, run)?);
         }
         // Only the stable host/profile prefix has system authority. Rebuild all
         // lower-authority evidence together, including after rolling compaction.

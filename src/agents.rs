@@ -125,6 +125,60 @@ impl RunHandle {
     }
 }
 impl SessionHandle {
+    /// One focused, read-only acceptance review for nontrivial coding work.
+    /// It shares admission/policy with explicit delegation and never substitutes
+    /// a child's prose for executable verification by the parent.
+    pub(crate) async fn maybe_start_review(&self, run_id: &str) -> Result<()> {
+        let data = self.snapshot().await?;
+        let run = data.run(run_id)?;
+        if data.parent.is_some()
+            || !crate::completion::enabled(&data, run)?
+            || !run.children.is_empty()
+            || run.plan["steps"]
+                .as_array()
+                .is_none_or(|steps| steps.len() < 3)
+            || !run.invocations.iter().any(|i| {
+                matches!(i.call.name.as_str(), "files.write" | "files.edit")
+                    && i.result
+                        .as_ref()
+                        .is_some_and(|r| r.status == Outcome::Succeeded)
+            })
+            || self.execution_status()["effective_model_requests"]
+                .as_u64()
+                .unwrap_or(1)
+                < 2
+            || self.engine.inner.execution.max_depth == 0
+            || self.engine.inner.execution.max_children_per_run == 0
+            || self.engine.inner.child_slots.available_permits() == 0
+            || !data.profile.tools.iter().any(|t| t == "delegate_task")
+        {
+            return Ok(());
+        }
+        let task = DelegateTask {
+            goal: "Review acceptance criteria and missing behavior for this coding task. Inspect the existing implementation, identify gaps, and propose concrete behavioral assertions through real entry points. The parent continues implementing. Return concise evidence and test recommendations; do not implement or claim the user's task is complete.".into(),
+            context: format!("User requirements:\n{}\nCurrent plan:\n{}", crate::completion::excerpt(&run.input, 8000), crate::completion::excerpt(&run.plan.to_string(), 4000)),
+            tools: Some(data.profile.tools.iter().filter(|t| matches!(t.as_str(), "files.read" | "files.list" | "files.search")).cloned().collect()),
+            read_only: true,
+        };
+        if task.tools.as_ref().is_none_or(Vec::is_empty) {
+            return Ok(());
+        }
+        let definition = AgentTool("delegate_task".into()).definition();
+        let arguments = json!({"tasks":[task]});
+        if data.policy.evaluate(&definition, &arguments, &[])
+            != crate::policy::PolicyDecision::Allow
+        {
+            return Ok(());
+        }
+        match self
+            .delegate(run_id, vec![task], &format!("review_{run_id}"))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) if matches!(error.code.as_str(), "agent_capacity" | "agent_limit") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
     pub(crate) async fn ancestors_allow(&self, def: &ToolDefinition, args: &Value) -> Result<bool> {
         let mut parent = self.snapshot().await?.parent;
         let mut visited = std::collections::BTreeSet::new();
@@ -163,13 +217,13 @@ impl SessionHandle {
             {
                 return Err(WorkerError::new("cancelled", "Root run stopped"));
             }
-            if run.tree_model_requests >= run.limits.max_model_requests {
+            if run.limits.requests_exhausted(run.tree_model_requests) {
                 return Err(WorkerError::new(
                     "request_budget",
                     "Shared agent-tree model request budget exhausted",
                 ));
             }
-            run.tree_model_requests += 1;
+            run.tree_model_requests = run.tree_model_requests.saturating_add(1);
             Ok(())
         })
         .await

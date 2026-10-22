@@ -152,8 +152,8 @@ ww --werk-config examples/werk-config.json \
 ```
 
 Defaults allow four active subagents and up to four concurrent model requests.
-Werk deployment diagnostics or WerkProtocol observability must establish server
-capacity; unknown concurrency gracefully limits inference to one request. Children
+WerkProtocol configured limits (refreshed while running), observability, or
+deployment diagnostics establish server capacity; unknown concurrency gracefully limits inference to one request. Children
 still run as independent tasks. Shared-workspace writes are serialized and
 checked for stale edits. See [configuration and safety boundaries](docs/subagents.md),
 [SDK](docs/sdk.md), [protocol](docs/protocol.md) and
@@ -163,7 +163,11 @@ Context and output reservations respect the provider limit before every request.
 Automatic rolling compaction keeps long tool runs within that budget while
 preserving user constraints and complete tool pairs. If Werk cannot report its
 context size, set `capabilities.context_tokens` explicitly in the connection JSON.
-See [server limits and compaction](docs/context.md).
+Coding runs require a current-file verification receipt before completion and
+retain plans/checks across compaction. Interactive runs continue without aggregate
+time/step cutoffs; `--continuous` enables this for headless runs.
+See [coding acceptance](docs/harness.md#coding-acceptance-and-continuous-work) and
+[server limits and compaction](docs/context.md).
 
 ## Minimal SDK
 

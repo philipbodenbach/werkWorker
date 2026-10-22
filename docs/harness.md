@@ -2,8 +2,8 @@
 
 New runs use one lean, adaptive harness through the existing model/tool loop.
 There is no mode choice, supervisor, second agent engine, classifier request,
-model switch or additional permission grant. A successful ordinary run receives
-no precautionary planning, review, budget-reminder or recovery rules.
+model switch or additional permission grant. Coding runs additionally retain a current-file verification contract and can
+start one focused, read-only acceptance review when verified capacity allows it.
 
 ## Startup and compatibility
 
@@ -29,8 +29,8 @@ parent's contract, so an old parent's execution rules remain intact; root
 completion criteria do not become acceptance criteria for independent child tasks.
 
 The reserved `SessionData.metadata._werkworker_harness[run_id]` contains
-`version`, `config`, completion `checks`, canonical feedback `messages` indices,
-and `adaptive`. Other object metadata is preserved. Legacy scalar/array metadata
+`version`, `config`, completion `checks`, durable `verifications`, final-progress
+markers, canonical feedback `messages` indices, and `adaptive`. Other object metadata is preserved. Legacy scalar/array metadata
 is retained under `_werkworker_legacy_metadata` when the namespace is added.
 Hosts must preserve these reserved fields on export/import. Existing public
 struct literals, RPC methods, event variants and session schema remain compatible.
@@ -166,8 +166,56 @@ The repetition guard recognizes new or changed read observations and successful
 workspace actions. Unchanged reads cannot reset one another. Polling a proven
 active owned process/child remains bounded by ordinary run budgets. Failed calls
 and denials are not progress. Permission checks, approval, revocation, sandbox,
-leases, tool/step/request/tree/wall budgets and unknown-outcome recovery remain
-binding. No aid increases them or authorizes another action.
+leases, explicitly finite tool/step/request/tree/wall budgets and unknown-outcome
+recovery remain binding. No aid increases them or authorizes another action.
+
+## Coding acceptance and continuous work
+
+New `coding-basic` runs (including profiles using that skill) enable
+`coding_checks` by default. A final answer is only a candidate: all current plan
+steps must be completed, and code changes require a successful recorded check
+against the current source and tests. Other profiles keep their existing
+completion contract. An SDK host can explicitly set `coding_checks: false` for
+infrastructure-only workflows. Saved runs whose configuration predates this
+field preserve their previous contract; new follow-ups enable the new default.
+
+Use the existing sandboxed process tool, for example:
+
+```json
+{"argv":["python3","-m","unittest","test_game.py"],"verification":{"criteria":["Start creates a board","Input moves the active piece"],"paths":["game.py","test_game.py"]}}
+```
+
+The host hashes the named files before and after execution and records a receipt
+only from the actual tool outcome. Exit status zero, no cancellation/timeout,
+and unchanged files are required. A failed check, missing coverage of changed
+files, later process execution, or stale source/test hashes prevents completion.
+The latest check must include all changed source/test files; use one command
+that aggregates the relevant checks. Tests that generate fixtures should create
+them before the recorded check. Current plans and bounded evidence excerpts are
+reconstructed independently of transcript compaction. Full receipts survive
+output truncation and persistence. Child file edits and child process work also require parent validation.
+
+The harness verifies execution and file identity. It cannot prove that arbitrary
+model-written assertions cover every user requirement. Behavioral checks must
+exercise real entry points; syntax checks, reviewer prose and model claims alone
+are insufficient. A host-supplied `completion` check can replace the model-selected
+check, while the current plan still gates completion. Missing tools or permissions
+remain blockers, never automatic grants.
+
+Coding tool schemas cap new file content/replacements at 4,096 characters and
+edit anchors at 2,048 characters. Existing files require hash-bound `files.edit`.
+Output-limit recovery may narrow these bounds further. Four rejected final
+answers at the same implementation/plan/check state stop with
+`completion_stalled`, never `Completed`; successful repair cycles have no fixed
+count. Owned harness echoes remain invalid even when the model changes internal
+scope/trigger IDs. Arbitrary user JSON is not treated as owned feedback.
+
+TUI runs have no aggregate step, request, tool-call or wall-time cutoff by default.
+For headless use, select `--continuous`; SDK hosts use `Limits::continuous()`.
+`--limits limits.json` supplies explicit budgets instead. The explicit `Limits.continuous` flag disables those four aggregate cutoffs;
+omitted flags preserve finite budgets, including a zero tool-call allowance. Per-request output/context limits, retries,
+process timeouts, repeated-call guards and user cancellation remain active.
+Existing saved runs keep their stored budgets.
 
 ## Explicit completion check
 
@@ -195,9 +243,9 @@ ww --werk-config examples/werk-config.json --harness-config harness.json run --p
 
 This example assumes Python tests
 are the task's explicitly chosen acceptance criterion and normal host policy
-allows or can approve `process.run`. The harness invents no test requirement.
-Without `completion`, final
-answers take the ordinary completion path with no extra model/tool request.
+allows or can approve `process.run`. This explicit command takes precedence over
+the coding profile’s model-selected verification receipt. Other profiles without
+`completion` take the ordinary completion path with no extra model/tool request.
 
 A final model response is a candidate. After pending results, steering and child
 synthesis, the harness records a complete assistant tool call and invocation,

@@ -75,7 +75,7 @@ pub(crate) struct EngineInner {
     closed: AtomicBool,
     fatal: Mutex<BTreeMap<String, WorkerError>>,
     pub(crate) execution: crate::parallel::ExecutionConfig,
-    model_slots: tokio::sync::Semaphore,
+    model_slots: Arc<crate::parallel::InferenceSlots>,
     pub(crate) child_slots: Arc<tokio::sync::Semaphore>,
     pub(crate) child_permits: Mutex<BTreeMap<String, tokio::sync::OwnedSemaphorePermit>>,
     pub(crate) delegation: Mutex<()>,
@@ -161,7 +161,7 @@ impl EngineBuilder {
             .effective_requests(&self.provider.concurrency());
         Ok(WorkerEngine {
             inner: Arc::new(EngineInner {
-                model_slots: tokio::sync::Semaphore::new(slots),
+                model_slots: crate::parallel::InferenceSlots::new(slots),
                 child_slots: Arc::new(tokio::sync::Semaphore::new(self.execution.max_subagents)),
                 child_permits: Mutex::new(BTreeMap::new()),
                 delegation: Mutex::new(()),
@@ -1345,7 +1345,11 @@ impl SessionHandle {
                 let run = d.run_mut(run_id)?;
                 run.history_start = start;
                 run.started_at_ms = now_ms();
-                run.deadline_ms = run.started_at_ms + run.limits.max_wall_ms;
+                run.deadline_ms = if run.limits.continuous {
+                    0
+                } else {
+                    run.started_at_ms.saturating_add(run.limits.max_wall_ms)
+                };
             }
             d.run_mut(run_id)?.status = RunStatus::Running;
             d.emit(
@@ -1380,6 +1384,7 @@ impl SessionHandle {
                     .await?;
                 continue;
             }
+            self.maybe_start_review(run_id).await?;
             self.update(|d| {
                 project_pending(d, run_id)?;
                 crate::harness::refresh(d, run_id)?;
@@ -1439,7 +1444,7 @@ impl SessionHandle {
                     .expect("response recovery failure");
                 return Err(error.clone());
             }
-            if run.metrics.steps >= run.limits.max_steps {
+            if run.limits.steps_exhausted(run.metrics.steps) {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
             }
             let mut defs: Vec<_> = data
@@ -1452,6 +1457,9 @@ impl SessionHandle {
                 .filter(|def| data.policy.can_request(def))
                 .collect();
             crate::context::bound_recovery_tools(run, &mut defs);
+            if crate::completion::enabled(&data, run)? {
+                crate::completion::bound_tools(&mut defs);
+            }
             let planning = self.engine.inner.context.build_with_provider(
                 &data,
                 run,
@@ -1493,7 +1501,7 @@ impl SessionHandle {
             let step_id = id("step");
             self.update(|d| {
                 let r = d.run_mut(run_id)?;
-                r.metrics.steps += 1;
+                r.metrics.steps = r.metrics.steps.saturating_add(1);
                 r.metrics.estimated_input_tokens = snapshot.estimated_tokens;
                 r.contexts.push(snapshot.clone());
                 crate::harness::delivered(d, run_id, &step_id, &request, &request_fingerprint)?;
@@ -1525,13 +1533,13 @@ impl SessionHandle {
                 let attempt_id = id("attempt");
                 self.update(|d| {
                     let r = d.run_mut(run_id)?;
-                    if r.metrics.model_requests >= r.limits.max_model_requests {
+                    if r.limits.requests_exhausted(r.metrics.model_requests) {
                         return Err(WorkerError::new(
                             "request_budget",
                             "Maximum model requests reached",
                         ));
                     }
-                    r.metrics.model_requests += 1;
+                    r.metrics.model_requests = r.metrics.model_requests.saturating_add(1);
                     r.attempts.push(ModelAttempt {
                         attempt_id: attempt_id.clone(),
                         step_id: step_id.clone(),
@@ -1650,9 +1658,11 @@ impl SessionHandle {
             let has_calls = !message.tool_calls.is_empty();
             self.update(|d| {
                 let r = d.run(run_id)?;
-                if r.metrics.tool_invocations + message.tool_calls.len() as u32
-                    > r.limits.max_tool_invocations
-                {
+                if r.limits.tools_exceeded(
+                    r.metrics
+                        .tool_invocations
+                        .saturating_add(message.tool_calls.len() as u32),
+                ) {
                     return Err(WorkerError::new(
                         "tool_budget",
                         "Maximum tool invocations reached",
@@ -1720,7 +1730,10 @@ impl SessionHandle {
                     }
                 }
                 let r = d.run_mut(run_id)?;
-                r.metrics.tool_invocations += invocations.len() as u32;
+                r.metrics.tool_invocations = r
+                    .metrics
+                    .tool_invocations
+                    .saturating_add(invocations.len() as u32);
                 r.invocations.extend(invocations);
                 r.attempts.last_mut().unwrap().completed = true;
                 if let Some(u) = &usage {
@@ -1783,6 +1796,71 @@ impl SessionHandle {
             }
         }
         let mut state = crate::harness::state(&data, run_id)?;
+        if crate::completion::enabled(&data, run)? {
+            let mut reviewed = run.clone();
+            let mut child_work = Vec::new();
+            for child in self.children(run_id).await? {
+                if let Some(child_run) = child.run {
+                    for mut invocation in child_run.invocations.into_iter().filter(|i| {
+                        matches!(
+                            i.call.name.as_str(),
+                            "files.write" | "files.edit" | "process.run" | "process.start"
+                        )
+                    }) {
+                        // A child process may create code without file tools.
+                        // Parent acceptance still needs the parent's own check.
+                        if let Some(arguments) = invocation.call.arguments.as_object_mut() {
+                            arguments.remove("verification");
+                        }
+                        child_work.push(invocation);
+                    }
+                }
+            }
+            child_work.extend(reviewed.invocations);
+            reviewed.invocations = child_work;
+            if let Some(detail) = crate::completion::findings(
+                &reviewed,
+                &state.verifications,
+                &self.runtime.workspace,
+                state.config.completion.is_none(),
+            )
+            .await?
+            {
+                let progress = crate::completion::progress(&reviewed);
+                state.final_rejections = if state.final_progress == progress {
+                    state.final_rejections + 1
+                } else {
+                    1
+                };
+                state.final_progress = progress;
+                let stalled = state.final_rejections > 3;
+                self.update(|d| {
+                    crate::harness::save(d, run_id, &state)?;
+                    d.run_mut(run_id)?.final_text = None;
+                    crate::harness::push_feedback(
+                        d,
+                        run_id,
+                        "completion_required",
+                        json!({"detail":detail}),
+                    )?;
+                    d.emit(
+                        Some(run_id),
+                        EventKind::Diagnostic {
+                            code: "completion_pending".into(),
+                        },
+                    );
+                    Ok(())
+                })
+                .await?;
+                if stalled {
+                    return Err(WorkerError::new(
+                        "completion_stalled",
+                        "Repeated final answers without implementation or verification progress; work remains incomplete",
+                    ));
+                }
+                return Ok(false);
+            }
+        }
         let Some(check) = state.config.completion.clone() else {
             return Ok(true);
         };
@@ -1904,13 +1982,16 @@ impl SessionHandle {
         });
         self.update(|d| {
             let run = d.run(run_id)?;
-            if run.metrics.tool_invocations >= run.limits.max_tool_invocations {
+            if run
+                .limits
+                .tools_exceeded(run.metrics.tool_invocations.saturating_add(1))
+            {
                 return Err(WorkerError::new(
                     "tool_budget",
                     "No tool budget remains for completion check",
                 ));
             }
-            if run.metrics.steps >= run.limits.max_steps {
+            if run.limits.steps_exhausted(run.metrics.steps) {
                 return Err(WorkerError::new(
                     "step_budget",
                     "No step budget remains for completion check",
@@ -1924,8 +2005,8 @@ impl SessionHandle {
             let message_index = d.messages.len();
             d.messages.push(message);
             let run = d.run_mut(run_id)?;
-            run.metrics.steps += 1;
-            run.metrics.tool_invocations += 1;
+            run.metrics.steps = run.metrics.steps.saturating_add(1);
+            run.metrics.tool_invocations = run.metrics.tool_invocations.saturating_add(1);
             run.invocations.push(ToolInvocation {
                 request_input_schema: None,
                 invocation_id: invocation_id.clone(),
@@ -2062,16 +2143,16 @@ impl SessionHandle {
         let source_hash = fingerprint(&source);
         self.update(|d| {
             let r = d.run_mut(run_id)?;
-            if r.metrics.model_requests >= r.limits.max_model_requests
-                || r.metrics.steps >= r.limits.max_steps
+            if r.limits.requests_exhausted(r.metrics.model_requests)
+                || r.limits.steps_exhausted(r.metrics.steps)
             {
                 return Err(WorkerError::new(
                     "request_budget",
                     "No budget remains for compaction",
                 ));
             }
-            r.metrics.model_requests += 1;
-            r.metrics.steps += 1;
+            r.metrics.model_requests = r.metrics.model_requests.saturating_add(1);
+            r.metrics.steps = r.metrics.steps.saturating_add(1);
             r.attempts.push(ModelAttempt {
                 attempt_id: attempt_id.clone(),
                 step_id: step_id.clone(),
@@ -2211,13 +2292,14 @@ impl SessionHandle {
                     "Request exceeds effective context/output budget before dispatch",
                 ));
             }
-            let _slot = self
-                .engine
-                .inner
-                .model_slots
-                .acquire()
-                .await
-                .map_err(|_| WorkerError::new("closed", "Inference scheduler closed"))?;
+            self.engine.inner.provider.refresh_concurrency().await;
+            self.engine.inner.model_slots.set_limit(
+                self.engine
+                    .inner
+                    .execution
+                    .effective_requests(&self.engine.inner.provider.concurrency()),
+            );
+            let _slot = self.engine.inner.model_slots.acquire().await;
             self.charge_tree_request(run_id).await?;
             let mut stream = self.engine.inner.provider.stream(request.clone()).await?;
             let mut assembler = ResponseAssembler::default();
@@ -2412,6 +2494,10 @@ impl SessionHandle {
             .as_ref()
             .map_or(8192, |d| d.output_limit)
             .min(data.run(run_id)?.limits.max_output_bytes);
+        let verification = (invocation.call.name == "process.run"
+            && result.status == Outcome::Succeeded)
+            .then(|| result.data.get("verification").cloned())
+            .flatten();
         let bytes = serde_json::to_vec(&result.data)?;
         if bytes.len() > limit {
             if let Some(store) = &self.engine.inner.artifacts
@@ -2461,6 +2547,30 @@ impl SessionHandle {
                     }
                 }
             }
+            if let Some(verification) = &verification {
+                excerpt = json!({
+                    "exit_code":result.data["exit_code"],
+                    "stdout":result.data["stdout"],"stderr":result.data["stderr"],
+                    "verification":{"passed":verification["passed"],"receipt_retained":true},
+                    "truncated":true
+                });
+                // Keep a valid process result inside the output allowance;
+                // evidence lives separately, not in a broken JSON excerpt.
+                while serde_json::to_vec(&excerpt)?.len() > limit {
+                    let field = if excerpt["stdout"].as_str().unwrap_or("").len()
+                        >= excerpt["stderr"].as_str().unwrap_or("").len()
+                    {
+                        "stdout"
+                    } else {
+                        "stderr"
+                    };
+                    let value = excerpt[field].as_str().unwrap_or("");
+                    if value.is_empty() {
+                        break;
+                    }
+                    excerpt[field] = json!(crate::completion::excerpt(value, value.len() / 2));
+                }
+            }
             result.data = excerpt;
             result.truncated = true;
         }
@@ -2485,6 +2595,13 @@ impl SessionHandle {
                 if run.status == RunStatus::WaitingApproval {
                     run.status = RunStatus::Running;
                 }
+            }
+            if let Some(verification) = verification {
+                let mut state = crate::harness::state(d, run_id)?;
+                state
+                    .verifications
+                    .insert(invocation_id.into(), verification);
+                crate::harness::save(d, run_id, &state)?;
             }
             d.emit(
                 Some(run_id),
@@ -2538,8 +2655,19 @@ impl SessionHandle {
             .as_ref()
             .is_some_and(|schema| validate_arguments(schema, &invocation.call.arguments).is_err())
         {
-            let mut result = ToolResult::error(Outcome::ValidationError, "recovery_step_too_large");
-            result.data = json!({"message":"This turn has bounded tool arguments: use at most 2048 characters per file content/replacement or argv string. Write one small working increment, then extend with files.edit. No part of this call executed."});
+            let (code, detail) = if run.generation_recovery.split_required {
+                (
+                    "recovery_step_too_large",
+                    "This turn has bounded tool arguments: use at most 2048 characters per file content/replacement or argv string. Write one small working increment, then extend with files.edit. No part of this call executed.",
+                )
+            } else {
+                (
+                    "coding_step_invalid",
+                    "Coding steps must fit the advertised tool schema: files.write creates NEW files only (no expected_hash), existing files use files.edit with a current hash and unique anchor. Content/replacements are capped at 4096 characters, edit anchors at 2048. No part of this call executed.",
+                )
+            };
+            let mut result = ToolResult::error(Outcome::ValidationError, code);
+            result.data = json!({"message":detail});
             return self.outcome(run_id, invocation_id, result).await;
         }
         let tool = self.engine.inner.tools.get(&def.name)?;

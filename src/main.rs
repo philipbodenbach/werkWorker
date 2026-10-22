@@ -42,6 +42,12 @@ struct Cli {
     /// Host-owned inference and subagent limits JSON.
     #[arg(long)]
     execution_config: Option<PathBuf>,
+    /// Run without aggregate step/request/time cutoffs (default in interactive mode).
+    #[arg(long, conflicts_with = "limits")]
+    continuous: bool,
+    /// Explicit run budgets JSON; overrides the interactive continuous default.
+    #[arg(long)]
+    limits: Option<PathBuf>,
     /// Legacy option, migrated to adaptive for new runs.
     #[arg(long, hide = true, value_parser = ["classic", "minimal", "adaptive"])]
     harness: Option<String>,
@@ -343,6 +349,12 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         Some(path) => path,
         None => default_store_path()?,
     };
+    if let Some(path) = &cli.limits {
+        setup_limits = serde_json::from_slice(&tokio::fs::read(path).await?)?;
+    } else if cli.continuous || matches!(&command, Command::Tui { .. }) {
+        setup_limits.remove_run_cutoffs();
+    }
+    setup_limits.validate()?;
     let store = Arc::new(SqliteStore::open(&store_path).await?);
     let artifacts = ArtifactStore::open(
         store_path
@@ -566,7 +578,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                 )
                 .await?;
             let run = session
-                .submit(input, &id("command"), Limits::default(), None)
+                .submit(input, &id("command"), setup_limits, None)
                 .await?;
             display(&run).await
         }

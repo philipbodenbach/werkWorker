@@ -33,6 +33,10 @@ Options:
 
       --execution-config <EXECUTION_CONFIG>
           Host-owned inference and subagent limits JSON
+      --continuous
+          Run without aggregate step/request/time cutoffs (default in interactive mode)
+      --limits <LIMITS>
+          Explicit run budgets JSON; overrides the interactive continuous default
       --harness-config <HARNESS_CONFIG>
           Optional completion criteria and explicit host guidance JSON
       --bubblewrap <BUBBLEWRAP>

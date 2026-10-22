@@ -82,12 +82,15 @@ with tempfile.TemporaryDirectory(prefix='ww-child-ui-') as temporary:
     config.update(base_url=f'http://127.0.0.1:{server.server_port}', model='fixture', stream=False)
     config['capabilities'].update(context_tokens=32768, tool_calling='supported')
     (root / 'connection.json').write_text(json.dumps(config))
+    # Isolate child approval/interaction UI from coding acceptance tests.
+    harness = root / 'harness.json'
+    harness.write_text(json.dumps({'coding_checks': False}))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 36, 130, 0, 0))
     before = termios.tcgetattr(slave)
     env = dict(os.environ, TERM='xterm-256color', WW_CHILD_FIXTURE_KEY='fixture-key', XDG_CONFIG_HOME=str(root / 'config'))
     screen = Screen()
-    proc = subprocess.Popen([str(binary), '--workspace', str(workspace), '--store', str(root / 'state.sqlite'),
+    proc = subprocess.Popen([str(binary), '--harness-config', str(harness), '--workspace', str(workspace), '--store', str(root / 'state.sqlite'),
         '--werk-config', str(root / 'connection.json'), '--secret-env', 'WW_CHILD_FIXTURE_KEY',
         'tui', 'Run both fixture tasks'],
         stdin=slave, stdout=slave, stderr=slave, env=env)

@@ -31,6 +31,9 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
     root = Path(temp)
     workspace = root / "workspace"
     workspace.mkdir()
+    # Isolate permission UI behavior from coding acceptance tests.
+    harness = root / "harness.json"
+    harness.write_text(json.dumps({"coding_checks": False}))
     script = root / "script.json"
     script.write_text(json.dumps([
         turn("interaction.ask", {"question": "May I write files?", "choices": ["continue"]}),
@@ -55,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
 
     def start(store, extra):
         return subprocess.Popen(
-            [str(binary), "--workspace", str(workspace), "--store", str(root / store)] + extra,
+            [str(binary), "--harness-config", str(harness), "--workspace", str(workspace), "--store", str(root / store)] + extra,
             stdin=slave, stdout=slave, stderr=slave, env=env)
 
     def wait(token, present=True):

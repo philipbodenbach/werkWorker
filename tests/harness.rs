@@ -597,6 +597,7 @@ async fn legacy_configurations_migrate_to_identical_adaptive_contexts() {
             let provider = Arc::new(ScriptedProvider::new(turns));
             let engine = WorkerEngine::builder(provider.clone())
                 .harness(HarnessConfig {
+                    coding_checks: false,
                     mode,
                     ..Default::default()
                 })

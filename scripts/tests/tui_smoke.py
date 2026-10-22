@@ -35,6 +35,8 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         turn(text='Follow-up recovered in the same session'),
         dict(turn(text='slow response'),delay_ms=10_000),
     ]))
+    # UI mechanics fixture; functional completion is covered by tests/completion.rs.
+    harness=root/'harness.json'; harness.write_text(json.dumps({'coding_checks':False}))
     grants=root/'grants.json'; grants.write_text(json.dumps({'mode':'ask','workspace_writable':True,'grants':[{'tool':'files.write','version':'1','resource':'.','arguments_hash':None,'expires_at_ms':None,'preapproved':False}]}))
     master,slave=pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,130,0,0))
     before=termios.tcgetattr(slave)
@@ -57,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
     terminal_env.update(PATH=str(helpers)+os.pathsep+os.environ['PATH'],
                         WAYLAND_DISPLAY='ww-test', TEST_CLIPBOARD=str(clipboard),
                         TEST_CLIPBOARD_READS=str(reads))
-    proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'state.sqlite'),'--script',str(script),'--grants',str(grants),'tui','initial task','--profile','coding-basic'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
+    proc=subprocess.Popen([str(binary),'--harness-config',str(harness),'--workspace',str(workspace),'--store',str(root/'state.sqlite'),'--script',str(script),'--grants',str(grants),'tui','initial task','--profile','coding-basic'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
     capture=bytearray(); screen=Screen()
     def wait_for(token,timeout=15,present=True):
         deadline=time.monotonic()+timeout
@@ -245,7 +247,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         assert 'http.fetch' in sessions[0]['profile']['tools']
         assert [r['status'] for r in sessions[0]['runs']]==['completed','failed','completed','cancelled']
         screen=Screen()
-        proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'restart.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
+        proc=subprocess.Popen([str(binary),'--harness-config',str(harness),'--workspace',str(workspace),'--store',str(root/'restart.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
         wait_for(b' Session ')
         wait_for(b'__        __')
         os.write(master,b'/view\r')
@@ -298,7 +300,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         assert proc.wait(timeout=10)==0
         assert termios.tcgetattr(slave)==before
         screen=Screen()
-        proc=subprocess.Popen([str(binary),'--workspace',str(workspace),'--store',str(root/'defaults.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
+        proc=subprocess.Popen([str(binary),'--harness-config',str(harness),'--workspace',str(workspace),'--store',str(root/'defaults.sqlite'),'tui','--demo'],stdin=slave,stdout=slave,stderr=slave,env=terminal_env)
         wait_for(b'Compact')
         os.write(master,b'\x1bOQ')  # F2 verifies persisted defaults after restarting the process.
         wait_for(b'Profile: coding-basic')

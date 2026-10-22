@@ -174,7 +174,15 @@ impl Tool for Builtin {
                     &["path", "old", "new", "expected_hash"],
                 ),
             ),
-            "process.run" | "process.start" => (
+            "process.run" => (
+                Effect::Process,
+                "Sandboxed argv, no network. To verify code, supply verification with behavioral criteria and all relevant source/test paths. Run real assertions through public entry points; syntax-only checks are insufficient for interactive behavior. A successful check records file hashes; later changes require another check. /workspace persists; /tmp is fresh each call.",
+                object(
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
+                    &["argv"],
+                ),
+            ),
+            "process.start" => (
                 Effect::Process,
                 "Sandboxed argv, no network. /workspace persists; /tmp is fresh each call. Keep cross-call files in /workspace. Shell argv needs explicit approval",
                 object(
@@ -334,7 +342,16 @@ impl Tool for Builtin {
             "process.run"|"process.start"=>{
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
                 if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
-                else{serde_json::to_value(ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?)?}
+                else{
+                    let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
+                    let output = ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?;
+                    let mut result = serde_json::to_value(&output)?;
+                    if !before.is_empty() {
+                        let after = crate::completion::verification_files(&args, &ctx.workspace).await?;
+                        result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                    }
+                    result
+                }
             },
             "process.status"|"process.cancel"=>ctx.jobs.status(&ctx.run_id,field(&args,"job_id")?,self.name=="process.cancel").await?,
             "http.fetch"=>fetch(field(&args,"url")?,args["method"].as_str().unwrap_or("GET"),None).await?,

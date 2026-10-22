@@ -2,8 +2,12 @@
 
 werkWorker can orchestrate background child sessions while the parent continues
 working. All bundled profiles expose `delegate_task`, `agents.status`,
-`agents.wait`, `agents.cancel` and `agents.message`. The model decides when to
-delegate; SDK/RPC hosts can also delegate explicitly. Children run in the same
+`agents.wait`, `agents.cancel` and `agents.message`. The model can delegate; SDK/RPC hosts can also delegate explicitly.
+For coding tasks with at least three plan steps and a successful file change, the
+harness starts one read-only acceptance review if at least two configured model
+slots are verified, no child was already delegated, and host policy permits it.
+The reviewer receives the requirements and current plan and can inspect files.
+It cannot write files, execute processes, or replace the parent’s behavior tests. Children run in the same
 engine, not by spawning another CLI binary.
 
 This design uses the goal/context and isolated-conversation pattern described
@@ -45,40 +49,39 @@ Zero child capacity/depth disables delegation. The similarly named
 a concurrency setting. Children, retries and context compaction share that
 budget. Each run also retains its own limits/metrics. No budget is reserved for
 final synthesis, so size the tree's total budget for workers plus synthesis.
-Children cannot outlive the parent's wall deadline.
+Children cannot outlive an explicitly configured parent wall deadline. The explicit
+continuous mode removes aggregate cutoffs; see [continuous work](harness.md).
 
 ## Werk capacity discovery
 
 The normal WerkProtocol `/werk/v1/info` and `/werk/v1/capabilities` handshake is
 still required. Optional capacity discovery follows it:
 
-1. Read `/werk/v1/deployments` (ordinary JSON, not a WerkProtocol envelope).
-   Match the configured chat model to deployment `plan.profile.id` or `alias`.
-   Add the configured `parallel` slots for distinct matching deployment IDs.
-   Ignore unrelated models. Invalid/duplicate matching profiles give no evidence.
-   Busy/available slot counters are not a stable configured limit.
-2. If no capacity was established, read `/werk/v1/observability` through the
-   existing WerkProtocol envelope/version/request-ID validation. Accept schema 1,
-   available `llama.cpp / ...` entries for the exact model, positive integral
-   `gauges.slots_total`, and backend observations within 10 seconds of the
-   snapshot timestamp. Use the minimum across matching entries; this telemetry
-   alone does not prove a load-balancing pool.
-3. Unknown, absent, forbidden, malformed or timed-out optional data means one
-   inference request at a time. Each optional probe has a two-second timeout.
-   The host limit is always an upper bound. Ordinary `parallel_tool_calls` support
-   is not evidence of concurrent inference capacity.
+1. Prefer `max_concurrent_requests` from advertised
+   `GET /werk/v1/chat/limits?model=MODEL`. This is configured capacity for the
+   selected model, independent of current activity or observability sampling.
+2. Fall back to fresh WerkProtocol observability: accept matching schema-1,
+   available llama.cpp entries with positive `gauges.slots_total`; use the minimum
+   across matching workers. Ignore unrelated, stale, or malformed samples.
+3. At connection time, deployment diagnostics can provide configured `parallel`
+   counts for distinct matching deployments when protocol capacity is absent.
+4. Unknown capacity defaults to one inference request. The host concurrency
+   limit always remains an upper bound. `parallel_tool_calls` and busy/free slot
+   counters are not evidence of configured inference capacity.
 
 `diagnose`, `engine.execution_status()` and RPC `execution.status` expose the
 source, explanation and effective slots. Built-in scripted fixtures advertise
 parallel capacity only for offline harness testing. Third-party providers can
 implement `ModelProvider::concurrency()`; its default is unknown/one slot.
 
-Discovery is a connection-time snapshot, not adaptive load balancing. Reconnect
-after loading a previously cold model or changing server slot configuration.
-Other server clients can still consume capacity: existing bounded retry/backoff
-handles retryable server errors; there is no promise of reserved GPU capacity.
-Missing optional endpoints never trigger an extra model, cloud fallback or an
-unsupported server command. See [wire provenance](reuse-matrix.md).
+Capacity is refreshed before inference admission, at most once every five
+seconds, from the limits endpoint and then observability when necessary. Probes
+have two/four-second timeouts. A higher reported limit wakes waiting requests;
+a lower limit lets active requests finish and restricts new admissions. Optional
+probe failures retain the last established capacity; an explicit unknown value
+from a valid limits response falls back to one slot without fresh telemetry. This is not load balancing
+or a promise of GPU capacity reserved from other clients. Probes never load a
+model or start inference. See [wire provenance](reuse-matrix.md).
 
 Context size is checked independently from concurrency. A server with unknown
 context requires explicit `capabilities.context_tokens` before inference.
@@ -137,7 +140,7 @@ silently, even if its delivery markers were already persisted.
 
 ## Concurrency and workspace safety
 
-A shared semaphore covers every provider stream, from admission through stream
+A shared adjustable admission limiter covers every provider stream, from admission through stream
 completion/drop. Waiting for children, approvals or tools does not consume an
 inference slot. Separate sessions can overlap inference and safe reads even in
 the same workspace. Tool calls within one session remain ordered.

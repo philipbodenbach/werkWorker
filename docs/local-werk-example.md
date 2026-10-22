@@ -112,7 +112,11 @@ already-truncated request stops with `model_output_recovery_stalled` before more
 inference is spent. Existing files remain available for a focused follow-up.
 
 The coding profile requires executable behavioral assertions as well as syntax
-checks. For browser code without a browser inside the sandbox, it can exercise
+checks. Mark the command with `process.run.verification` criteria and source/test
+paths so Worker can retain the actual result and hashes; see
+[coding acceptance](harness.md#coding-acceptance-and-continuous-work).
+TUI runs continue without aggregate time/step limits by default; use `--continuous`
+for headless runs or `--limits limits.json` to select explicit limits. For browser code without a browser inside the sandbox, it can exercise
 core behavior using DOM/canvas stubs and must disclose that limitation. A passing
 syntax check alone is not evidence that the generated application works. Tests
 must exercise the actual startup/reset and input handlers, not substitute helper

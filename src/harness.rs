@@ -19,7 +19,7 @@ pub enum HarnessMode {
     Adaptive,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HarnessConfig {
     /// Legacy compatibility input; new root runs always normalize to Adaptive.
@@ -27,6 +27,19 @@ pub struct HarnessConfig {
     /// Explicit host-provided, model-specific guidance. Never sourced from tools.
     pub local_guidance: Option<String>,
     pub completion: Option<CompletionCheck>,
+    /// Require current-file behavioral receipts for coding profiles. Hosts may
+    /// explicitly disable this for non-coding infrastructure workflows.
+    pub coding_checks: bool,
+}
+impl Default for HarnessConfig {
+    fn default() -> Self {
+        Self {
+            mode: HarnessMode::Adaptive,
+            local_guidance: None,
+            completion: None,
+            coding_checks: true,
+        }
+    }
 }
 
 /// One explicitly configured tool, executed through the ordinary invocation path.
@@ -72,6 +85,13 @@ impl HarnessConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct HarnessState {
+    /// Host-produced receipts survive transcript truncation and compaction.
+    #[serde(default)]
+    pub verifications: std::collections::BTreeMap<String, Value>,
+    #[serde(default)]
+    pub final_rejections: usize,
+    #[serde(default)]
+    pub final_progress: String,
     #[serde(default = "legacy_version")]
     pub version: u32,
     pub config: HarnessConfig,
@@ -106,6 +126,11 @@ pub(crate) fn state(session: &SessionData, run_id: &str) -> Result<HarnessState>
             // Omitted modes in schema-1 records meant classic, never adaptive.
             if let Some(config) = value.get_mut("config").and_then(Value::as_object_mut) {
                 config.entry("mode").or_insert_with(|| json!("classic"));
+                // Saved runs keep their original completion contract; new runs
+                // serialize coding_checks explicitly, including follow-ups.
+                config
+                    .entry("coding_checks")
+                    .or_insert_with(|| json!(false));
             }
             let mut state: HarnessState = serde_json::from_value(value)?;
             migrate_output_aid(&mut state, session.run(run_id).ok());
@@ -201,7 +226,7 @@ pub(crate) fn minimal_feedback(session: &SessionData, run: &Run) -> Result<Vec<M
         .limits
         .max_tool_invocations
         .saturating_sub(run.metrics.tool_invocations);
-    if steps <= 3 || calls <= 3 {
+    if !run.limits.continuous && (steps <= 3 || calls <= 3) {
         messages.push(feedback(
             "budget_low",
             json!({"steps":steps,"tool_calls":calls}),
@@ -245,6 +270,11 @@ pub(crate) fn is_feedback_echo(
         )
         .filter(|observation| request.messages.contains(observation))
         .collect();
+    owned.extend(
+        crate::completion::observation(session, run)?
+            .into_iter()
+            .filter(|observation| request.messages.contains(observation)),
+    );
     if state.config.mode == HarnessMode::Minimal {
         // Planning precedes the step charge and its first attempt. Every
         // transport retry uses that same admitted request, so reconstruct the
@@ -285,8 +315,15 @@ pub(crate) fn is_feedback_echo(
     Ok(owned.iter().any(|observation| {
         message.content.trim() == observation.content.trim()
             || value.as_ref().is_some_and(|value| {
-                serde_json::from_str::<Value>(&observation.content)
-                    .is_ok_and(|expected| &expected == value)
+                serde_json::from_str::<Value>(&observation.content).is_ok_and(|expected| {
+                    &expected == value
+                        || (expected["source"] == "werk_worker.harness"
+                            && value["source"] == expected["source"]
+                            && value["event"] == expected["event"]
+                            && expected["data"]["detail"].as_str().is_some_and(|detail| {
+                                !detail.is_empty() && value["data"]["detail"] == detail
+                            }))
+                })
             })
     }))
 }

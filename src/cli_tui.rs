@@ -936,6 +936,9 @@ impl View {
             EventKind::AttemptFailed { code, .. } => {
                 self.append(&format!("\n[Attempt interrupted: {code}]\n"))
             }
+            EventKind::Diagnostic { code } if code == "completion_pending" => {
+                self.append("\nVerification incomplete. Continuing implementation and checks; the task is not completed.\n");
+            }
             EventKind::Diagnostic { code }
                 if code == "model_output_recovery" || code == "model_output_recovery_split" =>
             {

@@ -17,6 +17,7 @@ use werk_worker::{
 enum Reply {
     Turn(ScriptedTurn),
     FeedbackEcho,
+    ChangedIdEcho,
     LegacyEcho(&'static str),
     BoundaryEcho,
     PrefillSensitive(ScriptedTurn),
@@ -62,7 +63,7 @@ impl ModelProvider for RecoveryProvider {
         let reply = self.replies.lock().unwrap().pop_front().unwrap();
         let turn = match reply {
             Reply::Turn(turn) => turn,
-            Reply::FeedbackEcho => {
+            Reply::FeedbackEcho | Reply::ChangedIdEcho => {
                 let hint = request
                     .messages
                     .iter()
@@ -72,7 +73,14 @@ impl ModelProvider for RecoveryProvider {
                                 .is_ok_and(|value| value["event"] == "generation_output_limit")
                     })
                     .expect("generation recovery hint must be delivered");
-                ScriptedTurn::text(&hint.content)
+                if matches!(reply, Reply::ChangedIdEcho) {
+                    let mut value: Value = serde_json::from_str(&hint.content).unwrap();
+                    value["data"]["trigger"] = json!("attempt_wrong_id");
+                    value["data"]["scope"] = json!("attempt_wrong_id");
+                    ScriptedTurn::text(&value.to_string())
+                } else {
+                    ScriptedTurn::text(&hint.content)
+                }
             }
             Reply::LegacyEcho(event) => {
                 let hint = request
@@ -1263,6 +1271,37 @@ async fn genuine_user_turn_equal_to_runtime_boundary_remains_valid_input() {
             .attempts
             .iter()
             .all(|attempt| attempt.completed)
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovery_json_with_hallucinated_attempt_ids_cannot_complete_a_run() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        limited(),
+        Reply::ChangedIdEcho,
+        write("saved.txt", "actual work"),
+        Reply::Turn(ScriptedTurn::text("Implemented")),
+    ]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit("Implement", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    let saved = run.status().await.unwrap();
+    assert_eq!(
+        saved.attempts[1].error.as_ref().unwrap().code,
+        "model_feedback_echo"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("saved.txt")).unwrap(),
+        "actual work"
     );
     engine.close().await.unwrap();
 }

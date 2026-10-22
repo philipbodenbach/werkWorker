@@ -29,6 +29,13 @@ request count, hash, native token counting and admission as all other messages.
 They are not shortened to make a request fit: indispensable rules can cause
 `context_overflow`. Legacy profiles with embedded rules remain unchanged.
 
+Adaptive/minimal context observations follow the leading canonical user/system
+turns, after the stable host/project prefix. Adding summaries, restored skills
+or receipt ledgers therefore does not move images in the initial user turn.
+Observations retain their assistant role; the remaining conversation keeps its
+order. A later image can still move when earlier history is compacted, and then
+the normal conservative image estimate applies. No image-key or margin is relaxed.
+
 When werkProtocol advertises `api.chat.token_count`, sizing uses the exact native
 chat count from `/werk/v1/chat/count_tokens`, including tool schemas/history and
 template options. Identical requests reuse a bounded cache; eviction triggers
@@ -109,7 +116,17 @@ half tool-call/result group is compacted.
 
 Excerpts include source message indices, roles, tool names and up to 400
 characters of each source content; the accumulated excerpt is capped at 1,536
-UTF-8 bytes. Candidates that would increase size are discarded. These are
+UTF-8 bytes. The builder evaluates successive omissions cumulatively. It counts
+a candidate after four whole eligible groups or at least 8 KiB of source messages
+have been removed, keeping the smallest counted complete candidate.
+It always evaluates the last eligible
+group in each retention pass. Batching reduces remote token-count calls; it may
+omit a few more older groups than testing every small omission individually.
+An initial candidate can temporarily grow when
+retained receipts are added or an image moves to a position without a learned
+reserve; this must not prevent later groups from being compacted together.
+The chosen request must still pass the unchanged full admission calculation.
+These are
 explicitly labeled incomplete, untrusted excerpts, not a claim of lossless
 semantic summarization. The model may need to reread evidence through granted
 tools. If the fixed excerpt allowance would crowd out current work, older

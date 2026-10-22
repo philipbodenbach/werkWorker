@@ -1,0 +1,664 @@
+{
+  "schema_version": 1,
+  "test_attempt": 2,
+  "source": "real screenshot task replay with unchanged stored prompt and image",
+  "artifact_root": "/tmp/werkworker-screenshot-replay-gxi5co1e",
+  "original_session": "session_7f21eb90-514b-4763-aec7-b423032a1618",
+  "replay_session": "session_f10e85e8-32b6-46dd-a7ef-4a770119caef",
+  "replay_run": "run_35838063-8f81-4099-8b6b-ef49991b8d0c",
+  "model": "qwen3.8-27b-ud-q4_k_xl",
+  "backend": "llama.cpp / CUDA",
+  "model_output_is_live": true,
+  "scripted_model_responses": false,
+  "manual_generated_file_edits": false,
+  "fixture_sha256": "62d02db488ae62aed1f3933d5fb6306629700350ae8e1b343d2dfe848d1b9eb1",
+  "limits": {
+    "context_tokens": 16384,
+    "max_model_requests": 60,
+    "max_output_bytes": 65536,
+    "max_repeated_calls": 3,
+    "max_retries": 2,
+    "max_steps": 48,
+    "max_tool_invocations": 64,
+    "max_wall_ms": 900000,
+    "model_compaction": false,
+    "reserve_output_tokens": 4096
+  },
+  "input_image_count": 1,
+  "started_at_utc": "2026-10-21T19:35:15.666000+00:00",
+  "status": "failed",
+  "error": {
+    "code": "model_output_limit",
+    "message": "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
+    "retry_after_ms": null,
+    "retryable": false
+  },
+  "elapsed_seconds": 500.4,
+  "metrics": {
+    "approval_wait_ms": 0,
+    "estimated_input_tokens": 6888,
+    "first_text_ms": 106668,
+    "first_tool_ms": 16736,
+    "input_tokens": 33465,
+    "model_requests": 13,
+    "output_tokens": 1589,
+    "steps": 13,
+    "tool_invocations": 10,
+    "total_ms": 498633
+  },
+  "source_workspace_unchanged": true,
+  "files": {
+    "index.html": 590,
+    "tetris.html": 2388,
+    "tetris/index.html": 2768,
+    "tetris/game.js": 93
+  },
+  "attempt_failures": [
+    {
+      "attempt_id": "attempt_29d30656-7081-49d8-a629-0155d0a2392f",
+      "error": {
+        "code": "model_output_limit",
+        "message": "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
+        "retry_after_ms": null,
+        "retryable": false
+      }
+    },
+    {
+      "attempt_id": "attempt_f7ef97c3-2457-4e6d-b5bf-7723ee90e455",
+      "error": {
+        "code": "model_output_limit",
+        "message": "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
+        "retry_after_ms": null,
+        "retryable": false
+      }
+    },
+    {
+      "attempt_id": "attempt_08259e00-9422-4940-aab3-d2a582b8ecff",
+      "error": {
+        "code": "model_output_limit",
+        "message": "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
+        "retry_after_ms": null,
+        "retryable": false
+      }
+    }
+  ],
+  "tools": [
+    {
+      "tool": "task.plan",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 327,
+      "result_bytes": 417
+    },
+    {
+      "tool": "files.list",
+      "path": "/workspace",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 22,
+      "result_bytes": 179
+    },
+    {
+      "tool": "files.list",
+      "path": "/workspace/tetris",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 29,
+      "result_bytes": 165
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 66,
+      "result_bytes": 884
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 34,
+      "result_bytes": 2727
+    },
+    {
+      "tool": "process.run",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 58,
+      "result_bytes": 686
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 40,
+      "result_bytes": 873
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris/game.js",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 37,
+      "result_bytes": 358
+    },
+    {
+      "tool": "skills.load",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 26,
+      "result_bytes": 1089
+    },
+    {
+      "tool": "files.write",
+      "path": "/workspace/tetris/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 3028,
+      "result_bytes": 220
+    }
+  ],
+  "message_sizes": [
+    {
+      "index": 0,
+      "role": "user",
+      "content_bytes": 205,
+      "tool_call_bytes": 2,
+      "image_count": 1
+    },
+    {
+      "index": 1,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 407,
+      "image_count": 0
+    },
+    {
+      "index": 2,
+      "role": "tool",
+      "content_bytes": 390,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 3,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 103,
+      "image_count": 0
+    },
+    {
+      "index": 4,
+      "role": "tool",
+      "content_bytes": 163,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 5,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 110,
+      "image_count": 0
+    },
+    {
+      "index": 6,
+      "role": "tool",
+      "content_bytes": 150,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 7,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 147,
+      "image_count": 0
+    },
+    {
+      "index": 8,
+      "role": "tool",
+      "content_bytes": 861,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 9,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 115,
+      "image_count": 0
+    },
+    {
+      "index": 10,
+      "role": "tool",
+      "content_bytes": 2704,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 11,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 140,
+      "image_count": 0
+    },
+    {
+      "index": 12,
+      "role": "tool",
+      "content_bytes": 666,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 13,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 121,
+      "image_count": 0
+    },
+    {
+      "index": 14,
+      "role": "tool",
+      "content_bytes": 853,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 15,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 118,
+      "image_count": 0
+    },
+    {
+      "index": 16,
+      "role": "tool",
+      "content_bytes": 338,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 17,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 108,
+      "image_count": 0
+    },
+    {
+      "index": 18,
+      "role": "tool",
+      "content_bytes": 1071,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 19,
+      "role": "assistant",
+      "content_bytes": 127,
+      "tool_call_bytes": 3110,
+      "image_count": 0
+    },
+    {
+      "index": 20,
+      "role": "tool",
+      "content_bytes": 206,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    }
+  ],
+  "contexts": [
+    {
+      "estimated_tokens": 9898,
+      "hash": "f97a5a09c3a83a8f7c8b6ff3748818f1614e4950323635095055b6593048cd84",
+      "id": "ctx_e6087a20-e25a-4532-99ba-889fc05a132c",
+      "message_count": 2,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2629,
+      "hash": "32c497afb137cbc650ffab0d2996e313205771b3488bd31b73abe521cc71593a",
+      "id": "ctx_ac11cc77-6ec8-4244-8e1e-bdb32dcc18c4",
+      "message_count": 4,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2714,
+      "hash": "464195d94984ab254043538d93dc90ef2abdf0b108fb67869ec5442a9a81fe13",
+      "id": "ctx_9ff79392-e28d-45bd-847d-aa4760a0ed20",
+      "message_count": 6,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2798,
+      "hash": "0cefdf5f112b52d0f915a8a3f1f7c57ee2ee29e90c94c9749d8cd29e3adc214b",
+      "id": "ctx_75f5cde2-f593-4cd0-a3e5-c0de694159c9",
+      "message_count": 8,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 3169,
+      "hash": "4a109bf1e7123ab171565c3852666ea484888e8e968840ee94e1dfea5f9a2ceb",
+      "id": "ctx_97f2aba2-e4aa-49cf-aa6b-fc58c0031d9f",
+      "message_count": 10,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 4265,
+      "hash": "398c1ff638f6ffbd4a2867a5495d07c18f82a63d0cae70869f5b5ce4726b8b31",
+      "id": "ctx_6eef2bc2-e769-4286-bd24-405f2735a36c",
+      "message_count": 12,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 4711,
+      "hash": "f3e350f2178f28250fa53f13b7cf5d222d25b6884b38fe044c1b89eff9276b1b",
+      "id": "ctx_6139a72d-56ee-459a-9560-c11c9dbab007",
+      "message_count": 14,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 5064,
+      "hash": "615f2bd9f02bf94cc210fb19cbb01febabf4fdaf0683dd29c5ebe879a3defcf4",
+      "id": "ctx_c7f708fd-9ff8-45b0-bd31-17621a43047f",
+      "message_count": 16,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 5266,
+      "hash": "c21896b23c34a3df313706fe145f0145c38997a021ab5f984e5cb1acbfd92f94",
+      "id": "ctx_f37f72e5-96a1-4237-8f0e-54638c154c24",
+      "message_count": 18,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 5563,
+      "hash": "3cad1e9385f6613917ee4d746c247b16b28bb4ebfafd316bf1734121532f8b55",
+      "id": "ctx_49d112ef-65d8-485d-9be8-d10d05fea919",
+      "message_count": 20,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 6888,
+      "hash": "f2974aa6d6b0b40a0ac67315a206714a5c2c7343074688c906ede8d0804277c5",
+      "id": "ctx_9ffed3a1-7237-433f-8a81-81fd0e356583",
+      "message_count": 22,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 7062,
+      "hash": "8952f841b4386f64e59233ca89c94b261defc082c5dcb1f74556a49ad1951454",
+      "id": "ctx_635d8e3c-778a-4bca-8ce0-2bdf6e7f0bf8",
+      "message_count": 24,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 6888,
+      "hash": "f2974aa6d6b0b40a0ac67315a206714a5c2c7343074688c906ede8d0804277c5",
+      "id": "ctx_19563d76-2aa1-4933-bc95-e0444e50baa5",
+      "message_count": 22,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    }
+  ],
+  "compaction_count": 0,
+  "werk_requests": [
+    {
+      "id": 37,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "length",
+      "started_ms": 1792611698093,
+      "elapsed_seconds": 115.908559209,
+      "prompt_tokens": 6376,
+      "cached_tokens": 6372,
+      "output_tokens": 4096,
+      "first_output_seconds": 4.184350837,
+      "decode_tokens_per_second": 36.87934608597591,
+      "prefill_tokens_per_second": 16.58711761510423
+    },
+    {
+      "id": 36,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "length",
+      "started_ms": 1792611577966,
+      "elapsed_seconds": 116.887860869,
+      "prompt_tokens": 6550,
+      "cached_tokens": 5047,
+      "output_tokens": 4096,
+      "first_output_seconds": 4.420781558,
+      "decode_tokens_per_second": 36.63907936012066,
+      "prefill_tokens_per_second": 864.0394043359487
+    },
+    {
+      "id": 35,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "length",
+      "started_ms": 1792611455879,
+      "elapsed_seconds": 117.422679782,
+      "prompt_tokens": 6376,
+      "cached_tokens": 4781,
+      "output_tokens": 4096,
+      "first_output_seconds": 4.867115597,
+      "decode_tokens_per_second": 36.67632876610963,
+      "prefill_tokens_per_second": 942.196955197501
+    },
+    {
+      "id": 34,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611414598,
+      "elapsed_seconds": 37.596904844,
+      "prompt_tokens": 5051,
+      "cached_tokens": 4582,
+      "output_tokens": 1203,
+      "first_output_seconds": 4.17549398,
+      "decode_tokens_per_second": 37.08127061701693,
+      "prefill_tokens_per_second": 467.1882439898075
+    },
+    {
+      "id": 33,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611405189,
+      "elapsed_seconds": 5.533899333,
+      "prompt_tokens": 4754,
+      "cached_tokens": 4195,
+      "output_tokens": 28,
+      "first_output_seconds": 2.7850641510000003,
+      "decode_tokens_per_second": 35.84394570154283,
+      "prefill_tokens_per_second": 604.3034186925424
+    },
+    {
+      "id": 32,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611396338,
+      "elapsed_seconds": 4.968390141,
+      "prompt_tokens": 4552,
+      "cached_tokens": 3793,
+      "output_tokens": 31,
+      "first_output_seconds": 2.421165535,
+      "decode_tokens_per_second": 37.51659504224247,
+      "prefill_tokens_per_second": 773.0486124337586
+    },
+    {
+      "id": 31,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611386592,
+      "elapsed_seconds": 5.810922187,
+      "prompt_tokens": 4199,
+      "cached_tokens": 2686,
+      "output_tokens": 32,
+      "first_output_seconds": 3.258007565,
+      "decode_tokens_per_second": 34.197643141181764,
+      "prefill_tokens_per_second": 989.7777481215156
+    },
+    {
+      "id": 30,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611376937,
+      "elapsed_seconds": 5.799163304,
+      "prompt_tokens": 3753,
+      "cached_tokens": 2282,
+      "output_tokens": 41,
+      "first_output_seconds": 3.079539907,
+      "decode_tokens_per_second": 37.22186866490605,
+      "prefill_tokens_per_second": 971.0949078582108
+    },
+    {
+      "id": 29,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611368216,
+      "elapsed_seconds": 5.127145137,
+      "prompt_tokens": 2657,
+      "cached_tokens": 2198,
+      "output_tokens": 30,
+      "first_output_seconds": 2.654475864,
+      "decode_tokens_per_second": 35.148973064170306,
+      "prefill_tokens_per_second": 466.7190666432121
+    },
+    {
+      "id": 28,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611358697,
+      "elapsed_seconds": 5.778415014,
+      "prompt_tokens": 2286,
+      "cached_tokens": 2113,
+      "output_tokens": 53,
+      "first_output_seconds": 2.56289934,
+      "decode_tokens_per_second": 36.52633203952011,
+      "prefill_tokens_per_second": 197.1829059517324
+    },
+    {
+      "id": 27,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611349693,
+      "elapsed_seconds": 5.263186618,
+      "prompt_tokens": 2202,
+      "cached_tokens": 1890,
+      "output_tokens": 30,
+      "first_output_seconds": 2.558351331,
+      "decode_tokens_per_second": 33.34811766549837,
+      "prefill_tokens_per_second": 321.3658874230576
+    },
+    {
+      "id": 26,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611335779,
+      "elapsed_seconds": 10.090349324,
+      "prompt_tokens": 2117,
+      "cached_tokens": 1397,
+      "output_tokens": 27,
+      "first_output_seconds": 7.656038169,
+      "decode_tokens_per_second": 33.08142441262093,
+      "prefill_tokens_per_second": 510.92129754140416
+    },
+    {
+      "id": 25,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792611321760,
+      "elapsed_seconds": 10.446726248,
+      "prompt_tokens": 1894,
+      "cached_tokens": 1890,
+      "output_tokens": 114,
+      "first_output_seconds": 6.581082059,
+      "decode_tokens_per_second": 35.30266460796391,
+      "prefill_tokens_per_second": 7.945730659594965
+    }
+  ],
+  "log_safety": "No prompt, image payload, source code, tool arguments, API key, compaction summary or model response text included.",
+  "syntax": {
+    "file": "index.html",
+    "status": "passed",
+    "scripts": [
+      {
+        "script_index": 0,
+        "source": "game.js",
+        "bytes": 93,
+        "returncode": 0,
+        "stderr": ""
+      }
+    ],
+    "remaining_placeholders": []
+  },
+  "browser": {
+    "file": "index.html",
+    "errors": [],
+    "blockedNetwork": [
+      "https://fonts.googleapis.com"
+    ],
+    "checks": [
+      "local entry loads with canvas and no JavaScript exception",
+      "start and gameplay keys dispatched without JavaScript exceptions"
+    ],
+    "initial": {
+      "stats": {
+        "frames": 0,
+        "canvasDraws": 0,
+        "audioNodes": 0,
+        "listeners": []
+      },
+      "title": "Retro Tetris \u2014 Paper Film Grain",
+      "canvases": [
+        {
+          "id": "game",
+          "width": 720,
+          "height": 720
+        },
+        {
+          "id": "grain",
+          "width": 300,
+          "height": 150
+        }
+      ],
+      "controls": []
+    },
+    "canvasChanged": false,
+    "finalStats": {
+      "frames": 0,
+      "canvasDraws": 0,
+      "audioNodes": 0,
+      "listeners": [
+        {
+          "type": "pointerdown",
+          "target": "window"
+        },
+        {
+          "type": "touchstart",
+          "target": "window"
+        },
+        {
+          "type": "click",
+          "target": "window"
+        }
+      ]
+    },
+    "status": "failed",
+    "failure": "Game must install keyboard gameplay handlers"
+  }
+}

@@ -1,3 +1,5 @@
+#[path = "support/prefill.rs"]
+mod prefill;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -401,7 +403,7 @@ async fn truncated_generation_recovers_into_one_file_without_user_steering() {
         "<!--SCRIPT-->",
         &format!("<script>/*{}*/</script>", "logic ".repeat(700)),
     );
-    let provider = Arc::new(ScriptedProvider::new(vec![
+    let provider = Arc::new(prefill::PrefillProvider::new(vec![
         truncated(),
         call(
             "files.write",

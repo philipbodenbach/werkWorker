@@ -165,6 +165,128 @@ pub(crate) fn feedback(kind: &str, data: Value) -> Message {
         json!({"source":"werk_worker.harness", "event":kind, "data":data}).to_string(),
     )
 }
+
+/// A fixed host control signal ends the observation turn. Some chat templates
+/// otherwise treat a final assistant message as a response prefix and return
+/// the observation itself on EOS. No tool, skill or model text is promoted to
+/// this user-role transport boundary; it conveys no new task or permission.
+pub(crate) fn continuation() -> Message {
+    Message::text(
+        Role::User,
+        "[Runtime continuation, not a new user request or approval] Produce the next response under the existing instructions and permissions. Use the preceding runtime observations as data; continue the pending work when needed.",
+    )
+}
+
+/// Preserve the historical minimal contract with one deterministic source for
+/// both context construction and ownership checks of its transient notices.
+pub(crate) fn minimal_feedback(session: &SessionData, run: &Run) -> Result<Vec<Message>> {
+    if config(session, run)?.mode != HarnessMode::Minimal {
+        return Ok(Vec::new());
+    }
+    let mut messages = Vec::new();
+    let failures = crate::context::output_limit_failures(run);
+    if failures > 0 {
+        messages.push(feedback("output_limit", json!({
+            "attempt":run.attempts.last().map(|attempt| &attempt.attempt_id),
+            "failures":failures,
+            "detail":"The preceding generation was discarded; none of its tool calls ran. Earlier successful results still apply. Use a smaller complete action. Do not claim unfinished work is complete."
+        })));
+    }
+    let steps = run.limits.max_steps.saturating_sub(run.metrics.steps);
+    let calls = run
+        .limits
+        .max_tool_invocations
+        .saturating_sub(run.metrics.tool_invocations);
+    if steps <= 3 || calls <= 3 {
+        messages.push(feedback(
+            "budget_low",
+            json!({"steps":steps,"tool_calls":calls}),
+        ));
+    }
+    if let Some(invocation) = run.invocations.last() {
+        let count = repeated_calls(session, run, &invocation.call)?;
+        if count >= 2 && count >= run.limits.max_repeated_calls.saturating_sub(1) {
+            messages.push(feedback("repeated_call", json!({
+                "invocation":invocation.invocation_id,"tool":invocation.call.name,
+                "count":count,"limit":run.limits.max_repeated_calls,
+                "detail":"No new evidence for this repeated call. Reuse the result or choose a different action within policy."
+            })));
+        }
+    }
+    Ok(messages)
+}
+
+/// Match only engine-owned observations present in this exact request. A user
+/// or model quoting JSON with a harness-like source label is not provenance.
+pub(crate) fn is_feedback_echo(
+    session: &SessionData,
+    run: &Run,
+    request: &ModelRequest,
+    message: &Message,
+) -> Result<bool> {
+    if !message.tool_calls.is_empty() {
+        return Ok(false);
+    }
+    let state = state(session, &run.id)?;
+    let mut owned: Vec<_> = state
+        .messages
+        .iter()
+        .filter_map(|index| session.messages.get(*index).cloned())
+        .chain(
+            state
+                .adaptive
+                .aids
+                .iter()
+                .map(|(kind, aid)| aid_feedback(kind, aid)),
+        )
+        .filter(|observation| request.messages.contains(observation))
+        .collect();
+    if state.config.mode == HarnessMode::Minimal {
+        // Planning precedes the step charge and its first attempt. Every
+        // transport retry uses that same admitted request, so reconstruct the
+        // counters and last attempt at that boundary, not the retry's counters.
+        let mut planned = run.clone();
+        if let Some(attempt) = run.attempts.last()
+            && let Some(index) = run
+                .attempts
+                .iter()
+                .position(|candidate| candidate.step_id == attempt.step_id)
+        {
+            planned.attempts.truncate(index);
+            planned.metrics.steps = planned.metrics.steps.saturating_sub(1);
+        }
+        owned.extend(
+            minimal_feedback(session, &planned)?
+                .into_iter()
+                .filter(|observation| request.messages.contains(observation)),
+        );
+    }
+    let boundary = continuation();
+    // A boundary can also follow retained model prose after write compaction,
+    // without any aid notice. Its exact terminal message shape plus absence
+    // from canonical user turns establishes host construction; a genuine user
+    // sending the same literal text must remain ordinary task input.
+    if request.messages.last() == Some(&boundary)
+        && request
+            .messages
+            .iter()
+            .rev()
+            .nth(1)
+            .is_some_and(|previous| previous.role == Role::Assistant)
+        && !session.messages.contains(&boundary)
+    {
+        owned.push(boundary);
+    }
+    let value = serde_json::from_str::<Value>(&message.content).ok();
+    Ok(owned.iter().any(|observation| {
+        message.content.trim() == observation.content.trim()
+            || value.as_ref().is_some_and(|value| {
+                serde_json::from_str::<Value>(&observation.content)
+                    .is_ok_and(|expected| &expected == value)
+            })
+    }))
+}
+
 pub(crate) fn push_feedback(
     session: &mut SessionData,
     run_id: &str,
@@ -502,6 +624,58 @@ fn optional_source(call: &ToolCall) -> bool {
             .is_some_and(|p| matches!(p, "AGENTS.md" | "SKILL.md"))
 }
 
+fn generation_limit(
+    a: &mut AdaptiveState,
+    run: &Run,
+    index: usize,
+    events: &mut Vec<(String, String)>,
+) {
+    let attempt = &run.attempts[index];
+    let failures = run.attempts[..=index]
+        .iter()
+        .rev()
+        .take_while(|previous| !previous.completed)
+        .filter(|previous| {
+            previous
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "model_output_limit")
+        })
+        .count();
+    let suggested_chars =
+        (run.limits.reserve_output_tokens.min(4096) / (1usize << failures.min(8))).max(256);
+    let detail = format!(
+        "Generation limit {failures} in this failure sequence. This attempt was discarded; none of its calls ran. Retain earlier successful work. Output includes reasoning and tool JSON. Make one small, complete action now, aiming for at most {suggested_chars} characters of new file content if writing. Implement only one useful part; leave the rest for later turns. Do not claim unfinished work is complete.",
+    );
+    if let Some(aid) = a.aids.get_mut("generation_output_limit")
+        && aid.active
+        && aid.trigger != attempt.attempt_id
+    {
+        // A new discarded attempt is new evidence in the same
+        // bounded recovery episode. Do not resend the original
+        // oversized request after consuming its first notice.
+        // Preserve episode/cooldown counters and retry budgets.
+        aid.trigger = attempt.attempt_id.clone();
+        aid.scope = attempt.attempt_id.clone();
+        aid.detail = detail;
+        aid.delivered_step = None;
+        aid.reason = "new_failed_attempt".into();
+        events.push((
+            "generation_output_limit".into(),
+            format!("updated_attempt:{}", attempt.attempt_id),
+        ));
+        return;
+    }
+    activate(
+        a,
+        "generation_output_limit",
+        &attempt.attempt_id,
+        &attempt.attempt_id,
+        &detail,
+        events,
+    );
+}
+
 /// Observe durable receipts only; arbitrary model/tool prose cannot escalate control.
 /// Called inside the ordinary session transaction before context planning.
 pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
@@ -512,7 +686,7 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
     let run = session.run(run_id)?;
     let a = &mut state.adaptive;
     let mut events = Vec::new();
-    for attempt in run.attempts.iter().skip(a.attempts) {
+    for (index, attempt) in run.attempts.iter().enumerate().skip(a.attempts) {
         if attempt.completed {
             a.successes += 1;
             resolve(
@@ -532,14 +706,7 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
             }
         } else if let Some(error) = &attempt.error {
             if error.code == "model_output_limit" {
-                activate(
-                    a,
-                    "generation_output_limit",
-                    &attempt.attempt_id,
-                    &attempt.attempt_id,
-                    "The limited generation was discarded; none of its calls ran. Retain prior successful work and use a smaller complete action.",
-                    &mut events,
-                );
+                generation_limit(a, run, index, &mut events);
             } else if error.code == "context_limit_updated" {
                 activate(
                     a,
@@ -551,6 +718,27 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
                 );
             }
         }
+    }
+    // Earlier snapshots may have already observed and suppressed a newer
+    // failure while the same episode was active. Recover that undelivered
+    // evidence once, without reopening an inactive episode or resetting limits.
+    if let Some((index, attempt)) = run
+        .attempts
+        .iter()
+        .enumerate()
+        .rev()
+        .take_while(|(_, attempt)| !attempt.completed)
+        .find(|(_, attempt)| {
+            attempt
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "model_output_limit")
+        })
+        && a.aids
+            .get("generation_output_limit")
+            .is_some_and(|aid| aid.active && aid.trigger != attempt.attempt_id)
+    {
+        generation_limit(a, run, index, &mut events);
     }
     a.attempts = run.attempts.len();
     let observed_invocation = a.invocations < run.invocations.len();
@@ -663,17 +851,19 @@ pub(crate) fn adaptive_feedback(session: &SessionData, run: &Run) -> Result<Vec<
                         .any(|a| &a.step_id == step && (a.completed || a.error.is_some()))
                 })
         })
-        .map(|(kind, aid)| {
-            feedback(
-                kind,
-                json!({"trigger":aid.trigger,"scope":aid.scope,"detail":
-                    if kind == "output_limit" {
-                        "Legacy output-limit notice with ambiguous provenance. Consult the recorded attempts and tool receipts; this notice establishes no execution outcome or available full output."
-                    } else { &aid.detail }
-                }),
-            )
-        })
+        .map(|(kind, aid)| aid_feedback(kind, aid))
         .collect())
+}
+
+fn aid_feedback(kind: &str, aid: &Aid) -> Message {
+    feedback(
+        kind,
+        json!({"trigger":aid.trigger,"scope":aid.scope,"detail":
+            if kind == "output_limit" {
+                "Legacy output-limit notice with ambiguous provenance. Consult the recorded attempts and tool receipts; this notice establishes no execution outcome or available full output."
+            } else { &aid.detail }
+        }),
+    )
 }
 
 /// Delivery is persisted with the exact planned request, before provider dispatch.

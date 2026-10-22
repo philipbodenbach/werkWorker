@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- End runtime feedback turns explicitly for assistant-prefill backends, preventing
+  output-limit notices from being returned as completed work. Empty/echoed replies
+  now use bounded, resume-safe recovery instead of false completion.
+- Keep generation recovery tied to the newest discarded attempt within the same
+  bounded episode, including saved states that previously suppressed that notice.
+- Evaluate rolling compaction cumulatively when an image-position change or
+  retained evidence makes the first shortened candidate temporarily larger.
+- Keep initial image turns ahead of adaptive context observations, allowing
+  recovery from large failed writes without discarding their proposed content.
+- Batch eligible history omissions before remote token counting, preserving full
+  counting and admission for the selected request while reducing planning calls.
 - Independent adaptive recovery for truncated tool receipts and discarded model
   generations, with bounded delivery and migration of legacy aid snapshots.
 - Shorter bundled profile prompts and immutable scoped project context for new

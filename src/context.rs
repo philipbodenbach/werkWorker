@@ -377,33 +377,7 @@ impl DefaultContextBuilder {
                 ));
             }
             if crate::harness::config(session, run)?.mode == crate::harness::HarnessMode::Minimal {
-                if output_failures > 0 {
-                    dynamic.push(crate::harness::feedback("output_limit", serde_json::json!({
-                    "attempt":run.attempts.last().map(|a| &a.attempt_id),
-                    "failures":output_failures,
-                    "detail":"The preceding generation was discarded; none of its tool calls ran. Earlier successful results still apply. Use a smaller complete action. Do not claim unfinished work is complete."
-                })));
-                }
-                let steps = run.limits.max_steps.saturating_sub(run.metrics.steps);
-                let calls = run
-                    .limits
-                    .max_tool_invocations
-                    .saturating_sub(run.metrics.tool_invocations);
-                if steps <= 3 || calls <= 3 {
-                    dynamic.push(crate::harness::feedback(
-                        "budget_low",
-                        serde_json::json!({"steps":steps,"tool_calls":calls}),
-                    ));
-                }
-                if let Some(invocation) = run.invocations.last() {
-                    let count = crate::harness::repeated_calls(session, run, &invocation.call)?;
-                    if count >= 2 && count >= run.limits.max_repeated_calls.saturating_sub(1) {
-                        dynamic.push(crate::harness::feedback("repeated_call", serde_json::json!({
-                        "invocation":invocation.invocation_id,"tool":invocation.call.name,"count":count,"limit":run.limits.max_repeated_calls,
-                        "detail":"No new evidence for this repeated call. Reuse the result or choose a different action within policy."
-                    })));
-                    }
-                }
+                dynamic.extend(crate::harness::minimal_feedback(session, run)?);
             }
             dynamic.extend(crate::harness::adaptive_feedback(session, run)?);
         }
@@ -483,21 +457,46 @@ impl DefaultContextBuilder {
             }
             messages
         };
+        let compose = |mut head: Vec<Message>, mut history: Vec<Message>| {
+            if minimal {
+                // Keep initial user constraints/images at their original
+                // position. Request-local observations must not invalidate a
+                // learned image reserve merely by appearing before that turn.
+                // Their assistant role and the stable host/project prefix stay
+                // unchanged; later conversation retains its original order.
+                let observations = head.split_off(1 + project_messages.len());
+                let leading = history
+                    .iter()
+                    .take_while(|message| {
+                        matches!(message.role, Role::System | Role::Developer | Role::User)
+                    })
+                    .count();
+                head.extend(history.drain(..leading));
+                head.extend(observations);
+            }
+            head.extend(history);
+            head.extend(dynamic.clone());
+            // This builder requests a fresh decision, never assistant prefill.
+            if head.last().is_some_and(|m| m.role == Role::Assistant) {
+                head.push(crate::harness::continuation());
+            }
+            head
+        };
         let compacted: BTreeSet<usize> = session
             .compactions
             .iter()
             .flat_map(|c| c.message_indices.iter().copied())
             .collect();
-        let mut messages = prefix(&compacted, "");
-        messages.extend(
+        let mut messages = compose(
+            prefix(&compacted, ""),
             session
                 .messages
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| !compacted.contains(i))
-                .map(|(_, m)| m.clone()),
+                .map(|(_, m)| m.clone())
+                .collect(),
         );
-        messages.extend(dynamic.clone());
         let estimate = |m: &Vec<Message>, budget: usize| {
             let request = ModelRequest {
                 messages: m.clone(),
@@ -621,18 +620,45 @@ impl DefaultContextBuilder {
         }
         let mut i = 0;
         let mut preserve_setup = true;
-        while needs_compaction && estimate(&messages, output_budget).await? > target {
-            if i >= latest && estimate(&messages, output_budget).await? <= available {
+        let last_candidate = |omitted: &BTreeSet<usize>, preserve_setup: bool| {
+            session
+                .messages
+                .iter()
+                .enumerate()
+                .take(protected)
+                .rev()
+                .find(|(index, message)| {
+                    message.role == Role::Assistant
+                        && !omitted.contains(index)
+                        && !(preserve_setup && retained.contains(index))
+                        && index + 1 + message.tool_calls.len() <= protected
+                })
+                .map(|(index, _)| index)
+        };
+        let mut last = last_candidate(&omitted, preserve_setup);
+        let mut pending_groups = 0;
+        let mut pending_bytes = 0;
+        // Compaction has shared costs: retained evidence adds messages, and
+        // moving an image can invalidate a learned image-token estimate. A
+        // first omitted group can therefore cost more even when several
+        // groups together fit. Explore cumulative omissions while retaining
+        // the cheapest complete request, never committing a worse candidate.
+        let mut best = (
+            messages.clone(),
+            summary.clone(),
+            omitted.clone(),
+            estimate(&messages, output_budget).await?,
+        );
+        while needs_compaction && best.3 > target {
+            if i >= latest && best.3 <= available {
                 break;
             }
             if i >= protected {
-                if protected > 0
-                    && preserve_setup
-                    && estimate(&messages, output_budget).await? > retention_available
-                {
+                if protected > 0 && preserve_setup && best.3 > retention_available {
                     // Retention is a preference, never a new hard context limit.
                     preserve_setup = false;
                     i = 0;
+                    last = last_candidate(&omitted, preserve_setup);
                 } else {
                     break;
                 }
@@ -649,9 +675,8 @@ impl DefaultContextBuilder {
             if end > protected {
                 break;
             }
-            let previous_messages = messages.clone();
-            let previous_summary = summary.clone();
-            let previous_omitted = omitted.clone();
+            pending_groups += 1;
+            pending_bytes += serde_json::to_vec(&session.messages[i..end])?.len();
             for (n, item) in session.messages[i..end].iter().enumerate() {
                 omitted.insert(i + n);
                 // Extractive, explicitly untrusted excerpts; no invented semantic summary.
@@ -719,47 +744,70 @@ impl DefaultContextBuilder {
                 }
                 summary = summary[start..].to_owned();
             }
-            messages = prefix(&omitted, &summary);
-            messages.extend(session.messages.iter().enumerate().filter_map(|(n, m)| {
-                if !omitted.contains(&n) {
-                    Some(m.clone())
-                } else if n == latest
-                    && latest_write
-                    && (!m.content.is_empty() || !m.images.is_empty())
-                {
-                    // Only saved tool arguments/results are compacted.
-                    // Keep the current explanation/plan verbatim, even
-                    // when optional history excerpts are later pruned.
-                    let mut retained = m.clone();
-                    retained.tool_calls.clear();
-                    Some(retained)
-                } else {
-                    None
+            // Native token counting can be remote and relatively expensive.
+            // Explore small batches of whole eligible groups instead of paying
+            // for every tiny omission. Always evaluate the final candidate in
+            // this pass. No batch is admitted without the full native/fallback
+            // calculation, including all constraints and image reserves.
+            if pending_groups < 4 && pending_bytes < 8192 && Some(i) != last {
+                i = end;
+                continue;
+            }
+            pending_groups = 0;
+            pending_bytes = 0;
+            let history: Vec<_> = session
+                .messages
+                .iter()
+                .enumerate()
+                .filter_map(|(n, m)| {
+                    if !omitted.contains(&n) {
+                        Some(m.clone())
+                    } else if n == latest
+                        && latest_write
+                        && (!m.content.is_empty() || !m.images.is_empty())
+                    {
+                        // Only saved tool arguments/results are compacted.
+                        // Keep the current explanation/plan verbatim, even
+                        // when optional history excerpts are later pruned.
+                        let mut retained = m.clone();
+                        retained.tool_calls.clear();
+                        Some(retained)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            messages = compose(prefix(&omitted, &summary), history.clone());
+            // Excerpts are optional, unlike user constraints and current work.
+            // Compare each full candidate after trimming oldest excerpts as
+            // needed; a temporarily costly prefix must not hide a fitting
+            // aggregate compaction whose optional summary can be shortened.
+            let mut estimated = estimate(&messages, output_budget).await?;
+            if estimated < best.3 {
+                best = (
+                    messages.clone(),
+                    summary.clone(),
+                    omitted.clone(),
+                    estimated,
+                );
+            }
+            while estimated > available && !summary.is_empty() {
+                let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
+                summary.drain(..end);
+                messages = compose(prefix(&omitted, &summary), history.clone());
+                estimated = estimate(&messages, output_budget).await?;
+                if estimated < best.3 {
+                    best = (
+                        messages.clone(),
+                        summary.clone(),
+                        omitted.clone(),
+                        estimated,
+                    );
                 }
-            }));
-            messages.extend(dynamic.clone());
-            if estimate(&messages, output_budget).await?
-                >= estimate(&previous_messages, output_budget).await?
-            {
-                messages = previous_messages;
-                summary = previous_summary;
-                omitted = previous_omitted;
             }
             i = end;
         }
-        // Excerpts are optional context, unlike current work/user constraints.
-        // A fixed 1,536-byte excerpt budget can itself prevent a small request
-        // from fitting. Remove oldest excerpts before reporting an overflow.
-        while estimate(&messages, output_budget).await? > available && !summary.is_empty() {
-            let previous_summary_for_prefix = summary.clone();
-            let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
-            summary.drain(..end);
-            let history_start = prefix(&omitted, &previous_summary_for_prefix).len();
-            let history = messages.split_off(history_start);
-            messages = prefix(&omitted, &summary);
-            messages.extend(history);
-        }
-        let mut estimated = estimate(&messages, output_budget).await?;
+        let (mut messages, summary, omitted, mut estimated) = best;
         // The configured output reserve is a maximum, not a reason to reject a
         // nearly fitting request. After compaction, lend at most one quarter to
         // input (never reduce below 2048 unless configured smaller). Recount the

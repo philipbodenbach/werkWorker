@@ -1,0 +1,747 @@
+{
+  "schema_version": 1,
+  "source": "real screenshot task replay with unchanged stored prompt and image",
+  "artifact_root": "/tmp/werkworker-screenshot-replay-g41jbc2l",
+  "original_session": "session_7f21eb90-514b-4763-aec7-b423032a1618",
+  "replay_session": "session_bdfce2d2-4232-4f1f-8d4f-c23560df0c94",
+  "replay_run": "run_575090ce-f2ba-4d97-b58d-c4fe850a909d",
+  "model": "qwen3.8-27b-ud-q4_k_xl",
+  "backend": "llama.cpp / CUDA",
+  "model_output_is_live": true,
+  "scripted_model_responses": false,
+  "manual_generated_file_edits": false,
+  "limits": {
+    "context_tokens": 16384,
+    "max_model_requests": 60,
+    "max_output_bytes": 65536,
+    "max_repeated_calls": 3,
+    "max_retries": 2,
+    "max_steps": 48,
+    "max_tool_invocations": 64,
+    "max_wall_ms": 900000,
+    "model_compaction": false,
+    "reserve_output_tokens": 4096
+  },
+  "input_image_count": 1,
+  "started_at_utc": "2026-10-21T19:20:05.495000+00:00",
+  "status": "failed",
+  "error": {
+    "code": "context_overflow",
+    "message": "Context needs 14063 input tokens (counted/estimated), but only 11776 fit after reserving 4096 output tokens and 512 safety tokens within the 16384-token limit. Current work and constraints were retained",
+    "retry_after_ms": null,
+    "retryable": false
+  },
+  "elapsed_seconds": 537.9,
+  "metrics": {
+    "approval_wait_ms": 0,
+    "estimated_input_tokens": 11912,
+    "first_text_ms": 17954,
+    "first_tool_ms": 18156,
+    "input_tokens": 66480,
+    "model_requests": 14,
+    "output_tokens": 9054,
+    "steps": 14,
+    "tool_invocations": 13,
+    "total_ms": 536209
+  },
+  "source_workspace_unchanged": true,
+  "generated_files": {
+    "index.html": 590,
+    "tetris.html": 2388,
+    "tetris/index.html": 575,
+    "tetris/game.html": 10300,
+    "tetris/game.js": 93
+  },
+  "attempt_failures": [
+    {
+      "attempt_id": "attempt_ff93f9b0-f349-4b55-a2d2-eae8766a3ef0",
+      "error": {
+        "code": "model_output_limit",
+        "message": "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
+        "retry_after_ms": null,
+        "retryable": false
+      }
+    }
+  ],
+  "tools": [
+    {
+      "tool": "files.list",
+      "path": ".",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 13,
+      "result_bytes": 179
+    },
+    {
+      "tool": "files.read",
+      "path": "index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 22,
+      "result_bytes": 884
+    },
+    {
+      "tool": "files.list",
+      "path": "tetris",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 18,
+      "result_bytes": 165
+    },
+    {
+      "tool": "files.read",
+      "path": "tetris.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 23,
+      "result_bytes": 2727
+    },
+    {
+      "tool": "files.read",
+      "path": "tetris.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 41,
+      "result_bytes": 271
+    },
+    {
+      "tool": "process.run",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 62,
+      "result_bytes": 514
+    },
+    {
+      "tool": "files.read",
+      "path": "tetris/game.js",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 26,
+      "result_bytes": 358
+    },
+    {
+      "tool": "task.plan",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 412,
+      "result_bytes": 502
+    },
+    {
+      "tool": "files.write",
+      "path": "tetris/game.html",
+      "status": "validation_error",
+      "error_code": "not_found",
+      "argument_bytes": 10101,
+      "result_bytes": 108
+    },
+    {
+      "tool": "files.list",
+      "path": ".",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 13,
+      "result_bytes": 179
+    },
+    {
+      "tool": "process.run",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 17,
+      "result_bytes": 206
+    },
+    {
+      "tool": "files.write",
+      "path": "tetris/game.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 6150,
+      "result_bytes": 219
+    },
+    {
+      "tool": "files.edit",
+      "path": "tetris/game.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 4626,
+      "result_bytes": 220
+    }
+  ],
+  "message_sizes": [
+    {
+      "index": 0,
+      "role": "user",
+      "content_bytes": 205,
+      "tool_call_bytes": 2,
+      "image_count": 1
+    },
+    {
+      "index": 1,
+      "role": "assistant",
+      "content_bytes": 195,
+      "tool_call_bytes": 94,
+      "image_count": 0
+    },
+    {
+      "index": 2,
+      "role": "tool",
+      "content_bytes": 163,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 3,
+      "role": "assistant",
+      "content_bytes": 79,
+      "tool_call_bytes": 103,
+      "image_count": 0
+    },
+    {
+      "index": 4,
+      "role": "tool",
+      "content_bytes": 861,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 5,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 99,
+      "image_count": 0
+    },
+    {
+      "index": 6,
+      "role": "tool",
+      "content_bytes": 150,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 7,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 104,
+      "image_count": 0
+    },
+    {
+      "index": 8,
+      "role": "tool",
+      "content_bytes": 2704,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 9,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 122,
+      "image_count": 0
+    },
+    {
+      "index": 10,
+      "role": "tool",
+      "content_bytes": 251,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 11,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 144,
+      "image_count": 0
+    },
+    {
+      "index": 12,
+      "role": "tool",
+      "content_bytes": 494,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 13,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 107,
+      "image_count": 0
+    },
+    {
+      "index": 14,
+      "role": "tool",
+      "content_bytes": 338,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 15,
+      "role": "assistant",
+      "content_bytes": 329,
+      "tool_call_bytes": 492,
+      "image_count": 0
+    },
+    {
+      "index": 16,
+      "role": "tool",
+      "content_bytes": 469,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 17,
+      "role": "assistant",
+      "content_bytes": 72,
+      "tool_call_bytes": 10183,
+      "image_count": 0
+    },
+    {
+      "index": 18,
+      "role": "tool",
+      "content_bytes": 99,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 19,
+      "role": "assistant",
+      "content_bytes": 121,
+      "tool_call_bytes": 94,
+      "image_count": 0
+    },
+    {
+      "index": 20,
+      "role": "tool",
+      "content_bytes": 163,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 21,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 99,
+      "image_count": 0
+    },
+    {
+      "index": 22,
+      "role": "tool",
+      "content_bytes": 186,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 23,
+      "role": "assistant",
+      "content_bytes": 281,
+      "tool_call_bytes": 6232,
+      "image_count": 0
+    },
+    {
+      "index": 24,
+      "role": "tool",
+      "content_bytes": 205,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 25,
+      "role": "assistant",
+      "content_bytes": 85,
+      "tool_call_bytes": 4707,
+      "image_count": 0
+    },
+    {
+      "index": 26,
+      "role": "tool",
+      "content_bytes": 206,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    }
+  ],
+  "contexts": [
+    {
+      "estimated_tokens": 9898,
+      "hash": "f97a5a09c3a83a8f7c8b6ff3748818f1614e4950323635095055b6593048cd84",
+      "id": "ctx_fae23a72-7348-4816-83f4-6e9fab2e965e",
+      "message_count": 2,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 2532,
+      "hash": "000136575610eab578cf4ed7651b963e725f51d2418abae4133c449dafb3b138",
+      "id": "ctx_3e649a1f-d7a2-4d22-b13e-efd351c15062",
+      "message_count": 4,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 2894,
+      "hash": "1b87f44a58d5cc6d03588381555fc5dc3deba35a45d89f92422befafb77f072c",
+      "id": "ctx_4abfc4a8-02af-4ff3-b5ac-1a6f16372c32",
+      "message_count": 6,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 2976,
+      "hash": "6ca9b04677be59dd47eea4a194f5415fd219898b1f41bb0cf2429ac62ffeb185",
+      "id": "ctx_9a121e2f-abfa-4208-9b0f-7bd6aafce79a",
+      "message_count": 8,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 4070,
+      "hash": "3b24215bdee060a519df7715facffdf62ad82fa429c3735e71853784ae6b1cf5",
+      "id": "ctx_3ce35505-d7da-47de-b5e3-ecc243e76691",
+      "message_count": 10,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 4240,
+      "hash": "32830d756c165350af1600354abfa7beb6585d9eecf9691b923f886979eeda94",
+      "id": "ctx_816e3729-6d85-45a0-9c8f-c7c923e8e9ee",
+      "message_count": 12,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 4571,
+      "hash": "0aadcfcf71f2bf01c020a624c86f8f7613ef78c8e38b13811f27f1cdcde66d01",
+      "id": "ctx_54ee0095-d125-4a0d-821a-eb2c55303534",
+      "message_count": 14,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 4771,
+      "hash": "0b794fa89e569701dd55f21e9935bd51dd82b5e47e978592671a5f406861d813",
+      "id": "ctx_78417fee-44cd-4086-af1b-e107b0909482",
+      "message_count": 16,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 5099,
+      "hash": "454d983ec1fa5da5e7c212297e2907c797a459ccd2ede00574ff111c691ba952",
+      "id": "ctx_8307c78f-57d7-49e0-9a59-fe5cc11dc259",
+      "message_count": 18,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 9158,
+      "hash": "4229e4f725208301bf3d7713e3c9e804c4ca89d4deebd82b968cfc536dbf8505",
+      "id": "ctx_51f4339d-0438-42b9-9c6c-9b00161630e8",
+      "message_count": 22,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 9125,
+      "hash": "597b76903786cd396e9feaae880ae9f510757a43c4d276c49940a792e5365859",
+      "id": "ctx_3a0b20f6-ca2c-41eb-89e6-06030d875581",
+      "message_count": 22,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 9220,
+      "hash": "7a3b7cee0a6c23b504e62a6c98da858e7c866d42afd1ef92b98d8746c649fd1e",
+      "id": "ctx_fc3e2911-63d7-4333-a13b-c4a337166591",
+      "message_count": 24,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 9382,
+      "hash": "44e1b25e262c4d80d54151e1b5d31e029cc3c852e1675dc2ff85637983a88f79",
+      "id": "ctx_ea772df4-aa5d-49af-b1a5-338a0b33dc25",
+      "message_count": 26,
+      "omitted_messages": [],
+      "summary": null
+    },
+    {
+      "estimated_tokens": 11912,
+      "hash": "b61b6fc187625fab2c211fca18eb50abb548cb861ee15d91062ec40294a905a9",
+      "id": "ctx_2c8b3798-58ea-48a9-875c-4b3cd7230b88",
+      "message_count": 26,
+      "omitted_messages": [],
+      "summary": null
+    }
+  ],
+  "compaction_count": 0,
+  "recovery_outcome": {
+    "continued_after_generation_limit": true,
+    "subsequent_successful_tools": [
+      "files.write",
+      "files.edit"
+    ],
+    "recovery_echo_as_final": false,
+    "complete_task": false,
+    "next_blocker": "context_overflow",
+    "required_input_tokens": 14063,
+    "available_input_tokens": 11776,
+    "output_reserve_tokens": 4096,
+    "safety_tokens": 512
+  },
+  "syntax": {
+    "file": "tetris/game.html",
+    "status": "passed",
+    "scripts": [
+      {
+        "script_index": 0,
+        "bytes": 7624,
+        "returncode": 0,
+        "stderr": ""
+      }
+    ],
+    "remaining_placeholders": [
+      "/*__PART3__*/"
+    ]
+  },
+  "browser": {
+    "file": "tetris/game.html",
+    "errors": [],
+    "blockedNetwork": [
+      "https://fonts.googleapis.com"
+    ],
+    "checks": [
+      "local entry loads with canvas and no JavaScript exception",
+      "start and gameplay keys dispatched without JavaScript exceptions"
+    ],
+    "initial": {
+      "stats": {
+        "frames": 0,
+        "canvasDraws": 0,
+        "audioNodes": 0,
+        "listeners": []
+      },
+      "title": "Retro Tetris \u2014 Sketchbook Film Grain",
+      "canvases": [
+        {
+          "id": "game",
+          "width": 720,
+          "height": 660
+        },
+        {
+          "id": "grain",
+          "width": 680,
+          "height": 450
+        }
+      ],
+      "controls": []
+    },
+    "canvasChanged": false,
+    "finalStats": {
+      "frames": 0,
+      "canvasDraws": 0,
+      "audioNodes": 0,
+      "listeners": [
+        {
+          "type": "pointerdown",
+          "target": "window"
+        },
+        {
+          "type": "touchstart",
+          "target": "window"
+        },
+        {
+          "type": "click",
+          "target": "window"
+        }
+      ]
+    },
+    "status": "failed",
+    "failure": "Game must install keyboard gameplay handlers"
+  },
+  "werk_requests": [
+    {
+      "id": 24,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610856253,
+      "elapsed_seconds": 65.352532897,
+      "prompt_tokens": 11400,
+      "cached_tokens": 8704,
+      "output_tokens": 2038,
+      "first_output_seconds": 7.55136025,
+      "decode_tokens_per_second": 35.84373370279699,
+      "prefill_tokens_per_second": 1000.385163130315
+    },
+    {
+      "id": 23,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610765027,
+      "elapsed_seconds": 76.803244417,
+      "prompt_tokens": 8870,
+      "cached_tokens": 8641,
+      "output_tokens": 2572,
+      "first_output_seconds": 5.032565894,
+      "decode_tokens_per_second": 36.297053106892974,
+      "prefill_tokens_per_second": 185.48532762459715
+    },
+    {
+      "id": 22,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "length",
+      "started_ms": 1792610642368,
+      "elapsed_seconds": 118.503574759,
+      "prompt_tokens": 8708,
+      "cached_tokens": 8130,
+      "output_tokens": 4096,
+      "first_output_seconds": 4.765645019,
+      "decode_tokens_per_second": 36.29886847050952,
+      "prefill_tokens_per_second": 763.5342388303395
+    },
+    {
+      "id": 21,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610628438,
+      "elapsed_seconds": 9.427251654,
+      "prompt_tokens": 8613,
+      "cached_tokens": 4583,
+      "output_tokens": 29,
+      "first_output_seconds": 6.843023806,
+      "decode_tokens_per_second": 36.28846577372014,
+      "prefill_tokens_per_second": 1144.8122110272402
+    },
+    {
+      "id": 20,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610613706,
+      "elapsed_seconds": 10.418040094,
+      "prompt_tokens": 8646,
+      "cached_tokens": 4464,
+      "output_tokens": 53,
+      "first_output_seconds": 6.941911975,
+      "decode_tokens_per_second": 36.54129096933703,
+      "prefill_tokens_per_second": 1005.5028560176172
+    },
+    {
+      "id": 19,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610499416,
+      "elapsed_seconds": 109.428970266,
+      "prompt_tokens": 4587,
+      "cached_tokens": 4055,
+      "output_tokens": 3872,
+      "first_output_seconds": 3.289399329,
+      "decode_tokens_per_second": 36.78556800322892,
+      "prefill_tokens_per_second": 488.9135183668819
+    },
+    {
+      "id": 18,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610486683,
+      "elapsed_seconds": 8.786260253,
+      "prompt_tokens": 4259,
+      "cached_tokens": 3772,
+      "output_tokens": 206,
+      "first_output_seconds": 2.241466048,
+      "decode_tokens_per_second": 36.50540492645756,
+      "prefill_tokens_per_second": 486.6695513746167
+    },
+    {
+      "id": 17,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610476912,
+      "elapsed_seconds": 5.931884228,
+      "prompt_tokens": 4059,
+      "cached_tokens": 3598,
+      "output_tokens": 30,
+      "first_output_seconds": 3.263565205,
+      "decode_tokens_per_second": 34.60251514148392,
+      "prefill_tokens_per_second": 443.81033798900967
+    },
+    {
+      "id": 16,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610467112,
+      "elapsed_seconds": 5.401584034,
+      "prompt_tokens": 3728,
+      "cached_tokens": 2491,
+      "output_tokens": 45,
+      "first_output_seconds": 2.5156129590000003,
+      "decode_tokens_per_second": 36.91026622144683,
+      "prefill_tokens_per_second": 847.3566172592226
+    },
+    {
+      "id": 15,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610456633,
+      "elapsed_seconds": 6.635028254,
+      "prompt_tokens": 3558,
+      "cached_tokens": 2408,
+      "output_tokens": 41,
+      "first_output_seconds": 3.867496769,
+      "decode_tokens_per_second": 35.0498948075718,
+      "prefill_tokens_per_second": 776.3770735175079
+    },
+    {
+      "id": 14,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610447907,
+      "elapsed_seconds": 4.729204978,
+      "prompt_tokens": 2464,
+      "cached_tokens": 2016,
+      "output_tokens": 28,
+      "first_output_seconds": 2.31807388,
+      "decode_tokens_per_second": 36.70528149673651,
+      "prefill_tokens_per_second": 475.440020800501
+    },
+    {
+      "id": 13,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610439273,
+      "elapsed_seconds": 4.888202398,
+      "prompt_tokens": 2382,
+      "cached_tokens": 1890,
+      "output_tokens": 27,
+      "first_output_seconds": 2.5919961540000003,
+      "decode_tokens_per_second": 36.52271306944997,
+      "prefill_tokens_per_second": 495.4917302228807
+    },
+    {
+      "id": 12,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610426931,
+      "elapsed_seconds": 8.692468775,
+      "prompt_tokens": 2020,
+      "cached_tokens": 0,
+      "output_tokens": 45,
+      "first_output_seconds": 5.834695632,
+      "decode_tokens_per_second": 32.688260773869146,
+      "prefill_tokens_per_second": 836.942475120642
+    },
+    {
+      "id": 11,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792610411959,
+      "elapsed_seconds": 11.48657094,
+      "prompt_tokens": 1894,
+      "cached_tokens": 0,
+      "output_tokens": 68,
+      "first_output_seconds": 7.614440388,
+      "decode_tokens_per_second": 32.832841725906604,
+      "prefill_tokens_per_second": 614.0644093261275
+    }
+  ],
+  "log_safety": "No prompt, image payload, source code, tool arguments, API key or model response text included."
+}

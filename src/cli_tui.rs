@@ -232,7 +232,7 @@ pub(crate) fn banner() -> Vec<Line<'static>> {
         lines.push(Line::from(
             std::iter::once(Span::raw(" ".repeat(4 - row.max(1))))
                 .chain(glyphs.iter().enumerate().map(|(i, glyph)| {
-                    let width = if i == 0 || i == 4 { 14 } else { 7 };
+                    let width = if i == 0 || i == 4 { 12 } else { 7 };
                     Span::styled(
                         format!("{:<width$}", glyph[row]),
                         Style::default().fg(BRAND[i.min(4)]).bold(),

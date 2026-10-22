@@ -1,3 +1,5 @@
+#[path = "support/prefill.rs"]
+mod prefill;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -42,7 +44,7 @@ async fn model_compaction_is_budgeted_preserves_user_constraints_and_raw_history
     for mode in [harness::HarnessMode::Classic, harness::HarnessMode::Minimal] {
         let dir = tempfile::tempdir().unwrap();
         let long = "Historical evidence. ".repeat(100);
-        let provider = Arc::new(ScriptedProvider::new(vec![
+        let provider = Arc::new(prefill::PrefillProvider::new(vec![
             ScriptedTurn::text(&long),
             ScriptedTurn::text("Earlier evidence summary."),
             ScriptedTurn::text("Final answer."),
@@ -114,7 +116,8 @@ async fn model_compaction_is_budgeted_preserves_user_constraints_and_raw_history
                     .contains("Earlier evidence summary")
             );
         } else {
-            assert!(!requests[1].messages.iter().any(|m| m.role == Role::User));
+            assert_eq!(requests[1].messages.last().unwrap().role, Role::User);
+            assert!(!requests[1].messages.last().unwrap().content.contains(&long));
             assert!(
                 !requests[2].messages[0]
                     .content

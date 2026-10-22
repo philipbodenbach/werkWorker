@@ -30,6 +30,24 @@ fn configuration_allowed(status: RunStatus) -> bool {
         || matches!(status, RunStatus::WaitingInput | RunStatus::WaitingApproval)
 }
 
+/// Invalid continuations share the output-limit recovery allowance. Deriving
+/// it from durable attempts prevents restart from granting additional retries.
+fn response_recovery_failures(run: &Run) -> usize {
+    run.attempts
+        .iter()
+        .rev()
+        .take_while(|attempt| !attempt.completed)
+        .filter(|attempt| {
+            attempt.error.as_ref().is_some_and(|error| {
+                matches!(
+                    error.code.as_str(),
+                    "model_output_limit" | "model_empty_response" | "model_feedback_echo"
+                )
+            })
+        })
+        .count()
+}
+
 struct SessionRuntime {
     deleted: AtomicBool,
     data: Arc<Mutex<SessionData>>,
@@ -1400,11 +1418,20 @@ impl SessionHandle {
                 self.engine.inner.provider.capabilities().context_tokens,
             )?;
             let run = &effective_run;
-            if crate::context::output_limit_failures(run) > run.limits.max_retries as usize {
-                return Err(WorkerError::new(
-                    "model_output_limit",
-                    "Output limit still reached after bounded recovery with smaller steps",
-                ));
+            if response_recovery_failures(run) > run.limits.max_retries as usize {
+                let error = run
+                    .attempts
+                    .iter()
+                    .rev()
+                    .filter_map(|attempt| attempt.error.as_ref())
+                    .find(|error| {
+                        matches!(
+                            error.code.as_str(),
+                            "model_output_limit" | "model_empty_response" | "model_feedback_echo"
+                        )
+                    })
+                    .expect("response recovery failure");
+                return Err(error.clone());
             }
             if run.metrics.steps >= run.limits.max_steps {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
@@ -1520,12 +1547,16 @@ impl SessionHandle {
                             // resend the identical rejected request. Steps/tree budget bound retries.
                             continue 'steps;
                         }
-                        if error.code == "model_output_limit" {
+                        if matches!(
+                            error.code.as_str(),
+                            "model_output_limit" | "model_empty_response" | "model_feedback_echo"
+                        ) {
                             let data = self.snapshot().await?;
                             let run = data.run(run_id)?;
-                            if crate::context::output_limit_failures(run)
-                                <= run.limits.max_retries as usize
-                            {
+                            if response_recovery_failures(run) > run.limits.max_retries as usize {
+                                return Err(error);
+                            }
+                            if error.code == "model_output_limit" {
                                 // Never replay the identical oversized request.
                                 // Rebuild with explicit feedback and smaller chunks;
                                 // partial tool arguments remain outside canonical history.
@@ -1924,7 +1955,7 @@ impl SessionHandle {
         if source.is_empty() {
             return Ok(());
         }
-        let request = crate::providers::ModelRequest {
+        let mut request = crate::providers::ModelRequest {
             messages: vec![
                 Message::text(
                     Role::System,
@@ -1944,6 +1975,17 @@ impl SessionHandle {
             max_output_tokens: run.limits.reserve_output_tokens.min(1024),
             output_schema: None,
         };
+        if crate::harness::config(&data, run)?.mode != crate::harness::HarnessMode::Classic {
+            request.messages.push(crate::harness::continuation());
+        }
+        // These source/continuation messages are local request data, not durable
+        // aid records. Keep their ownership explicit when validating a summary.
+        let summary_feedback: Vec<String> = request
+            .messages
+            .iter()
+            .skip(1)
+            .map(|message| message.content.clone())
+            .collect();
         let attempt_id = id("attempt");
         let step_id = id("step");
         let source_hash = fingerprint(&source);
@@ -1985,6 +2027,13 @@ impl SessionHandle {
             Ok((message, usage, metadata))
                 if message.tool_calls.is_empty()
                     && !message.content.is_empty()
+                    && !summary_feedback.iter().any(|owned| {
+                        message.content.trim() == owned.trim()
+                            || serde_json::from_str::<Value>(&message.content).is_ok_and(|value| {
+                                serde_json::from_str::<Value>(owned)
+                                    .is_ok_and(|expected| expected == value)
+                            })
+                    })
                     && message.content.len() < serde_json::to_vec(&source)?.len() =>
             {
                 self.update(|d| {
@@ -2023,7 +2072,7 @@ impl SessionHandle {
                 let error = outcome.err().unwrap_or_else(|| {
                     WorkerError::new(
                         "compaction_rejected",
-                        "Summary was empty, larger than source or requested tools",
+                        "Summary was empty, echoed runtime input, larger than source or requested tools",
                     )
                 });
                 self.update(|d| {
@@ -2173,6 +2222,27 @@ impl SessionHandle {
             }
             self.flush_model_events(run_id, &mut pending).await?;
             let result = assembler.finish()?;
+            if result.0.tool_calls.is_empty() {
+                let rejection = if result.0.content.trim().is_empty() {
+                    Some((
+                        "model_empty_response",
+                        "Model returned neither visible answer content nor tool calls",
+                    ))
+                } else {
+                    let data = self.snapshot().await?;
+                    crate::harness::is_feedback_echo(&data, data.run(run_id)?, &request, &result.0)?
+                        .then_some((
+                            "model_feedback_echo",
+                            "Model echoed runtime feedback without a new answer or tool call",
+                        ))
+                };
+                if let Some((code, message)) = rejection {
+                    return Err(WorkerError {
+                        retryable: true,
+                        ..WorkerError::new(code, message)
+                    });
+                }
+            }
             if let Some(usage) = &result.1 {
                 self.engine
                     .inner

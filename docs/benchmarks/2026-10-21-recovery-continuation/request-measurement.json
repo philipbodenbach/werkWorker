@@ -1,0 +1,44 @@
+{
+  "executed_tools": 3,
+  "model_requests": 5,
+  "request_estimates": [
+    1755,
+    2269,
+    11808,
+    12029,
+    11775
+  ],
+  "serialized_request_bytes": [
+    1652,
+    2125,
+    11627,
+    11848,
+    11553
+  ],
+  "status": "completed",
+  "tool_proposals": 3,
+  "tool_schema_bytes": [
+    1123,
+    1123,
+    1123,
+    1123,
+    1123
+  ],
+  "total_estimate": 39636,
+  "total_serialized_request_bytes": 38805,
+  "verification": "prior write preserved; discarded call absent; both hints reference actual receipts; context snapshots match complete request estimates",
+  "baseline": {
+    "revision": "c6f237c942297f3637813808c6ef8894e777cba7",
+    "total_estimate": 38884,
+    "total_serialized_request_bytes": 38053,
+    "model_requests": 5,
+    "executed_tools": 3
+  },
+  "estimate_kind": "deterministic fixture estimator, not native tokenizer tokens",
+  "delta": {
+    "total_estimate": 752,
+    "total_serialized_request_bytes": 752,
+    "model_requests": 0,
+    "executed_tools": 0
+  }
+}

@@ -1,0 +1,864 @@
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use werk_worker::{
+    context::validate_messages,
+    policy::*,
+    profiles::AgentProfile,
+    providers::*,
+    sessions::{InMemoryStore, SessionStore},
+    *,
+};
+
+enum Reply {
+    Turn(ScriptedTurn),
+    FeedbackEcho,
+    LegacyEcho(&'static str),
+    BoundaryEcho,
+    PrefillSensitive(ScriptedTurn),
+    Empty,
+    Pending,
+}
+
+struct RecoveryProvider {
+    replies: Mutex<VecDeque<Reply>>,
+    requests: Mutex<Vec<ModelRequest>>,
+}
+impl RecoveryProvider {
+    fn new(replies: Vec<Reply>) -> Self {
+        Self {
+            replies: Mutex::new(replies.into()),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+#[async_trait]
+impl ModelProvider for RecoveryProvider {
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            tool_calling: Support::Supported,
+            streaming: Support::Supported,
+            ..Default::default()
+        }
+    }
+    fn identity(&self) -> String {
+        "response-recovery-fixture".into()
+    }
+    async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        self.requests.lock().unwrap().push(request.clone());
+        let reply = self.replies.lock().unwrap().pop_front().unwrap();
+        let turn = match reply {
+            Reply::Turn(turn) => turn,
+            Reply::FeedbackEcho => {
+                let hint = request
+                    .messages
+                    .iter()
+                    .find(|message| {
+                        message.role == Role::Assistant
+                            && serde_json::from_str::<Value>(&message.content)
+                                .is_ok_and(|value| value["event"] == "generation_output_limit")
+                    })
+                    .expect("generation recovery hint must be delivered");
+                ScriptedTurn::text(&hint.content)
+            }
+            Reply::LegacyEcho(event) => {
+                let hint = request
+                    .messages
+                    .iter()
+                    .find(|message| {
+                        message.role == Role::Assistant
+                            && serde_json::from_str::<Value>(&message.content)
+                                .is_ok_and(|value| value["event"] == event)
+                    })
+                    .expect("legacy recovery hint must be delivered");
+                ScriptedTurn::text(&hint.content)
+            }
+            Reply::BoundaryEcho => {
+                let boundary = request.messages.last().unwrap();
+                assert_eq!(boundary.role, Role::User);
+                ScriptedTurn::text(&boundary.content)
+            }
+            Reply::Empty => ScriptedTurn::text(" \n\t"),
+            Reply::PrefillSensitive(next) => {
+                if let Some(message) = request.messages.last()
+                    && message.role == Role::Assistant
+                    && message.tool_calls.is_empty()
+                {
+                    ScriptedTurn::text(&message.content)
+                } else {
+                    next
+                }
+            }
+            Reply::Pending => return Ok(Box::pin(futures_util::stream::pending())),
+        };
+        Ok(Box::pin(futures_util::stream::iter(
+            turn.deltas.into_iter().map(Ok),
+        )))
+    }
+}
+
+fn write(path: &str, content: &str) -> Reply {
+    Reply::Turn(ScriptedTurn::calls(
+        "",
+        vec![ToolCall {
+            id: id("call"),
+            name: "files.write".into(),
+            arguments: json!({"path":path,"content":content}),
+        }],
+    ))
+}
+fn limited() -> Reply {
+    Reply::Turn(ScriptedTurn {
+        deltas: vec![
+            ModelDelta::Tool {
+                index: 0,
+                id: "discarded-complete".into(),
+                name: "files.write".into(),
+                arguments: json!({"path":"discarded.txt","content":"must not execute"}).to_string(),
+            },
+            ModelDelta::Tool {
+                index: 1,
+                id: "discarded-partial".into(),
+                name: "files.write".into(),
+                arguments: r#"{"path":"partial.txt","content":"unfinished"#.into(),
+            },
+            ModelDelta::Finish {
+                reason: "length".into(),
+            },
+            ModelDelta::Done,
+        ],
+        delay_ms: 0,
+        error: None,
+    })
+}
+fn profile() -> AgentProfile {
+    AgentProfile {
+        schema_version: 1,
+        name: "recovery".into(),
+        prompt: "Implement the requested changes and report truthfully.".into(),
+        tools: vec!["files.write".into()],
+        skills: vec![],
+    }
+}
+fn policy() -> HostPolicy {
+    HostPolicy {
+        workspace_writable: true,
+        grants: vec![CapabilityGrant {
+            tool: "files.write".into(),
+            version: "1".into(),
+            resource: ".".into(),
+            arguments_hash: None,
+            expires_at_ms: None,
+            preapproved: true,
+        }],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn output_limit_then_empty_or_feedback_echo_recovers_without_false_completion() {
+    for bad_reply in [Reply::Empty, Reply::FeedbackEcho, Reply::BoundaryEcho] {
+        let workspace = tempfile::tempdir().unwrap();
+        let provider = Arc::new(RecoveryProvider::new(vec![
+            write("saved.txt", "prior success"),
+            limited(),
+            bad_reply,
+            write("finished.txt", "complete implementation"),
+            Reply::Turn(ScriptedTurn::text("Implemented and verified.")),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit("Implement", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed);
+        assert_eq!(result.text.as_deref(), Some("Implemented and verified."));
+        assert_eq!(result.metrics.model_requests, 5);
+        assert_eq!(result.metrics.tool_invocations, 2);
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("saved.txt")).unwrap(),
+            "prior success"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("finished.txt")).unwrap(),
+            "complete implementation"
+        );
+        assert!(!workspace.path().join("discarded.txt").exists());
+        assert!(!workspace.path().join("partial.txt").exists());
+        let data = session.snapshot().await.unwrap();
+        validate_messages(&data.messages).unwrap();
+        let state = data.run(&run.id).unwrap();
+        assert_eq!(
+            state
+                .attempts
+                .iter()
+                .filter(|attempt| !attempt.completed)
+                .count(),
+            2
+        );
+        assert!(
+            state.attempts[2]
+                .error
+                .as_ref()
+                .is_some_and(|error| matches!(
+                    error.code.as_str(),
+                    "model_empty_response" | "model_feedback_echo"
+                ))
+        );
+        let requests = provider.requests();
+        // Invalid continuations retry the same admitted request, including the
+        // one-shot recovery evidence and the fresh-turn boundary.
+        assert_eq!(
+            serde_json::to_value(&requests[2]).unwrap(),
+            serde_json::to_value(&requests[3]).unwrap()
+        );
+        assert_eq!(requests[2].messages.last().unwrap().role, Role::User);
+        for request in requests {
+            validate_messages(&request.messages).unwrap();
+        }
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn each_new_generation_limit_updates_the_same_bounded_recovery_episode() {
+    for completes in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut replies = vec![write("saved.txt", "prior success"), limited(), limited()];
+        if completes {
+            replies.extend([
+                write("finished.txt", "complete implementation"),
+                Reply::Turn(ScriptedTurn::text("Implemented.")),
+            ]);
+        } else {
+            replies.push(limited());
+        }
+        let provider = Arc::new(RecoveryProvider::new(replies));
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit("Implement", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(
+            result.status,
+            if completes {
+                RunStatus::Completed
+            } else {
+                RunStatus::Failed
+            }
+        );
+        let saved = session.snapshot().await.unwrap();
+        let state = saved.run(&run.id).unwrap();
+        let requests = provider.requests();
+        assert_eq!(requests.len(), if completes { 5 } else { 4 });
+        for (request_index, failed_index) in [(2, 1), (3, 2)] {
+            let observations: Vec<Value> = requests[request_index]
+                .messages
+                .iter()
+                .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+                .filter(|v| v["event"] == "generation_output_limit")
+                .collect();
+            assert_eq!(observations.len(), 1);
+            assert_eq!(
+                observations[0]["data"]["trigger"],
+                state.attempts[failed_index].attempt_id
+            );
+            assert_eq!(
+                observations[0]["data"]["scope"],
+                state.attempts[failed_index].attempt_id
+            );
+            assert_eq!(
+                requests[request_index].messages.last().unwrap().role,
+                Role::User
+            );
+            validate_messages(&requests[request_index].messages).unwrap();
+        }
+        assert_eq!(
+            saved.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["generation_output_limit"]
+                ["episodes"],
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("saved.txt")).unwrap(),
+            "prior success"
+        );
+        assert_eq!(workspace.path().join("finished.txt").exists(), completes);
+        assert!(!workspace.path().join("discarded.txt").exists());
+        assert!(!workspace.path().join("partial.txt").exists());
+        if !completes {
+            assert_eq!(result.error.unwrap().code, "model_output_limit");
+        }
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn resumed_repeated_limit_keeps_latest_evidence_and_spent_allowance() {
+    for old_suppressed_snapshot in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryStore::default());
+        let provider = Arc::new(RecoveryProvider::new(vec![
+            limited(),
+            limited(),
+            Reply::Pending,
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .store(store.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit("Implement", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while provider.requests().len() < 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut saved = session.snapshot().await.unwrap();
+        let latest = saved.runs[0].attempts[1].attempt_id.clone();
+        if old_suppressed_snapshot {
+            // The prior implementation recorded the second failure as observed
+            // but left the already delivered aid pointing at the first one.
+            let old = provider.requests()[1]
+                .messages
+                .iter()
+                .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+                .find(|v| v["event"] == "generation_output_limit")
+                .unwrap();
+            let aid = &mut saved.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["generation_output_limit"];
+            aid["trigger"] = old["data"]["trigger"].clone();
+            aid["scope"] = old["data"]["scope"].clone();
+            aid["detail"] = old["data"]["detail"].clone();
+            aid["delivered_step"] = json!(saved.runs[0].attempts[1].step_id);
+        }
+        engine.close().await.unwrap();
+        let revision = store.load(&saved.id).await.unwrap().revision;
+        saved.revision = revision + 1;
+        store.save(&saved, Some(revision)).await.unwrap();
+        let next = Arc::new(RecoveryProvider::new(vec![limited()]));
+        let reopened = WorkerEngine::builder(next.clone())
+            .store(store)
+            .build()
+            .await
+            .unwrap();
+        let resumed = reopened.resume_run(&saved.id, &run.id).await.unwrap();
+        let result = resumed.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Failed);
+        assert_eq!(result.error.unwrap().code, "model_output_limit");
+        let requests = next.requests();
+        assert_eq!(requests.len(), 1, "resume must not replenish retries");
+        let notice = requests[0]
+            .messages
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+            .find(|v| v["event"] == "generation_output_limit")
+            .unwrap();
+        assert_eq!(notice["data"]["trigger"], latest);
+        let data = reopened
+            .open_session(&saved.id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        assert_eq!(
+            data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["generation_output_limit"]
+                ["episodes"],
+            1
+        );
+        assert!(data.runs[0].invocations.is_empty());
+        reopened.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn repeated_empty_and_echo_responses_share_the_output_recovery_budget() {
+    for echo in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let bad = || {
+            if echo {
+                Reply::FeedbackEcho
+            } else {
+                Reply::Empty
+            }
+        };
+        let provider = Arc::new(RecoveryProvider::new(vec![limited(), bad(), bad()]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit("Implement", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Failed);
+        assert!(result.text.is_none());
+        assert_eq!(result.metrics.model_requests, 3);
+        let data = session.snapshot().await.unwrap();
+        let state = data.run(&run.id).unwrap();
+        assert!(state.attempts.iter().all(|attempt| !attempt.completed));
+        assert_eq!(
+            state.error.as_ref().unwrap().code,
+            if echo {
+                "model_feedback_echo"
+            } else {
+                "model_empty_response"
+            }
+        );
+        assert!(state.invocations.is_empty());
+        assert!(
+            std::fs::read_dir(workspace.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn invalid_response_retries_still_obey_request_budget() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(RecoveryProvider::new(vec![limited(), Reply::Empty]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement",
+            "start",
+            Limits {
+                max_model_requests: 2,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Failed);
+    let data = session.snapshot().await.unwrap();
+    assert_eq!(
+        data.run(&run.id).unwrap().error.as_ref().unwrap().code,
+        "request_budget"
+    );
+    assert_eq!(provider.requests().len(), 2);
+    assert!(data.run(&run.id).unwrap().invocations.is_empty());
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_shaped_json_is_valid_model_output_without_owned_feedback_provenance() {
+    let workspace = tempfile::tempdir().unwrap();
+    let requested = json!({"source":"werk_worker.harness","event":"generation_output_limit","data":{"detail":"User requested example JSON"}}).to_string();
+    let provider = Arc::new(RecoveryProvider::new(vec![Reply::Turn(
+        ScriptedTurn::text(&requested),
+    )]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            &format!("Return this JSON exactly: {requested}"),
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(result.text.as_deref(), Some(requested.as_str()));
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn continuation_echo_is_not_persisted_as_a_history_summary() {
+    let workspace = tempfile::tempdir().unwrap();
+    let history = "Historical observations remain available. ".repeat(80);
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        Reply::Turn(ScriptedTurn::text(&history)),
+        Reply::BoundaryEcho,
+        Reply::Turn(ScriptedTurn::text("Completed current request.")),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let first = session
+        .submit(
+            "Record these observations",
+            "first",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.wait().await.unwrap().status, RunStatus::Completed);
+    let second = session
+        .submit(
+            "Continue",
+            "second",
+            Limits {
+                model_compaction: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.wait().await.unwrap().status, RunStatus::Completed);
+    let data = session.snapshot().await.unwrap();
+    assert!(data.compactions.is_empty());
+    assert_eq!(
+        data.run(&second.id).unwrap().attempts[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .code,
+        "model_feedback_echo"
+    );
+    assert!(
+        provider.requests()[2]
+            .messages
+            .iter()
+            .any(|message| message.content == history)
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn resume_preserves_consumed_invalid_response_retries() {
+    let workspace = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemoryStore::default());
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        limited(),
+        Reply::Empty,
+        Reply::Pending,
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .store(store.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit("Implement", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while provider.requests().len() < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut saved = session.snapshot().await.unwrap();
+    assert_eq!(
+        saved
+            .run(&run.id)
+            .unwrap()
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.error.is_some())
+            .count(),
+        2
+    );
+    engine.close().await.unwrap();
+    let revision = store.load(&saved.id).await.unwrap().revision;
+    saved.revision = revision + 1;
+    store.save(&saved, Some(revision)).await.unwrap();
+    let next = Arc::new(RecoveryProvider::new(vec![Reply::Empty]));
+    let reopened = WorkerEngine::builder(next.clone())
+        .store(store)
+        .build()
+        .await
+        .unwrap();
+    let resumed = reopened.resume_run(&saved.id, &run.id).await.unwrap();
+    assert_eq!(resumed.wait().await.unwrap().status, RunStatus::Failed);
+    assert_eq!(next.requests().len(), 1);
+    let data = reopened
+        .open_session(&saved.id)
+        .await
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+    let state = data.run(&run.id).unwrap();
+    assert_eq!(state.error.as_ref().unwrap().code, "model_empty_response");
+    assert_eq!(state.metrics.model_requests, 4);
+    assert!(state.invocations.is_empty());
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_minimal_hints_and_boundary_echoes_are_rejected_after_resume() {
+    for echo in [
+        Reply::LegacyEcho("output_limit"),
+        Reply::LegacyEcho("budget_low"),
+        Reply::BoundaryEcho,
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryStore::default());
+        let provider = Arc::new(RecoveryProvider::new(vec![Reply::Pending]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .store(store.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Implement",
+                "start",
+                Limits {
+                    max_steps: 5,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while provider.requests().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut saved = session.snapshot().await.unwrap();
+        engine.close().await.unwrap();
+        // A historical run keeps its minimal contract when resumed, even
+        // though newly submitted runs normalize to the adaptive default.
+        saved.metadata["_werkworker_harness"][&run.id]["config"]["mode"] = json!("minimal");
+        let revision = store.load(&saved.id).await.unwrap().revision;
+        saved.revision = revision + 1;
+        store.save(&saved, Some(revision)).await.unwrap();
+        let next = Arc::new(RecoveryProvider::new(vec![
+            limited(),
+            echo,
+            write("finished.txt", "completed"),
+            Reply::Turn(ScriptedTurn::text("Implemented.")),
+        ]));
+        let reopened = WorkerEngine::builder(next.clone())
+            .store(store)
+            .build()
+            .await
+            .unwrap();
+        let resumed = reopened.resume_run(&saved.id, &run.id).await.unwrap();
+        let result = resumed.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        assert_eq!(result.text.as_deref(), Some("Implemented."));
+        assert_eq!(next.requests().len(), 4);
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("finished.txt")).unwrap(),
+            "completed"
+        );
+        assert!(!workspace.path().join("discarded.txt").exists());
+        let data = reopened
+            .open_session(&saved.id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        assert_eq!(
+            harness::config(&data, data.run(&run.id).unwrap())
+                .unwrap()
+                .mode,
+            harness::HarnessMode::Minimal
+        );
+        assert!(data.run(&run.id).unwrap().attempts.iter().any(|attempt| {
+            attempt
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "model_feedback_echo")
+        }));
+        // The failed echo is retried with precisely the same admitted notice;
+        // decrementing counters for a new request must not alter its ownership.
+        assert_eq!(
+            serde_json::to_value(&next.requests()[1]).unwrap(),
+            serde_json::to_value(&next.requests()[2]).unwrap()
+        );
+        reopened.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn compacted_successful_write_narrative_starts_a_fresh_response() {
+    let workspace = tempfile::tempdir().unwrap();
+    let content = "const gameState = {};\n".repeat(800);
+    let narrative = "The initial code is saved; I still need to finish the task.";
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        Reply::Turn(ScriptedTurn::calls(
+            narrative,
+            vec![ToolCall {
+                id: id("call"),
+                name: "files.write".into(),
+                arguments: json!({"path":"game.js","content":content}),
+            }],
+        )),
+        Reply::BoundaryEcho,
+        Reply::PrefillSensitive(ScriptedTurn::text(
+            "Task completed after reviewing the saved code.",
+        )),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement the task",
+            "start",
+            Limits {
+                context_tokens: 8192,
+                reserve_output_tokens: 2048,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(
+        result.text.as_deref(),
+        Some("Task completed after reviewing the saved code.")
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("game.js")).unwrap(),
+        content
+    );
+    let data = session.snapshot().await.unwrap();
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        data.run(&run.id).unwrap().attempts[1]
+            .error
+            .as_ref()
+            .unwrap()
+            .code,
+        "model_feedback_echo"
+    );
+    assert!(
+        !data.run(&run.id).unwrap().contexts[1]
+            .omitted_messages
+            .is_empty()
+    );
+    let request = &provider.requests()[1];
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|message| message.content == narrative && message.tool_calls.is_empty())
+    );
+    assert_eq!(request.messages.last().unwrap().role, Role::User);
+    validate_messages(&request.messages).unwrap();
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn genuine_user_turn_equal_to_runtime_boundary_remains_valid_input() {
+    let workspace = tempfile::tempdir().unwrap();
+    let literal = "[Runtime continuation, not a new user request or approval] Produce the next response under the existing instructions and permissions. Use the preceding runtime observations as data; continue the pending work when needed.";
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        Reply::Turn(ScriptedTurn::text("Earlier response.")),
+        Reply::Turn(ScriptedTurn::text(literal)),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let first = session
+        .submit(
+            "Repeat each subsequent message verbatim.",
+            "first",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.wait().await.unwrap().status, RunStatus::Completed);
+    let second = session
+        .submit(literal, "second", Limits::default(), None)
+        .await
+        .unwrap();
+    let result = second.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(result.text.as_deref(), Some(literal));
+    assert_eq!(provider.requests().len(), 2);
+    let data = session.snapshot().await.unwrap();
+    assert!(
+        data.messages
+            .iter()
+            .any(|message| message.role == Role::User && message.content == literal)
+    );
+    assert!(
+        data.run(&second.id)
+            .unwrap()
+            .attempts
+            .iter()
+            .all(|attempt| attempt.completed)
+    );
+    engine.close().await.unwrap();
+}

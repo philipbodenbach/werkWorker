@@ -57,7 +57,13 @@ validation. Missing optional guidance does not trigger stronger control.
 | Repeated identical action without new evidence | Reuse the receipt or select a different relevant action | New evidence, or two complete responses |
 
 A hint is request-local, with a persisted trigger ID and scope. Each episode
-gets one delivery; unresolved repeats do not inject the same hint again. After
+gets one delivery per observed trigger; unresolved repeats do not inject the
+same hint again. A distinct discarded generation within an active recovery
+sequence updates that episode to the newest failed attempt and receives a new
+notice, with a smaller suggested action. This preserves the episode count and
+spent retry allowance; it never repeats the previously consumed attempt's
+notice. Saved active states that suppressed such a newer attempt recover that
+undelivered evidence once. Other aid kinds retain one delivery per episode. After
 deactivation, two complete model responses must pass before a different scope can
 activate that kind again. The previous identical scope remains suppressed;
 at most three episodes of each kind are allowed in a run. This also bounds
@@ -105,7 +111,23 @@ existing request. Hints are not appended repeatedly to canonical history.
 Canonical schema/completion/child findings keep separate provenance indices.
 Feedback uses the supported assistant role and a structured
 `source: werk_worker.harness` envelope; it cannot grant authority. Real steering
-remains a user message.
+remains a user message. When assistant content would end a request, the default
+context builder adds a fixed runtime continuation in the user transport role.
+This includes retained model prose after compaction removes a completed tool
+group. The boundary requests a fresh response from backends that treat trailing
+assistant text as prefill. The fixed signal includes no tool, skill, document or child
+payload, and grants no new task authority or approval. Ownership comes from
+construction or saved feedback indices, never from a source-looking JSON label.
+It is request-only, included in counting, hashes and admission, and reconstructed
+after compaction/resume without adding user steering to canonical history.
+
+Whitespace-only final responses and exact echoes of owned feedback are rejected
+before completion. They share the existing `max_retries` allowance with discarded
+output-limited attempts; durable attempt records prevent a restart from resetting
+it. Retries preserve the admitted request and ordinary request/tree/time budgets.
+Exhaustion fails explicitly rather than reporting the task completed. Model
+summarization uses the same turn boundary and rejects its own evidence or signal
+as a summary. This does not attempt to judge arbitrary final-answer quality.
 
 ## Context, resources and execution
 
@@ -191,3 +213,5 @@ See [Werk capability decisions](reuse-matrix.md), [context limits](context.md),
 [recovery](recovery.md), and the fixture measurements in
 [the validation record](benchmarks/2026-10-21-harness/README.md) and
 [the follow-up measurements](benchmarks/2026-10-21-harness-followup/README.md).
+The [continuation investigation](benchmarks/2026-10-21-recovery-continuation/README.md)
+includes werk1112 evidence, prefill regressions and live replay results.

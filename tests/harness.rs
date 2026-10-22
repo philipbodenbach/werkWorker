@@ -1,3 +1,5 @@
+#[path = "support/prefill.rs"]
+mod prefill;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::{
@@ -255,7 +257,7 @@ async fn configured_completion_is_bounded_persisted_and_respects_policy_and_budg
         } else {
             99
         };
-        let provider = Arc::new(ScriptedProvider::new(vec![
+        let provider = Arc::new(prefill::PrefillProvider::new(vec![
             ScriptedTurn::text("Candidate"),
             ScriptedTurn::text("Corrected"),
         ]));
@@ -328,7 +330,7 @@ async fn configured_completion_is_bounded_persisted_and_respects_policy_and_budg
                     .iter()
                     .filter(|m| m.role == Role::User)
                     .count(),
-                1
+                2
             );
         }
         engine.close().await.unwrap();
@@ -929,7 +931,7 @@ async fn truncated_tool_then_limited_generation_have_independent_receipts() {
     limited.deltas[2] = ModelDelta::Finish {
         reason: "length".into(),
     };
-    let provider = Arc::new(ScriptedProvider::new(vec![
+    let provider = Arc::new(prefill::PrefillProvider::new(vec![
         call("files.write", json!({"path":"saved","content":"confirmed"})),
         call("files.read", json!({"path":"large"})),
         limited,
@@ -1134,7 +1136,26 @@ async fn legacy_output_aids_migrate_across_crash_without_redelivery_or_budget_re
             .unwrap();
         assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
         let request = &next.requests()[0];
-        assert_eq!(hints(request, kind), usize::from(!consumed && !conflicting));
+        let newer_generation = generation && consumed && !conflicting;
+        assert_eq!(
+            hints(request, kind),
+            usize::from((!consumed && !conflicting) || newer_generation)
+        );
+        if newer_generation {
+            let notice = request
+                .messages
+                .iter()
+                .filter_map(|message| serde_json::from_str::<Value>(&message.content).ok())
+                .find(|message| message["event"] == "generation_output_limit")
+                .unwrap();
+            // The old notice remains consumed. Only the distinct failed
+            // attempt at the crash boundary supplies fresh recovery evidence.
+            assert_eq!(
+                notice["data"]["trigger"],
+                saved.runs[0].attempts.last().unwrap().attempt_id
+            );
+            assert_ne!(notice["data"]["trigger"], old["trigger"]);
+        }
         if conflicting {
             let notice = request
                 .messages
@@ -1162,7 +1183,14 @@ async fn legacy_output_aids_migrate_across_crash_without_redelivery_or_budget_re
             .unwrap();
         let migrated = &data.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"][kind];
         assert_eq!(migrated["episodes"], old["episodes"]);
-        assert_eq!(migrated["trigger"], old["trigger"]);
+        assert_eq!(
+            migrated["trigger"],
+            if newer_generation {
+                json!(saved.runs[0].attempts.last().unwrap().attempt_id)
+            } else {
+                old["trigger"].clone()
+            }
+        );
         assert_eq!(data.runs[0].metrics.model_requests, previous_requests + 1);
         assert_eq!(
             data.runs[0].limits.max_retries,
@@ -1375,7 +1403,7 @@ async fn adaptive_pending_and_delivered_hints_survive_resume() {
         let store = Arc::new(InMemoryStore::default());
         let mut slow = ScriptedTurn::text("never completed in original process");
         slow.delay_ms = 60_000;
-        let provider = Arc::new(ScriptedProvider::new(vec![
+        let provider = Arc::new(prefill::PrefillProvider::new(vec![
             call("files.read", json!({})),
             slow,
         ]));
@@ -1550,7 +1578,7 @@ async fn legacy_snapshots_keep_execution_contract_but_new_followups_are_adaptive
 }
 
 #[tokio::test]
-async fn repeated_output_limits_do_not_reinject_the_hint_or_expand_recovery_budget() {
+async fn repeated_output_limits_deliver_new_evidence_without_expanding_recovery_budget() {
     let dir = tempfile::tempdir().unwrap();
     let limited = || ScriptedTurn {
         deltas: vec![
@@ -1598,7 +1626,7 @@ async fn repeated_output_limits_do_not_reinject_the_hint_or_expand_recovery_budg
             .iter()
             .map(|r| hints(r, "generation_output_limit"))
             .collect::<Vec<_>>(),
-        [0, 1, 0]
+        [0, 1, 1]
     );
     assert_eq!(run.status().await.unwrap().metrics.model_requests, 3);
     engine.close().await.unwrap();

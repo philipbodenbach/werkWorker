@@ -72,3 +72,12 @@ correction allowance is persisted and remains bounded after restart. Old runs
 without this metadata explicitly migrate to a preserved classic contract. New
 runs are adaptive; their trigger scopes, episode counts, delivery steps, observation
 cursors and cooldowns persist in the same namespace for resume.
+
+Runtime feedback must not become an assistant response prefix. Default requests
+ending with assistant content include a fixed continuation boundary, including
+retained prose after compaction; observations retain their existing low-authority
+role and no tool/document text enters the boundary.
+Empty answers or exact echoes of owned feedback are failed attempts, not final
+results. Their recovery shares the output-limit retry allowance and is derived
+from persisted attempts, including on resume. The boundary participates in the
+full request count and admission. See [harness behavior](harness.md).

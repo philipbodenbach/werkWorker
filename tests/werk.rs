@@ -1181,6 +1181,15 @@ async fn image_inspection_keeps_file_hash_missing_file_and_listing_until_edit() 
 
 #[tokio::test]
 async fn image_coding_continues_through_failed_write_edits_and_verification() {
+    image_coding_compaction_fixture(false).await;
+}
+
+#[tokio::test]
+async fn image_coding_compacts_older_turns_before_later_images() {
+    image_coding_compaction_fixture(true).await;
+}
+
+async fn image_coding_compaction_fixture(prior_turn: bool) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut contents = "<html><!--next--></html>".to_owned();
     let mut turns = vec![
@@ -1200,6 +1209,14 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
         turns.push(("files.edit", json!({"path":"index.html","old":"<!--next-->","new":addition,"expected_hash":hash(&contents)})));
         contents = contents.replace("<!--next-->", &addition);
     }
+    if !prior_turn {
+        // Failed proposals must remain intact while older completed groups
+        // are compacted; moving the first image would make this one overflow.
+        turns.push((
+            "files.write",
+            json!({"path":"index.html","content":"rejected ".repeat(1400)}),
+        ));
+    }
     turns.push((
         "files.read",
         json!({"path":"index.html","start_line":9,"end_line":9}),
@@ -1211,6 +1228,15 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
         if r.path == "/werk/v1/capabilities" {
             return control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"native text counter","operations":["count_tokens"]}]}));
         }
+        let text_count = |body: &Value| {
+            let mut messages = body["messages"].clone();
+            for message in messages.as_array_mut().unwrap() {
+                if message["content"].is_array() {
+                    message["content"] = message["content"][0]["text"].clone();
+                }
+            }
+            2100 + serde_json::to_vec(&messages).unwrap().len() / 4
+        };
         if r.path == "/werk/v1/chat/count_tokens" {
             let messages = r.body["messages"].as_array().unwrap();
             if messages.iter().any(|m| m["content"].is_array()) {
@@ -1221,13 +1247,21 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
             }
             // Deterministic native-counter fixture: templates/tools plus actual
             // text/history length. Images are budgeted by WerkProvider itself.
-            let tokens = 2100 + serde_json::to_vec(messages).unwrap().len() / 4;
+            let tokens = text_count(&r.body);
             return control(json!({"model":"fixture-model","input_tokens":tokens}));
         }
         if r.path == "/v1/chat/completions" {
+            if r.body["messages"].as_array().unwrap().iter().any(|m| m["content"] == "Earlier separate task")
+                && !r.body["messages"].as_array().unwrap().iter().any(|m| m["content"].is_array()) {
+                return Response::json(json!({"choices":[{"message":{"role":"assistant","content":"Earlier task completed."},"finish_reason":"stop"}]}));
+            }
             let n = step.fetch_add(1, Ordering::SeqCst);
             if let Some((name, args)) = turns.get(n) {
-                return Response::json(json!({"choices":[{"message":{"role":"assistant","content":format!("Step {n}: preserve existing functions while implementing the next section."),"tool_calls":[{"id":format!("call_{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}]}));
+                // Learn the small overhead at the original image position.
+                // Removing an older turn before a later image changes its
+                // placement-specific estimate. Aggregate compaction must still
+                // work; an image in the initial user turn should remain stable.
+                return Response::json(json!({"choices":[{"message":{"role":"assistant","content":format!("Step {n}: preserve existing functions while implementing the next section."),"tool_calls":[{"id":format!("call_{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":text_count(&r.body)+443,"completion_tokens":100}}));
             }
             return werk(r);
         }
@@ -1255,6 +1289,13 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
         )
         .await
         .unwrap();
+    if prior_turn {
+        let earlier = session
+            .submit("Earlier separate task", "earlier", Limits::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(earlier.wait().await.unwrap().status, RunStatus::Completed);
+    }
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(677, 680)
         .write_to(&mut encoded, image::ImageFormat::Png)
@@ -1283,7 +1324,15 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
         expected
     );
     let saved = session.snapshot().await.unwrap();
-    assert_eq!(saved.messages[0].images, vec![picture]);
+    assert_eq!(
+        saved
+            .messages
+            .iter()
+            .find(|m| !m.images.is_empty())
+            .unwrap()
+            .images,
+        vec![picture]
+    );
     assert_eq!(
         saved
             .messages
@@ -1306,12 +1355,80 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
             .iter()
             .any(|c| !c.omitted_messages.is_empty())
     );
+    let state = saved.run(&run.id).unwrap();
+    assert!(state.contexts[0].estimated_tokens > 10_000);
+    assert!(state.contexts[1].estimated_tokens < 4_000);
+    assert!(state.contexts.iter().any(|c| c.omitted_messages.len() >= 4));
+    if prior_turn {
+        // The fallback for a shifted later image also requires releasing a
+        // proven latest write; stable initial images need fewer omissions.
+        assert!(state.contexts.iter().enumerate().any(|(step, context)| {
+            step.checked_sub(1)
+                .and_then(|previous| state.invocations.get(previous))
+                .is_some_and(|invocation| {
+                    matches!(invocation.call.name.as_str(), "files.write" | "files.edit")
+                        && invocation
+                            .result
+                            .as_ref()
+                            .is_some_and(|result| result.status == Outcome::Succeeded)
+                        && context.omitted_messages.contains(&invocation.message_index)
+                })
+        }));
+    }
     let requests = server.requests.lock().unwrap().clone();
     let generations: Vec<_> = requests
         .iter()
-        .filter(|r| r.path == "/v1/chat/completions")
+        .filter(|r| {
+            r.path == "/v1/chat/completions"
+                && r.body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["content"].is_array())
+        })
         .collect();
     assert_eq!(generations.len(), count + 1);
+    let positions: Vec<_> = generations
+        .iter()
+        .map(|request| {
+            request.body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|message| message["content"].is_array())
+                .unwrap()
+        })
+        .collect();
+    if prior_turn {
+        assert!(
+            positions.iter().any(|index| *index != positions[0]),
+            "old turns before the image are compactable"
+        );
+    } else {
+        assert!(
+            positions.iter().all(|index| *index == 1),
+            "runtime observations must preserve the initial image position"
+        );
+        let rejected = &state.invocations[count - 2];
+        assert_eq!(
+            rejected.result.as_ref().unwrap().error_code.as_deref(),
+            Some("write_conflict")
+        );
+        assert!(
+            !state.contexts[count - 1]
+                .omitted_messages
+                .contains(&rejected.message_index)
+        );
+        let retry_messages = generations[count - 1].body["messages"].as_array().unwrap();
+        assert!(
+            retry_messages
+                .iter()
+                .any(|m| m["tool_calls"].as_array().is_some_and(|calls| calls
+                    .iter()
+                    .any(|call| call["id"] == format!("call_{}", count - 2)))),
+            "failed proposal stays available for correction"
+        );
+    }
     for (n, r) in generations.iter().enumerate() {
         let messages = r.body["messages"].as_array().unwrap();
         if n > 0 {
@@ -1322,7 +1439,10 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
                         n - 1
                     )));
         }
-        let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+        let user = messages
+            .iter()
+            .find(|m| m["role"] == "user" && m["content"].is_array())
+            .unwrap();
         assert_eq!(user["content"][0]["text"], input);
         assert!(
             user["content"][1]["image_url"]["url"]
@@ -1359,6 +1479,18 @@ async fn image_coding_continues_through_failed_write_edits_and_verification() {
                     .any(|m| m["content"].is_array()))
             .count(),
         1
+    );
+    let counts = requests
+        .iter()
+        .filter(|request| request.path == "/werk/v1/chat/count_tokens")
+        .count();
+    assert!(
+        counts <= generations.len() * 5,
+        "compaction must not count every small intermediate omission: {counts}"
+    );
+    println!(
+        "IMAGE_COMPACTION_COUNTS prior_turn={prior_turn} count_requests={counts} model_requests={}",
+        generations.len()
     );
     engine.close().await.unwrap();
 }

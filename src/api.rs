@@ -1460,13 +1460,14 @@ impl SessionHandle {
                 }
             };
             let count_source = self.engine.inner.provider.input_token_source(&request);
+            let request_fingerprint = self.engine.inner.provider.request_fingerprint(&request);
             let step_id = id("step");
             self.update(|d| {
                 let r = d.run_mut(run_id)?;
                 r.metrics.steps += 1;
                 r.metrics.estimated_input_tokens = snapshot.estimated_tokens;
                 r.contexts.push(snapshot.clone());
-                crate::harness::delivered(d, run_id, &step_id, &request)?;
+                crate::harness::delivered(d, run_id, &step_id, &request, &request_fingerprint)?;
                 crate::project::delivered(d, &step_id, &request)?;
                 d.emit(
                     Some(run_id),

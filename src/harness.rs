@@ -81,6 +81,10 @@ pub(crate) struct HarnessState {
     pub checks: Vec<CheckRecord>,
     #[serde(default)]
     pub messages: Vec<usize>,
+    /// Exact admitted requests, indexed by step. Older snapshots have no hashes.
+    /// Store hashes only: incomplete tool arguments never enter canonical history.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub request_fingerprints: std::collections::BTreeMap<String, String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CheckRecord {
@@ -639,10 +643,24 @@ fn generation_limit(
     events: &mut Vec<(String, String)>,
 ) {
     let attempt = &run.attempts[index];
+    // A read/list/plan is a complete response, but does not establish that a
+    // previously oversized implementation was split successfully. Size the next
+    // suggestion using durable failures since the latest confirmed file change.
+    // This sizes feedback only; the ordinary retry/time/request budgets remain.
     let failures = run.attempts[..=index]
         .iter()
         .rev()
-        .take_while(|previous| !previous.completed)
+        .take_while(|previous| {
+            !previous.completed
+                || !run.invocations.iter().any(|invocation| {
+                    invocation.step_id == previous.step_id
+                        && matches!(invocation.call.name.as_str(), "files.write" | "files.edit")
+                        && invocation
+                            .result
+                            .as_ref()
+                            .is_some_and(|result| result.status == Outcome::Succeeded)
+                })
+        })
         .filter(|previous| {
             previous
                 .error
@@ -653,35 +671,44 @@ fn generation_limit(
     let suggested_chars =
         (run.limits.reserve_output_tokens.min(4096) / (1usize << failures.min(8))).max(256);
     let detail = format!(
-        "Generation limit {failures} in this failure sequence. This attempt was discarded; none of its calls ran. Retain earlier successful work. Output includes reasoning and tool JSON. Make one small, complete action now, aiming for at most {suggested_chars} characters of new file content if writing. Implement only one useful part; leave the rest for later turns. Do not claim unfinished work is complete.",
+        "Generation limit {failures} since the last confirmed file change (or start of this run). This attempt was discarded; none of its calls ran. Retain earlier successful work. Output includes reasoning and tool JSON. Make one small, complete action now, aiming for at most {suggested_chars} characters of new file content if writing. Implement only one useful part; leave the rest for later turns. Reading or listing files does not make the unfinished large write fit. Do not claim unfinished work is complete.",
     );
-    if let Some(aid) = a.aids.get_mut("generation_output_limit")
-        && aid.active
-        && aid.trigger != attempt.attempt_id
-    {
-        // A new discarded attempt is new evidence in the same
-        // bounded recovery episode. Do not resend the original
-        // oversized request after consuming its first notice.
-        // Preserve episode/cooldown counters and retry budgets.
-        aid.trigger = attempt.attempt_id.clone();
-        aid.scope = attempt.attempt_id.clone();
-        aid.detail = detail;
-        aid.delivered_step = None;
-        aid.reason = "new_failed_attempt".into();
-        events.push((
-            "generation_output_limit".into(),
-            format!("updated_attempt:{}", attempt.attempt_id),
-        ));
+    let old = a.aids.get("generation_output_limit");
+    if old.is_some_and(|aid| aid.trigger == attempt.attempt_id) {
+        // A consumed or resolved trigger must never be delivered again.
         return;
     }
-    activate(
-        a,
-        "generation_output_limit",
-        &attempt.attempt_id,
-        &attempt.attempt_id,
-        &detail,
-        events,
+    let active = old.is_some_and(|aid| aid.active);
+    let episodes = old.map_or(1, |aid| aid.episodes + usize::from(!aid.active));
+    // A distinct failed generation always needs fresh recovery evidence. The
+    // generic observation cooldown/three-episode cap must not suppress it after
+    // an intervening successful read. Attempts are bounded by normal run limits.
+    a.aids.insert(
+        "generation_output_limit".into(),
+        Aid {
+            active: true,
+            trigger: attempt.attempt_id.clone(),
+            scope: attempt.attempt_id.clone(),
+            detail,
+            episodes,
+            activated_at: a.successes,
+            rearm_at: 0,
+            delivered_step: None,
+            reason: "new_failed_attempt".into(),
+        },
     );
+    events.push((
+        "generation_output_limit".into(),
+        format!(
+            "{}:{}",
+            if active {
+                "updated_attempt"
+            } else {
+                "activated"
+            },
+            attempt.attempt_id
+        ),
+    ));
 }
 
 /// Observe durable receipts only; arbitrary model/tool prose cannot escalate control.
@@ -728,8 +755,8 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
         }
     }
     // Earlier snapshots may have already observed and suppressed a newer
-    // failure while the same episode was active. Recover that undelivered
-    // evidence once, without reopening an inactive episode or resetting limits.
+    // failure, including an inactive episode's cooldown. Recover that distinct
+    // undelivered evidence once, without replaying a consumed trigger or resetting limits.
     if let Some((index, attempt)) = run
         .attempts
         .iter()
@@ -744,7 +771,7 @@ pub(crate) fn refresh(session: &mut SessionData, run_id: &str) -> Result<()> {
         })
         && a.aids
             .get("generation_output_limit")
-            .is_some_and(|aid| aid.active && aid.trigger != attempt.attempt_id)
+            .is_none_or(|aid| aid.trigger != attempt.attempt_id)
     {
         generation_limit(a, run, index, &mut events);
     }
@@ -882,10 +909,30 @@ pub(crate) fn delivered(
     run_id: &str,
     step: &str,
     request: &ModelRequest,
+    request_hash: &str,
 ) -> Result<()> {
     let mut state = state(session, run_id)?;
+    if session.run(run_id)?.attempts.iter().any(|attempt| {
+        attempt
+            .error
+            .as_ref()
+            .is_some_and(|error| error.code == "model_output_limit")
+            && state
+                .request_fingerprints
+                .get(&attempt.step_id)
+                .map(String::as_str)
+                == Some(request_hash)
+    }) {
+        return Err(WorkerError::new(
+            "model_output_recovery_stalled",
+            "Recovery rebuilt an identical request that already exceeded its output limit. Stopped before repeating inference; successful work is preserved. Continue with a smaller implementation step or explicitly revise the output budget.",
+        ));
+    }
+    state
+        .request_fingerprints
+        .insert(step.into(), request_hash.into());
     if state.config.mode != HarnessMode::Adaptive {
-        return Ok(());
+        return save(session, run_id, &state);
     }
     let pending = adaptive_feedback(session, session.run(run_id)?)?;
     for hint in pending {

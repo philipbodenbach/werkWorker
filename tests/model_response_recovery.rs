@@ -163,6 +163,201 @@ fn policy() -> HostPolicy {
 }
 
 #[tokio::test]
+async fn generation_limits_after_reads_keep_fresh_feedback_and_shrink_until_a_write() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut replies = vec![write("saved.txt", "prior success")];
+    for n in 0..4 {
+        std::fs::write(
+            workspace.path().join(format!("observation-{n}.txt")),
+            "evidence",
+        )
+        .unwrap();
+        replies.push(limited());
+        if n < 3 {
+            replies.push(Reply::Turn(ScriptedTurn::calls(
+                "",
+                vec![ToolCall {
+                    id: id("read"),
+                    name: "files.read".into(),
+                    arguments: json!({"path":format!("observation-{n}.txt")}),
+                }],
+            )));
+        }
+    }
+    replies.extend([
+        write("part-one.js", "function first() {}"),
+        limited(),
+        write("part-two.js", "function second() {}"),
+        Reply::Turn(ScriptedTurn::text("Done")),
+    ]);
+    let provider = Arc::new(RecoveryProvider::new(replies));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let mut agent = profile();
+    agent.tools.push("files.read".into());
+    let mut access = policy();
+    access.grants.push(CapabilityGrant {
+        tool: "files.read".into(),
+        version: "1".into(),
+        resource: ".".into(),
+        arguments_hash: None,
+        expires_at_ms: None,
+        preapproved: true,
+    });
+    let session = engine
+        .create_session(agent, workspace.path(), access, Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement the game in small complete parts",
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed);
+    let requests = provider.requests();
+    let saved = session.snapshot().await.unwrap();
+    let attempts = &saved.run(&run.id).unwrap().attempts;
+    for (failed_index, chars) in [(1, 1024), (3, 512), (5, 256), (7, 256), (9, 1024)] {
+        let hint: Value = requests[failed_index + 1]
+            .messages
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+            .find(|v| v["event"] == "generation_output_limit")
+            .expect(
+                "every new generation failure must bypass observation cooldown and episode caps",
+            );
+        assert_eq!(hint["data"]["trigger"], attempts[failed_index].attempt_id);
+        assert!(
+            hint["data"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("at most {chars} characters")),
+            "{hint}"
+        );
+        assert_eq!(requests[failed_index + 1].max_output_tokens, 2048);
+    }
+    assert!(!workspace.path().join("partial.txt").exists());
+    assert!(!workspace.path().join("discarded.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("part-one.js")).unwrap(),
+        "function first() {}"
+    );
+    assert_eq!(
+        saved.metadata["_werkworker_harness"][&run.id]["adaptive"]["aids"]["generation_output_limit"]
+            ["episodes"],
+        5
+    );
+    for request in requests {
+        validate_messages(&request.messages).unwrap();
+    }
+    engine.close().await.unwrap();
+}
+
+struct FixedRecoveryContext {
+    change_output: bool,
+}
+#[async_trait]
+impl werk_worker::context::ContextBuilder for FixedRecoveryContext {
+    async fn build(
+        &self,
+        _: &SessionData,
+        run: &Run,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<(ModelRequest, ContextSnapshot)> {
+        Ok((
+            ModelRequest {
+                messages: vec![Message::text(Role::User, "Implement")],
+                tools,
+                max_output_tokens: if self.change_output && !run.attempts.is_empty() {
+                    1024
+                } else {
+                    2048
+                },
+                output_schema: None,
+            },
+            ContextSnapshot {
+                id: id("ctx"),
+                hash: "custom-fixed-context-hash".into(),
+                estimated_tokens: 8,
+                message_count: 1,
+                omitted_messages: vec![],
+                summary: None,
+            },
+        ))
+    }
+}
+
+#[tokio::test]
+async fn identical_truncated_request_is_blocked_durably_but_changed_output_is_allowed() {
+    for change_output in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryStore::default());
+        let provider = Arc::new(RecoveryProvider::new(vec![
+            limited(),
+            Reply::Turn(ScriptedTurn::text("Done")),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .store(store.clone())
+            .context(Arc::new(FixedRecoveryContext { change_output }))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit("Implement", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        if change_output {
+            assert_eq!(result.status, RunStatus::Completed);
+            assert_eq!(provider.requests().len(), 2);
+        } else {
+            assert_eq!(result.error.unwrap().code, "model_output_recovery_stalled");
+            assert_eq!(provider.requests().len(), 1);
+            let mut saved = session.snapshot().await.unwrap();
+            engine.close().await.unwrap();
+            let revision = saved.revision;
+            let state = saved.runs.last_mut().unwrap();
+            state.status = RunStatus::Running;
+            state.error = None;
+            saved.revision += 1;
+            store.save(&saved, Some(revision)).await.unwrap();
+            let next = Arc::new(RecoveryProvider::new(vec![]));
+            let reopened = WorkerEngine::builder(next.clone())
+                .store(store)
+                .context(Arc::new(FixedRecoveryContext {
+                    change_output: false,
+                }))
+                .build()
+                .await
+                .unwrap();
+            let result = reopened
+                .resume_run(&saved.id, &run.id)
+                .await
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            assert_eq!(result.error.unwrap().code, "model_output_recovery_stalled");
+            assert!(next.requests().is_empty());
+            reopened.close().await.unwrap();
+            continue;
+        }
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn output_limit_then_empty_or_feedback_echo_recovers_without_false_completion() {
     for bad_reply in [Reply::Empty, Reply::FeedbackEcho, Reply::BoundaryEcho] {
         let workspace = tempfile::tempdir().unwrap();
@@ -574,7 +769,7 @@ async fn continuation_echo_is_not_persisted_as_a_history_summary() {
 }
 
 #[tokio::test]
-async fn resume_preserves_consumed_invalid_response_retries() {
+async fn resume_preserves_consumed_retries_and_blocks_return_to_original_truncated_request() {
     let workspace = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemoryStore::default());
     let provider = Arc::new(RecoveryProvider::new(vec![
@@ -625,7 +820,7 @@ async fn resume_preserves_consumed_invalid_response_retries() {
         .unwrap();
     let resumed = reopened.resume_run(&saved.id, &run.id).await.unwrap();
     assert_eq!(resumed.wait().await.unwrap().status, RunStatus::Failed);
-    assert_eq!(next.requests().len(), 1);
+    assert_eq!(next.requests().len(), 0);
     let data = reopened
         .open_session(&saved.id)
         .await
@@ -634,8 +829,11 @@ async fn resume_preserves_consumed_invalid_response_retries() {
         .await
         .unwrap();
     let state = data.run(&run.id).unwrap();
-    assert_eq!(state.error.as_ref().unwrap().code, "model_empty_response");
-    assert_eq!(state.metrics.model_requests, 4);
+    assert_eq!(
+        state.error.as_ref().unwrap().code,
+        "model_output_recovery_stalled"
+    );
+    assert_eq!(state.metrics.model_requests, 3);
     assert!(state.invocations.is_empty());
     reopened.close().await.unwrap();
 }

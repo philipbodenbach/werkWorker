@@ -87,8 +87,13 @@ A `finish_reason: length` becomes `model_output_limit`. It is never blindly
 replayed by transport retries. The engine can rebuild with feedback to use
 smaller complete calls, up to `max_retries` consecutive recoveries, inside the
 same step/request/time budgets. Partial text remains audit evidence; none of
-the incomplete response's tools execute. Ordinary
-429/503 retries remain bounded and honor Retry-After. A provider's private
+the incomplete response's tools execute. Every distinct generation-limit failure
+receives fresh adaptive feedback, even after intervening complete read calls.
+The suggested write size shrinks until a file change succeeds. An identical
+previously truncated request is rejected before dispatch with
+`model_output_recovery_stalled`; durable fingerprints keep this guard on resume.
+This does not judge whether a complete response substantively finishes the task.
+Ordinary 429/503 retries remain bounded and honor Retry-After. A provider's private
 rate/total-token quotas cannot be inferred from concurrency telemetry.
 
 ## Automatic rolling compaction

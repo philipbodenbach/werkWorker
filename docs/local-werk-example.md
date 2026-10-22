@@ -102,7 +102,12 @@ consecutive recoveries (default: two; zero disables recovery), and remains subje
 to the normal request, step, and time limits. Recovery never raises the configured
 output/context caps or executes partial tool calls. Repeated failures can still
 require reducing the server's reasoning budget or adjusting the output reserve.
-Automatic compaction handles growing input history separately.
+Automatic compaction handles growing input history separately. After repeated
+output limits, read/list calls do not erase sizing feedback: the next small-write
+suggestion shrinks until a confirmed file change. A newly failed generation
+always gets a fresh notice, regardless of generic hint cooldowns. An identical
+already-truncated request stops with `model_output_recovery_stalled` before more
+inference is spent. Existing files remain available for a focused follow-up.
 
 The coding profile requires executable behavioral assertions as well as syntax
 checks. For browser code without a browser inside the sandbox, it can exercise

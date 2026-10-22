@@ -64,6 +64,11 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    /// Stable, content-free identity of a concrete request, including provider
+    /// settings that affect its wire payload. No network or model work here.
+    fn request_fingerprint(&self, request: &ModelRequest) -> String {
+        fingerprint(&(self.identity(), request))
+    }
     /// Exact native input count when supported; None keeps conservative fallback.
     async fn count_input_tokens(&self, _request: &ModelRequest) -> Result<Option<usize>> {
         Ok(None)
@@ -1111,6 +1116,9 @@ impl ModelProvider for WerkProvider {
     }
     fn identity(&self) -> String {
         format!("werk:{}", self.config.model)
+    }
+    fn request_fingerprint(&self, request: &ModelRequest) -> String {
+        fingerprint(&(&self.config, self.supports_reasoning_tiers(), request))
     }
     fn cached_input_tokens(&self, request: &ModelRequest) -> Option<usize> {
         self.token_counts

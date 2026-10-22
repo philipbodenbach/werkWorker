@@ -60,21 +60,31 @@ A hint is request-local, with a persisted trigger ID and scope. Each episode
 gets one delivery per observed trigger; unresolved repeats do not inject the
 same hint again. A distinct discarded generation within an active recovery
 sequence updates that episode to the newest failed attempt and receives a new
-notice, with a smaller suggested action. This preserves the episode count and
-spent retry allowance; it never repeats the previously consumed attempt's
-notice. Saved active states that suppressed such a newer attempt recover that
-undelivered evidence once. Other aid kinds retain one delivery per episode. After
-deactivation, two complete model responses must pass before a different scope can
-activate that kind again. The previous identical scope remains suppressed;
-at most three episodes of each kind are allowed in a run. This also bounds
-alternating-error behavior. Terminal runs deactivate any remaining help.
+notice, with a smaller suggested action. This preserves the active episode count
+and spent retry allowance; it never repeats the previously consumed attempt's
+notice. A distinct generation failure after a complete response starts a new
+notice immediately, even during the generic cooldown or after three episodes.
+Generation failures are bounded by the normal retry/request/time budgets; these
+observations must not be silenced by the generic assistance cap. Suggested write
+size shrinks across intervening reads, lists, plans and process calls until a
+successful `files.write` or `files.edit` is recorded. This only sizes guidance;
+it neither requires a file-writing workflow nor changes the retry allowance.
+Saved states that suppressed such a newer attempt recover that undelivered
+evidence once, including failures suppressed during an inactive generation
+episode's cooldown. Other aid kinds retain one delivery per episode. For those
+kinds, after deactivation, two complete model responses must pass before a
+different scope can activate that kind again. The previous identical scope
+remains suppressed; at most three episodes of each of those kinds are allowed
+in a run. This also bounds alternating-error behavior. Terminal runs deactivate
+any remaining help.
 Repetition, missing information and context pressure never enable a general
 "strict" mode. Output/schema/completion recovery retains its existing budget.
 
 Tool truncation uses `tool_result_truncated`; a discarded model generation uses
-`generation_output_limit`. Each has its own trigger, scope, delivery step,
-episode allowance, cooldown and expiry. A still-active or cooling-down tool
-notice cannot consume the generation recovery. The generation trigger identifies
+`generation_output_limit`. Each has its own trigger, scope, delivery step and
+expiry; only the tool notice uses the generic episode cap and cooldown.
+A still-active or cooling-down tool notice cannot consume the generation
+recovery. The generation trigger identifies
 the discarded attempt: no calls from that attempt executed, while earlier
 confirmed work remains valid. No skeleton-file or insertion-marker workflow is
 required. Successful generation resolves generation recovery, not missing file
@@ -120,6 +130,15 @@ payload, and grants no new task authority or approval. Ownership comes from
 construction or saved feedback indices, never from a source-looking JSON label.
 It is request-only, included in counting, hashes and admission, and reconstructed
 after compaction/resume without adding user steering to canonical history.
+
+Each admitted request also records a content-free fingerprint by step in saved
+harness metadata. The fingerprint covers messages, tools, output budget/schema,
+provider identity and (for Werk) the connection's inference settings. If planning
+reconstructs an identical request already cut off by `model_output_limit`, the
+run stops with `model_output_recovery_stalled` before another model call. This
+applies across resume and custom context builders. Changed payloads or explicitly
+changed inference settings are distinct requests; no budget is raised automatically.
+Old snapshots lack fingerprints and gain them for newly admitted requests.
 
 Whitespace-only final responses and exact echoes of owned feedback are rejected
 before completion. They share the existing `max_retries` allowance with discarded

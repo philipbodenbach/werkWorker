@@ -22,6 +22,37 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
 }
 
 #[tokio::test]
+async fn request_fingerprints_include_native_reasoning_configuration_without_credentials() {
+    let server = Server::start(werk).await;
+    let mut low = config(&server.origin, false);
+    low.options.insert("reasoning_effort".into(), json!("low"));
+    let mut high = low.clone();
+    high.options
+        .insert("reasoning_effort".into(), json!("high"));
+    let first = WerkProvider::connect(low.clone(), Some("first-secret".into()))
+        .await
+        .unwrap();
+    let same = WerkProvider::connect(low, Some("other-secret".into()))
+        .await
+        .unwrap();
+    let changed = WerkProvider::connect(high, None).await.unwrap();
+    let request = ModelRequest {
+        messages: vec![Message::text(Role::User, "Task")],
+        tools: vec![],
+        max_output_tokens: 2048,
+        output_schema: None,
+    };
+    assert_eq!(
+        first.request_fingerprint(&request),
+        same.request_fingerprint(&request)
+    );
+    assert_ne!(
+        first.request_fingerprint(&request),
+        changed.request_fingerprint(&request)
+    );
+}
+
+#[tokio::test]
 async fn protocol_reasoning_tiers_are_opaque_and_defaults_reach_count_and_generation() {
     for tier in [None, Some("default"), Some("ultra")] {
         let server=Server::start(|request| match request.path.as_str() {

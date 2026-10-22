@@ -369,6 +369,14 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
     run.invocations[boundary..]
         .iter()
         .filter(|i| i.call.name == call.name && i.call.arguments == call.arguments)
+        // The project gate requires a new decision before the first execution.
+        // Keep every other outcome (and pending call) in the repetition budget.
+        .filter(|i| {
+            !i.result.as_ref().is_some_and(|r| {
+                r.status == Outcome::CancelledBeforeStart
+                    && r.error_code.as_deref() == Some("project_instructions_required")
+            })
+        })
         .count()
 }
 pub(crate) fn repeated_calls(session: &SessionData, run: &Run, call: &ToolCall) -> Result<usize> {

@@ -8,7 +8,7 @@ use werk_worker::{
     policy::{HostPolicy, ToolPermission},
     project::{CONFIG, Project},
     providers::{ModelRequest, ScriptedProvider, ScriptedTurn},
-    sessions::{InMemoryStore, SessionStore},
+    sessions::{InMemoryStore, SessionStore, SqliteStore},
     *,
 };
 
@@ -105,6 +105,149 @@ fn assert_scoped(request: &ModelRequest) {
             .any(|m| m.content == "USER: preserve public API")
     );
     validate_messages(&request.messages).unwrap();
+}
+
+#[tokio::test]
+async fn scope_gate_reconfirmed_write_uses_one_repetition_with_and_without_resume() {
+    for resume in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let global = tempfile::tempdir().unwrap();
+        let project = project(dir.path()).await;
+        let profile = project
+            .scoped_profile("coding-basic", dir.path(), global.path())
+            .await
+            .unwrap();
+        let database = global.path().join("session.sqlite");
+        let arguments = json!({"path":"a/deep/corrected.txt","content":"verified"});
+        let confirmed = || {
+            vec![
+                call("files.write", arguments.clone()),
+                ScriptedTurn::text("Saved the file."),
+            ]
+        };
+        let mut turns = vec![call("files.write", arguments.clone())];
+        if resume {
+            let mut slow = ScriptedTurn::text("interrupted decision");
+            slow.delay_ms = 60_000;
+            turns.push(slow);
+        } else {
+            turns.extend(confirmed());
+        }
+        let provider = Arc::new(ScriptedProvider::new(turns));
+        let mut engine = WorkerEngine::builder(provider.clone())
+            .store(Arc::new(SqliteStore::open(&database).await.unwrap()))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile, dir.path(), policy(), project.scoped_metadata())
+            .await
+            .unwrap();
+        let limits = Limits {
+            max_repeated_calls: 1,
+            max_tool_invocations: 2,
+            max_model_requests: if resume { 4 } else { 3 },
+            max_steps: if resume { 4 } else { 3 },
+            ..Default::default()
+        };
+        let mut run = session
+            .submit("Write the file", "start", limits.clone(), None)
+            .await
+            .unwrap();
+        let session_id = session.id().await;
+        let mut providers = vec![provider.clone()];
+        let mut interrupted = None;
+        if resume {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while provider.requests().len() < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!dir.path().join("a/deep/corrected.txt").exists());
+            let mut saved = session.snapshot().await.unwrap();
+            let state = saved.run(&run.id).unwrap();
+            assert_eq!(state.metrics.tool_invocations, 1);
+            assert_eq!(state.metrics.model_requests, 2);
+            assert_eq!(state.metrics.steps, 2);
+            interrupted = Some(state.clone());
+            engine.close().await.unwrap();
+            // Restore the durable interruption boundary, before orderly shutdown
+            // records cancellation. Preserve all attempts and consumed budgets.
+            let store = Arc::new(SqliteStore::open(&database).await.unwrap());
+            let revision = store.load(&session_id).await.unwrap().revision;
+            saved.revision = revision + 1;
+            store.save(&saved, Some(revision)).await.unwrap();
+            let next = Arc::new(ScriptedProvider::new(confirmed()));
+            engine = WorkerEngine::builder(next.clone())
+                .store(store)
+                .build()
+                .await
+                .unwrap();
+            run = engine.resume_run(&session_id, &run.id).await.unwrap();
+            providers.push(next);
+        }
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        let saved = engine
+            .open_session(&session_id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        let state = saved.run(&run.id).unwrap();
+        assert_eq!(serde_json::to_value(&state.limits).unwrap(), json!(limits));
+        assert_eq!(state.metrics.tool_invocations, 2);
+        assert_eq!(state.metrics.model_requests, limits.max_model_requests);
+        assert_eq!(state.metrics.steps, limits.max_steps);
+        assert_eq!(state.tree_model_requests, limits.max_model_requests);
+        if let Some(before) = interrupted {
+            assert_eq!(state.started_at_ms, before.started_at_ms);
+            assert_eq!(state.deadline_ms, before.deadline_ms);
+            assert_eq!(state.tree_model_requests, before.tree_model_requests + 2);
+        }
+        assert_eq!(state.invocations.len(), 2);
+        let deferred = state.invocations[0].result.as_ref().unwrap();
+        assert_eq!(deferred.status, Outcome::CancelledBeforeStart);
+        assert_eq!(
+            deferred.error_code.as_deref(),
+            Some("project_instructions_required")
+        );
+        assert_eq!(
+            state.invocations[0].call.arguments,
+            state.invocations[1].call.arguments
+        );
+        assert_eq!(
+            state.invocations[1].result.as_ref().unwrap().status,
+            Outcome::Succeeded
+        );
+        assert_eq!(
+            saved
+                .events
+                .iter()
+                .filter(|e| matches!(e.event, EventKind::ToolStarted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/deep/corrected.txt")).unwrap(),
+            "verified"
+        );
+        let requests: Vec<_> = providers.iter().flat_map(|p| p.requests()).collect();
+        assert_eq!(rules(&requests[0]).len(), 1);
+        for request in &requests[1..] {
+            assert_eq!(rules(request).len(), 3);
+            validate_messages(&request.messages).unwrap();
+            assert!(!request.messages.iter().any(|m| {
+                serde_json::from_str::<Value>(&m.content).is_ok_and(|v| {
+                    v["source"] == "werk_worker.harness" && v["event"] == "repeated_action"
+                })
+            }));
+        }
+        engine.close().await.unwrap();
+    }
 }
 
 #[tokio::test]

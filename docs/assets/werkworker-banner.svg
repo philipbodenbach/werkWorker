@@ -1,350 +1,56 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="124" viewBox="0 0 880 124" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="822" height="100" viewBox="0 0 822 100" role="img" aria-labelledby="title desc">
   <title id="title">werkWorker</title>
-  <desc id="desc">WERKWORKER in the five-row ASCII lettering and cyan, blue, violet and pink palette of the terminal UI.</desc>
-  <rect width="880" height="124" fill="#090d17"/>
-  <g font-family="DejaVu Sans Mono, Consolas, monospace" font-size="16" font-weight="700">
-    <g fill="#00dcff">
-      <text x="40" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="50" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="140" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="150" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#3b82f6">
-      <text x="190" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="200" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="210" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="220" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="230" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="240" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#6366f1">
-      <text x="260" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="270" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="280" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="290" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#8b5cf6">
-      <text x="330" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="340" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="360" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="370" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="390" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="400" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="490" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="500" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="540" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="550" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="560" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="570" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="610" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="620" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="630" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="640" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="680" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="690" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="710" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="720" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="750" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="760" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="770" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="780" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="790" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="800" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="820" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="830" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="840" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="850" y="14" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#00dcff">
-      <text x="40" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="60" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="130" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="150" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#3b82f6">
-      <text x="180" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="200" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="210" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="220" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="230" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="240" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#6366f1">
-      <text x="250" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="270" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="280" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="300" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-    </g>
-    <g fill="#8b5cf6">
-      <text x="320" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="340" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="350" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="360" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="370" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="390" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="410" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="480" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="500" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="530" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="550" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="560" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="580" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="600" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="620" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="630" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="650" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="670" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="690" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="700" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="710" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="720" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="740" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="760" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="770" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="780" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="790" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="800" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="810" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="830" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="840" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="860" y="36" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-    </g>
-    <g fill="#00dcff">
-      <text x="50" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="70" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="90" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="100" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="120" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="140" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#3b82f6">
-      <text x="170" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="190" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="200" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="210" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#6366f1">
-      <text x="240" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="260" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="270" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="280" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="300" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#8b5cf6">
-      <text x="310" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="330" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">,</text>
-      <text x="340" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">&lt;</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="400" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="420" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="440" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="450" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="470" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="490" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="520" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="540" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="560" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="580" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="590" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="610" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="620" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="630" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="650" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="660" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="680" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">,</text>
-      <text x="690" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">&lt;</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="730" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="750" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="760" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="770" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="800" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="820" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="830" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="840" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="860" y="58" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#00dcff">
-      <text x="60" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="80" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">V</text>
-      <text x="110" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">V</text>
-      <text x="130" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#3b82f6">
-      <text x="160" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="180" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="190" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="200" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="210" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#6366f1">
-      <text x="230" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="250" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="260" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">,</text>
-      <text x="280" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="290" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#8b5cf6">
-      <text x="300" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="320" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="330" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="350" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="410" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="430" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">V</text>
-      <text x="460" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">V</text>
-      <text x="480" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="510" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="530" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="540" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="550" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="570" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="580" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="600" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="610" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">,</text>
-      <text x="630" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="640" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="650" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="670" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="680" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="700" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="720" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="740" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="750" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="760" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="770" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="790" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="810" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="820" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">,</text>
-      <text x="840" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="850" y="80" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#00dcff">
-      <text x="70" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="80" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="90" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="100" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="110" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="120" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#3b82f6">
-      <text x="150" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="160" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="170" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="180" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="190" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="200" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="210" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#6366f1">
-      <text x="220" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="230" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="240" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="260" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="270" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="280" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-    <g fill="#8b5cf6">
-      <text x="290" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="300" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="310" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="330" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="340" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="350" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="420" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="430" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="440" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="450" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="460" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="470" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="500" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">\</text>
-      <text x="510" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="520" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="530" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="540" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="550" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="570" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="580" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="590" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="610" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="620" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="630" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="640" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="650" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="660" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="680" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="690" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="700" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="710" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="720" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="730" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="740" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="750" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="760" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="770" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-    </g>
-    <g fill="#ff4fc3">
-      <text x="780" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="790" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="800" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">/</text>
-      <text x="820" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-      <text x="830" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">_</text>
-      <text x="840" y="102" textLength="10" lengthAdjust="spacingAndGlyphs">|</text>
-    </g>
-  </g>
+  <desc id="desc">WERK WORKER in slanted ASCII lettering, with cyan, blue, violet and pink strokes on a dark background.</desc>
+  <rect width="822" height="100" fill="#090d17"/>
+  <!-- Outlined glyphs preserve the reference lettering without font dependencies. -->
+  <path fill="#00dcff" d="M26 10.289V11.773H16V10.289ZM36 10.289V11.773H26V10.289ZM126 10.289V11.773H116V10.289ZM136 10.289V11.773H126V10.289Z"/>
+  <path fill="#3b82f6" d="M156 10.289V11.773H146V10.289ZM166 10.289V11.773H156V10.289ZM176 10.289V11.773H166V10.289ZM186 10.289V11.773H176V10.289ZM196 10.289V11.773H186V10.289ZM206 10.289V11.773H196V10.289Z"/>
+  <path fill="#6366f1" d="M226 10.289V11.773H216V10.289ZM236 10.289V11.773H226V10.289ZM246 10.289V11.773H236V10.289ZM256 10.289V11.773H246V10.289Z"/>
+  <path fill="#8b5cf6" d="M296 10.289V11.773H286V10.289ZM306 10.289V11.773H296V10.289ZM326 10.289V11.773H316V10.289ZM336 10.289V11.773H326V10.289Z"/>
+  <path fill="#ff4fc3" d="M356 10.289V11.773H346V10.289ZM366 10.289V11.773H356V10.289ZM456 10.289V11.773H446V10.289ZM466 10.289V11.773H456V10.289Z"/>
+  <path fill="#ff4fc3" d="M486 10.289V11.773H476V10.289ZM496 10.289V11.773H486V10.289ZM506 10.289V11.773H496V10.289ZM516 10.289V11.773H506V10.289Z"/>
+  <path fill="#ff4fc3" d="M556 10.289V11.773H546V10.289ZM566 10.289V11.773H556V10.289ZM576 10.289V11.773H566V10.289ZM586 10.289V11.773H576V10.289Z"/>
+  <path fill="#ff4fc3" d="M626 10.289V11.773H616V10.289ZM636 10.289V11.773H626V10.289ZM656 10.289V11.773H646V10.289ZM666 10.289V11.773H656V10.289Z"/>
+  <path fill="#ff4fc3" d="M696 10.289V11.773H686V10.289ZM706 10.289V11.773H696V10.289ZM716 10.289V11.773H706V10.289ZM726 10.289V11.773H716V10.289ZM736 10.289V11.773H726V10.289ZM746 10.289V11.773H736V10.289Z"/>
+  <path fill="#ff4fc3" d="M766 10.289V11.773H756V10.289ZM776 10.289V11.773H766V10.289ZM786 10.289V11.773H776V10.289ZM796 10.289V11.773H786V10.289Z"/>
+  <path fill="#00dcff" d="M18.709 15.336 25.084 28.484H23.275L16.9 15.336ZM38.709 15.336 45.084 28.484H43.275L36.9 15.336ZM113.291 15.336H115.084L108.709 28.484H106.916ZM133.291 15.336H135.084L128.709 28.484H126.916Z"/>
+  <path fill="#3b82f6" d="M143.291 15.336H145.084L138.709 28.484H136.916ZM166 29.289V30.773H156V29.289ZM176 29.289V30.773H166V29.289ZM186 29.289V30.773H176V29.289ZM196 29.289V30.773H186V29.289ZM203.291 15.336H205.084L198.709 28.484H196.916Z"/>
+  <path fill="#6366f1" d="M213.291 15.336H215.084L208.709 28.484H206.916ZM236 29.289V30.773H226V29.289ZM246 29.289V30.773H236V29.289ZM258.709 15.336 265.084 28.484H263.275L256.9 15.336Z"/>
+  <path fill="#8b5cf6" d="M283.291 15.336H285.084L278.709 28.484H276.916ZM303.291 15.336H305.084L298.709 28.484H296.916ZM313.291 15.336H315.084L308.709 28.484H306.916ZM326 29.289V30.773H316V29.289ZM333.291 15.336H335.084L328.709 28.484H326.916Z"/>
+  <path fill="#ff4fc3" d="M348.709 15.336 355.084 28.484H353.275L346.9 15.336ZM368.709 15.336 375.084 28.484H373.275L366.9 15.336ZM443.291 15.336H445.084L438.709 28.484H436.916ZM463.291 15.336H465.084L458.709 28.484H456.916Z"/>
+  <path fill="#ff4fc3" d="M473.291 15.336H475.084L468.709 28.484H466.916ZM496 29.289V30.773H486V29.289ZM506 29.289V30.773H496V29.289ZM518.709 15.336 525.084 28.484H523.275L516.9 15.336Z"/>
+  <path fill="#ff4fc3" d="M543.291 15.336H545.084L538.709 28.484H536.916ZM566 29.289V30.773H556V29.289ZM576 29.289V30.773H566V29.289ZM588.709 15.336 595.084 28.484H593.275L586.9 15.336Z"/>
+  <path fill="#ff4fc3" d="M613.291 15.336H615.084L608.709 28.484H606.916ZM633.291 15.336H635.084L628.709 28.484H626.916ZM643.291 15.336H645.084L638.709 28.484H636.916ZM656 29.289V30.773H646V29.289ZM663.291 15.336H665.084L658.709 28.484H656.916Z"/>
+  <path fill="#ff4fc3" d="M683.291 15.336H685.084L678.709 28.484H676.916ZM706 29.289V30.773H696V29.289ZM716 29.289V30.773H706V29.289ZM726 29.289V30.773H716V29.289ZM736 29.289V30.773H726V29.289ZM743.291 15.336H745.084L738.709 28.484H736.916Z"/>
+  <path fill="#ff4fc3" d="M753.291 15.336H755.084L748.709 28.484H746.916ZM776 29.289V30.773H766V29.289ZM786 29.289V30.773H776V29.289ZM798.709 15.336 805.084 28.484H803.275L796.9 15.336Z"/>
+  <path fill="#00dcff" d="M28.709 34.336 35.084 47.484H33.275L26.9 34.336ZM48.709 34.336 55.084 47.484H53.275L46.9 34.336ZM73.291 34.336H75.084L68.709 47.484H66.916ZM78.709 34.336 85.084 47.484H83.275L76.9 34.336ZM103.291 34.336H105.084L98.709 47.484H96.916ZM123.291 34.336H125.084L118.709 47.484H116.916Z"/>
+  <path fill="#3b82f6" d="M133.291 34.336H135.084L128.709 47.484H126.916ZM156 48.289V49.773H146V48.289ZM166 48.289V49.773H156V48.289ZM173.291 34.336H175.084L168.709 47.484H166.916Z"/>
+  <path fill="#6366f1" d="M203.291 34.336H205.084L198.709 47.484H196.916ZM223.291 34.336H225.084L218.709 47.484H216.916ZM236 48.289V49.773H226V48.289ZM243.291 34.336H245.084L238.709 47.484H236.916ZM263.291 34.336H265.084L258.709 47.484H256.916Z"/>
+  <path fill="#8b5cf6" d="M273.291 34.336H275.084L268.709 47.484H266.916ZM289.739 43.133H292.277V45.25L290.688 48.242H288.936L289.739 45.25ZM305.286 38.766 298.839 40.992 305.286 43.203V45.148L296.714 41.906V40.062L305.286 36.812Z"/>
+  <path fill="#ff4fc3" d="M358.709 34.336 365.084 47.484H363.275L356.9 34.336ZM378.709 34.336 385.084 47.484H383.275L376.9 34.336ZM403.291 34.336H405.084L398.709 47.484H396.916ZM408.709 34.336 415.084 47.484H413.275L406.9 34.336ZM433.291 34.336H435.084L428.709 47.484H426.916ZM453.291 34.336H455.084L448.709 47.484H446.916Z"/>
+  <path fill="#ff4fc3" d="M463.291 34.336H465.084L458.709 47.484H456.916ZM483.291 34.336H485.084L478.709 47.484H476.916ZM503.291 34.336H505.084L498.709 47.484H496.916ZM523.291 34.336H525.084L518.709 47.484H516.916Z"/>
+  <path fill="#ff4fc3" d="M533.291 34.336H535.084L528.709 47.484H526.916ZM553.291 34.336H555.084L548.709 47.484H546.916ZM566 48.289V49.773H556V48.289ZM573.291 34.336H575.084L568.709 47.484H566.916ZM593.291 34.336H595.084L588.709 47.484H586.916Z"/>
+  <path fill="#ff4fc3" d="M603.291 34.336H605.084L598.709 47.484H596.916ZM619.739 43.133H622.277V45.25L620.688 48.242H618.936L619.739 45.25ZM635.286 38.766 628.839 40.992 635.286 43.203V45.148L626.714 41.906V40.062L635.286 36.812Z"/>
+  <path fill="#ff4fc3" d="M673.291 34.336H675.084L668.709 47.484H666.916ZM696 48.289V49.773H686V48.289ZM706 48.289V49.773H696V48.289ZM713.291 34.336H715.084L708.709 47.484H706.916Z"/>
+  <path fill="#ff4fc3" d="M743.291 34.336H745.084L738.709 47.484H736.916ZM763.291 34.336H765.084L758.709 47.484H756.916ZM776 48.289V49.773H766V48.289ZM783.291 34.336H785.084L778.709 47.484H776.916ZM803.291 34.336H805.084L798.709 47.484H796.916Z"/>
+  <path fill="#00dcff" d="M38.709 53.336 45.084 66.484H43.275L36.9 53.336ZM60.996 63.078 63.129 53.336H65.538L62.659 65H59.341L56.462 53.336H58.871ZM90.996 63.078 93.129 53.336H95.538L92.659 65H89.341L86.462 53.336H88.871ZM113.291 53.336H115.084L108.709 66.484H106.916Z"/>
+  <path fill="#3b82f6" d="M123.291 53.336H125.084L118.709 66.484H116.916ZM143.291 53.336H145.084L138.709 66.484H136.916ZM156 67.289V68.773H146V67.289ZM166 67.289V68.773H156V67.289ZM176 67.289V68.773H166V67.289Z"/>
+  <path fill="#6366f1" d="M193.291 53.336H195.084L188.709 66.484H186.916ZM216 67.289V68.773H206V67.289ZM219.739 62.133H222.277V64.25L220.688 67.242H218.936L219.739 64.25ZM246 67.289V68.773H236V67.289ZM253.291 53.336H255.084L248.709 66.484H246.916Z"/>
+  <path fill="#8b5cf6" d="M263.291 53.336H265.084L258.709 66.484H256.916ZM283.291 53.336H285.084L278.709 66.484H276.916ZM291.912 52.773V68.773H290.071V52.773ZM311.912 52.773V68.773H310.071V52.773Z"/>
+  <path fill="#ff4fc3" d="M368.709 53.336 375.084 66.484H373.275L366.9 53.336ZM390.996 63.078 393.129 53.336H395.538L392.659 65H389.341L386.462 53.336H388.871ZM420.996 63.078 423.129 53.336H425.538L422.659 65H419.341L416.462 53.336H418.871ZM443.291 53.336H445.084L438.709 66.484H436.916Z"/>
+  <path fill="#ff4fc3" d="M453.291 53.336H455.084L448.709 66.484H446.916ZM473.291 53.336H475.084L468.709 66.484H466.916ZM486 67.289V68.773H476V67.289ZM493.291 53.336H495.084L488.709 66.484H486.916ZM513.291 53.336H515.084L508.709 66.484H506.916Z"/>
+  <path fill="#ff4fc3" d="M523.291 53.336H525.084L518.709 66.484H516.916ZM546 67.289V68.773H536V67.289ZM549.739 62.133H552.277V64.25L550.688 67.242H548.936L549.739 64.25ZM576 67.289V68.773H566V67.289ZM583.291 53.336H585.084L578.709 66.484H576.916Z"/>
+  <path fill="#ff4fc3" d="M593.291 53.336H595.084L588.709 66.484H586.916ZM613.291 53.336H615.084L608.709 66.484H606.916ZM621.912 52.773V68.773H620.071V52.773ZM641.912 52.773V68.773H640.071V52.773Z"/>
+  <path fill="#ff4fc3" d="M663.291 53.336H665.084L658.709 66.484H656.916ZM683.291 53.336H685.084L678.709 66.484H676.916ZM696 67.289V68.773H686V67.289ZM706 67.289V68.773H696V67.289ZM716 67.289V68.773H706V67.289Z"/>
+  <path fill="#ff4fc3" d="M733.291 53.336H735.084L728.709 66.484H726.916ZM756 67.289V68.773H746V67.289ZM759.739 62.133H762.277V64.25L760.688 67.242H758.936L759.739 64.25ZM786 67.289V68.773H776V67.289ZM793.291 53.336H795.084L788.709 66.484H786.916Z"/>
+  <path fill="#00dcff" d="M48.709 72.336 55.084 85.484H53.275L46.9 72.336ZM66 86.289V87.773H56V86.289ZM73.291 72.336H75.084L68.709 85.484H66.916ZM78.709 72.336 85.084 85.484H83.275L76.9 72.336ZM96 86.289V87.773H86V86.289ZM103.291 72.336H105.084L98.709 85.484H96.916Z"/>
+  <path fill="#3b82f6" d="M113.291 72.336H115.084L108.709 85.484H106.916ZM126 86.289V87.773H116V86.289ZM136 86.289V87.773H126V86.289ZM146 86.289V87.773H136V86.289ZM156 86.289V87.773H146V86.289ZM166 86.289V87.773H156V86.289ZM173.291 72.336H175.084L168.709 85.484H166.916Z"/>
+  <path fill="#6366f1" d="M183.291 72.336H185.084L178.709 85.484H176.916ZM196 86.289V87.773H186V86.289ZM203.291 72.336H205.084L198.709 85.484H196.916ZM221.912 71.773V87.773H220.071V71.773ZM236 86.289V87.773H226V86.289ZM241.912 71.773V87.773H240.071V71.773Z"/>
+  <path fill="#8b5cf6" d="M253.291 72.336H255.084L248.709 85.484H246.916ZM266 86.289V87.773H256V86.289ZM273.291 72.336H275.084L268.709 85.484H266.916ZM291.912 71.773V87.773H290.071V71.773ZM306 86.289V87.773H296V86.289ZM311.912 71.773V87.773H310.071V71.773Z"/>
+  <path fill="#ff4fc3" d="M378.709 72.336 385.084 85.484H383.275L376.9 72.336ZM396 86.289V87.773H386V86.289ZM403.291 72.336H405.084L398.709 85.484H396.916ZM408.709 72.336 415.084 85.484H413.275L406.9 72.336ZM426 86.289V87.773H416V86.289ZM433.291 72.336H435.084L428.709 85.484H426.916Z"/>
+  <path fill="#ff4fc3" d="M438.709 72.336 445.084 85.484H443.275L436.9 72.336ZM456 86.289V87.773H446V86.289ZM466 86.289V87.773H456V86.289ZM476 86.289V87.773H466V86.289ZM486 86.289V87.773H476V86.289ZM493.291 72.336H495.084L488.709 85.484H486.916Z"/>
+  <path fill="#ff4fc3" d="M513.291 72.336H515.084L508.709 85.484H506.916ZM526 86.289V87.773H516V86.289ZM533.291 72.336H535.084L528.709 85.484H526.916ZM551.912 71.773V87.773H550.071V71.773ZM566 86.289V87.773H556V86.289ZM571.912 71.773V87.773H570.071V71.773Z"/>
+  <path fill="#ff4fc3" d="M583.291 72.336H585.084L578.709 85.484H576.916ZM596 86.289V87.773H586V86.289ZM603.291 72.336H605.084L598.709 85.484H596.916ZM621.912 71.773V87.773H620.071V71.773ZM636 86.289V87.773H626V86.289ZM641.912 71.773V87.773H640.071V71.773Z"/>
+  <path fill="#ff4fc3" d="M653.291 72.336H655.084L648.709 85.484H646.916ZM666 86.289V87.773H656V86.289ZM676 86.289V87.773H666V86.289ZM686 86.289V87.773H676V86.289ZM696 86.289V87.773H686V86.289ZM706 86.289V87.773H696V86.289ZM713.291 72.336H715.084L708.709 85.484H706.916Z"/>
+  <path fill="#ff4fc3" d="M723.291 72.336H725.084L718.709 85.484H716.916ZM736 86.289V87.773H726V86.289ZM743.291 72.336H745.084L738.709 85.484H736.916ZM761.912 71.773V87.773H760.071V71.773ZM776 86.289V87.773H766V86.289ZM781.912 71.773V87.773H780.071V71.773Z"/>
 </svg>

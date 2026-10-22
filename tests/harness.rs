@@ -712,6 +712,109 @@ async fn new_read_observations_allow_research_but_unchanged_reads_and_denials_ar
     }
 }
 
+struct ReceiptProbe {
+    calls: Arc<AtomicUsize>,
+    receipt: ToolResult,
+}
+#[async_trait]
+impl Tool for ReceiptProbe {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "fixture.receipt".into(),
+            version: "1".into(),
+            description: "Return a fixed structured receipt".into(),
+            input_schema: json!({"type":"object"}),
+            effect: Effect::Internal,
+            timeout_ms: 1000,
+            output_limit: 1024,
+            concurrency_safe: true,
+        }
+    }
+    async fn execute(&self, _: Value, _: &ToolContext) -> Result<ToolResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.receipt.clone())
+    }
+}
+
+#[tokio::test]
+async fn repetition_exemption_requires_both_project_gate_status_and_code() {
+    for (status, code) in [
+        (Outcome::CancelledBeforeStart, Some("cancelled")),
+        (Outcome::CancelledBeforeStart, None),
+        (Outcome::Denied, Some("project_instructions_required")),
+        (Outcome::Failed, Some("project_instructions_required")),
+        (
+            Outcome::ValidationError,
+            Some("project_instructions_required"),
+        ),
+        (Outcome::Succeeded, Some("project_instructions_required")),
+        (
+            Outcome::OutcomeUnknown,
+            Some("project_instructions_required"),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut receipt = ToolResult::error(status.clone(), code.unwrap_or(""));
+        receipt.error_code = code.map(str::to_owned);
+        // Free-form text must never qualify an unrelated receipt for exemption.
+        receipt.data = json!({"message":"project_instructions_required: proposal deferred until project rules are loaded"});
+        let mut tools = ToolRegistry::builtins().unwrap();
+        tools
+            .register(Arc::new(ReceiptProbe {
+                calls: calls.clone(),
+                receipt,
+            }))
+            .unwrap();
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            call("fixture.receipt", json!({})),
+            call("fixture.receipt", json!({})),
+            ScriptedTurn::text("Done"),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .tools(tools)
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                profile(&["fixture.receipt"]),
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Repeat",
+                "start",
+                Limits {
+                    max_repeated_calls: 1,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(
+            result.error.unwrap().code,
+            if status == Outcome::OutcomeUnknown {
+                "outcome_unknown"
+            } else {
+                "repetition_limit"
+            },
+            "{status:?} {code:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "{status:?} {code:?}");
+        if status == Outcome::OutcomeUnknown {
+            assert_eq!(provider.requests().len(), 1);
+        }
+        engine.close().await.unwrap();
+    }
+}
+
 #[test]
 fn documented_runtime_measurements_survive_json_and_sse_without_backend_text() {
     let value = json!({"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"delta":{"content":"ok"},"finish_reason":"stop"}],

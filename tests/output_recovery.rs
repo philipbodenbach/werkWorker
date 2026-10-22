@@ -373,7 +373,7 @@ async fn file_conflicts_explain_stale_hash_and_missing_match_without_writing() {
     for (index, expected) in [
         (1, "File hash changed"),
         (2, "one unique nonempty match"),
-        (3, "Target already exists; supply expected_hash"),
+        (3, "Target already exists. Preserve it and use files.edit"),
     ] {
         let message = requests[index]
             .messages

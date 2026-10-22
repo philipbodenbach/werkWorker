@@ -169,6 +169,16 @@ and denials are not progress. Permission checks, approval, revocation, sandbox,
 leases, explicitly finite tool/step/request/tree/wall budgets and unknown-outcome
 recovery remain binding. No aid increases them or authorizes another action.
 
+For adaptive coding runs with `files.edit` available, a repeated `files.read`
+with a previous successful hash receipt gets up to two recovery decisions per
+evidence epoch before `repetition_limit`. The redundant read is **not executed**:
+its `repetition_recovery` result identifies the historical receipt and directs
+the model to an incremental edit, missing range, or behavioral check. Unchanged
+reads and failed writes do not replenish these decisions; new evidence or
+successful workspace actions use the same epoch rules as the ordinary guard.
+The allowance is derived from persisted tool outcomes, so resume cannot reset it.
+Denied reads without a successful receipt retain the normal guard.
+
 ## Coding acceptance and continuous work
 
 New `coding-basic` runs (including profiles using that skill) enable

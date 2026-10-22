@@ -139,6 +139,14 @@ the saved conversation, and does not require a server restart or cache reset.
 Pending invocations finish or resolve their approvals before this step; no
 half tool-call/result group is compacted.
 
+For coding profiles with file-editing tools, each request ends with bounded
+`coding_task_state` evidence reconstructed from durable plan/check/file receipts.
+It includes recent paths and observed hashes, small exact read-tail excerpts,
+and repeated calls approaching the guard. These are historical observations,
+not current filesystem guarantees or system instructions. A directory listing
+before a successful workspace mutation loses its setup-retention preference;
+an old empty listing must not encourage rebuilding files that were later saved.
+
 Excerpts include source message indices, roles, tool names and up to 400
 characters of each source content; the accumulated excerpt is capped at 1,536
 UTF-8 bytes. The builder evaluates successive omissions cumulatively. It counts

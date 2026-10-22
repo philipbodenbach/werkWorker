@@ -7,6 +7,10 @@ For coding tasks with at least three plan steps and a successful file change, th
 harness starts one read-only acceptance review if at least two configured model
 slots are verified, no child was already delegated, and host policy permits it.
 The reviewer receives the requirements and current plan and can inspect files.
+Completed child results arrive at the parent's next model decision while work
+continues, without waiting for running siblings. Automatic delivery occurs once
+per child and remains recorded across resume. Review observations may describe
+an earlier file revision; the parent must check them against its current work.
 It cannot write files, execute processes, or replace the parent’s behavior tests. Children run in the same
 engine, not by spawning another CLI binary.
 

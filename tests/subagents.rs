@@ -660,6 +660,200 @@ struct CodingReviewProbe {
     child: ScriptedProvider,
     seen: Mutex<Vec<ModelRequest>>,
 }
+
+struct LiveReviewProbe {
+    parent_requests: AtomicUsize,
+    parent_started: tokio::sync::Notify,
+    release_parent: tokio::sync::Notify,
+    review_received: tokio::sync::Notify,
+    release_slow: Arc<tokio::sync::Notify>,
+}
+#[async_trait]
+impl ModelProvider for LiveReviewProbe {
+    fn identity(&self) -> String {
+        "live-review-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+    fn concurrency(&self) -> InferenceConcurrency {
+        InferenceConcurrency {
+            max_requests: Some(3),
+            source: "fixture".into(),
+            detail: "verified".into(),
+        }
+    }
+    async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        let child = request
+            .messages
+            .iter()
+            .any(|m| m.role == Role::System && m.content.contains("delegated worker"));
+        let slow = child
+            && request
+                .messages
+                .iter()
+                .any(|m| m.role == Role::User && m.content.contains("slow review"));
+        let turn = if child {
+            ScriptedTurn::text(if slow {
+                "slow evidence"
+            } else {
+                "ready evidence"
+            })
+        } else {
+            let n = self.parent_requests.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                self.parent_started.notify_one();
+                self.release_parent.notified().await;
+                tool_turn("inspect", "files.list", json!({"path":"."}))
+            } else if n == 1 {
+                let feedback: Vec<Value> = request
+                    .messages
+                    .iter()
+                    .filter_map(|m| serde_json::from_str(&m.content).ok())
+                    .filter(|v: &Value| v["event"] == "subagent_results")
+                    .collect();
+                assert_eq!(
+                    feedback.len(),
+                    1,
+                    "completed review must arrive before parent final"
+                );
+                assert_eq!(feedback[0]["data"]["agents"].as_array().unwrap().len(), 1);
+                assert_eq!(feedback[0]["data"]["agents"][0]["text"], "ready evidence");
+                self.review_received.notify_one();
+                tool_turn("continue", "files.list", json!({"path":"."}))
+            } else {
+                ScriptedTurn::text("Synthesis after work")
+            }
+        };
+        let release = self.release_slow.clone();
+        Ok(Box::pin(async_stream::stream! {
+            if slow { release.notified().await; }
+            for delta in turn.deltas { yield Ok(delta); }
+        }))
+    }
+}
+
+#[tokio::test]
+async fn completed_child_arrives_during_work_once_without_waiting_for_running_sibling() {
+    let provider = Arc::new(LiveReviewProbe {
+        parent_requests: AtomicUsize::new(0),
+        parent_started: tokio::sync::Notify::new(),
+        release_parent: tokio::sync::Notify::new(),
+        review_received: tokio::sync::Notify::new(),
+        release_slow: Arc::new(tokio::sync::Notify::new()),
+    });
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = profile(false);
+    agent.tools.push("files.list".into());
+    let session = engine
+        .create_session(
+            agent,
+            dir.path(),
+            HostPolicy {
+                tool_permissions: [(
+                    "files.list".into(),
+                    werk_worker::policy::ToolPermission::Allow,
+                )]
+                .into(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement while reviews run",
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.parent_started.notified(),
+    )
+    .await
+    .unwrap();
+    let children = run
+        .delegate(
+            vec![
+                DelegateTask {
+                    goal: "fast review".into(),
+                    context: String::new(),
+                    tools: Some(vec![]),
+                    read_only: true,
+                },
+                DelegateTask {
+                    goal: "slow review".into(),
+                    context: String::new(),
+                    tools: Some(vec![]),
+                    read_only: true,
+                },
+            ],
+            "reviews",
+        )
+        .await
+        .unwrap();
+    let ready = run.subagent(&children[0].session_id).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    provider.release_parent.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.review_received.notified(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !run.subagent(&children[1].session_id)
+            .await
+            .unwrap()
+            .status()
+            .await
+            .unwrap()
+            .status
+            .terminal()
+    );
+    provider.release_slow.notify_one();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), run.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+    let saved = session.snapshot().await.unwrap();
+    context::validate_messages(&saved.messages).unwrap();
+    let mut delivered = vec![];
+    for message in &saved.messages {
+        if let Ok(value) = serde_json::from_str::<Value>(&message.content)
+            && value["event"] == "subagent_results"
+        {
+            assert_eq!(message.role, Role::Assistant);
+            delivered.extend(
+                value["data"]["agents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| a["session_id"].as_str().unwrap().to_owned()),
+            );
+        }
+    }
+    delivered.sort();
+    let mut expected: Vec<_> = children.iter().map(|c| c.session_id.clone()).collect();
+    expected.sort();
+    assert_eq!(delivered, expected);
+    engine.close().await.unwrap();
+}
 #[async_trait]
 impl ModelProvider for CodingReviewProbe {
     fn identity(&self) -> String {

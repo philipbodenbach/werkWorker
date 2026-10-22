@@ -1399,6 +1399,9 @@ impl SessionHandle {
                 Ok(())
             })
             .await?;
+            // Project every completed tool result before inserting assistant
+            // feedback, preserving contiguous call/result groups.
+            self.deliver_ready_children(run_id).await?;
             // Both normal completion and restart take this path. A durable final
             // candidate is not accepted until its configured check is resolved.
             let saved = self.snapshot().await?;
@@ -2627,6 +2630,10 @@ impl SessionHandle {
             && crate::harness::repeated_calls(&data, run, &invocation.call)?
                 > run.limits.max_repeated_calls
         {
+            if let Some(result) = crate::harness::read_loop_recovery(&data, run, &invocation.call)?
+            {
+                return self.outcome(run_id, invocation_id, result).await;
+            }
             return Err(WorkerError::new(
                 "repetition_limit",
                 "Repeated identical calls without new evidence exceeded the run limit",

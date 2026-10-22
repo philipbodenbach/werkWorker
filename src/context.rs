@@ -650,7 +650,26 @@ impl DefaultContextBuilder {
         // move on, causing alternating reload/list loops on small contexts.
         // Bound this reservation so large results remain compactable.
         let mut setup = BTreeMap::new();
+        let last_workspace_change = run
+            .invocations
+            .iter()
+            .rev()
+            .find(|i| {
+                i.result
+                    .as_ref()
+                    .is_some_and(|r| r.status == Outcome::Succeeded)
+                    && i.definition
+                        .as_ref()
+                        .is_some_and(|d| matches!(d.effect, Effect::Write | Effect::Process))
+            })
+            .map(|i| i.message_index);
         for invocation in &run.invocations {
+            // Old directory contents are not setup evidence after a mutation.
+            if invocation.call.name == "files.list"
+                && last_workspace_change.is_some_and(|index| invocation.message_index < index)
+            {
+                continue;
+            }
             if matches!(
                 invocation.call.name.as_str(),
                 "skills.load" | "files.list" | "files.read" | "task.plan"

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Preserve current coding file receipts after compaction, stop retaining stale
+  directory listings as setup evidence, and explain existing-file edits without
+  recommending unavailable write parameters. Repeated reads get bounded,
+  persisted recovery decisions before a run-wide repetition failure.
+- Deliver completed subagent reviews during parent work without waiting for
+  running siblings or duplicating results at final synthesis.
+
 - End runtime feedback turns explicitly for assistant-prefill backends, preventing
   output-limit notices from being returned as completed work. Empty/echoed replies
   now use bounded, resume-safe recovery instead of false completion.

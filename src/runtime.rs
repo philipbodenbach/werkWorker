@@ -239,7 +239,7 @@ impl Workspace {
                 (None, Ok(_)) => {
                     return Err(WorkerError::new(
                         "write_conflict",
-                        "Target already exists; supply expected_hash from files.read or the last successful write",
+                        "Target already exists. Preserve it and use files.edit with the latest observed expected_hash and a unique nonempty old anchor. Use files.write for replacement only if its advertised schema allows expected_hash.",
                     ));
                 }
                 (None, Err(_)) => {}

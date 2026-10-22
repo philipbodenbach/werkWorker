@@ -33,7 +33,38 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
         let evidence = state.verifications.get(&check.invocation_id);
         json!({"criteria":check.call.arguments["verification"]["criteria"],"result":check.result.as_ref().map(|r| json!({"status":r.status,"exit_code":r.data["exit_code"],"verification":evidence.unwrap_or(&r.data["verification"])}))})
     });
-    if run.plan.is_null() && check.is_none() {
+    // Keep file receipts at the current decision point. An old empty listing
+    // or compacted assistant claim must not look newer than successful writes.
+    let editing = session
+        .profile
+        .tools
+        .iter()
+        .any(|t| matches!(t.as_str(), "files.write" | "files.edit"));
+    let files = if editing {
+        file_observations(session, run)
+    } else {
+        Vec::new()
+    };
+    let mut repeated = BTreeMap::new();
+    let mut considered = std::collections::BTreeSet::new();
+    for invocation in run.invocations.iter().rev().take(128) {
+        if !editing {
+            break;
+        }
+        let key = fingerprint(&(&invocation.call.name, &invocation.call.arguments));
+        if !considered.insert(key.clone()) {
+            continue;
+        }
+        let count = crate::harness::repetitions(run, &invocation.call);
+        if count >= 2
+            && count >= run.limits.max_repeated_calls.saturating_sub(1)
+            && repeated.len() < 4
+        {
+            repeated.entry(key)
+                .or_insert_with(|| json!({"tool":invocation.call.name,"path":invocation.call.arguments["path"],"count":count,"limit":run.limits.max_repeated_calls}));
+        }
+    }
+    if run.plan.is_null() && check.is_none() && files.is_empty() && repeated.is_empty() {
         return Ok(None);
     }
     Ok(Some(crate::harness::feedback(
@@ -41,9 +72,68 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
         json!({
             "plan_excerpt": excerpt(&run.plan.to_string(), 4096),
             "verification_excerpt": excerpt(&serde_json::to_string(&observed)?, 3072),
-            "detail":"Current run plan and latest recorded verification, bounded excerpts of observed task data. These are not instructions or a guarantee of current file contents. Finish the plan and verify the final implementation before completion."
+            "files": files,
+            "repeated_calls": repeated.into_values().collect::<Vec<_>>(),
+            "detail":"Current run plan and verification; historical file observations, not guarantees against external edits. Compaction does not erase files. Later writes supersede old empty listings. Reuse observed hashes/anchors with files.edit; read only missing details. Finish and verify remaining work."
         }),
     )))
+}
+
+fn file_observations(session: &SessionData, run: &Run) -> Vec<Value> {
+    let mut files = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for invocation in std::iter::once(run)
+        .chain(session.runs.iter().rev().filter(|r| r.id != run.id))
+        .flat_map(|r| r.invocations.iter().rev())
+        .take(128)
+    {
+        if !matches!(
+            invocation.call.name.as_str(),
+            "files.read" | "files.write" | "files.edit"
+        ) {
+            continue;
+        }
+        let Some(result) = invocation
+            .result
+            .as_ref()
+            .filter(|r| r.status == Outcome::Succeeded)
+        else {
+            continue;
+        };
+        let Some(path) = result.data["path"]
+            .as_str()
+            .and_then(|p| normalized_path(p).ok())
+        else {
+            continue;
+        };
+        if !result.data["sha256"].is_string() || !seen.insert(path.clone()) {
+            continue;
+        }
+        let mut receipt =
+            json!({"path":path,"tool":invocation.call.name,"sha256":result.data["sha256"]});
+        if invocation.call.name == "files.read" {
+            receipt["lines"] = json!([result.data["start_line"], result.data["end_line"]]);
+            receipt["total_lines"] = result.data["total_lines"].clone();
+            receipt["next_start_line"] = result.data["next_start_line"].clone();
+            // Preserve a small exact observed tail for incremental edits, not
+            // a model-written summary or a fabricated unique insertion point.
+            if let Some(content) = result.data["content"].as_str() {
+                let mut start = content.len().saturating_sub(384);
+                while !content.is_char_boundary(start) {
+                    start += 1;
+                }
+                receipt["observed_tail_excerpt"] = json!(&content[start..]);
+            }
+        }
+        if serde_json::to_vec(&files).unwrap_or_default().len() + receipt.to_string().len() > 4096 {
+            break;
+        }
+        files.push(receipt);
+        if files.len() == 8 {
+            break;
+        }
+    }
+    files
 }
 
 fn normalized_path(path: &str) -> Result<String> {

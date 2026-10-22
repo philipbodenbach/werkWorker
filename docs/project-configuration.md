@@ -127,6 +127,7 @@ Copy [the example](../examples/project-config.json) to `.werkworker/config.json`
   "profile": "coding-basic",
   "context_tokens": 32768,
   "output_tokens": 4096,
+  "reasoning_tier": "low",
   "skills": ["task-execution", "coding-basic"],
   "test_commands": {
     "check": ["cargo", "check", "--all-targets"],
@@ -144,10 +145,17 @@ tools and bundled skills; arbitrary scripts/plugins are not loaded automatically
 A test command is an argv array included as a **suggestion** in the prompt. Merely
 opening the project never executes it. There are no startup hooks.
 
+`reasoning_tier` is an optional tier ID reported by WerkProtocol. Omission inherits
+the connection's value; explicit `null` or `"default"` selects the server's current
+default, even when the global connection specifies a tier or native effort. The
+wizard saves this preference along with model and budgets. `reasoning_effort`
+remains available for native string/number overrides; configure only one field.
+See [Reasoning effort in setup](setup.md) for discovery and limit handling.
+
 Interactive precedence: built-in defaults → global connection → local
 `.werkworker/werk-config.json` → project
-model/profile/budgets → explicit `--werk-config` transport values and a non-default
-CLI `--profile` → choices made in the wizard. Project model/context/output values
+model/profile/reasoning/budgets → explicit `--werk-config` transport values and a non-default
+CLI `--profile` → choices made in the wizard. Project model/context/output/reasoning values
 are TUI defaults; headless `run` still uses its explicitly provided WerkConfig and
 default run limits. Both paths apply project rules, tool/skill selection and
 profile defaults. Recovery retains the original session's profile snapshot.
@@ -169,7 +177,7 @@ clears inherited global authentication. Files are read only in the selected
 workspace, with bounded sizes and no symlinks; parent directories are not searched.
 Headless and explicit offline paths do not automatically read these files.
 
-The TUI can save model/profile/budgets back to this file while retaining lists,
+The TUI can save model/profile/reasoning/budgets back to this file while retaining lists,
 commands and other preferences. It checks the original file hash to reject
 concurrent edits. Saving project settings is a direct host UI operation, separate
 from the agent's workspace grants.

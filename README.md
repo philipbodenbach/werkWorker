@@ -40,7 +40,7 @@ Bubblewrap installation and the kernel interfaces described in
 [the sandbox matrix](docs/security.md). Missing isolation fails closed.
 
 With no arguments, `ww` opens an interactive setup: choose a Werk server, enter
-its API key in a masked field, discover models, and select token budgets,
+its API key in a masked field, discover models, and select token budgets, reasoning effort,
 profile and workspace access. Settings can be saved globally in
 `~/.config/werkworker/config.json` or as project preferences in
 `.werkworker/config.json`. Keys are session-only; reusable credentials use an

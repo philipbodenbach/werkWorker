@@ -14,6 +14,44 @@ fn write(root: &Path, path: &str, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
 }
+
+#[test]
+fn project_reasoning_distinguishes_inheritance_from_explicit_server_default() {
+    let inherited = ProjectConfig::parse(b"{}").unwrap();
+    assert!(inherited.reasoning_effort.is_none());
+    assert!(
+        serde_json::to_value(&inherited)
+            .unwrap()
+            .get("reasoning_effort")
+            .is_none()
+    );
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!("none"),
+        serde_json::json!("high"),
+        serde_json::json!(0.75),
+    ] {
+        let bytes = serde_json::to_vec(&serde_json::json!({"reasoning_effort":value})).unwrap();
+        let config = ProjectConfig::parse(&bytes).unwrap();
+        assert_eq!(config.reasoning_effort, Some(value.clone()));
+        let roundtrip = ProjectConfig::parse(&serde_json::to_vec(&config).unwrap()).unwrap();
+        assert_eq!(roundtrip.reasoning_effort, Some(value));
+    }
+    for value in [
+        serde_json::json!(true),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        assert_eq!(
+            ProjectConfig::parse(
+                &serde_json::to_vec(&serde_json::json!({"reasoning_effort":value})).unwrap()
+            )
+            .unwrap_err()
+            .code,
+            "invalid_reasoning_effort"
+        );
+    }
+}
 #[tokio::test]
 async fn connection_defaults_stay_within_workspace_and_reject_unsafe_secrets() {
     let dir = tempfile::tempdir().unwrap();
@@ -271,4 +309,32 @@ async fn rejects_symlinks_oversize_traversal_and_host_configuration() {
         Project::load(huge.path()).await.unwrap_err().code,
         "file_limit"
     );
+}
+#[test]
+fn protocol_reasoning_tier_project_configuration_is_explicit_and_validated() {
+    use werk_worker::project::ProjectConfig;
+    for value in [
+        serde_json::json!("ultra"),
+        serde_json::json!("default"),
+        serde_json::Value::Null,
+    ] {
+        let config = ProjectConfig::parse(
+            &serde_json::to_vec(&serde_json::json!({"reasoning_tier":value})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(config.reasoning_tier, Some(value));
+        assert!(
+            serde_json::to_value(config)
+                .unwrap()
+                .get("reasoning_tier")
+                .is_some()
+        );
+    }
+    for payload in [
+        serde_json::json!({"reasoning_tier":42}),
+        serde_json::json!({"reasoning_tier":"bad tier"}),
+        serde_json::json!({"reasoning_tier":"high","reasoning_effort":"low"}),
+    ] {
+        assert!(ProjectConfig::parse(&serde_json::to_vec(&payload).unwrap()).is_err());
+    }
 }

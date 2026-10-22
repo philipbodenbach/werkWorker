@@ -20,8 +20,8 @@ use werk_worker::{
     profiles::AgentProfile,
     project::{Access, Project},
     providers::{
-        EnvironmentSecrets, ModelProvider, ScriptedProvider, ScriptedTurn, SecretResolver, Support,
-        WerkConfig, WerkProvider,
+        EnvironmentSecrets, ModelProvider, ReasoningProfile, ScriptedProvider, ScriptedTurn,
+        SecretResolver, Support, WerkConfig, WerkProvider,
     },
     *,
 };
@@ -149,6 +149,14 @@ pub(crate) async fn save(path: &Path, settings: &impl Serialize) -> Result<()> {
     tokio::fs::rename(temporary, path).await?;
     Ok(())
 }
+struct ReasoningPending(Option<tokio::task::JoinHandle<Result<Option<ReasoningProfile>>>>);
+impl Drop for ReasoningPending {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
 struct Form {
     settings: Settings,
     stage: u8,
@@ -162,6 +170,7 @@ struct Form {
     models: Vec<String>,
     selected: usize,
     backend: String,
+    reasoning_profile: Option<ReasoningProfile>,
     save: usize,
     error: String,
     busy: bool,
@@ -172,6 +181,26 @@ struct Form {
     access: Access,
     project_notice: String,
 }
+const REASONING_FIELD: usize = 8;
+const SAVE_FIELD: usize = 9;
+fn reasoning_label(config: &WerkConfig) -> String {
+    if let Some(value) = config
+        .options
+        .get("reasoning_effort")
+        .filter(|v| !v.is_null())
+    {
+        return format!("Native: {value}");
+    }
+    match config
+        .options
+        .get("reasoning_tier")
+        .and_then(serde_json::Value::as_str)
+    {
+        None | Some("default") => "Server default".into(),
+        Some(tier) => tier.to_owned(),
+    }
+}
+
 impl Form {
     fn new(settings: Settings, custom_policy: bool) -> Self {
         let auth = if settings.secret_env.is_some() {
@@ -206,6 +235,7 @@ impl Form {
             models: vec![],
             selected: 0,
             backend: String::new(),
+            reasoning_profile: None,
             save: 0,
             error: String::new(),
             busy: false,
@@ -314,11 +344,12 @@ impl Form {
                     }
                     .into(),
                 ),
+                ("Reasoning effort".into(), self.reasoning_label()),
                 (
                     "Save settings (never API key)".into(),
                     [
                         "Global connection",
-                        "Project model/profile/budgets",
+                        "Project model/profile/reasoning/budgets",
                         "Do not save",
                     ][self.save]
                         .into(),
@@ -326,6 +357,58 @@ impl Form {
                 ("Connect and start".into(), "Enter".into()),
             ],
         }
+    }
+
+    fn reasoning_label(&self) -> String {
+        let label = reasoning_label(&self.settings.werk);
+        if self
+            .settings
+            .werk
+            .options
+            .get("reasoning_effort")
+            .is_some_and(|v| !v.is_null())
+        {
+            return label;
+        }
+        let Some(profile) = &self.reasoning_profile else {
+            return format!("{label} (not reported)");
+        };
+        let requested = self
+            .settings
+            .werk
+            .options
+            .get("reasoning_tier")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("default");
+        let id = if requested == "default" {
+            profile.default_tier.as_deref()
+        } else {
+            Some(requested)
+        };
+        let Some(tier) = profile
+            .tiers
+            .iter()
+            .find(|tier| Some(tier.id.as_str()) == id)
+        else {
+            return format!("{label} (not reported)");
+        };
+        let value = if requested == "default" {
+            format!("Server default: {}", tier.label)
+        } else {
+            tier.label.clone()
+        };
+        let budget = tier
+            .reasoning_tokens
+            .map(|n| format!("; {n} reasoning tokens"))
+            .unwrap_or_default();
+        format!(
+            "{value}{budget}{}",
+            if tier.available {
+                ""
+            } else {
+                " (unavailable at these limits)"
+            }
+        )
     }
     fn edit(&mut self) -> Option<&mut String> {
         match (self.stage, self.field) {
@@ -387,7 +470,43 @@ impl Form {
                         Support::Supported => Support::Unsupported,
                     }
             }
-            (2, 8) => self.save = next(self.save, 3),
+            (2, REASONING_FIELD) => {
+                let mut choices = vec!["default".to_owned()];
+                if let Some(profile) = &self.reasoning_profile {
+                    choices.extend(
+                        profile
+                            .tiers
+                            .iter()
+                            .filter(|tier| tier.available)
+                            .map(|tier| tier.id.clone()),
+                    );
+                }
+                let current = self
+                    .settings
+                    .werk
+                    .options
+                    .get("reasoning_tier")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("default");
+                let selected = choices.iter().position(|id| id == current);
+                let index = if self
+                    .settings
+                    .werk
+                    .options
+                    .get("reasoning_effort")
+                    .is_some_and(|v| !v.is_null())
+                {
+                    0
+                } else {
+                    selected.map_or(0, |i| next(i, choices.len()))
+                };
+                self.settings.werk.options.remove("reasoning_effort");
+                self.settings
+                    .werk
+                    .options
+                    .insert("reasoning_tier".into(), choices[index].clone().into());
+            }
+            (2, SAVE_FIELD) => self.save = next(self.save, 3),
             _ => {}
         }
     }
@@ -470,11 +589,8 @@ fn draw(frame: &mut ratatui::Frame, form: &Form) {
     lines.push(Line::from(
         "Inference backends (CUDA/CPU/etc.) are managed by the Werk server.",
     ));
-    let scroll = if rows[1].height < 25 {
-        ((form.field * 2).saturating_sub(rows[1].height.saturating_sub(8) as usize)) as u16
-    } else {
-        0
-    };
+    let scroll =
+        ((form.field * 2).saturating_sub(rows[1].height.saturating_sub(8) as usize)) as u16;
     frame.render_widget(
         Paragraph::new(lines)
             .scroll((scroll, 0))
@@ -487,7 +603,9 @@ fn draw(frame: &mut ratatui::Frame, form: &Form) {
     } else if !form.error.is_empty() {
         form.error.clone()
     } else {
-        if form.stage == 2 && matches!(form.field, 3 | 4) {
+        if form.stage == 2 && form.field == REASONING_FIELD {
+            "WerkProtocol supplies model-specific tiers, defaults and limits.\nOnly tiers available within the current output limit can be selected.\nOutput tokens includes reasoning and the answer. Unknown defaults remain unknown.\nLeft/Right: change reasoning · Tab: next field · Enter: next".into()
+        } else if form.stage == 2 && matches!(form.field, 3 | 4) {
             "All tools: file changes, sandbox processes and network requests require explicit approval.\nOther access modes restrict the profile's tools to the selected grants.\nLeft/Right: change selection · Tab: next field · Enter: next / action\nExisting sessions: /permissions changes access without reconnecting.".into()
         } else {
             "Tab / Shift-Tab or Up / Down: field · Left / Right: select\nEnter: next / action · Ctrl-U: clear field · Esc: back\nCtrl-Q: exit · Ctrl-C twice: exit · API keys are masked.".into()
@@ -512,7 +630,9 @@ fn error_message(error: &WorkerError) -> String {
         "transport_denied" => {
             "Use a bare HTTPS server URL, or HTTP on a literal loopback address.".into()
         }
-        "missing_key" => error.message.clone(),
+        "missing_key" | "invalid_reasoning_effort" | "invalid_reasoning_tier" => {
+            error.message.clone()
+        }
         _ => format!(
             "Connection failed ({}). Check the URL, server and model settings.",
             error.code
@@ -550,6 +670,20 @@ async fn resolve_settings(
     }
     if let Some(output) = project.config.output_tokens {
         settings.limits.reserve_output_tokens = output;
+    }
+    if let Some(effort) = &project.config.reasoning_effort {
+        settings.werk.options.remove("reasoning_tier");
+        settings
+            .werk
+            .options
+            .insert("reasoning_effort".into(), effort.clone());
+    }
+    if let Some(tier) = &project.config.reasoning_tier {
+        settings.werk.options.remove("reasoning_effort");
+        settings
+            .werk
+            .options
+            .insert("reasoning_tier".into(), tier.clone());
     }
     if let Some(profile) = explicit_profile {
         settings.profile = profile.into();
@@ -654,7 +788,7 @@ pub async fn show(
         let mut error = String::new();
         loop {
             let detail = format!(
-                "{}\nModel: {} · Profile: {} · Access: {}\n{}",
+                "{}\nModel: {} · Profile: {} · Access: {}\nReasoning effort: {}\n{}",
                 form.settings.werk.base_url,
                 form.settings.werk.model,
                 form.settings.profile,
@@ -663,6 +797,7 @@ pub async fn show(
                 } else {
                     &access_label
                 },
+                reasoning_label(&form.settings.werk),
                 error
             );
             match crate::cli_start::choose(
@@ -750,12 +885,55 @@ pub async fn show(
     let _paste = PasteGuard;
     let mut keys = crate::cli_tui::input().await;
     let mut pending = Pending(None);
+    let mut reasoning_provider: Option<Arc<WerkProvider>> = None;
+    let mut reasoning_key: Option<(String, usize)> = None;
+    let mut reasoning_pending = ReasoningPending(None);
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut result = None;
     loop {
+        let key = if form.stage == 2 {
+            form.output
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=500_000).contains(n))
+                .and_then(|output| {
+                    form.models
+                        .get(form.selected)
+                        .map(|model| (model.clone(), output))
+                })
+        } else {
+            None
+        };
+        if key != reasoning_key {
+            if let Some(task) = reasoning_pending.0.take() {
+                task.abort();
+            }
+            form.reasoning_profile = None;
+            reasoning_key = key.clone();
+            if let (Some(provider), Some((model, output))) = (reasoning_provider.clone(), key) {
+                reasoning_pending.0 = Some(tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        provider.reasoning_profile(&model, output),
+                    )
+                    .await
+                    .map_err(|_| {
+                        WorkerError::new("reasoning_timeout", "Reasoning profile timed out")
+                    })?
+                }));
+            }
+        }
         terminal.draw(|f| draw(f, &form))?;
         tokio::select! {
-            _=tick.tick(), if pending.is_some()=>{
+            _=tick.tick(), if pending.is_some() || reasoning_pending.0.is_some()=>{
+                if reasoning_pending.0.as_ref().is_some_and(|task|task.is_finished()) {
+                    match reasoning_pending.0.take().unwrap().await {
+                        Ok(Ok(profile)) => form.reasoning_profile = profile,
+                        Ok(Err(error)) => form.error = format!("Reasoning profile unavailable ({}); server default remains available.", error.code),
+                        Err(_) => form.error = "Reasoning profile lookup stopped".into(),
+                    }
+                }
                 if pending.as_ref().is_some_and(|task|task.is_finished()) {
                     let outcome=pending.take().unwrap().await.map_err(|_|WorkerError::new("connection_task","Connection check stopped"))?;
                     form.busy=false;
@@ -767,6 +945,7 @@ pub async fn show(
                             form.selected=form.models.iter().position(|m|*m==form.settings.werk.model).unwrap_or(0);
                             form.backend=provider.discovery["info"]["active_backend"].as_str().unwrap_or("managed by server").to_owned();
                             form.settings.werk.capabilities.tool_calling=Support::Supported;
+                            reasoning_provider=Some(Arc::new(provider));reasoning_key=None;
                             form.stage=2;form.field=0;form.error.clear();
                         },
                         Ok(provider)=>{
@@ -781,14 +960,16 @@ pub async fn show(
                                     let mut config=project.config.clone();
                                     config.model=Some(form.settings.werk.model.clone());config.profile=Some(form.settings.profile.clone());
                                     config.context_tokens=form.settings.werk.capabilities.context_tokens;config.output_tokens=Some(form.settings.limits.reserve_output_tokens);
+                                    config.reasoning_effort=form.settings.werk.options.get("reasoning_effort").filter(|v|!v.is_null()).cloned();
+                                    config.reasoning_tier=if config.reasoning_effort.is_some(){None}else{Some(form.settings.werk.options.get("reasoning_tier").cloned().unwrap_or(serde_json::Value::Null))};
                                     project.save(workspace,&config).await
                                 },
                                 _=>Ok(())
                             };
-                            if let Err(error)=saved {form.error=format!("Connection works, but saving failed ({}). Choose Do not save to continue.",error.code);form.field=8;continue;}
+                            if let Err(error)=saved {form.error=format!("Connection works, but saving failed ({}). Choose Do not save to continue.",error.code);form.field=SAVE_FIELD;continue;}
                             if form.save < 2
                                 && let Err(error)=save(&previous_path,&PreviousConnection{settings:form.settings.clone(),access:form.access}).await {
-                                    form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=8;continue;
+                                    form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=SAVE_FIELD;continue;
                             }
                             if form.save < 2 && !custom_policy
                                 && let Err(error) = crate::cli_config::save_policy(workspace, form.access.policy()).await {
@@ -840,12 +1021,21 @@ pub async fn show(
                                     config.model=form.models[form.selected].clone();
                                     config.capabilities.context_tokens=if form.context.trim().is_empty(){None}else{match form.context.parse::<usize>(){Ok(n) if (1024..=2_000_000).contains(&n)=>Some(n),_=>{form.error="Context tokens must be 1024..2000000, or empty for discovery.".into();form.field=1;continue;}}};
                                     let output=match form.output.parse::<usize>(){Ok(n) if (1..=500_000).contains(&n)=>n,_=>{form.error="Enter a positive output token budget.".into();form.field=2;continue;}};
+                                    if let Some(tier)=config.options.get("reasoning_tier").and_then(serde_json::Value::as_str).filter(|s|*s!="default")
+                                        && !form.reasoning_profile.as_ref().is_some_and(|p|p.supported && p.tiers.iter().any(|t|t.id==tier && t.available)) {
+                                            form.error="Selected reasoning tier is not available for this model and output limit. Select Server default or an available tier.".into();form.field=REASONING_FIELD;continue;
+                                    }
                                     form.settings.limits.reserve_output_tokens=output;
                                     config.capabilities.streaming=if config.stream{Support::Supported}else{Support::Unsupported};
                                     if !profile.tools.is_empty() && config.capabilities.tool_calling!=Support::Supported {form.error="This profile requires tool calling. Enable it for a compatible model.".into();form.field=5;continue;}
                                     form.settings.werk=config.clone();
                                     form.settings.secret_env=if form.auth==1{Some(form.env_name.clone())}else{None};
                                     form.settings.no_auth=form.auth==2;
+                                } else {
+                                    // Discovery must remain reachable when a saved tier is
+                                    // unsupported by the newly selected server. The model
+                                    // page keeps the saved preference for correction.
+                                    config.options.remove("reasoning_tier");
                                 }
                                 form.error.clear();form.busy=true;
                                 pending.0=Some(tokio::spawn(async move {tokio::time::timeout(Duration::from_secs(20),WerkProvider::connect(config,secret)).await.map_err(|_|WorkerError::new("connection_timeout","Connection timed out"))?}));
@@ -867,6 +1057,125 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile(model: &str, output: u64) -> ReasoningProfile {
+        serde_json::from_value(serde_json::json!({"schema_version":1,"model":model,"supported":true,
+            "default_tier":"low","default_adjusted_to_limits":true,
+            "limits":{"context_tokens":32768,"output_tokens":output,"reasoning_tokens":output.saturating_sub(512),"answer_reserve_tokens":512},
+            "tiers":[{"id":"low","label":"Low","available":true,"reasoning_tokens":512,"minimum_output_tokens":1024},
+                {"id":"ultra","label":"Ultra","available":output>=8704,"reasoning_tokens":8192,"minimum_output_tokens":8704}]})).unwrap()
+    }
+    #[tokio::test]
+    async fn reasoning_selection_persists_and_server_default_clears_inherited_effort() {
+        let mut form = Form::new(Settings::default(), false);
+        form.stage = 2;
+        form.field = REASONING_FIELD;
+        assert_eq!(form.reasoning_label(), "Server default (not reported)");
+        form.reasoning_profile = Some(profile("known", 10000));
+        assert_eq!(
+            form.reasoning_label(),
+            "Server default: Low; 512 reasoning tokens"
+        );
+        form.cycle(true);
+        assert_eq!(form.settings.werk.options["reasoning_tier"], "low");
+        form.cycle(true);
+        assert_eq!(form.settings.werk.options["reasoning_tier"], "ultra");
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("connection.json");
+        save(
+            &saved,
+            &PreviousConnection {
+                settings: form.settings.clone(),
+                access: Access::Read,
+            },
+        )
+        .await
+        .unwrap();
+        let restored: PreviousConnection =
+            serde_json::from_slice(&read_settings(&saved).await.unwrap()).unwrap();
+        assert_eq!(restored.settings.werk.options["reasoning_tier"], "ultra");
+        let project = Project {
+            config: crate::project::ProjectConfig::parse(br#"{"reasoning_tier":null}"#).unwrap(),
+            ..Default::default()
+        };
+        let (settings, _) =
+            resolve_settings(restored.settings, None, None, dir.path(), &project, None)
+                .await
+                .unwrap();
+        assert_eq!(reasoning_label(&settings.werk), "Server default");
+        form.cycle(true);
+        assert_eq!(form.settings.werk.options["reasoning_tier"], "default");
+        assert_eq!(form.settings.limits.reserve_output_tokens, 4096);
+    }
+
+    #[test]
+    fn native_reasoning_values_survive_setup_and_selected_fields_remain_visible() {
+        for effort in [serde_json::json!("native-level"), serde_json::json!(0.75)] {
+            let mut settings = Settings::default();
+            settings
+                .werk
+                .options
+                .insert("reasoning_effort".into(), effort.clone());
+            let mut form = Form::new(settings, false);
+            form.stage = 2;
+            form.field = REASONING_FIELD;
+            assert!(form.fields()[REASONING_FIELD].1.starts_with("Native:"));
+            assert_eq!(form.settings.werk.options["reasoning_effort"], effort);
+            for (width, height) in [(110, 36), (100, 34), (80, 24)] {
+                for field in [REASONING_FIELD, SAVE_FIELD, SAVE_FIELD + 1] {
+                    form.field = field;
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                            .unwrap();
+                    terminal.draw(|f| draw(f, &form)).unwrap();
+                    let screen = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .map(|c| c.symbol())
+                        .collect::<String>();
+                    assert!(
+                        screen.contains(&form.fields()[field].0),
+                        "selected field missing at {width}x{height}: {screen}"
+                    );
+                }
+            }
+            form.field = REASONING_FIELD;
+            form.cycle(true);
+            assert_eq!(
+                form.fields()[REASONING_FIELD].1,
+                "Server default (not reported)"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_limits_filter_choices_without_changing_output_budget() {
+        let mut form = Form::new(Settings::default(), false);
+        form.stage = 2;
+        form.field = REASONING_FIELD;
+        form.reasoning_profile = Some(profile("known", 2048));
+        assert_eq!(
+            form.reasoning_label(),
+            "Server default: Low; 512 reasoning tokens"
+        );
+        assert!(form.settings.werk.options.is_empty());
+        form.cycle(true);
+        assert_eq!(form.settings.werk.options["reasoning_tier"], "low");
+        form.cycle(true);
+        assert_eq!(form.settings.werk.options["reasoning_tier"], "default");
+        form.settings
+            .werk
+            .options
+            .insert("reasoning_tier".into(), "ultra".into());
+        assert!(form.reasoning_label().contains("unavailable"));
+        assert_eq!(form.settings.limits.reserve_output_tokens, 4096);
+        form.reasoning_profile = None;
+        form.cycle(true);
+        assert_eq!(form.reasoning_label(), "Server default (not reported)");
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn workspace_connection_credentials_and_explicit_overrides() {

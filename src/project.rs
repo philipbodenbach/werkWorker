@@ -110,6 +110,20 @@ pub struct ProjectConfig {
     pub profile: Option<String>,
     pub context_tokens: Option<usize>,
     pub output_tokens: Option<usize>,
+    /// Missing inherits connection settings; explicit null restores server defaults.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_reasoning_effort"
+    )]
+    pub reasoning_effort: Option<serde_json::Value>,
+    /// Protocol tier ID. Missing inherits; null restores the server default.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_reasoning_effort"
+    )]
+    pub reasoning_tier: Option<serde_json::Value>,
     /// Available registered tool names, not grants.
     pub tools: Option<Vec<String>>,
     /// Available registered skill names, not executable scripts.
@@ -129,6 +143,8 @@ impl Default for ProjectConfig {
             profile: None,
             context_tokens: None,
             output_tokens: None,
+            reasoning_effort: None,
+            reasoning_tier: None,
             tools: None,
             skills: None,
             test_commands: BTreeMap::new(),
@@ -162,6 +178,18 @@ impl ProjectConfig {
                 "Invalid project configuration limits/version",
             ));
         }
+        if let Some(effort) = &config.reasoning_effort {
+            crate::providers::validate_reasoning_effort(effort)?;
+        }
+        if let Some(tier) = &config.reasoning_tier {
+            crate::providers::validate_reasoning_tier(tier)?;
+        }
+        if config.reasoning_tier.is_some() && config.reasoning_effort.is_some() {
+            return Err(WorkerError::new(
+                "project_config",
+                "Configure reasoning_tier or native reasoning_effort, not both",
+            ));
+        }
         if let Some(name) = &config.profile {
             profile_name(name)?;
         }
@@ -183,6 +211,13 @@ impl ProjectConfig {
         Ok(config)
     }
 }
+
+fn read_reasoning_effort<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
     pub path: String,

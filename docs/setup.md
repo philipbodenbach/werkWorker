@@ -37,9 +37,16 @@ flags cannot override a client-side disable.
    Output defaults to 4,096 tokens **including reasoning** and must fit within
    one quarter of the effective context. The server's smaller discovered limit
    always wins. Unknown context requires an explicit value before continuing.
-6. Select streaming and tool support for your model. Profiles exposing tools
-   require tool calling. These capability choices are host assertions, not a
+6. Select streaming, tool support and **Reasoning effort** for your model.
+   Profiles exposing tools require tool calling. These capability choices are host assertions, not a
    benchmark proving that a model can use tools correctly.
+   Reasoning defaults to **Server default**. WerkProtocol supplies the selected
+   model's tiers (for example `low`, `medium`, `high`, `max`, `ultra`), effective
+   default and limits. The wizard refreshes this read-only profile when the model
+   or output reserve changes, and cycles only through available tiers. It shows
+   a reported token budget where one exists; unknown defaults remain unknown.
+   An unavailable saved tier must be changed before connecting. Discovery never
+   starts a model or generates a response.
 7. Choose where to save, then **Connect and start**. The dialog checks the selected
    model's capacity again. Save errors remain visible; choosing **Do not save**
    allows a session without changing configuration files.
@@ -81,7 +88,7 @@ selection without reconnecting.
 The global file is versioned JSON containing `version`, `werk` (the existing
 WerkConfig object), `secret_env`, `no_auth`, `profile` and `limits`. The wizard
 reloads it on the next launch. **Global connection** saves URL, model,
-capabilities, streaming, profile, token budgets and authentication method.
+capabilities, streaming, reasoning effort, profile, token budgets and authentication method.
 A named environment reference is saved; the variable's value is not.
 The file is written using a temporary file and replacement; Unix mode is 0600.
 Windows replacement removes the old file first and is not atomic.
@@ -92,6 +99,31 @@ global config. These files are scoped to the canonical workspace path and writte
 with mode 0600 on Unix. They contain credential references, never API-key values.
 This also remembers connections when the wizard saves project preferences only.
 **Do not save** leaves the remembered connection unchanged.
+
+Reasoning is stored as `werk.options.reasoning_tier` in a global/remembered
+connection. In a standalone WerkConfig, add it to the existing `options` object:
+
+```json
+{ "options": { "reasoning_tier": "low" } }
+```
+
+This also works for headless runs using `--werk-config`. Missing, `null`, or
+`"default"` sends `werk.reasoning: {"tier":"default"}` to servers advertising
+`api.chat.reasoning`. Werk resolves the current default within each request's
+output limits. Explicit tier IDs are opaque to Worker: their native meaning and
+budgets are owned by Werk. Count and generation carry the same tier payload.
+Older servers inherit their native default without an override and expose no
+invented choices; an explicit tier requires the new protocol capability.
+
+The advanced `options.reasoning_effort` field still accepts native strings or
+numbers unchanged. It is displayed as **Native** and preserved until explicitly
+changed. It cannot be combined with `reasoning_tier`; native overrides bypass
+managed tier mapping. `capabilities.reasoning` is a capability declaration only.
+
+Use `/setup` to change reasoning and reconnect. This starts a new session and
+does not change an in-flight request or restart the model server. Setup does not
+test model-specific reasoning levels by generating a response; if Werk rejects
+a level, the run reports that error without silently choosing another level.
 
 Directly entered keys exist only in the process for the connection/session.
 They are masked on screen and are absent from settings, prompts, tool arguments

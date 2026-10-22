@@ -19,6 +19,7 @@ import tempfile
 import termios
 import threading
 import time
+from urllib.parse import urlparse, parse_qs
 from tui_support import Screen
 
 KEY = 'setup-fixture-sensitive-key'
@@ -48,9 +49,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Authorization') != 'Bearer ' + KEY:
             self.respond({'error': 'unauthorized'}, 401)
             return
+        if urlparse(self.path).path == '/werk/v1/chat/reasoning':
+            query = parse_qs(urlparse(self.path).query)
+            output = int(query['max_output_tokens'][0])
+            self.respond({'schema_version':1, 'model':query['model'][0], 'supported':True,
+                'default_tier':'none','default_adjusted_to_limits':False,
+                'limits':{'context_tokens':32768,'output_tokens':output,'reasoning_tokens':min(2048,max(0,output-512)),'answer_reserve_tokens':min(512,output)},
+                'tiers':[{'id':tier,'label':label,'available':tokens==0 or tokens+512<=output,'reasoning_tokens':tokens,'minimum_output_tokens':tokens+512}
+                    for tier,label,tokens in [('none','Off (none)',0),('low','Low',512),('ultra','Ultra',8192)]]}, control=True)
+            return
         routes = {
             '/werk/v1/info': {'service': 'werk1112', 'protocol': {'major': 1, 'minor': 0}, 'active_backend': 'fixture'},
             '/werk/v1/capabilities': {'capabilities': [
+                {'id':'api.chat.reasoning','status':'supported','detail':'fixture','operations':['profile','tiers']},
                 {'id': 'runtime.state.persistence', 'status': 'unsupported',
                  'detail': 'fixture backend does not expose this operation'}]},
             '/v1/capabilities': {'models': [{'id': 'fixture-model', 'available_tasks': ['text_generation']}]},
@@ -147,8 +158,13 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\x1b[Z\x15\x1b[200~' + KEY + '\x1b[201~\t\r')
         wait_for('Model and agent settings')
         wait_for('fixture-model')
-        # Model(0), context(1), output(2), profile(3), access(4), tools(5), stream(6).
-        send('\t32768' + '\t' * 5 + '\x1b[C' + '\t' * 3 + '\r')
+        # Model(0), context(1), output(2), profile(3), access(4), tools(5),
+        # stream(6), images(7), reasoning(8), save(9), connect(10).
+        send('\t32768' + '\t' * 5 + '\x1b[C' + '\t' * 2)
+        wait_for('Reasoning effort: Server default: Off (none)')
+        send('\x1b[C' * 2)
+        wait_for('Reasoning effort: Low')
+        send('\t' * 2 + '\r')
         wait_for('Ready')
         config = root / 'config/werkworker/config.json'
         settings = json.loads(config.read_text())
@@ -156,6 +172,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert settings['werk']['model'] == 'fixture-model'
         assert settings['limits']['reserve_output_tokens'] == 4096
         assert settings['werk']['capabilities']['context_tokens'] == 32768
+        assert settings['werk']['options']['reasoning_tier'] == 'low'
         assert settings['secret_env'] is None
         assert KEY not in config.read_text()
         assert config.stat().st_mode & 0o777 == 0o600
@@ -166,6 +183,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         wait_for('Setup connected successfully')
         wait_for('Completed')
         assert len(requests) == 2
+        assert all(body['werk']['reasoning']['tier'] == 'low' for body in requests)
         send('/setup\r')
         wait_for('Choose how to connect')
         send('\r')
@@ -190,10 +208,12 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\t\x1b[C\t\x15WW_SETUP_FIXTURE_KEY\t\r')
         wait_for('Model and agent settings')
         wait_for('32768')
-        send('\t' * 9 + '\r')
+        wait_for('Reasoning effort: Low')
+        send('\t' * 10 + '\r')
         wait_for('Ready')
         settings = json.loads(config.read_text())
         assert settings['secret_env'] == 'WW_SETUP_FIXTURE_KEY'
+        assert settings['werk']['options']['reasoning_tier'] == 'low'
         assert KEY not in config.read_text()
         send('\x11')
         assert exited() == 0
@@ -205,7 +225,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         project_dir.mkdir()
         project_file = project_dir / 'config.json'
         project_file.write_text(json.dumps({'version': 1, 'model': 'fixture-model',
-            'output_tokens': 2048, 'requested_access': 'process',
+            'output_tokens': 2048, 'reasoning_tier': 'none', 'requested_access': 'process',
             'test_commands': {'check': ['never-run-this-command']}}))
         global_before = config.read_bytes()
         screen = Screen()
@@ -217,11 +237,16 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         wait_for('Model and agent settings')
         wait_for('2048')
         # Change output, keep default read-only policy, save only project settings.
-        send('\t' * 2 + '\x154096' + '\t' * 7 + '\r')
+        send('\t' * 2 + '\x154096' + '\t' * 6)
+        wait_for('Reasoning effort: Off (none)')
+        send('\x1b[D')
+        wait_for('Reasoning effort: Server default')
+        send('\t' * 2 + '\r')
         wait_for('Ready')
         assert config.read_bytes() == global_before
         project_settings = json.loads(project_file.read_text())
         assert project_settings['output_tokens'] == 4096
+        assert project_settings['reasoning_tier'] == 'default' and 'reasoning_effort' not in project_settings
         assert project_settings['test_commands']['check'] == ['never-run-this-command']
         assert 'base_url' not in project_settings and 'secret_env' not in project_settings
         send('\x11')
@@ -259,7 +284,8 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         send('\t' * 3 + '\r')
         wait_for('Model and agent settings')
         wait_for('fixture-model')
-        send('\t' * 9 + '\r')
+        wait_for('Reasoning effort: Server default')
+        send('\t' * 10 + '\r')
         wait_for('Ready')
         send('\x11')
         assert exited() == 0
@@ -297,6 +323,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         proc = start(cwd=workspace)
         wait_for('Continue previous')
         wait_for('Connect new')
+        wait_for('Reasoning effort: Server default')
         assert len(requests) == 2
         send('\r')
         wait_for('New / Previous sessions')
@@ -316,6 +343,8 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         while len(requests) < 3 and time.monotonic() < deadline:
             time.sleep(.05)
         assert len(requests) == 3
+        assert 'reasoning_effort' not in requests[-1]
+        assert requests[-1]['werk']['reasoning']['tier'] == 'default'
         assert any(m['role'] == 'user' and m['content'] == 'Hello from configured TUI'
                    for m in requests[-1]['messages'])
         assert any(m['role'] == 'assistant' and m.get('content') == 'Setup connected successfully'
@@ -445,7 +474,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert not any(path.startswith('/v1/parameters') for path in discovery_requests)
         print('PASS: fast discovery omits global backend probes; 20 immediate chat/setup/connection transitions retain keyboard input.')
         print('PASS: remembered connection and capabilities, workspace-filtered sessions, same-session follow-up with model history, --session without run-id, interrupted approval recovery, retry/connect-new after failure; no replay or leaked credentials.')
-        print('PASS: PTY setup, masked key paste, auth retry, model discovery, budgets, authenticated chat and approval, saved global/project configs (0600), project rules and permission separation, reconnect, environment reference, double Ctrl-C and terminal restoration.')
+        print('PASS: PTY setup, reasoning selection and actual request forwarding, global/project persistence and explicit server default on reconnect, masked key paste, auth retry, budgets, authenticated chat and approval, saved configs (0600), project rules and permission separation, environment reference and terminal restoration.')
         print('PASS: automatic workspace connection and masked local credentials for bare ww and --workspace; no token in settings, terminal capture or sessions.')
     finally:
         if proc is not None and proc.poll() is None:

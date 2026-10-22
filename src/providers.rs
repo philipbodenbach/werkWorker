@@ -357,6 +357,62 @@ pub struct RuntimeCapability {
     #[serde(default)]
     pub operations: Vec<String>,
 }
+
+/// Defaults reported for matching live workers by Werk Protocol. They are
+/// informational: inheriting them must not turn a template default into an
+/// explicit override (which can change native thinking semantics).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReasoningDefaults {
+    pub source: String,
+    pub effort: Option<Value>,
+    pub thinking: Option<bool>,
+    pub budget_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningTier {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub reasoning_tokens: Option<u64>,
+    pub minimum_output_tokens: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningProfile {
+    pub schema_version: u32,
+    pub model: String,
+    pub supported: bool,
+    pub tiers: Vec<ReasoningTier>,
+    pub default_tier: Option<String>,
+    pub default_adjusted_to_limits: bool,
+    pub limits: ReasoningLimits,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningLimits {
+    pub context_tokens: Option<u64>,
+    pub output_tokens: u64,
+    pub reasoning_tokens: Option<u64>,
+    pub answer_reserve_tokens: u64,
+}
+
+pub fn validate_reasoning_tier(value: &Value) -> Result<()> {
+    if value.is_null()
+        || value.as_str().is_some_and(|s| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        })
+    {
+        Ok(())
+    } else {
+        Err(WorkerError::new(
+            "invalid_reasoning_tier",
+            "reasoning_tier must be a protocol tier ID, default, or null",
+        ))
+    }
+}
+
 /// Credentials are resolved separately and never serialized with configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WerkConfig {
@@ -383,6 +439,18 @@ impl WerkConfig {
         }
     }
 }
+
+pub(crate) fn validate_reasoning_effort(value: &Value) -> Result<()> {
+    if value.is_null() || value.is_string() || value.is_number() {
+        Ok(())
+    } else {
+        Err(WorkerError::new(
+            "invalid_reasoning_effort",
+            "reasoning_effort must be a string, number, or null (server default); supported values depend on the server/model",
+        ))
+    }
+}
+
 pub trait SecretResolver: Send + Sync {
     fn resolve(&self, reference: &str) -> Result<Option<String>>;
 }
@@ -660,6 +728,7 @@ pub struct WerkProvider {
     config: WerkConfig,
     pub runtime_capabilities: Vec<RuntimeCapability>,
     pub discovery: Value,
+    pub reasoning_defaults: BTreeMap<String, ReasoningDefaults>,
     pub inference_concurrency: InferenceConcurrency,
     context_limit: std::sync::atomic::AtomicUsize,
     pub context_limit_source: String,
@@ -735,7 +804,28 @@ impl WerkProvider {
             body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"worker_output","schema":schema,"strict":true}});
         }
         for (key, value) in &self.config.options {
+            if key == "reasoning_tier" {
+                continue;
+            }
+            if key == "reasoning_effort" && value.is_null() {
+                continue;
+            }
             body[key] = value.clone();
+        }
+        if self.supports_reasoning_tiers()
+            && !self
+                .config
+                .options
+                .get("reasoning_effort")
+                .is_some_and(|v| !v.is_null())
+        {
+            let tier = self
+                .config
+                .options
+                .get("reasoning_tier")
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            body["werk"] = json!({"reasoning":{"tier":tier}});
         }
         if body.to_string().len() > 1_048_576 {
             return Err(WorkerError::new("body_limit", "Chat request exceeds 1 MiB"));
@@ -743,6 +833,33 @@ impl WerkProvider {
         Ok(body)
     }
     pub async fn connect(config: WerkConfig, secret: Option<String>) -> Result<Self> {
+        for (key, value) in &config.options {
+            match key.as_str() {
+                "reasoning_effort" => validate_reasoning_effort(value)?,
+                "reasoning_tier" => validate_reasoning_tier(value)?,
+                "temperature" | "top_p" | "seed" | "stop" => {}
+                _ => {
+                    return Err(WorkerError::new(
+                        "unsupported_option",
+                        "Provider option is not explicitly allowed",
+                    ));
+                }
+            }
+        }
+        if config
+            .options
+            .get("reasoning_tier")
+            .is_some_and(|v| !v.is_null())
+            && config
+                .options
+                .get("reasoning_effort")
+                .is_some_and(|v| !v.is_null())
+        {
+            return Err(WorkerError::new(
+                "invalid_reasoning_tier",
+                "Choose reasoning_tier or native reasoning_effort, not both",
+            ));
+        }
         let client = WerkClient::new(&config, secret)?;
         let info = client.control("/werk/v1/info").await?;
         if info["service"] != "werk1112" || info["protocol"] != json!({"major":1,"minor":0}) {
@@ -760,13 +877,19 @@ impl WerkProvider {
         )?;
         let runtime_capabilities: Vec<RuntimeCapability> =
             serde_json::from_value(envelope["capabilities"].clone())?;
-        for key in config.options.keys() {
-            if !matches!(key.as_str(), "temperature" | "top_p" | "seed" | "stop") {
-                return Err(WorkerError::new(
-                    "unsupported_option",
-                    "Provider option is not explicitly allowed",
-                ));
-            }
+        if config
+            .options
+            .get("reasoning_tier")
+            .and_then(Value::as_str)
+            .is_some_and(|tier| tier != "default")
+            && !runtime_capabilities
+                .iter()
+                .any(|c| c.id == "api.chat.reasoning" && c.status == CapabilityStatus::Supported)
+        {
+            return Err(WorkerError::new(
+                "invalid_reasoning_tier",
+                "This server does not advertise reasoning tiers; select Server default",
+            ));
         }
         // Prefer fresh, model-matched Werk Protocol evidence. This samples only
         // running workers; it does not probe/load every installed backend.
@@ -783,6 +906,18 @@ impl WerkProvider {
         let protocol_limit = snapshot
             .as_ref()
             .and_then(|value| observability_context(value, &config.model));
+        let reasoning_defaults = snapshot.as_ref().map_or_else(BTreeMap::new, |snapshot| {
+            snapshot["backends"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|worker| worker["model"].as_str())
+                .filter_map(|model| {
+                    observability_reasoning_defaults(snapshot, model)
+                        .map(|defaults| (model.to_owned(), defaults))
+                })
+                .collect()
+        });
         // Older protocol producers omit per-request context. Their deployment
         // extension is plain JSON and is only an optional fallback.
         let diagnostics = if protocol_capacity.is_none() || protocol_limit.is_none() {
@@ -836,8 +971,69 @@ impl WerkProvider {
             image_estimates: Mutex::new(BTreeMap::new()),
             inference_unresolved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             runtime_capabilities,
+            reasoning_defaults,
             discovery: json!({"info":info,"models":models}),
         })
+    }
+
+    pub fn supports_reasoning_tiers(&self) -> bool {
+        self.runtime_capabilities
+            .iter()
+            .any(|c| c.id == "api.chat.reasoning" && c.status == CapabilityStatus::Supported)
+    }
+
+    pub async fn reasoning_profile(
+        &self,
+        model: &str,
+        output: usize,
+    ) -> Result<Option<ReasoningProfile>> {
+        if !self.supports_reasoning_tiers() {
+            return Ok(None);
+        }
+        let query: String = reqwest::Url::parse_with_params(
+            "http://localhost/",
+            &[
+                ("model", model.to_owned()),
+                ("max_output_tokens", output.to_string()),
+            ],
+        )
+        .map_err(|_| WorkerError::new("invalid_reasoning_tier", "Invalid model query"))?
+        .query()
+        .unwrap()
+        .to_owned();
+        let value = self
+            .client
+            .control(&format!("/werk/v1/chat/reasoning?{query}"))
+            .await?;
+        let profile: ReasoningProfile = serde_json::from_value(value)?;
+        let valid = profile.schema_version == 1
+            && profile.model == model
+            && profile.tiers.len() <= 64
+            && profile.limits.output_tokens <= output as u64
+            && profile.tiers.iter().all(|t| {
+                t.id != "default"
+                    && validate_reasoning_tier(&json!(t.id)).is_ok()
+                    && t.label.len() <= 128
+                    && !t.label.chars().any(char::is_control)
+            })
+            && profile
+                .tiers
+                .iter()
+                .map(|t| &t.id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == profile.tiers.len()
+            && profile
+                .default_tier
+                .as_ref()
+                .is_none_or(|id| profile.tiers.iter().any(|t| &t.id == id && t.available));
+        if !valid {
+            return Err(WorkerError::new(
+                "invalid_reasoning_profile",
+                "Werk reported an inconsistent reasoning profile",
+            ));
+        }
+        Ok(Some(profile))
     }
 }
 pub fn wire_message(message: &Message) -> Value {
@@ -1109,6 +1305,24 @@ impl ModelProvider for WerkProvider {
                     return Err(WorkerError::new(
                         "context_overflow",
                         "Server rejected the context; no smaller verified limit was supplied",
+                    ));
+                }
+                if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                    && matches!(
+                        value["error"]["code"].as_str(),
+                        Some("invalid_reasoning_effort" | "invalid_reasoning_tier")
+                    )
+                {
+                    let message = value["error"]["message"].as_str().unwrap_or(
+                        "The server/model rejected reasoning_effort; select Server default or a supported level",
+                    );
+                    return Err(WorkerError::new(
+                        value["error"]["code"].as_str().unwrap(),
+                        self.client
+                            .redact(message)
+                            .chars()
+                            .take(2048)
+                            .collect::<String>(),
                     ));
                 }
             }
@@ -1478,7 +1692,7 @@ fn deployment_concurrency(value: &Value, model: &str) -> InferenceConcurrency {
 
 /// Protocol-validated native slot telemetry for ordinary (non-deployment) servers.
 /// Use the minimum across matching workers: telemetry is not a routing guarantee.
-fn observability_concurrency(value: &Value, model: &str) -> Option<InferenceConcurrency> {
+fn observability_fresh(value: &Value) -> Option<()> {
     if value["schema_version"] != 1 {
         return None;
     }
@@ -1487,6 +1701,50 @@ fn observability_concurrency(value: &Value, model: &str) -> Option<InferenceConc
     if observed.abs_diff(sampled) > 10_000 {
         return None;
     }
+    Some(())
+}
+
+fn observability_reasoning_defaults(value: &Value, model: &str) -> Option<ReasoningDefaults> {
+    observability_fresh(value)?;
+    let mut defaults = None;
+    for worker in value["backends"].as_array()? {
+        if worker["model"].as_str() != Some(model) {
+            continue;
+        }
+        if worker["available"] != true {
+            return None;
+        }
+        let reported: ReasoningDefaults =
+            serde_json::from_value(worker.get("reasoning_defaults")?.clone()).ok()?;
+        if reported.source != "worker_launch_configuration"
+            || reported
+                .budget_tokens
+                .is_some_and(|n| !(-1..=i32::MAX as i64).contains(&n))
+            || reported.effort.as_ref().is_some_and(|v| {
+                !v.is_number()
+                    && !v.as_str().is_some_and(|s| {
+                        !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
+                    })
+            })
+            || (reported.effort.is_none()
+                && reported.thinking.is_none()
+                && reported.budget_tokens.is_none())
+        {
+            return None;
+        }
+        if defaults
+            .as_ref()
+            .is_some_and(|previous| *previous != reported)
+        {
+            return None;
+        }
+        defaults = Some(reported);
+    }
+    defaults
+}
+
+fn observability_concurrency(value: &Value, model: &str) -> Option<InferenceConcurrency> {
+    observability_fresh(value)?;
     let mut capacity = None;
     for worker in value["backends"].as_array()? {
         if worker["model"].as_str() != Some(model) {

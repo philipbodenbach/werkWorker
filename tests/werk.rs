@@ -22,6 +22,328 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
 }
 
 #[tokio::test]
+async fn protocol_reasoning_tiers_are_opaque_and_defaults_reach_count_and_generation() {
+    for tier in [None, Some("default"), Some("ultra")] {
+        let server=Server::start(|request| match request.path.as_str() {
+            "/werk/v1/capabilities" => control(json!({"capabilities":[
+                {"id":"api.chat.reasoning","status":"supported","detail":"fixture","operations":["profile","tiers"]},
+                {"id":"api.chat.token_count","status":"supported","detail":"fixture","operations":["count_tokens"]}]})),
+            "/werk/v1/chat/count_tokens" => control(json!({"model":"fixture-model","input_tokens":32})),
+            path if path.starts_with("/werk/v1/chat/reasoning?") => {
+                let url=reqwest::Url::parse(&format!("http://localhost{path}")).unwrap();
+                let query=url.query_pairs().collect::<std::collections::BTreeMap<_,_>>();
+                let output=query["max_output_tokens"].parse::<u64>().unwrap();
+                control(json!({"schema_version":1,"model":query["model"],"supported":true,
+                    "default_tier":if output>=2048 {"ultra"} else {"low"},"default_adjusted_to_limits":output<2048,
+                    "limits":{"context_tokens":32768,"output_tokens":output,"reasoning_tokens":output-512,"answer_reserve_tokens":512},
+                    "tiers":[{"id":"low","label":"Low","available":true,"reasoning_tokens":512,"minimum_output_tokens":1024},
+                        {"id":"ultra","label":"Ultra","available":output>=2048,"reasoning_tokens":1536,"minimum_output_tokens":2048}]}))
+            },
+            _ => werk(request),
+        }).await;
+        let mut c = config(&server.origin, false);
+        if let Some(tier) = tier {
+            c.options.insert("reasoning_tier".into(), json!(tier));
+        }
+        let provider = WerkProvider::connect(c, None).await.unwrap();
+        let large = provider
+            .reasoning_profile("fixture-model", 2048)
+            .await
+            .unwrap()
+            .unwrap();
+        let small = provider
+            .reasoning_profile("fixture-model", 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(large.default_tier.as_deref(), Some("ultra"));
+        assert_eq!(small.default_tier.as_deref(), Some("low"));
+        assert!(!small.tiers[1].available);
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.method == "GET")
+        );
+        let request = ModelRequest {
+            messages: vec![Message::text(Role::User, "hi")],
+            tools: vec![],
+            max_output_tokens: 2048,
+            output_schema: None,
+        };
+        assert_eq!(
+            provider.count_input_tokens(&request).await.unwrap(),
+            Some(32)
+        );
+        let mut stream = provider.stream(request).await.unwrap();
+        while let Some(delta) = stream.next().await {
+            delta.unwrap();
+        }
+        let records = server.requests.lock().unwrap();
+        let sent: Vec<_> = records.iter().filter(|r| r.method == "POST").collect();
+        assert_eq!(sent.len(), 2);
+        for request in sent {
+            assert_eq!(
+                request.body["werk"]["reasoning"]["tier"],
+                tier.unwrap_or("default")
+            );
+            assert!(request.body.get("reasoning_effort").is_none());
+            assert!(request.body.get("reasoning_budget_tokens").is_none());
+            assert_eq!(request.body["max_completion_tokens"], 2048);
+        }
+    }
+}
+
+#[tokio::test]
+async fn reasoning_tiers_require_advertised_protocol_and_do_not_replace_native_effort() {
+    let server = Server::start(werk).await;
+    let mut c = config(&server.origin, false);
+    c.options.insert("reasoning_tier".into(), json!("ultra"));
+    let error = WerkProvider::connect(c.clone(), None).await.err().unwrap();
+    assert_eq!(error.code, "invalid_reasoning_tier");
+    c.options.insert("reasoning_effort".into(), json!("high"));
+    let before = server.requests.lock().unwrap().len();
+    assert_eq!(
+        WerkProvider::connect(c, None).await.err().unwrap().code,
+        "invalid_reasoning_tier"
+    );
+    assert_eq!(server.requests.lock().unwrap().len(), before);
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    assert!(
+        provider
+            .reasoning_profile("fixture-model", 2048)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn reasoning_effort_reaches_token_count_and_both_chat_transports() {
+    for streaming in [false, true] {
+        for effort in [
+            None,
+            Some(Value::Null),
+            Some(json!("none")),
+            Some(json!("minimal")),
+            Some(json!("low")),
+            Some(json!("medium")),
+            Some(json!("high")),
+            Some(json!("xhigh")),
+            Some(json!("max")),
+            Some(json!("native-level")),
+            Some(json!(0.75)),
+        ] {
+            let server = Server::start(|request| match request.path.as_str() {
+                "/werk/v1/capabilities" => control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"fixture","operations":["count_tokens"]}]})),
+                "/werk/v1/chat/count_tokens" => control(json!({"model":"fixture-model","input_tokens":32})),
+                "/v1/chat/completions" if request.body["stream"] == true => Response {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/event-stream".into())],
+                    body: b"data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec(),
+                },
+                _ => werk(request),
+            }).await;
+            let mut configuration = config(&server.origin, streaming);
+            if let Some(value) = &effort {
+                configuration
+                    .options
+                    .insert("reasoning_effort".into(), value.clone());
+            }
+            let provider = WerkProvider::connect(configuration, None).await.unwrap();
+            let request = ModelRequest {
+                messages: vec![Message::text(Role::User, "Task")],
+                tools: vec![ToolDefinition {
+                    name: "files.read".into(),
+                    version: "1".into(),
+                    description: "Read a file".into(),
+                    input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+                    effect: Effect::Read,
+                    timeout_ms: 1000,
+                    output_limit: 1024,
+                    concurrency_safe: true,
+                }],
+                max_output_tokens: 1024,
+                output_schema: None,
+            };
+            assert_eq!(
+                provider.count_input_tokens(&request).await.unwrap(),
+                Some(32)
+            );
+            let mut stream = provider.stream(request).await.unwrap();
+            let mut assembler = ResponseAssembler::default();
+            while let Some(delta) = stream.next().await {
+                assembler.push(&delta.unwrap(), 65536).unwrap();
+            }
+            assert_eq!(assembler.finish().unwrap().0.content, "done");
+            let records = server.requests.lock().unwrap();
+            let bodies: Vec<_> = records.iter().filter(|r| r.method == "POST").collect();
+            assert_eq!(bodies.len(), 2, "counts are cached; no extra inference");
+            for request in bodies {
+                assert_eq!(
+                    request.body.get("reasoning_effort"),
+                    effort.as_ref().filter(|v| !v.is_null())
+                );
+                assert_eq!(request.body["max_completion_tokens"], 1024);
+                assert_eq!(request.body["tools"][0]["function"]["name"], "files.read");
+                assert!(request.body.get("reasoning_budget").is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_reasoning_types_and_unlisted_options_fail_before_network() {
+    let server = Server::start(werk).await;
+    for (key, value, code) in [
+        ("reasoning_effort", json!(true), "invalid_reasoning_effort"),
+        ("reasoning_effort", json!([]), "invalid_reasoning_effort"),
+        (
+            "reasoning_effort",
+            json!({"level":"high"}),
+            "invalid_reasoning_effort",
+        ),
+        ("reasoning_budget", json!(2048), "unsupported_option"),
+        ("messages", json!([]), "unsupported_option"),
+    ] {
+        let mut configuration = config(&server.origin, false);
+        configuration.options.insert(key.into(), value);
+        assert_eq!(
+            WerkProvider::connect(configuration, None)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            code
+        );
+    }
+    assert!(server.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn protocol_reasoning_defaults_are_model_scoped_fresh_and_never_frozen_as_overrides() {
+    for case in [
+        "reported",
+        "wrong-model",
+        "stale",
+        "busy",
+        "disagree",
+        "missing",
+        "malformed",
+    ] {
+        let server = Server::start(move |request| {
+            if request.path != "/werk/v1/observability" { return werk(request); }
+            let mut worker = json!({"model":"fixture-model","backend":"llama.cpp / CUDA","available":true,
+                "reasoning_defaults":{"source":"worker_launch_configuration","effort":"high","thinking":false,"budget_tokens":2048},
+                "gauges":{"slots_total":1,"context_per_request_tokens":32768}});
+            match case {
+                "wrong-model" => worker["model"] = json!("another-model"),
+                "busy" => worker["available"] = json!(false),
+                "missing" => { worker.as_object_mut().unwrap().remove("reasoning_defaults"); },
+                "malformed" => worker["reasoning_defaults"]["effort"] = json!(true),
+                _ => {}
+            }
+            let mut backends = vec![worker.clone()];
+            if case == "disagree" {
+                worker["reasoning_defaults"]["effort"] = json!("low");
+                backends.push(worker);
+            }
+            control(json!({"schema_version":1,"observed_at_ms":20000,"backend_observed_at_ms":if case == "stale" {1} else {20000},"backends":backends}))
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap();
+        if case == "reported" {
+            let defaults = &provider.reasoning_defaults["fixture-model"];
+            assert_eq!(defaults.effort, Some(json!("high")));
+            assert_eq!(defaults.thinking, Some(false));
+            assert_eq!(defaults.budget_tokens, Some(2048));
+        } else {
+            assert!(
+                !provider.reasoning_defaults.contains_key("fixture-model"),
+                "{case}"
+            );
+        }
+        let mut stream = provider
+            .stream(ModelRequest {
+                messages: vec![Message::text(Role::User, "Task")],
+                tools: vec![],
+                max_output_tokens: 1024,
+                output_schema: None,
+            })
+            .await
+            .unwrap();
+        while let Some(delta) = stream.next().await {
+            delta.unwrap();
+        }
+        let requests = server.requests.lock().unwrap();
+        let sent = &requests
+            .iter()
+            .find(|r| r.path == "/v1/chat/completions")
+            .unwrap()
+            .body;
+        // Echoing high would force thinking on, overriding the server's false.
+        // Inherit the native defaults as a unit instead of reconstructing them.
+        assert!(sent.get("reasoning_effort").is_none());
+        assert!(sent.get("reasoning_budget").is_none());
+        assert_eq!(sent["max_completion_tokens"], 1024);
+    }
+}
+
+#[tokio::test]
+async fn rejected_reasoning_keeps_server_explanation_without_credentials_or_retry() {
+    let server = Server::start(|request| {
+        if request.path != "/v1/chat/completions" {
+            return werk(request);
+        }
+        let mut response = Response::json(json!({"error":{
+            "code":"invalid_reasoning_effort", "param":"reasoning_effort",
+            "message":"Supported values: none, high (fixture-secret)"
+        }}));
+        response.status = 400;
+        response
+    })
+    .await;
+    for streaming in [false, true] {
+        let mut configuration = config(&server.origin, streaming);
+        configuration
+            .options
+            .insert("reasoning_effort".into(), json!("max"));
+        let provider = WerkProvider::connect(configuration, Some("fixture-secret".into()))
+            .await
+            .unwrap();
+        let error = provider
+            .stream(ModelRequest {
+                messages: vec![Message::text(Role::User, "Task")],
+                tools: vec![],
+                max_output_tokens: 1024,
+                output_schema: None,
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "invalid_reasoning_effort");
+        assert!(error.message.contains("Supported values: none, high"));
+        assert!(!error.message.contains("fixture-secret"));
+        assert!(!error.retryable);
+    }
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn streaming_timeout_measures_inactivity_not_total_generation_time() {
     use std::time::Duration;
     for (streaming, pause, expected_error) in [

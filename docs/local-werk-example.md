@@ -76,7 +76,22 @@ from the current shell. For a deliberately unauthenticated local server, select
 
 ## Reasoning budget
 
-A 2,048-token server reasoning budget can exhaust the headless CLI's default
+Worker's **Reasoning effort** setting in `/setup` reads model-specific tiers,
+the default and limits from `GET /werk/v1/chat/reasoning`. A saved preference
+such as `"options":{"reasoning_tier":"low"}` becomes
+`"werk":{"reasoning":{"tier":"low"}}` in chat and count requests. Werk1112
+translates this ID to native controls; Worker does not assign token budgets.
+
+For a running llama.cpp worker with budget control, Werk's tiers use 0/512/1024/
+2048/4096/8192 reasoning tokens (`none`/`low`/`medium`/`high`/`max`/`ultra`).
+The launch budget is a ceiling and output reserves 512 tokens for the answer.
+Thus a 2048-token launch budget and 2048 total output yield a `medium` default
+(1024 reasoning tokens) when thinking is enabled; 4096 output permits `high`.
+An explicitly disabled launch default stays `none`. Native effort backends may
+have different vocabularies and report no separate reasoning-token ceiling.
+Unknown or cold runtimes report no verified tiers; discovery never loads them.
+
+With native overrides or older servers, a 2,048-token server reasoning budget can exhaust the headless CLI's default
 2,048 total output tokens. The wizard allows **4096** or another valid reserve
 within the effective context. Worker guides large file creation through a small
 skeleton and incremental edits, retaining the latest file hash in compact write

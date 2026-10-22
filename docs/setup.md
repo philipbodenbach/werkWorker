@@ -93,6 +93,15 @@ A named environment reference is saved; the variable's value is not.
 The file is written using a temporary file and replacement; Unix mode is 0600.
 Windows replacement removes the old file first and is not atomic.
 
+`limits.reserve_output_tokens` is the initial output allowance, including
+reasoning. Optional `limits.max_output_tokens` is the hard recovery ceiling:
+for example, `{"reserve_output_tokens":4096,"max_output_tokens":8192}`.
+With `max_output_tokens:null` (the default), the advertised model/server ceiling
+applies; without server evidence, the initial allowance remains the ceiling.
+Actual requests must also fit the input/context budget. The wizard labels its
+output field **Initial output tokens**; advanced ceilings can be set in the
+connection JSON or per-run RPC limits. See [budget recovery](context.md).
+
 Successful saved setups also remember the effective connection, budgets, profile
 and explicitly selected access in `connections/<workspace-hash>.json` beside the
 global config. These files are scoped to the canonical workspace path and written

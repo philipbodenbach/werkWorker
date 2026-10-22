@@ -22,17 +22,20 @@ enum Reply {
     PrefillSensitive(ScriptedTurn),
     Empty,
     Pending,
+    NeedsBudget(usize, ScriptedTurn),
 }
 
 struct RecoveryProvider {
     replies: Mutex<VecDeque<Reply>>,
     requests: Mutex<Vec<ModelRequest>>,
+    output_ceiling: Option<usize>,
 }
 impl RecoveryProvider {
     fn new(replies: Vec<Reply>) -> Self {
         Self {
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),
+            output_ceiling: None,
         }
     }
     fn requests(&self) -> Vec<ModelRequest> {
@@ -41,6 +44,9 @@ impl RecoveryProvider {
 }
 #[async_trait]
 impl ModelProvider for RecoveryProvider {
+    fn max_output_tokens(&self) -> Option<usize> {
+        self.output_ceiling
+    }
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             tool_calling: Support::Supported,
@@ -97,6 +103,32 @@ impl ModelProvider for RecoveryProvider {
                 }
             }
             Reply::Pending => return Ok(Box::pin(futures_util::stream::pending())),
+            Reply::NeedsBudget(required, turn) => {
+                if request.max_output_tokens >= required {
+                    turn
+                } else {
+                    self.replies
+                        .lock()
+                        .unwrap()
+                        .push_front(Reply::NeedsBudget(required, turn));
+                    ScriptedTurn {
+                        deltas: vec![
+                            ModelDelta::Tool {
+                                index: 0,
+                                id: "oversized".into(),
+                                name: "files.write".into(),
+                                arguments: "{\"path\":\"never-partial.txt\",\"content\":\"".into(),
+                            },
+                            ModelDelta::Finish {
+                                reason: "length".into(),
+                            },
+                            ModelDelta::Done,
+                        ],
+                        delay_ms: 0,
+                        error: None,
+                    }
+                }
+            }
         };
         Ok(Box::pin(futures_util::stream::iter(
             turn.deltas.into_iter().map(Ok),
@@ -160,6 +192,177 @@ fn policy() -> HostPolicy {
         }],
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn recovery_grows_the_actual_budget_within_provider_and_host_caps() {
+    for (provider_cap, host_cap, expected) in [
+        (Some(8192), None, 8192),
+        (Some(8192), Some(6144), 6144),
+        (None, Some(6144), 6144),
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut provider = RecoveryProvider::new(vec![
+            Reply::NeedsBudget(
+                expected,
+                ScriptedTurn::calls(
+                    "",
+                    vec![ToolCall {
+                        id: "complete".into(),
+                        name: "files.write".into(),
+                        arguments: json!({"path":"complete.js","content":"function game() {}"}),
+                    }],
+                ),
+            ),
+            Reply::Turn(ScriptedTurn::text("Implemented.")),
+        ]);
+        provider.output_ceiling = provider_cap;
+        let provider = Arc::new(provider);
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let limits = Limits {
+            context_tokens: 32768,
+            reserve_output_tokens: 4096,
+            max_output_tokens: host_cap,
+            ..Default::default()
+        };
+        let run = session
+            .submit("Implement game", "start", limits, None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        assert_eq!(
+            provider
+                .requests()
+                .iter()
+                .map(|r| r.max_output_tokens)
+                .collect::<Vec<_>>(),
+            vec![4096, expected, expected]
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("complete.js")).unwrap(),
+            "function game() {}"
+        );
+        assert!(!workspace.path().join("never-partial.txt").exists());
+        let state = run.status().await.unwrap();
+        let restored: Run = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(
+            restored.generation_recovery.target_output_tokens,
+            Some(expected)
+        );
+        validate_messages(&session.snapshot().await.unwrap().messages).unwrap();
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn exhausted_budget_bounds_write_schema_and_rejects_oversized_complete_calls() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        limited(),
+        write("too-large.js", &"x".repeat(2049)),
+        write("small.js", "function game() {}"),
+        Reply::Turn(ScriptedTurn::text("Done")),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit("Implement", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert!(!workspace.path().join("too-large.js").exists());
+    assert!(workspace.path().join("small.js").exists());
+    let requests = provider.requests();
+    assert_eq!(
+        requests[0].tools[0].input_schema["properties"]["content"]["maxLength"],
+        65536
+    );
+    assert_eq!(
+        requests[1].tools[0].input_schema["properties"]["content"]["maxLength"],
+        2048
+    );
+    assert_eq!(
+        run.status().await.unwrap().invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .status,
+        Outcome::ValidationError
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn grown_output_borrows_only_free_context_and_keeps_user_constraints() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut provider =
+        RecoveryProvider::new(vec![limited(), Reply::Turn(ScriptedTurn::text("Done"))]);
+    provider.output_ceiling = Some(16383);
+    let provider = Arc::new(provider);
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let input = format!("Keep this complete constraint: {}", "x".repeat(2000));
+    let run = session
+        .submit(
+            &input,
+            "start",
+            Limits {
+                context_tokens: 8192,
+                reserve_output_tokens: 2048,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    let requests = provider.requests();
+    assert!(requests[1].max_output_tokens < 4096);
+    assert!(requests[1].max_output_tokens >= 2048);
+    assert_eq!(
+        requests[1].tools[0].input_schema["properties"]["content"]["maxLength"],
+        2048
+    );
+    assert_eq!(
+        requests.len(),
+        2,
+        "switching schemas must not spend another inference"
+    );
+    for request in &requests {
+        assert!(
+            werk_worker::context::estimate_request(request) + request.max_output_tokens + 512
+                <= 8192
+        );
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::User && message.content == input)
+        );
+    }
+    engine.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -269,12 +472,14 @@ impl werk_worker::context::ContextBuilder for FixedRecoveryContext {
         &self,
         _: &SessionData,
         run: &Run,
-        tools: Vec<ToolDefinition>,
+        _tools: Vec<ToolDefinition>,
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         Ok((
             ModelRequest {
                 messages: vec![Message::text(Role::User, "Implement")],
-                tools,
+                // Deliberately ignore engine recovery changes: the replay guard
+                // must still reject an identical custom-builder request.
+                tools: vec![],
                 max_output_tokens: if self.change_output && !run.attempts.is_empty() {
                     1024
                 } else {
@@ -769,7 +974,7 @@ async fn continuation_echo_is_not_persisted_as_a_history_summary() {
 }
 
 #[tokio::test]
-async fn resume_preserves_consumed_retries_and_blocks_return_to_original_truncated_request() {
+async fn resume_preserves_consumed_retries_with_durable_schema_change() {
     let workspace = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemoryStore::default());
     let provider = Arc::new(RecoveryProvider::new(vec![
@@ -820,7 +1025,11 @@ async fn resume_preserves_consumed_retries_and_blocks_return_to_original_truncat
         .unwrap();
     let resumed = reopened.resume_run(&saved.id, &run.id).await.unwrap();
     assert_eq!(resumed.wait().await.unwrap().status, RunStatus::Failed);
-    assert_eq!(next.requests().len(), 0);
+    assert_eq!(next.requests().len(), 1);
+    assert_eq!(
+        next.requests()[0].tools[0].input_schema["properties"]["content"]["maxLength"],
+        2048
+    );
     let data = reopened
         .open_session(&saved.id)
         .await
@@ -829,11 +1038,8 @@ async fn resume_preserves_consumed_retries_and_blocks_return_to_original_truncat
         .await
         .unwrap();
     let state = data.run(&run.id).unwrap();
-    assert_eq!(
-        state.error.as_ref().unwrap().code,
-        "model_output_recovery_stalled"
-    );
-    assert_eq!(state.metrics.model_requests, 3);
+    assert_eq!(state.error.as_ref().unwrap().code, "model_empty_response");
+    assert_eq!(state.metrics.model_requests, 4);
     assert!(state.invocations.is_empty());
     reopened.close().await.unwrap();
 }

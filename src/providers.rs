@@ -64,6 +64,10 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    /// Verified generation ceiling, distinct from the desired initial reserve.
+    fn max_output_tokens(&self) -> Option<usize> {
+        None
+    }
     /// Stable, content-free identity of a concrete request, including provider
     /// settings that affect its wire payload. No network or model work here.
     fn request_fingerprint(&self, request: &ModelRequest) -> String {
@@ -728,6 +732,35 @@ fn http_error(status: u16) -> WorkerError {
     e.retryable = matches!(status, 429 | 500..=599);
     e
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationLimits {
+    pub schema_version: u32,
+    pub model: String,
+    pub context_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+}
+impl GenerationLimits {
+    fn validate(&self, model: &str) -> Result<()> {
+        if self.schema_version != 1
+            || self.model != model
+            || [self.context_tokens, self.max_output_tokens]
+                .into_iter()
+                .flatten()
+                .any(|n| n == 0 || n > 2_000_000)
+            || self
+                .context_tokens
+                .zip(self.max_output_tokens)
+                .is_some_and(|(context, output)| output >= context)
+        {
+            return Err(WorkerError::new(
+                "invalid_generation_limits",
+                "Werk reported inconsistent generation limits",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub struct WerkProvider {
     pub client: WerkClient,
     config: WerkConfig,
@@ -736,6 +769,7 @@ pub struct WerkProvider {
     pub reasoning_defaults: BTreeMap<String, ReasoningDefaults>,
     pub inference_concurrency: InferenceConcurrency,
     context_limit: std::sync::atomic::AtomicUsize,
+    output_limit: Option<usize>,
     pub context_limit_source: String,
     token_counts: Mutex<BTreeMap<String, usize>>,
     token_count_unavailable: std::sync::atomic::AtomicBool,
@@ -882,6 +916,32 @@ impl WerkProvider {
         )?;
         let runtime_capabilities: Vec<RuntimeCapability> =
             serde_json::from_value(envelope["capabilities"].clone())?;
+        let generation_limits = if runtime_capabilities
+            .iter()
+            .any(|c| c.id == "api.chat.limits" && c.status == CapabilityStatus::Supported)
+        {
+            let url =
+                reqwest::Url::parse_with_params("http://localhost/", &[("model", &config.model)])
+                    .map_err(|_| {
+                    WorkerError::new("invalid_generation_limits", "Invalid model query")
+                })?;
+            let value = tokio::time::timeout(
+                Duration::from_secs(2),
+                client.control(&format!("/werk/v1/chat/limits?{}", url.query().unwrap())),
+            )
+            .await
+            .map_err(|_| {
+                WorkerError::new(
+                    "generation_limits_timeout",
+                    "Werk limit discovery timed out",
+                )
+            })??;
+            let limits: GenerationLimits = serde_json::from_value(value)?;
+            limits.validate(&config.model)?;
+            Some(limits)
+        } else {
+            None
+        };
         if config
             .options
             .get("reasoning_tier")
@@ -941,13 +1001,19 @@ impl WerkProvider {
             .and_then(|value| deployment_context(value, &config.model));
         let context_limit = [
             config.capabilities.context_tokens,
+            generation_limits.as_ref().and_then(|l| l.context_tokens),
             protocol_limit,
             deployment_limit,
         ]
         .into_iter()
         .flatten()
         .min();
-        let context_limit_source = if protocol_limit.is_some() {
+        let context_limit_source = if protocol_limit.is_some()
+            || generation_limits
+                .as_ref()
+                .and_then(|l| l.context_tokens)
+                .is_some()
+        {
             "werk_protocol_and_host_minimum"
         } else if deployment_limit.is_some() {
             "deployment_and_host_minimum"
@@ -969,6 +1035,7 @@ impl WerkProvider {
             config,
             inference_concurrency,
             context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
+            output_limit: generation_limits.as_ref().and_then(|l| l.max_output_tokens),
             context_limit_source,
             token_counts: Mutex::new(BTreeMap::new()),
             token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
@@ -977,7 +1044,7 @@ impl WerkProvider {
             inference_unresolved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             runtime_capabilities,
             reasoning_defaults,
-            discovery: json!({"info":info,"models":models}),
+            discovery: json!({"info":info,"models":models,"generation_limits":generation_limits}),
         })
     }
 
@@ -1063,6 +1130,9 @@ pub fn wire_message(message: &Message) -> Value {
 }
 #[async_trait]
 impl ModelProvider for WerkProvider {
+    fn max_output_tokens(&self) -> Option<usize> {
+        self.output_limit
+    }
     fn estimated_image_tokens(&self, request: &ModelRequest) -> Option<usize> {
         let key = Self::image_key(request)?;
         self.image_estimates.lock().unwrap().get(&key).copied()
@@ -1229,6 +1299,15 @@ impl ModelProvider for WerkProvider {
     }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         self.check_inference_available()?;
+        if self
+            .output_limit
+            .is_some_and(|limit| request.max_output_tokens > limit)
+        {
+            return Err(WorkerError::new(
+                "output_limit_exceeded",
+                "Request exceeds the model/server output ceiling",
+            ));
+        }
         let limit = self.capabilities().context_tokens.ok_or_else(|| WorkerError::new("context_limit_unknown", "Set capabilities.context_tokens to the server's per-request context limit; discovery could not establish it"))?;
         if request.max_output_tokens == 0
             || self

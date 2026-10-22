@@ -304,7 +304,7 @@ impl Form {
                     },
                 ),
                 (
-                    "Output tokens (including reasoning)".into(),
+                    "Initial output tokens (including reasoning)".into(),
                     self.output.clone(),
                 ),
                 ("Agent profile".into(), self.settings.profile.clone()),

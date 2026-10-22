@@ -93,15 +93,17 @@ Unknown or cold runtimes report no verified tiers; discovery never loads them.
 
 With native overrides or older servers, a 2,048-token server reasoning budget can exhaust the headless CLI's default
 2,048 total output tokens. The wizard allows **4096** or another valid reserve
-within the effective context. Worker guides large file creation through a small
-skeleton and incremental edits, retaining the latest file hash in compact write
-receipts. If a generation reaches `model_output_limit`, its entire incomplete
-response is discarded and Worker rebuilds the request with feedback to use
-smaller steps. This happens within the same user request, up to `max_retries`
-consecutive recoveries (default: two; zero disables recovery), and remains subject
-to the normal request, step, and time limits. Recovery never raises the configured
-output/context caps or executes partial tool calls. Repeated failures can still
-require reducing the server's reasoning budget or adjusting the output reserve.
+within the effective context. This is the initial output reservation. When the
+server advertises `api.chat.limits`, a truncated generation can retry with twice
+the output reservation, bounded by the model/server ceiling, the optional host
+`Limits.max_output_tokens`, and actual remaining context. Older servers keep the
+initial cap unless the host supplies an explicit ceiling. Recovery does not
+change the selected reasoning tier. Incomplete tool calls are never executed.
+
+If the budget cannot grow enough, the next requests use bounded file steps:
+2,048 characters per file content/replacement string or process argv item,
+validated before execution. Larger tasks must progress through smaller writes
+and hash-bound edits. `max_retries` still limits consecutive recovery failures.
 Automatic compaction handles growing input history separately. After repeated
 output limits, read/list calls do not erase sizing feedback: the next small-write
 suggestion shrinks until a confirmed file change. A newly failed generation
@@ -127,9 +129,10 @@ minimum native slot context, clamped by the host setting. Deployment `context`
 is already per sequence and is not divided by parallel slot count.
 
 For streaming chat, `timeout_ms` bounds inactivity between received chunks.
-A healthy stream may take longer overall; the run's wall-time budget still
+A healthy stream may take longer overall; the run's active-time budget still
 applies (15 minutes, 48 steps and 60 model requests by default). Explicit
-host budgets remain authoritative. Non-streaming requests and control calls keep
+host budgets remain authoritative. Pending tool approvals pause this clock,
+including across restart; model/tool work still consumes it. Non-streaming requests and control calls keep
 their total HTTP timeout. This lets slower local models finish code generation
 without repeatedly losing an active response after two minutes.
 

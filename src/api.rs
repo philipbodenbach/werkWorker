@@ -1091,6 +1091,8 @@ impl SessionHandle {
                     output_schema,
                     started_at_ms: 0,
                     deadline_ms: 0,
+                    approval_wait_started_at_ms: None,
+                    generation_recovery: GenerationRecovery::default(),
                     history_start: d.messages.len(),
                     final_text: None,
                     error: None,
@@ -1273,6 +1275,9 @@ impl SessionHandle {
                             RunStatus::Completed
                         };
                         run.error = result.clone().err();
+                        if run.status != RunStatus::Interrupted {
+                            run.resume_approval_clock(now_ms());
+                        }
                         run.metrics.total_ms = Some(now_ms().saturating_sub(run.started_at_ms));
                         let status = run.status;
                         project_pending(d, &run_id)?;
@@ -1413,9 +1418,10 @@ impl SessionHandle {
             }
             let data = self.snapshot().await?;
             let mut effective_run = data.run(run_id)?.clone();
-            effective_run.limits = crate::context::effective_limits(
+            effective_run.limits = crate::context::generation_limits(
                 &effective_run.limits,
-                self.engine.inner.provider.capabilities().context_tokens,
+                &effective_run.generation_recovery,
+                self.engine.inner.provider.as_ref(),
             )?;
             let run = &effective_run;
             if response_recovery_failures(run) > run.limits.max_retries as usize {
@@ -1436,7 +1442,7 @@ impl SessionHandle {
             if run.metrics.steps >= run.limits.max_steps {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
             }
-            let defs = data
+            let mut defs: Vec<_> = data
                 .profile
                 .tools
                 .iter()
@@ -1445,6 +1451,7 @@ impl SessionHandle {
                 .into_iter()
                 .filter(|def| data.policy.can_request(def))
                 .collect();
+            crate::context::bound_recovery_tools(run, &mut defs);
             let planning = self.engine.inner.context.build_with_provider(
                 &data,
                 run,
@@ -1459,6 +1466,28 @@ impl SessionHandle {
                     _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Context planning cancelled")),
                 }
             };
+            if effective_run
+                .generation_recovery
+                .last_failed_output_tokens
+                .is_some()
+                && !effective_run.generation_recovery.split_required
+                && request.max_output_tokens < effective_run.limits.reserve_output_tokens
+            {
+                // The larger target did not fit after compaction. Switch to
+                // bounded tools before spending the next recovery attempt.
+                self.update(|d| {
+                    d.run_mut(run_id)?.generation_recovery.split_required = true;
+                    d.emit(
+                        Some(run_id),
+                        EventKind::Diagnostic {
+                            code: "model_output_recovery_split".into(),
+                        },
+                    );
+                    Ok(())
+                })
+                .await?;
+                continue 'steps;
+            }
             let count_source = self.engine.inner.provider.input_token_source(&request);
             let request_fingerprint = self.engine.inner.provider.request_fingerprint(&request);
             let step_id = id("step");
@@ -1531,8 +1560,31 @@ impl SessionHandle {
                     }
                     Err(error) => {
                         self.update(|d| {
-                            d.run_mut(run_id)?.attempts.last_mut().unwrap().error =
-                                Some(error.clone());
+                            let run = d.run_mut(run_id)?;
+                            run.attempts.last_mut().unwrap().error = Some(error.clone());
+                            if error.code == "model_output_limit" {
+                                let limits = crate::context::effective_limits(
+                                    &run.limits,
+                                    self.engine.inner.provider.capabilities().context_tokens,
+                                )?;
+                                let ceiling = crate::context::output_ceiling(
+                                    &limits,
+                                    self.engine.inner.provider.as_ref(),
+                                );
+                                let recovery = &mut run.generation_recovery;
+                                recovery
+                                    .initial_output_tokens
+                                    .get_or_insert(limits.reserve_output_tokens.min(ceiling));
+                                let target =
+                                    request.max_output_tokens.saturating_mul(2).min(ceiling);
+                                recovery.split_required |= target <= request.max_output_tokens
+                                    || recovery
+                                        .last_failed_output_tokens
+                                        .is_some_and(|last| request.max_output_tokens <= last);
+                                recovery.last_failed_output_tokens =
+                                    Some(request.max_output_tokens);
+                                recovery.target_output_tokens = Some(target);
+                            }
                             d.emit(
                                 Some(run_id),
                                 EventKind::AttemptFailed {
@@ -1559,15 +1611,22 @@ impl SessionHandle {
                             }
                             if error.code == "model_output_limit" {
                                 // Never replay the identical oversized request.
-                                // Rebuild with explicit feedback and smaller chunks;
+                                // Rebuild with a larger admitted budget or bounded file steps;
                                 // partial tool arguments remain outside canonical history.
                                 self.update(|d| {
-                                    d.emit(
-                                        Some(run_id),
-                                        EventKind::Diagnostic {
-                                            code: "model_output_recovery".into(),
-                                        },
-                                    );
+                                    let recovery = &d.run(run_id)?.generation_recovery;
+                                    let code = if recovery.split_required {
+                                        "model_output_recovery_split".to_owned()
+                                    } else {
+                                        format!(
+                                            "model_output_recovery_budget:{}:{}",
+                                            request.max_output_tokens,
+                                            recovery
+                                                .target_output_tokens
+                                                .unwrap_or(request.max_output_tokens)
+                                        )
+                                    };
+                                    d.emit(Some(run_id), EventKind::Diagnostic { code });
                                     Ok(())
                                 })
                                 .await?;
@@ -1617,6 +1676,16 @@ impl SessionHandle {
                     };
                     let invocation_id = id("invocation");
                     invocations.push(ToolInvocation {
+                        request_input_schema: request
+                            .tools
+                            .iter()
+                            .find(|def| def.name == call.name)
+                            .filter(|offered| {
+                                definition.as_ref().is_some_and(|original| {
+                                    original.input_schema != offered.input_schema
+                                })
+                            })
+                            .map(|offered| offered.input_schema.clone()),
                         invocation_id: invocation_id.clone(),
                         step_id: step_id.clone(),
                         message_index: d.messages.len(),
@@ -1858,6 +1927,7 @@ impl SessionHandle {
             run.metrics.steps += 1;
             run.metrics.tool_invocations += 1;
             run.invocations.push(ToolInvocation {
+                request_input_schema: None,
                 invocation_id: invocation_id.clone(),
                 step_id: step_id.clone(),
                 message_index,
@@ -1892,7 +1962,7 @@ impl SessionHandle {
         if shutdown.is_cancelled() || run.status == RunStatus::Cancelling {
             return Err(WorkerError::new("cancelled", "Run was cancelled"));
         }
-        if run.deadline_ms > 0 && now_ms() >= run.deadline_ms {
+        if run.wall_budget_expired(now_ms()) {
             return Err(WorkerError::new(
                 "wall_budget",
                 "Run wall-time budget reached",
@@ -1911,7 +1981,7 @@ impl SessionHandle {
             if run.status == RunStatus::Cancelling {
                 return Err(WorkerError::new("cancelled", "Run was cancelled"));
             }
-            if run.deadline_ms > 0 && now_ms() >= run.deadline_ms {
+            if run.wall_budget_expired(now_ms()) {
                 return Err(WorkerError::new(
                     "wall_budget",
                     "Run wall-time budget reached",
@@ -2129,7 +2199,8 @@ impl SessionHandle {
                 .estimate_input_tokens(&request)
                 .await?;
             if request.max_output_tokens == 0
-                || request.max_output_tokens > limits.reserve_output_tokens
+                || request.max_output_tokens
+                    > crate::context::output_ceiling(&limits, self.engine.inner.provider.as_ref())
                 || input_tokens
                     .saturating_add(request.max_output_tokens)
                     .saturating_add(512)
@@ -2408,6 +2479,13 @@ impl SessionHandle {
             }
             i.result = Some(result.clone());
             i.status = InvocationStatus::Finished;
+            if i.approval.is_some() {
+                let run = d.run_mut(run_id)?;
+                run.resume_approval_clock(now_ms());
+                if run.status == RunStatus::WaitingApproval {
+                    run.status = RunStatus::Running;
+                }
+            }
             d.emit(
                 Some(run_id),
                 EventKind::ToolCompleted {
@@ -2454,6 +2532,15 @@ impl SessionHandle {
                     ToolResult::error(Outcome::ValidationError, "validation_error"),
                 )
                 .await;
+        }
+        if invocation
+            .request_input_schema
+            .as_ref()
+            .is_some_and(|schema| validate_arguments(schema, &invocation.call.arguments).is_err())
+        {
+            let mut result = ToolResult::error(Outcome::ValidationError, "recovery_step_too_large");
+            result.data = json!({"message":"This turn has bounded tool arguments: use at most 2048 characters per file content/replacement or argv string. Write one small working increment, then extend with files.edit. No part of this call executed."});
+            return self.outcome(run_id, invocation_id, result).await;
         }
         let tool = self.engine.inner.tools.get(&def.name)?;
         if fingerprint(&tool.definition()) != fingerprint(def) {
@@ -2590,12 +2677,13 @@ impl SessionHandle {
                     invocation_id: invocation_id.clone(),
                     arguments_hash: prepared_hash.clone(),
                     description: json!({"tool":def.name,"version":def.version,"effect":def.effect,"arguments":prepared,"workspace":data.workspace,"sandbox_id":data.sandbox_id,"principal":data.principal,"similar_scope":"same tool version and exact prepared arguments, current run only"}),
-                    expires_at_ms: run.deadline_ms,
+                    expires_at_ms: now_ms().saturating_add(86_400_000),
                     decision: None,
                 };
                 self.update(|d| {
                     let r = d.run_mut(run_id)?;
                     r.status = RunStatus::WaitingApproval;
+                    r.approval_wait_started_at_ms.get_or_insert(now_ms());
                     let i = r
                         .invocations
                         .iter_mut()
@@ -2620,6 +2708,7 @@ impl SessionHandle {
                         .is_some_and(|a| a.decision.is_none());
                     if waiting && r.status == RunStatus::Running {
                         r.status = RunStatus::WaitingApproval;
+                        r.approval_wait_started_at_ms.get_or_insert(now_ms());
                         d.emit(
                             Some(run_id),
                             EventKind::RunState {
@@ -2631,7 +2720,6 @@ impl SessionHandle {
                 })
                 .await?;
             }
-            let started = now_ms();
             let allowed = loop {
                 self.check_running(run_id, shutdown).await?;
                 let data = self.snapshot().await?;
@@ -2661,7 +2749,7 @@ impl SessionHandle {
             self.update(|d| {
                 let r = d.run_mut(run_id)?;
                 r.status = RunStatus::Running;
-                r.metrics.approval_wait_ms += now_ms().saturating_sub(started);
+                r.resume_approval_clock(now_ms());
                 Ok(())
             })
             .await?;
@@ -2675,6 +2763,12 @@ impl SessionHandle {
                     .await;
             }
         }
+        // A resumed invocation can now be allowed directly by updated policy.
+        self.update(|d| {
+            d.run_mut(run_id)?.resume_approval_clock(now_ms());
+            Ok(())
+        })
+        .await?;
         self.check_running(run_id, shutdown).await?;
         if def.name == "interaction.ask" {
             let current = self.snapshot().await?;
@@ -3078,6 +3172,7 @@ impl RunHandle {
                 d.policy.remembered_grants.retain(|g| !(g.tool==grant.tool && g.arguments_hash==grant.arguments_hash));
                 d.policy.remembered_grants.push(grant);
             }
+            d.run_mut(&self.id)?.resume_approval_clock(now_ms());
             d.emit(Some(&self.id),EventKind::ApprovalResolved{request_id:request_id.into(),decision});Ok(receipt)
         }).await
     }

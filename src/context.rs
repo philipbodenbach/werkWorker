@@ -44,6 +44,57 @@ pub fn effective_limits(limits: &Limits, provider_context: Option<usize>) -> Res
     Ok(effective)
 }
 
+/// Initial generation reserve and hard output ceiling are separate. An unknown
+/// provider is never assumed to accept a larger output than the configured one.
+pub(crate) fn output_ceiling(limits: &Limits, provider: &dyn ModelProvider) -> usize {
+    limits
+        .max_output_tokens
+        .or_else(|| provider.max_output_tokens())
+        .unwrap_or(limits.reserve_output_tokens)
+        .min(provider.max_output_tokens().unwrap_or(usize::MAX))
+        .min(limits.context_tokens.saturating_sub(513))
+}
+
+pub(crate) fn generation_limits(
+    limits: &Limits,
+    recovery: &GenerationRecovery,
+    provider: &dyn ModelProvider,
+) -> Result<Limits> {
+    let mut effective = effective_limits(limits, provider.capabilities().context_tokens)?;
+    effective.reserve_output_tokens = recovery
+        .target_output_tokens
+        .unwrap_or(effective.reserve_output_tokens)
+        .min(output_ceiling(&effective, provider));
+    Ok(effective)
+}
+
+pub(crate) fn bound_recovery_tools(run: &Run, tools: &mut [ToolDefinition]) {
+    if !run.generation_recovery.split_required {
+        return;
+    }
+    let bound = |schema: &mut serde_json::Value| {
+        let limit = schema["maxLength"].as_u64().unwrap_or(2048).min(2048);
+        schema["maxLength"] = serde_json::json!(limit);
+    };
+    for tool in tools {
+        let fields: &[&str] = match tool.name.as_str() {
+            "files.write" => &["content"],
+            "files.edit" => &["old", "new"],
+            _ => &[],
+        };
+        for field in fields {
+            bound(&mut tool.input_schema["properties"][field]);
+        }
+        if !fields.is_empty() {
+            tool.description.push_str(" Recovery: at most 2048 characters per content/replacement string. Make one small working increment, then extend it with files.edit; keep the last returned SHA-256.");
+        }
+        if matches!(tool.name.as_str(), "process.run" | "process.start") {
+            bound(&mut tool.input_schema["properties"]["argv"]["items"]);
+            tool.description.push_str(" Recovery: each argv item is limited to 2048 characters; do not embed an entire source file in a shell command.");
+        }
+    }
+}
+
 /// Failed output-limited generations since the last complete response. Derive
 /// this from persisted attempts so restart cannot reset the recovery allowance.
 pub fn output_limit_failures(run: &Run) -> usize {
@@ -516,8 +567,13 @@ impl DefaultContextBuilder {
             .limits
             .context_tokens
             .saturating_sub(run.limits.reserve_output_tokens.saturating_add(512));
-        let minimum_output = output_budget
-            .saturating_sub(output_budget / 4)
+        let minimum_base = run
+            .generation_recovery
+            .initial_output_tokens
+            .unwrap_or(output_budget)
+            .min(output_budget);
+        let minimum_output = minimum_base
+            .saturating_sub(minimum_base / 4)
             .max(2048)
             .min(output_budget);
         let retention_available = run

@@ -936,8 +936,18 @@ impl View {
             EventKind::AttemptFailed { code, .. } => {
                 self.append(&format!("\n[Attempt interrupted: {code}]\n"))
             }
-            EventKind::Diagnostic { code } if code == "model_output_recovery" => {
-                self.append("\nOutput limit reached. Requesting a smaller complete step; incomplete tool calls were discarded.\n");
+            EventKind::Diagnostic { code }
+                if code == "model_output_recovery" || code == "model_output_recovery_split" =>
+            {
+                self.append("\nOutput limit reached. Continuing with bounded file steps; incomplete tool calls were discarded.\n");
+            }
+            EventKind::Diagnostic { code } if code.starts_with("model_output_recovery_budget:") => {
+                if let Some((before, after)) = code
+                    .strip_prefix("model_output_recovery_budget:")
+                    .and_then(|v| v.split_once(':'))
+                {
+                    self.append(&format!("\nOutput limit reached. Retrying with up to {after} output tokens (previously {before}), subject to available context. Incomplete tool calls were discarded.\n"));
+                }
             }
             EventKind::ToolPrepared { name, .. } => {
                 self.tools += 1;

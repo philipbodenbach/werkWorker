@@ -393,15 +393,15 @@ async fn truncated_generation_recovers_into_one_file_without_user_steering() {
     let workspace = tempfile::tempdir().unwrap();
     let skeleton = format!(
         "<html><body>{}<!--STYLE--><!--SCRIPT--></body></html>",
-        "scene ".repeat(700)
+        "scene ".repeat(250)
     );
     let styled = skeleton.replace(
         "<!--STYLE-->",
-        &format!("<style>/*{}*/</style>", "style ".repeat(700)),
+        &format!("<style>/*{}*/</style>", "style ".repeat(250)),
     );
     let complete = styled.replace(
         "<!--SCRIPT-->",
-        &format!("<script>/*{}*/</script>", "logic ".repeat(700)),
+        &format!("<script>/*{}*/</script>", "logic ".repeat(250)),
     );
     let provider = Arc::new(prefill::PrefillProvider::new(vec![
         truncated(),
@@ -412,12 +412,12 @@ async fn truncated_generation_recovers_into_one_file_without_user_steering() {
         call(
             "files.edit",
             json!({"path":"game.html","expected_hash":hash(&skeleton),
-            "old":"<!--STYLE-->","new":format!("<style>/*{}*/</style>", "style ".repeat(700))}),
+            "old":"<!--STYLE-->","new":format!("<style>/*{}*/</style>", "style ".repeat(250))}),
         ),
         call(
             "files.edit",
             json!({"path":"game.html","expected_hash":hash(&styled),
-            "old":"<!--SCRIPT-->","new":format!("<script>/*{}*/</script>", "logic ".repeat(700))}),
+            "old":"<!--SCRIPT-->","new":format!("<script>/*{}*/</script>", "logic ".repeat(250))}),
         ),
         ScriptedTurn::text("The HTML file is complete."),
     ]));

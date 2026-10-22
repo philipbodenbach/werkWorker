@@ -137,7 +137,7 @@ impl SessionHandle {
             let run = data.run(&link.run_id)?;
             if run.status.terminal()
                 || run.status == RunStatus::Cancelling
-                || (run.deadline_ms > 0 && now_ms() >= run.deadline_ms)
+                || run.wall_budget_expired(now_ms())
                 || data.policy.evaluate(def, args, &[]) == crate::policy::PolicyDecision::Deny
             {
                 return Ok(false);
@@ -159,7 +159,7 @@ impl SessionHandle {
             let run = d.run_mut(&root_run)?;
             if run.status.terminal()
                 || run.status == RunStatus::Cancelling
-                || (run.deadline_ms > 0 && now_ms() >= run.deadline_ms)
+                || run.wall_budget_expired(now_ms())
             {
                 return Err(WorkerError::new("cancelled", "Root run stopped"));
             }
@@ -237,7 +237,7 @@ impl SessionHandle {
         let run = data.run(run_id)?;
         if run.status.terminal()
             || run.status == RunStatus::Cancelling
-            || (run.deadline_ms > 0 && now_ms() >= run.deadline_ms)
+            || run.wall_budget_expired(now_ms())
         {
             return Err(WorkerError::new(
                 "cancelled",
@@ -376,7 +376,7 @@ impl SessionHandle {
             })
             .await?;
             let mut limits = run.limits.clone();
-            if run.deadline_ms > 0 {
+            if run.deadline_ms > 0 && run.approval_wait_started_at_ms.is_none() {
                 limits.max_wall_ms = limits
                     .max_wall_ms
                     .min(run.deadline_ms.saturating_sub(now_ms()).max(1));

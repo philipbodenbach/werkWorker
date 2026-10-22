@@ -7,16 +7,23 @@ prefix and restores omitted loaded skills as lower-authority data.
 
 Every model attempt, including children, retries and optional model summaries,
 passes an engine preflight. The effective context is the minimum of the run's
-`Limits.context_tokens` and the provider's known context size. Output reservation
-is capped by the requested reserve and one quarter of the provider context.
-After compaction, a nearly fitting request may borrow up to one quarter of that
-output reserve for input, keeping at least 2,048 output tokens (or the smaller
-configured reserve). The builder updates its output guidance, recounts the
-actual request and keeps the full safety margin. This adjustment applies only
-to that request; later steps can use the full configured output reserve again.
-The input estimate, reserved output and 512-token safety margin must fit before
-any provider dispatch. A custom `ContextBuilder` cannot bypass this check.
-Zero output budgets and arithmetic-overflow-sized limits are rejected.
+`Limits.context_tokens` and the provider's known context size. The initial
+`reserve_output_tokens` is capped at one quarter of a known provider context.
+`max_output_tokens` is a separate optional hard ceiling. With no host ceiling,
+Worker uses the verified provider ceiling; an older/unknown provider keeps the
+initial reserve as its ceiling. An explicit host ceiling never exceeds a known
+provider ceiling. Neither setting changes the server's context allocation.
+
+After a truncated generation, the next desired reservation doubles within that
+ceiling. Recovery state is persisted and the larger budget remains available on
+subsequent turns. Compaction first frees eligible history. If the larger reserve
+cannot fit, the builder reduces it using the actual input count; its minimum is
+based on the original reserve (up to one quarter can be lent to input), rather
+than making a larger recovery target cause an avoidable context overflow.
+The input estimate, output reservation and 512-token safety margin must fit before
+any provider dispatch. User/system constraints and tool pairs remain intact.
+A custom `ContextBuilder` cannot bypass admission. Zero output budgets and
+arithmetic-overflow-sized limits are rejected.
 
 The default context builder keeps a stable profile/host prefix, sorted tool
 schemas, available skill metadata, optional output schema, committed summaries
@@ -52,6 +59,10 @@ endpoint is not silently substituted for OpenAI chat/tool history.
 WerkProvider resolves context from these sources, always honoring a smaller
 explicit `capabilities.context_tokens` in the connection JSON:
 
+- `api.chat.limits` advertises `GET /werk/v1/chat/limits?model=MODEL`, which
+  reports optional `context_tokens` and `max_output_tokens`. Worker validates
+  schema version, model identity and numeric ranges. This read does not load a
+  model or run inference. Aliases use conservative limits across replicas.
 - Fresh, protocol-validated llama.cpp observability supplies
   `context_per_request_tokens`, the minimum native slot size. Older servers with
   **one slot** may supply `context_capacity_tokens`. A multi-slot aggregate
@@ -84,12 +95,21 @@ step/request/wall limits. Reconnect to discover later capacity increases.
 Server error bodies are not exposed in session history.
 
 A `finish_reason: length` becomes `model_output_limit`. It is never blindly
-replayed by transport retries. The engine can rebuild with feedback to use
-smaller complete calls, up to `max_retries` consecutive recoveries, inside the
+replayed by transport retries. The engine can rebuild with an increased output reservation or bounded
+file steps, up to `max_retries` consecutive recoveries, inside the
 same step/request/time budgets. Partial text remains audit evidence; none of
 the incomplete response's tools execute. Every distinct generation-limit failure
 receives fresh adaptive feedback, even after intervening complete read calls.
-The suggested write size shrinks until a file change succeeds. An identical
+The suggested write size shrinks until a file change succeeds. If output cannot
+grow, the larger target does not fit after compaction, or the same available
+output budget fails again, recovery constrains
+`files.write.content`, `files.edit.old/new` and each process argv string to 2,048
+characters. The request schema and the execution validator enforce the bound;
+the registered tool identity and approval scope are unchanged. These temporary
+schemas survive restart. A model must create a small working increment and then
+use exact, hash-bound edits. This is conditional recovery, not a global skeleton
+requirement. Reasoning remains the selected protocol tier/server default; Worker
+does not silently lower effort to gain answer tokens. An identical
 previously truncated request is rejected before dispatch with
 `model_output_recovery_stalled`; durable fingerprints keep this guard on resume.
 This does not judge whether a complete response substantively finishes the task.
@@ -247,3 +267,26 @@ cache hits never subtract from context occupancy. Validated numeric Werk chat
 `werk.timings` measurements also survive JSON/SSE in `ModelCompleted.metadata`;
 usage (including cached tokens) remains separate and optional. Arbitrary backend
 diagnostics are not copied into these metrics.
+
+## Active time and approval waits
+
+`max_wall_ms` measures active run time, including model/tool work and retries.
+A pending tool approval pauses that clock. Its start time is durable; deciding,
+expiring or cancelling the request credits the elapsed wait once. Resume after a
+host restart preserves the pause and original approval identity. A decision
+resumes the clock immediately, even before the actor notices it. Approval expiry
+is independent (24 hours), and cancellation remains available during a pause.
+`metrics.total_ms` still reports elapsed wall time; `approval_wait_ms` identifies
+the excluded portion. Time spent on ordinary model/tool work remains bounded.
+
+## Recovery design references
+
+The separation between an initial allowance and a bounded retry ceiling follows
+[Hermes' truncation handling](https://github.com/NousResearch/hermes-agent/blob/92663ae8054ae81f207f46d83512d3f879dc698d/agent/turn_truncation.py): increase the actual output cap and never execute incomplete tool arguments.
+Werk additionally clamps growth by native input counts and configured context.
+The fallback to incremental work follows
+[Anthropic's harness guidance](https://www.anthropic.com/research/effective-harnesses-for-long-running-agents); compaction alone does not solve oversized implementation attempts.
+These mechanisms do not establish application correctness. The isolated live
+acceptance in `scripts/tests/live_tetris.py` can require a real truncation with
+`--expect-output-recovery`; its completion and syntax checks still require a
+separate browser gameplay check.

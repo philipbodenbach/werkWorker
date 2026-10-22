@@ -51,6 +51,93 @@ async fn approval(run: &RunHandle) -> ApprovalRequest {
     .await
     .unwrap()
 }
+
+#[tokio::test]
+async fn approval_time_is_paused_but_work_after_approval_still_has_a_deadline() {
+    for stall_after_approval in [false, true] {
+        let workspace = TempDir::new().unwrap();
+        let mut next = ScriptedTurn::text("Done");
+        if stall_after_approval {
+            next.delay_ms = 2000;
+        }
+        let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![
+            ScriptedTurn::calls(
+                "",
+                vec![call(
+                    "files.write",
+                    json!({"path":"saved.txt","content":"saved"}),
+                )],
+            ),
+            next,
+        ])))
+        .build()
+        .await
+        .unwrap();
+        let session = engine
+            .create_session(
+                profile(&["files.write"]),
+                workspace.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    grants: vec![grant("files.write", false)],
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Write",
+                "start",
+                Limits {
+                    max_wall_ms: 500,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let request = approval(&run).await;
+        let old_deadline = run.status().await.unwrap().deadline_ms;
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert_eq!(
+            run.status().await.unwrap().status,
+            RunStatus::WaitingApproval
+        );
+        run.respond_to_approval(&request.request_id, ApprovalDecision::AllowOnce, "allow")
+            .await
+            .unwrap();
+        let result = finish(&run).await;
+        if stall_after_approval {
+            assert_eq!(result.status, RunStatus::Failed);
+            assert_eq!(result.error.unwrap().code, "wall_budget");
+        } else {
+            assert_eq!(result.status, RunStatus::Completed);
+        }
+        let state = run.status().await.unwrap();
+        assert!(state.metrics.approval_wait_ms >= 600);
+        assert_eq!(
+            state.deadline_ms - old_deadline,
+            state.metrics.approval_wait_ms
+        );
+        assert!(state.approval_wait_started_at_ms.is_none());
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("saved.txt")).unwrap(),
+            "saved"
+        );
+        let deadline = state.deadline_ms;
+        run.respond_to_approval(&request.request_id, ApprovalDecision::AllowOnce, "allow")
+            .await
+            .unwrap();
+        assert_eq!(
+            run.status().await.unwrap().deadline_ms,
+            deadline,
+            "duplicate decisions must not credit wait time twice"
+        );
+        engine.close().await.unwrap();
+    }
+}
 #[tokio::test]
 async fn invalid_file_paths_explain_the_path_error_without_claiming_missing_permissions() {
     let dir = TempDir::new().unwrap();
@@ -608,7 +695,14 @@ async fn resumed_requests_can_be_answered_after_resume_with_the_original_ids() {
             .await
             .unwrap();
         let before = waiting(&run, status).await;
-        let captured = session.snapshot().await.unwrap();
+        let mut captured = session.snapshot().await.unwrap();
+        if status == RunStatus::WaitingApproval {
+            // Simulate a durable approval surviving a minute of host downtime,
+            // well beyond the original active deadline. No real sleep needed.
+            let saved = captured.runs.iter_mut().find(|r| r.id == run.id).unwrap();
+            saved.deadline_ms = now_ms() - 30_000;
+            saved.approval_wait_started_at_ms = Some(now_ms() - 60_000);
+        }
         let store = Arc::new(InMemoryStore::default());
         store.save(&captured, None).await.unwrap();
         engine.close().await.unwrap();
@@ -656,6 +750,12 @@ async fn resumed_requests_can_be_answered_after_resume_with_the_original_ids() {
                 .unwrap();
         }
         assert_eq!(finish(&resumed).await.status, RunStatus::Completed);
+        if status == RunStatus::WaitingApproval {
+            let state = resumed.status().await.unwrap();
+            assert!(state.metrics.approval_wait_ms >= 60_000);
+            assert!(state.approval_wait_started_at_ms.is_none());
+            assert!(state.deadline_ms > now_ms());
+        }
         assert_eq!(provider.requests().len(), 1);
         let data = fresh
             .open_session(&captured.id)

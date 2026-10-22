@@ -24,6 +24,12 @@ parser.add_argument("--project", type=Path, required=True,
 parser.add_argument("--binary", type=Path, default=Path("target/debug/ww"))
 parser.add_argument("--secret-env", help="Read the API key from this environment variable")
 parser.add_argument("--timeout", type=int, default=950)
+parser.add_argument("--initial-output-tokens", type=int,
+                    help="Override only the test's initial reserve to exercise truncation recovery")
+parser.add_argument("--max-output-tokens", type=int,
+                    help="Explicit verified output ceiling for older servers without api.chat.limits")
+parser.add_argument("--expect-output-recovery", action="store_true",
+                    help="Fail unless the real model hit an output limit and recovered")
 args = parser.parse_args()
 node = shutil.which("node")
 if not node:
@@ -122,7 +128,9 @@ try:
         "Ein Referenzbild ist hier nicht verfügbar; verwende einen dunklen Neon-Retro-Stil. "
         "Speichere das fertige Spiel als tetris.html."
     )
-    limits = {"reserve_output_tokens": project["output_tokens"]}
+    limits = {"reserve_output_tokens": args.initial_output_tokens or project["output_tokens"]}
+    if args.max_output_tokens is not None:
+        limits["max_output_tokens"] = args.max_output_tokens
     if project.get("context_tokens") is not None:
         limits["context_tokens"] = project["context_tokens"]
     run = rpc("run.submit", {
@@ -153,6 +161,10 @@ try:
             print("FILES", [(p.name, p.stat().st_size) for p in workspace.iterdir()], flush=True)
             if status["status"] != "completed":
                 failure = "The live coding run did not complete"
+            elif args.expect_output_recovery and not any(
+                    (attempt.get("error") or {}).get("code") == "model_output_limit"
+                    for attempt in status["attempts"]):
+                failure = "No real output truncation occurred; recovery was not exercised"
             elif not (workspace / "tetris.html").is_file():
                 failure = "Run reported completion without the requested HTML file"
             elif set(workspace.rglob("*.html")) != {workspace / "tetris.html"}:

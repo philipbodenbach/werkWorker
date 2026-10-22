@@ -670,8 +670,21 @@ fn generation_limit(
         .count();
     let suggested_chars =
         (run.limits.reserve_output_tokens.min(4096) / (1usize << failures.min(8))).max(256);
+    let budget = if run.generation_recovery.split_required {
+        "The output budget could not grow enough. File content and replacement strings now have a hard 2048-character bound in the tool schemas. For a new file, write one small working module first; extend it with files.edit using its returned SHA-256 and an exact unique anchor. Do not try the entire file again, including through a shell command.".to_owned()
+    } else {
+        format!(
+            "The next output reservation may grow from {} to {} tokens, bounded by the server ceiling and available context. Complete the current useful step; do not expand the scope to consume the larger budget.",
+            run.generation_recovery
+                .last_failed_output_tokens
+                .unwrap_or(run.limits.reserve_output_tokens),
+            run.generation_recovery
+                .target_output_tokens
+                .unwrap_or(run.limits.reserve_output_tokens)
+        )
+    };
     let detail = format!(
-        "Generation limit {failures} since the last confirmed file change (or start of this run). This attempt was discarded; none of its calls ran. Retain earlier successful work. Output includes reasoning and tool JSON. Make one small, complete action now, aiming for at most {suggested_chars} characters of new file content if writing. Implement only one useful part; leave the rest for later turns. Reading or listing files does not make the unfinished large write fit. Do not claim unfinished work is complete.",
+        "Generation limit {failures} since the last confirmed file change (or start of this run). This attempt was discarded; none of its calls ran. Retain earlier successful work. Output includes reasoning and tool JSON. {budget} Make one small, complete action now, aiming for at most {suggested_chars} characters of new file content if writing. Implement only one useful part; leave the rest for later turns. Reading or listing files does not make the unfinished large write fit. Do not claim unfinished work is complete.",
     );
     let old = a.aids.get("generation_output_limit");
     if old.is_some_and(|aid| aid.trigger == attempt.attempt_id) {

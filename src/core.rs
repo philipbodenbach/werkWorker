@@ -152,6 +152,9 @@ pub struct Limits {
     pub max_output_bytes: usize,
     pub context_tokens: usize,
     pub reserve_output_tokens: usize,
+    /// Initial reserve may grow up to this ceiling during recovery. None uses
+    /// the provider's verified ceiling; unknown providers keep the initial cap.
+    pub max_output_tokens: Option<usize>,
     pub max_retries: u32,
     pub max_repeated_calls: usize,
     /// One optional budgeted model summary of old assistant/tool groups.
@@ -167,6 +170,7 @@ impl Default for Limits {
             max_output_bytes: 65_536,
             context_tokens: 32_768,
             reserve_output_tokens: 2048,
+            max_output_tokens: None,
             max_retries: 2,
             max_repeated_calls: 3,
             model_compaction: false,
@@ -184,6 +188,9 @@ impl Limits {
             || self.max_wall_ms > 86_400_000
             || !(256..=1_048_576).contains(&self.max_output_bytes)
             || self.reserve_output_tokens == 0
+            || self
+                .max_output_tokens
+                .is_some_and(|cap| cap < self.reserve_output_tokens || cap > 2_000_000)
             || self.context_tokens <= self.reserve_output_tokens.saturating_add(512)
             || self.context_tokens > 2_000_000
             || self.max_retries > 8
@@ -275,6 +282,10 @@ pub enum InvocationStatus {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolInvocation {
+    /// Additional request-local constraints; the registered definition remains
+    /// the authority for tool identity, effects and host permission checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_input_schema: Option<Value>,
     pub invocation_id: String,
     pub step_id: String,
     pub message_index: usize,
@@ -360,6 +371,15 @@ pub struct ModelAttempt {
     pub error: Option<WorkerError>,
     pub partial_text: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GenerationRecovery {
+    pub target_output_tokens: Option<usize>,
+    pub initial_output_tokens: Option<usize>,
+    pub last_failed_output_tokens: Option<usize>,
+    pub split_required: bool,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     #[serde(default)]
@@ -375,6 +395,10 @@ pub struct Run {
     pub output_schema: Option<Value>,
     pub started_at_ms: u64,
     pub deadline_ms: u64,
+    #[serde(default)]
+    pub approval_wait_started_at_ms: Option<u64>,
+    #[serde(default)]
+    pub generation_recovery: GenerationRecovery,
     pub history_start: usize,
     pub final_text: Option<String>,
     pub error: Option<WorkerError>,
@@ -390,6 +414,18 @@ pub struct Run {
     pub repaired_output: bool,
 }
 impl Run {
+    pub(crate) fn wall_budget_expired(&self, now: u64) -> bool {
+        self.approval_wait_started_at_ms.is_none()
+            && self.deadline_ms > 0
+            && now >= self.deadline_ms
+    }
+    pub(crate) fn resume_approval_clock(&mut self, now: u64) {
+        if let Some(started) = self.approval_wait_started_at_ms.take() {
+            let elapsed = now.saturating_sub(started);
+            self.metrics.approval_wait_ms = self.metrics.approval_wait_ms.saturating_add(elapsed);
+            self.deadline_ms = self.deadline_ms.saturating_add(elapsed);
+        }
+    }
     /// Count repetitions in the current workspace revision. A different successful
     /// write/process can change the next result (e.g. edit, then rerun a test).
     /// Process effects are deliberately conservative: even shell commands can write.

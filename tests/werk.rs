@@ -22,6 +22,65 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
 }
 
 #[tokio::test]
+async fn generation_limits_are_negotiated_without_probes_and_legacy_stays_unknown() {
+    for advertised in [false, true] {
+        let server = Server::start(move |request| match request.path.as_str() {
+            "/werk/v1/capabilities" if advertised => control(json!({"capabilities":[
+                {"id":"api.chat.limits","status":"supported","detail":"fixture","operations":["limits"]}]})),
+            path if path.starts_with("/werk/v1/chat/limits?") => control(json!({
+                "schema_version":1,"model":"fixture-model","context_tokens":16384,"max_output_tokens":8192})),
+            _ => werk(request),
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap();
+        assert_eq!(provider.max_output_tokens(), advertised.then_some(8192));
+        if advertised {
+            assert_eq!(provider.capabilities().context_tokens, Some(16384));
+        }
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .any(|r| r.path.starts_with("/werk/v1/chat/limits?")),
+            advertised
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.path == "/v1/chat/completions" || r.path == "/v1/capabilities")
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_generation_limits_fail_before_inference() {
+    for patch in [
+        json!({"model":"other"}),
+        json!({"schema_version":2}),
+        json!({"max_output_tokens":0}),
+        json!({"max_output_tokens":32768}),
+        json!({"context_tokens":0}),
+    ] {
+        let server = Server::start(move |request| match request.path.as_str() {
+            "/werk/v1/capabilities" => control(json!({"capabilities":[
+                {"id":"api.chat.limits","status":"supported","detail":"fixture","operations":["limits"]}]})),
+            path if path.starts_with("/werk/v1/chat/limits?") => {
+                let mut limits = json!({"schema_version":1,"model":"fixture-model","context_tokens":16384,"max_output_tokens":8192});
+                limits.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+                control(limits)
+            },
+            _ => werk(request),
+        }).await;
+        let error = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "invalid_generation_limits");
+    }
+}
+
+#[tokio::test]
 async fn request_fingerprints_include_native_reasoning_configuration_without_credentials() {
     let server = Server::start(werk).await;
     let mut low = config(&server.origin, false);

@@ -819,6 +819,9 @@ impl View {
             "repetition_limit" => {
                 "The agent repeated the same tool call too often. The history is retained. Send a follow-up naming the next concrete step; successful setup results can be reused."
             }
+            "timeout" | "network_error" | "interrupted_stream" | "inference_unresolved" => {
+                "The backend may still be processing the interrupted request. Check or restart Werk, then reconnect Worker before continuing. Saved work and session history are retained."
+            }
             _ => "The session is still open. You can send another message.",
         };
         self.append(&format!(

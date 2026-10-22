@@ -778,10 +778,10 @@ impl DefaultContextBuilder {
                 })
                 .collect();
             messages = compose(prefix(&omitted, &summary), history.clone());
-            // Excerpts are optional, unlike user constraints and current work.
-            // Compare each full candidate after trimming oldest excerpts as
-            // needed; a temporarily costly prefix must not hide a fitting
-            // aggregate compaction whose optional summary can be shortened.
+            // Excerpts are optional, unlike retained receipts, user constraints
+            // and current work. Count at most one excerpt-free alternative per
+            // batch: recounting after every summary line can send dozens of
+            // remote tokenizer requests before a single inference.
             let mut estimated = estimate(&messages, output_budget).await?;
             if estimated < best.3 {
                 best = (
@@ -791,9 +791,8 @@ impl DefaultContextBuilder {
                     estimated,
                 );
             }
-            while estimated > available && !summary.is_empty() {
-                let end = summary.find('\n').map_or(summary.len(), |i| i + 1);
-                summary.drain(..end);
+            if estimated > available && !summary.is_empty() {
+                summary.clear();
                 messages = compose(prefix(&omitted, &summary), history.clone());
                 estimated = estimate(&messages, output_budget).await?;
                 if estimated < best.3 {

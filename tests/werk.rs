@@ -80,6 +80,289 @@ async fn streaming_timeout_measures_inactivity_not_total_generation_time() {
 }
 
 #[tokio::test]
+async fn timed_out_inference_is_not_retried_and_shared_connection_blocks_followups() {
+    use std::time::Duration;
+    for (streaming, before_headers) in [(true, false), (true, true), (false, false)] {
+        let server = Server::with_chat_delays(
+            werk,
+            before_headers.then_some(Duration::from_secs(2)),
+            (!before_headers).then_some((16, Duration::from_secs(2))),
+        )
+        .await;
+        let mut configuration = config(&server.origin, streaming);
+        configuration.timeout_ms = 150;
+        let provider = Arc::new(WerkProvider::connect(configuration, None).await.unwrap());
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    schema_version: 1,
+                    name: "timeout-fixture".into(),
+                    prompt: "Do the task".into(),
+                    tools: vec![],
+                    skills: vec![],
+                },
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let limits = Limits {
+            max_retries: 2,
+            max_wall_ms: 5000,
+            ..Default::default()
+        };
+        let run = session
+            .submit("Task", "start", limits.clone(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Failed);
+        let error = result.error.unwrap();
+        assert!(matches!(error.code.as_str(), "timeout" | "network_error"));
+        assert!(!error.retryable);
+        assert_eq!(result.metrics.model_requests, 1);
+        assert_eq!(result.metrics.tool_invocations, 0);
+        let before = server.requests.lock().unwrap().len();
+        let followup = session
+            .submit("Continue", "followup", limits, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            followup.wait().await.unwrap().error.unwrap().code,
+            "inference_unresolved"
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), before);
+        assert_eq!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path == "/v1/chat/completions")
+                .count(),
+            1
+        );
+        let data = session.snapshot().await.unwrap();
+        assert_eq!(data.runs[0].limits.max_retries, 2);
+        assert_eq!(data.runs[0].attempts.len(), 1);
+        let other_dir = tempfile::tempdir().unwrap();
+        let other_session = engine
+            .create_session(
+                data.profile.clone(),
+                other_dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let other_run = other_session
+            .submit("Task", "other-session", Limits::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            other_run.wait().await.unwrap().error.unwrap().code,
+            "inference_unresolved"
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), before);
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn abandoning_an_unpolled_inference_stream_blocks_new_dispatch() {
+    let server = Server::start(werk).await;
+    let provider = WerkProvider::connect(config(&server.origin, true), None)
+        .await
+        .unwrap();
+    let request = ModelRequest {
+        messages: vec![Message::text(Role::User, "Task")],
+        tools: vec![],
+        max_output_tokens: 1024,
+        output_schema: None,
+    };
+    let stream = provider.stream(request.clone()).await.unwrap();
+    drop(stream);
+    let before = server.requests.lock().unwrap().len();
+    assert_eq!(
+        provider.stream(request).await.err().unwrap().code,
+        "inference_unresolved"
+    );
+    assert_eq!(server.requests.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn cancelling_before_response_headers_blocks_inference_and_token_counting() {
+    let received = Arc::new(tokio::sync::Notify::new());
+    let server = Server::with_chat_delays(
+        {
+            let received = received.clone();
+            move |request| {
+                if request.path == "/v1/chat/completions" {
+                    received.notify_one();
+                }
+                werk(request)
+            }
+        },
+        Some(std::time::Duration::from_secs(2)),
+        None,
+    )
+    .await;
+    let provider = Arc::new(
+        WerkProvider::connect(config(&server.origin, true), None)
+            .await
+            .unwrap(),
+    );
+    let request = ModelRequest {
+        messages: vec![Message::text(Role::User, "Task")],
+        tools: vec![],
+        max_output_tokens: 1024,
+        output_schema: None,
+    };
+    let task = tokio::spawn({
+        let provider = provider.clone();
+        let request = request.clone();
+        async move { provider.stream(request).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), received.notified())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.err().unwrap().is_cancelled());
+    let before = server.requests.lock().unwrap().len();
+    assert_eq!(
+        provider
+            .count_input_tokens(&request)
+            .await
+            .unwrap_err()
+            .code,
+        "inference_unresolved"
+    );
+    assert_eq!(
+        provider.stream(request).await.err().unwrap().code,
+        "inference_unresolved"
+    );
+    assert_eq!(server.requests.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn incomplete_stream_blocks_followups_but_reported_output_limit_does_not() {
+    for finished in [false, true] {
+        let server = Server::start(move |request| {
+            if request.path != "/v1/chat/completions" {
+                return werk(request);
+            }
+            let mut body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_owned();
+            if finished {
+                body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n");
+            }
+            Response {
+                status: 200,
+                headers: vec![("content-type".into(), "text/event-stream".into())],
+                body: body.into_bytes(),
+            }
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, true), None)
+            .await
+            .unwrap();
+        let request = ModelRequest {
+            messages: vec![Message::text(Role::User, "Task")],
+            tools: vec![],
+            max_output_tokens: 1024,
+            output_schema: None,
+        };
+        let mut stream = provider.stream(request.clone()).await.unwrap();
+        let mut error = None;
+        while let Some(delta) = stream.next().await {
+            match delta {
+                Ok(ModelDelta::Finish { reason }) => {
+                    assert_eq!(reason, "length");
+                    // Recovery may drop the stream as soon as the limit is reported.
+                    break;
+                }
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        drop(stream);
+        if finished {
+            assert!(error.is_none());
+            assert!(provider.stream(request).await.is_ok());
+        } else {
+            let error = error.unwrap();
+            assert_eq!(error.code, "interrupted_stream");
+            assert!(!error.retryable);
+            let before = server.requests.lock().unwrap().len();
+            assert_eq!(
+                provider.stream(request).await.err().unwrap().code,
+                "inference_unresolved"
+            );
+            assert_eq!(server.requests.lock().unwrap().len(), before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn explicit_http_rejection_keeps_bounded_retry_and_completed_connection_usable() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = Server::start({
+        let calls = calls.clone();
+        move |request| {
+            if request.path == "/v1/chat/completions" && calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Response {
+                    status: 503,
+                    headers: vec![],
+                    body: b"{}".to_vec(),
+                }
+            } else {
+                werk(request)
+            }
+        }
+    })
+    .await;
+    let provider = Arc::new(
+        WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap(),
+    );
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                schema_version: 1,
+                name: "rejection-fixture".into(),
+                prompt: "Do the task".into(),
+                tools: vec![],
+                skills: vec![],
+            },
+            dir.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    for command in ["start", "followup"] {
+        let run = session
+            .submit("Task", command, Limits::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn backend_error_messages_are_preserved_and_credentials_redacted() {
     for streaming in [false, true] {
         let server = Server::start(move |request| {
@@ -1485,8 +1768,8 @@ async fn image_coding_compaction_fixture(prior_turn: bool) {
         .filter(|request| request.path == "/werk/v1/chat/count_tokens")
         .count();
     assert!(
-        counts <= generations.len() * 5,
-        "compaction must not count every small intermediate omission: {counts}"
+        counts <= generations.len() * 3,
+        "compaction must not recount after each optional excerpt line: {counts}"
     );
     println!(
         "IMAGE_COMPACTION_COUNTS prior_turn={prior_turn} count_requests={counts} model_requests={}",

@@ -60,6 +60,20 @@ it copies conversational history, not active grants, jobs or requests.
 Graceful `close` cancels the engine and reaps owned processes/jobs. `Drop` offers
 no asynchronous cleanup guarantee; embedding hosts must call `close().await`.
 
+Werk inference transport failures are not automatically retried. A timeout,
+broken stream, or cancellation before a terminal response does not prove that
+the server stopped its work. The affected provider connection blocks subsequent
+inference and token-count requests with `inference_unresolved`, including work
+from other sessions sharing it. Check or restart the backend and reconnect before
+continuing. Existing work and history remain saved; reconnecting is not itself
+proof that an old server request has stopped. This protection is connection-local,
+not a cross-process server lock.
+
+Explicit HTTP rejections such as 429/503 retain bounded retries. Completed
+responses, including a reported output limit, retain ordinary recovery behavior.
+A healthy stream can run longer than the configured inactivity timeout while
+it continues delivering data.
+
 ## Configured completion checks
 
 An optional [harness completion check](harness.md) makes saved final text a

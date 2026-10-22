@@ -667,8 +667,40 @@ pub struct WerkProvider {
     token_count_unavailable: std::sync::atomic::AtomicBool,
     image_token_count_unavailable: std::sync::atomic::AtomicBool,
     image_estimates: Mutex<BTreeMap<String, usize>>,
+    inference_unresolved: Arc<std::sync::atomic::AtomicBool>,
+}
+
+// Dropping an HTTP request does not confirm that the remote inference stopped.
+// Keep the connection closed to new work until the host reconnects after recovery.
+struct InferenceReceipt {
+    unresolved: Arc<std::sync::atomic::AtomicBool>,
+    settled: bool,
+}
+impl Drop for InferenceReceipt {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.unresolved
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+fn no_inference_retry(mut error: WorkerError) -> WorkerError {
+    error.retryable = false;
+    error
 }
 impl WerkProvider {
+    fn check_inference_available(&self) -> Result<()> {
+        if self
+            .inference_unresolved
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(WorkerError::new(
+                "inference_unresolved",
+                "A previous inference ended without confirmed completion. Check or restart the Werk backend, then reconnect before sending more work.",
+            ));
+        }
+        Ok(())
+    }
     fn image_key(request: &ModelRequest) -> Option<String> {
         let images: Vec<_> = request
             .messages
@@ -802,6 +834,7 @@ impl WerkProvider {
             token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             image_token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             image_estimates: Mutex::new(BTreeMap::new()),
+            inference_unresolved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             runtime_capabilities,
             discovery: json!({"info":info,"models":models}),
         })
@@ -919,6 +952,7 @@ impl ModelProvider for WerkProvider {
         "wire_bytes_estimate"
     }
     async fn count_input_tokens(&self, request: &ModelRequest) -> Result<Option<usize>> {
+        self.check_inference_available()?;
         if let Some(count) = self.cached_input_tokens(request) {
             return Ok(Some(count));
         }
@@ -941,6 +975,7 @@ impl ModelProvider for WerkProvider {
         body.as_object_mut().unwrap().remove("stream_options");
         let mut retries = 0;
         let value = loop {
+            self.check_inference_available()?;
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
                 self.client.control_request(
@@ -989,6 +1024,7 @@ impl ModelProvider for WerkProvider {
         Ok(Some(count))
     }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+        self.check_inference_available()?;
         let limit = self.capabilities().context_tokens.ok_or_else(|| WorkerError::new("context_limit_unknown", "Set capabilities.context_tokens to the server's per-request context limit; discovery could not establish it"))?;
         if request.max_output_tokens == 0
             || self
@@ -1021,12 +1057,26 @@ impl ModelProvider for WerkProvider {
             .client
             .request(reqwest::Method::POST, "/v1/chat/completions")?
             .json(&body);
+        self.check_inference_available()?;
+        let mut receipt = InferenceReceipt {
+            unresolved: self.inference_unresolved.clone(),
+            settled: false,
+        };
         let response = if self.config.stream {
-            self.client.send_chat(request).await?
+            self.client
+                .send_chat(request)
+                .await
+                .map_err(no_inference_retry)?
         } else {
-            self.client.send(request).await?
+            self.client
+                .send(request)
+                .await
+                .map_err(no_inference_retry)?
         };
         if !response.status().is_success() {
+            // An explicit HTTP rejection remains eligible for ordinary bounded
+            // retries (e.g. 429/503); an uncertain transport failure does not.
+            receipt.settled = true;
             let mut e = http_error(response.status().as_u16());
             e.retry_after_ms = response
                 .headers()
@@ -1067,7 +1117,10 @@ impl ModelProvider for WerkProvider {
         let client = self.client.clone();
         let max = self.config.max_body_bytes;
         if !self.config.stream {
-            let bytes = bounded_body(response, max).await?;
+            let bytes = bounded_body(response, max)
+                .await
+                .map_err(no_inference_retry)?;
+            receipt.settled = true;
             let v: Value = serde_json::from_str(&client.redact(&String::from_utf8_lossy(&bytes)))?;
             let deltas = decode_completion(&v)?;
             return Ok(Box::pin(futures_util::stream::iter(
@@ -1075,17 +1128,24 @@ impl ModelProvider for WerkProvider {
             )));
         }
         Ok(Box::pin(async_stream::try_stream! {
+            // Capture the guard even if the returned stream is never polled.
+            let mut receipt = receipt;
             let mut bytes=response.bytes_stream();let mut parser=SseDecoder::new(max);
             let mut redactor=StreamRedactor::new(client.secret.as_ref().map(|s|s.as_str().to_owned()));
             while let Some(chunk)=bytes.next().await {
-                let chunk=chunk.map_err(|error|WorkerError::transient(if error.is_timeout() {"timeout"} else {"interrupted_stream"}))?;
+                let chunk=chunk.map_err(|error|no_inference_retry(WorkerError::transient(if error.is_timeout() {"timeout"} else {"interrupted_stream"})))?;
                 let deltas = parser.push(&chunk).map_err(|mut error| {
                     error.message = client.redact(&error.message);
+                    if error.code == "provider_error" { receipt.settled = true; }
+                    error.retryable = false;
                     error
                 })?;
+                if deltas.iter().any(|delta| matches!(delta, ModelDelta::Finish { .. } | ModelDelta::Done)) {
+                    receipt.settled = true;
+                }
                 for delta in deltas {for clean in redactor.push(delta) {yield clean;}}
             }
-            parser.finish()?;
+            parser.finish().map_err(no_inference_retry)?;
         }))
     }
 }

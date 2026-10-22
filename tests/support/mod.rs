@@ -43,6 +43,13 @@ impl Server {
         handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
         delay: Option<(usize, std::time::Duration)>,
     ) -> Self {
+        Self::with_chat_delays(handler, None, delay).await
+    }
+    pub async fn with_chat_delays(
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+        header_delay: Option<std::time::Duration>,
+        delay: Option<(usize, std::time::Duration)>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("local HTTP test listener");
@@ -109,6 +116,11 @@ impl Server {
                         header.push_str(&format!("{k}: {v}\r\n"));
                     }
                     header.push_str("\r\n");
+                    if request.path == "/v1/chat/completions"
+                        && let Some(pause) = header_delay
+                    {
+                        tokio::time::sleep(pause).await;
+                    }
                     let _ = socket.write_all(header.as_bytes()).await;
                     if let Some((size, pause)) =
                         delay.filter(|_| request.path == "/v1/chat/completions")

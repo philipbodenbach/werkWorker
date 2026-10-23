@@ -308,14 +308,15 @@ async fn oversized_edits_get_smaller_contracts_until_real_progress_then_release(
     assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
     let requests = provider.requests();
     let cap = |n: usize| {
-        requests[n]
+        let schema = &requests[n]
             .tools
             .iter()
             .find(|t| t.name == "files.edit")
             .unwrap()
-            .input_schema["properties"]["new"]["maxLength"]
+            .input_schema;
+        schema["x-werk-repair-limits"]["game.txt"]
             .as_u64()
-            .unwrap()
+            .unwrap_or_else(|| schema["properties"]["new"]["maxLength"].as_u64().unwrap())
     };
     assert_eq!(cap(1), 4096);
     assert_eq!(cap(2), 2048);
@@ -335,6 +336,122 @@ async fn oversized_edits_get_smaller_contracts_until_real_progress_then_release(
 }
 
 #[tokio::test]
+async fn repair_caps_are_path_scoped_and_report_actual_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "working").unwrap();
+    let other = format!("unique{}", "y".repeat(3000));
+    let (engine, session, provider) = fixture(
+        vec![
+            edit("working", &"x".repeat(5000)),
+            call("files.write", json!({"path":"other.txt","content":other})),
+            call("files.edit", json!({"path":"/workspace/./game.txt","expected_hash":hash("working"),"old":"working","new":"z".repeat(2500)})),
+            call("files.edit", json!({"path":"./other.txt","expected_hash":hash(&other),"old":"unique","new":"n".repeat(1500)})),
+            edit("working", "repaired"),
+            read("game.txt"),
+        ], dir.path(),
+    ).await;
+    let run = session
+        .submit(
+            "Repair",
+            "start",
+            Limits {
+                max_steps: 6,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    let data = session.snapshot().await.unwrap();
+    let calls = &data.run(&run.id).unwrap().invocations;
+    assert_eq!(
+        calls[1].result.as_ref().unwrap().status,
+        Outcome::Succeeded,
+        "repair of game.txt must not cap creating other.txt"
+    );
+    let error = calls[2].result.as_ref().unwrap();
+    assert_eq!(error.data["allowed_characters"], 2048);
+    assert_eq!(error.data["max_new_characters"], 1024);
+    assert!(
+        error.data["message"]
+            .as_str()
+            .unwrap()
+            .contains("2500 characters")
+    );
+    assert_eq!(
+        calls[3].result.as_ref().unwrap().status,
+        Outcome::Succeeded,
+        "other.txt must remain editable above the unrelated 1024 size cap"
+    );
+    let requests = provider.requests();
+    let schema = &requests[4]
+        .tools
+        .iter()
+        .find(|t| t.name == "files.edit")
+        .unwrap()
+        .input_schema;
+    assert_eq!(schema["properties"]["new"]["maxLength"], 4096);
+    assert_eq!(schema["x-werk-repair-limits"]["game.txt"], 1024);
+    assert!(schema["x-werk-repair-limits"]["other.txt"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("other.txt")).unwrap(),
+        format!("{}{}", "n".repeat(1500), "y".repeat(3000))
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "repaired"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_anchor_size_does_not_shrink_new_content_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "working").unwrap();
+    let (engine, session, provider) = fixture(
+        vec![
+            edit(&"a".repeat(2100), "small"),
+            edit("working", &"r".repeat(3000)),
+            read("game.txt"),
+        ],
+        dir.path(),
+    )
+    .await;
+    let run = session
+        .submit(
+            "Repair",
+            "start",
+            Limits {
+                max_steps: 3,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    let data = session.snapshot().await.unwrap();
+    let first = data.run(&run.id).unwrap().invocations[0]
+        .result
+        .as_ref()
+        .unwrap();
+    assert_eq!(first.error_code.as_deref(), Some("coding_step_invalid"));
+    assert!(first.data.get("max_new_characters").is_none());
+    assert_eq!(
+        task_state(&provider.requests()[1])["pending_repairs"][0]["size_limited"],
+        false
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt"))
+            .unwrap()
+            .len(),
+        3000
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn changing_bad_arguments_does_not_allow_unlimited_failed_repairs() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("game.txt"), "working").unwrap();
@@ -347,7 +464,11 @@ async fn changing_bad_arguments_does_not_allow_unlimited_failed_repairs() {
         .await
         .unwrap();
     let result = run.wait().await.unwrap();
-    assert_eq!(result.error.unwrap().code, "repair_no_progress");
+    let error = result.error.unwrap();
+    assert_eq!(error.code, "repair_no_progress");
+    assert!(error.message.contains("game.txt"));
+    assert!(error.message.contains("write_conflict"));
+    assert!(error.message.contains("unique nonempty match"));
     assert_eq!(result.metrics.tool_invocations, 5);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),

@@ -194,26 +194,23 @@ pub(crate) fn protect_process(session: &SessionData, run: &Run) -> bool {
 
 pub(crate) fn bound_repairs(session: &SessionData, run: &Run, tools: &mut [ToolDefinition]) {
     let repairs = repairs(session, run);
-    let cap = repairs
+    let caps: BTreeMap<_, _> = repairs
         .iter()
         .filter(|r| r["size_limited"] == true)
-        .filter_map(|r| r["max_new_characters"].as_u64())
-        .min();
+        .filter_map(|r| Some((r["path"].as_str()?, r["max_new_characters"].as_u64()?)))
+        .collect();
     for tool in tools {
         let fields: &[&str] = match tool.name.as_str() {
             "files.write" => &["content"],
             "files.edit" => &["new"],
             _ => &[],
         };
-        if let Some(cap) = cap {
-            for field in fields {
-                let property = &mut tool.input_schema["properties"][field];
-                property["maxLength"] =
-                    json!(property["maxLength"].as_u64().unwrap_or(cap).min(cap));
-            }
-            if !fields.is_empty() {
-                tool.description.push_str(&format!(" Pending repair: at most {cap} characters of new content. Complete one function/block; never truncate code to fit."));
-            }
+        if !caps.is_empty() && !fields.is_empty() {
+            // Persist the offered per-file contract with the request schema.
+            // Do not lower the global maxLength: another file may still need
+            // a normal sized edit to finish its implementation.
+            tool.input_schema["x-werk-repair-limits"] = json!(caps);
+            tool.description.push_str(&format!(" Pending repair limits in characters of new content by workspace path: {}. These limits apply only to the named paths (including ./ and /workspace/ aliases); other paths retain the normal schema limit. Complete one small block; preserve existing files.", json!(caps)));
         }
         if crate::completion::coding(session)
             && !repairs.is_empty()
@@ -222,6 +219,22 @@ pub(crate) fn bound_repairs(session: &SessionData, run: &Run, tools: &mut [ToolD
             tool.description.push_str(" Pending file repair: shell workspace is read-only until a corrected files.edit/files.write succeeds. Preserve existing files; do not delete/rebuild them to work around a rejected edit.");
         }
     }
+}
+
+/// Apply the contract captured at dispatch, not mutable state from later calls.
+pub(crate) fn repair_schema(schema: &Value, args: &Value) -> Value {
+    let mut effective = schema.clone();
+    if let Some(name) = args["path"].as_str().and_then(|p| path(p).ok())
+        && let Some(cap) = schema["x-werk-repair-limits"][&name].as_u64()
+    {
+        for field in ["content", "new"] {
+            if let Some(property) = effective["properties"].get_mut(field) {
+                property["maxLength"] =
+                    json!(property["maxLength"].as_u64().unwrap_or(cap).min(cap));
+            }
+        }
+    }
+    effective
 }
 
 /// Observe only known paths, with bounded I/O. No recursive repository scan.

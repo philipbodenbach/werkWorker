@@ -28,9 +28,14 @@ being confused with implementation progress.
   changed-file repair or a new user instruction ends the pending repair.
   Tests that write into the workspace must wait until the repair succeeds.
 - Rejected oversized file arguments include measured character counts and a
-  smaller next-step ceiling, enforced in the next request's tool schema. The
+  smaller next-step ceiling, enforced for the affected normalized path from the
+  contract saved with the next request's tool schema. Other files retain their
+  ordinary limits. The
   ceiling halves down to 256 characters; successful repair releases this extra
-  restriction. Code is never mechanically truncated or partially executed.
+  restriction. Invalid anchors or argument shapes alone do not shrink the
+  new-content limit. Receipts report the actual attempted and allowed sizes;
+  the final stalled-repair error includes the path and last concrete error.
+  Code is never mechanically truncated or partially executed.
 - Read aliases share repetition counts. Unchanged version checks and no-op file
   edits do not reset them. Observed file mutations and distinct verification
   results permit continued work. Existing changed-read/research behavior remains.
@@ -58,6 +63,13 @@ store in read-only mode: 750 canonical messages, 731 omitted, `tetris.html`
 correctly missing with no stale hash/tail and one pending repair. General TUI
 and effort/steering PTY checks passed using isolated fixtures. This validates
 the harness behavior; it is not a live-model success-rate benchmark.
+
+Follow-up validation of per-path repair limits: 254 Rust tests passed (two
+opt-in replay tests skipped), plus strict Clippy and rustfmt. Added regressions
+cover independent creation and editing of a second file during a pending
+repair, normalized path aliases, accurate size receipts, and oversized anchors
+without reducing the new-content budget. The stalled-repair cutoff remains;
+these checks do not establish that a model will finish the game successfully.
 
 ## Reference mechanisms
 

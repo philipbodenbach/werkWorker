@@ -2694,13 +2694,21 @@ impl SessionHandle {
         if repair_failed {
             let data = self.snapshot().await?;
             let run = data.run(run_id)?;
-            if crate::working_state::repairs(&data, run).iter().any(|r| {
+            if let Some(repair) = crate::working_state::repairs(&data, run).iter().find(|r| {
                 r["attempts"].as_u64().unwrap_or(0)
                     >= run.limits.max_repeated_calls.saturating_add(2) as u64
             }) {
                 return Err(WorkerError::new(
                     "repair_no_progress",
-                    "Repeated file repairs failed without changing the affected file. Existing work is retained. Inspect the last exact edit/size error before continuing; restarting scaffolding is not recovery.",
+                    format!(
+                        "{} repairs failed without changing {}. Existing work is retained. Last error ({}): {}",
+                        repair["attempts"],
+                        repair["path"].as_str().unwrap_or("the affected file"),
+                        repair["error"].as_str().unwrap_or("unknown"),
+                        repair["detail"]
+                            .as_str()
+                            .unwrap_or("Inspect the retained tool receipt.")
+                    ),
                 ));
             }
         }
@@ -2746,36 +2754,13 @@ impl SessionHandle {
                 )
                 .await;
         }
-        if invocation
+        let request_schema = invocation
             .request_input_schema
             .as_ref()
-            .is_some_and(|schema| validate_arguments(schema, &invocation.call.arguments).is_err())
+            .map(|schema| crate::working_state::repair_schema(schema, &invocation.call.arguments));
+        if let Some(schema) = &request_schema
+            && let Err(error) = validate_arguments(schema, &invocation.call.arguments)
         {
-            let (code, detail) = if run.generation_recovery.split_required {
-                (
-                    "recovery_step_too_large",
-                    "This turn has bounded tool arguments: use at most 2048 characters per file content/replacement or argv string. Write one small working increment, then extend with files.edit. No part of this call executed.",
-                )
-            } else {
-                (
-                    "coding_step_invalid",
-                    "Coding steps must fit the advertised tool schema: files.write creates NEW files only (no expected_hash), existing files use files.edit with a current hash and unique anchor. Content/replacements are capped at 4096 characters, edit anchors at 2048. No part of this call executed.",
-                )
-            };
-            let mut result = ToolResult::error(Outcome::ValidationError, code);
-            let limit = invocation
-                .request_input_schema
-                .as_ref()
-                .and_then(|s| {
-                    s["properties"][if def.name == "files.edit" {
-                        "new"
-                    } else {
-                        "content"
-                    }]["maxLength"]
-                        .as_u64()
-                })
-                .unwrap_or(2048);
-            let next = (limit / 2).max(256);
             let lengths: std::collections::BTreeMap<_, _> = ["old", "new", "content"]
                 .into_iter()
                 .filter_map(|key| {
@@ -2784,8 +2769,42 @@ impl SessionHandle {
                         .map(|v| (key, v.chars().count()))
                 })
                 .collect();
-            result.data = json!({"message":format!("{detail} Next repair: at most {next} characters of new content. Keep the current file and implement one complete function/block; do not repeat setup or delete the file."),
-                "executed":false,"argument_characters":lengths,"max_new_characters":next});
+            let field = match def.name.as_str() {
+                "files.edit" => Some("new"),
+                "files.write" => Some("content"),
+                _ => None,
+            };
+            let exceeded = field.and_then(|field| {
+                let limit = schema["properties"][field]["maxLength"].as_u64()?;
+                let actual = *lengths.get(field)? as u64;
+                (actual > limit).then_some((field, actual, limit))
+            });
+            let code = if run.generation_recovery.split_required {
+                "recovery_step_too_large"
+            } else {
+                "coding_step_invalid"
+            };
+            let mut result = ToolResult::error(Outcome::ValidationError, code);
+            let limits: std::collections::BTreeMap<_, _> = lengths
+                .keys()
+                .filter_map(|key| {
+                    schema["properties"][*key]["maxLength"]
+                        .as_u64()
+                        .map(|limit| (*key, limit))
+                })
+                .collect();
+            result.data = json!({"message":format!("The offered tool schema rejected this call: {}. Argument lengths: {lengths:?}; allowed maxima: {limits:?}. No part executed. Correct the invalid argument; files.write creates new files only, existing files require files.edit with a current hash and exact unique anchor.", error.message),
+                "executed":false,"argument_characters":lengths,"argument_limits":limits});
+            // Anchor/shape errors are not evidence that the new-content
+            // budget is too large. Only an actual size violation shrinks it.
+            if let Some((field, actual, limit)) = exceeded {
+                let next = (limit / 2).max(256).min(limit);
+                result.data["message"] = json!(format!(
+                    "Argument {field} has {actual} characters; this call allowed at most {limit}. No part executed. Next repair for this path: at most {next} characters of new content. Preserve existing work and use files.edit for existing files; do not restart scaffolding."
+                ));
+                result.data["allowed_characters"] = json!(limit);
+                result.data["max_new_characters"] = json!(next);
+            }
             return self.outcome(run_id, invocation_id, result).await;
         }
         let tool = self.engine.inner.tools.get(&def.name)?;

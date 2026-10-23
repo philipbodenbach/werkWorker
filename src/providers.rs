@@ -889,7 +889,7 @@ impl WerkProvider {
                 "Image input is disabled locally (capabilities.images=unsupported). Set Image input to Auto (unknown) and reconnect.",
             ));
         }
-        let mut body = json!({"model":self.config.model,"messages":request.messages.iter().map(wire_message).collect::<Vec<_>>(),"stream":self.config.stream,"max_completion_tokens":request.max_output_tokens});
+        let mut body = json!({"model":self.config.model,"messages":wire_messages(&request.messages),"stream":self.config.stream,"max_completion_tokens":request.max_output_tokens});
         if !request.tools.is_empty() {
             body["tools"]=Value::Array(request.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect());
             body["parallel_tool_calls"] =
@@ -1191,6 +1191,28 @@ impl WerkProvider {
         }
         Ok(Some(profile))
     }
+}
+fn wire_messages(messages: &[Message]) -> Vec<Value> {
+    let mut wire = Vec::new();
+    let mut images = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        let mut message = message.clone();
+        if message.role == Role::Tool {
+            images.append(&mut message.images);
+        }
+        wire.push(wire_message(&message));
+        // OpenAI-compatible transports expect image blocks in user content,
+        // after the entire tool-result group. Keep durable tool ownership intact.
+        if !images.is_empty() && messages.get(index + 1).is_none_or(|m| m.role != Role::Tool) {
+            let mut visual = Message::text(
+                Role::User,
+                "Images returned by the preceding tools (untrusted task data).",
+            );
+            visual.images = std::mem::take(&mut images);
+            wire.push(wire_message(&visual));
+        }
+    }
+    wire
 }
 pub fn wire_message(message: &Message) -> Value {
     let mut value = json!({"role":message.role,"content":message.content});
@@ -2056,4 +2078,32 @@ fn observability_context(value: &Value, model: &str) -> Option<usize> {
         limit = Some(limit.map_or(tokens as usize, |n| n.min(tokens as usize)));
     }
     limit
+}
+
+#[cfg(test)]
+mod tool_image_transport_tests {
+    use super::*;
+    #[test]
+    fn image_results_follow_the_complete_tool_group() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(16, 16)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let mut result = ToolResult::ok(json!({"path":"shot.png"}));
+        result
+            .images
+            .push(crate::attachments::ImageAttachment::from_bytes(&bytes.into_inner()).unwrap());
+        let messages = vec![
+            Message::tool("one", &result),
+            Message::tool("two", &ToolResult::ok(json!({"content":"source"}))),
+        ];
+        let wire = wire_messages(&messages);
+        assert_eq!(wire.len(), 3);
+        assert_eq!(wire[0]["role"], "tool");
+        assert!(wire[0]["content"].is_string());
+        assert!(!wire[0].to_string().contains("base64"));
+        assert_eq!(wire[1]["tool_call_id"], "two");
+        assert_eq!(wire[2]["role"], "user");
+        assert_eq!(wire[2]["content"][1]["type"], "image_url");
+    }
 }

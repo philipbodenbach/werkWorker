@@ -25,10 +25,10 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
         return Ok(None);
     }
     let state = crate::harness::state(session, &run.id)?;
-    let check =
-        run.invocations.iter().rev().find(|i| {
-            i.call.name == "process.run" && i.call.arguments.get("verification").is_some()
-        });
+    let check = run.invocations.iter().rev().find(|i| {
+        matches!(i.call.name.as_str(), "process.run" | "browser.check")
+            && i.call.arguments.get("verification").is_some()
+    });
     let observed = check.map(|check| {
         let evidence = state.verifications.get(&check.invocation_id);
         json!({"criteria":check.call.arguments["verification"]["criteria"],"result":check.result.as_ref().map(|r| json!({"status":r.status,"exit_code":r.data["exit_code"],"verification":evidence.unwrap_or(&r.data["verification"])}))})
@@ -39,7 +39,7 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
         .profile
         .tools
         .iter()
-        .any(|t| matches!(t.as_str(), "files.write" | "files.edit"));
+        .any(|t| matches!(t.as_str(), "files.write" | "files.edit" | "files.insert"));
     let files = if editing {
         file_observations(session, run)
     } else {
@@ -110,7 +110,7 @@ pub(crate) async fn verification_files(
     Ok(files)
 }
 
-pub(crate) fn bound_tools(tools: &mut [ToolDefinition]) {
+pub(crate) fn bound_tools(tools: &mut [ToolDefinition], bound_sizes: bool) {
     for tool in tools {
         let fields: &[(&str, u64)] = match tool.name.as_str() {
             "files.write" => {
@@ -122,9 +122,13 @@ pub(crate) fn bound_tools(tools: &mut [ToolDefinition]) {
                 &[("content", 4096)]
             }
             "files.edit" => &[("old", 2048), ("new", 4096)],
+            "files.insert" => &[("content", 4096)],
             _ => &[],
         };
         for (field, ceiling) in fields {
+            if !bound_sizes {
+                continue;
+            }
             let property = &mut tool.input_schema["properties"][field];
             property["maxLength"] = json!(
                 property["maxLength"]
@@ -165,7 +169,12 @@ pub(crate) async fn findings(
     let touched: BTreeMap<_, _> = run
         .invocations
         .iter()
-        .filter(|i| matches!(i.call.name.as_str(), "files.write" | "files.edit"))
+        .filter(|i| {
+            matches!(
+                i.call.name.as_str(),
+                "files.write" | "files.edit" | "files.insert"
+            )
+        })
         .filter_map(|i| i.result.as_ref())
         .filter(|r| r.status == Outcome::Succeeded)
         .filter_map(|r| {
@@ -191,11 +200,12 @@ pub(crate) async fn findings(
         .enumerate()
         .rev()
         .filter(|(_, i)| {
-            i.call.name == "process.run" && i.call.arguments.get("verification").is_some()
+            matches!(i.call.name.as_str(), "process.run" | "browser.check")
+                && i.call.arguments.get("verification").is_some()
         })
         .find_map(|(n, i)| i.result.as_ref().map(|r| (n, i, r)))
     else {
-        return Ok(Some("The implementation has no recorded behavioral verification. Use process.run with verification:{criteria:[actual acceptance criteria],paths:[all relevant source and test files, relative to workspace]}. Run assertions through real startup/input paths, inspect failures, fix them, and repeat. For an interactive app, syntax alone does not verify behavior. Do not claim completion if checks cannot run; report the blocker via interaction.ask.".into()));
+        return Ok(Some("The implementation has no recorded behavioral verification. Use process.run or browser.check with verification:{criteria:[actual acceptance criteria],paths:[all relevant source and test files, relative to workspace]}. Run assertions through real startup/input paths, inspect failures, fix them, and repeat. For an interactive app, syntax alone does not verify behavior. Do not claim completion if checks cannot run; report the blocker via interaction.ask.".into()));
     };
     let evidence = receipts
         .get(&invocation.invocation_id)
@@ -248,13 +258,18 @@ pub(crate) fn progress(run: &Run) -> String {
     let files: BTreeMap<_, _> = run
         .invocations
         .iter()
-        .filter(|i| matches!(i.call.name.as_str(), "files.write" | "files.edit"))
+        .filter(|i| {
+            matches!(
+                i.call.name.as_str(),
+                "files.write" | "files.edit" | "files.insert"
+            )
+        })
         .filter_map(|i| i.result.as_ref())
         .filter(|r| r.status == Outcome::Succeeded)
         .filter_map(|r| Some((r.data["path"].as_str()?, r.data["sha256"].as_str()?)))
         .collect();
     let check = run.invocations.iter().rev()
-        .find(|i| i.call.name == "process.run" && i.call.arguments.get("verification").is_some())
+        .find(|i| matches!(i.call.name.as_str(), "process.run" | "browser.check") && i.call.arguments.get("verification").is_some())
         .map(|i| json!({"arguments":i.call.arguments,"result":i.result.as_ref().map(|r| json!({"status":r.status,"verification":r.data["verification"],"exit_code":r.data["exit_code"]}))}));
     fingerprint(&(&run.plan, files, check))
 }

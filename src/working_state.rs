@@ -84,7 +84,7 @@ pub(crate) fn files(session: &SessionData, run: &Run) -> Vec<Value> {
         }
         if !matches!(
             i.call.name.as_str(),
-            "files.read" | "files.write" | "files.edit"
+            "files.read" | "files.write" | "files.edit" | "files.insert"
         ) {
             continue;
         }
@@ -97,10 +97,29 @@ pub(crate) fn files(session: &SessionData, run: &Run) -> Vec<Value> {
         } else if r.status == Outcome::Succeeded && r.data["sha256"].is_string() {
             receipt["status"] = json!("present");
             receipt["sha256"] = r.data["sha256"].clone();
+            for field in ["total_lines", "next_insert_after_line"] {
+                if let Some(value) = r.data.get(field) {
+                    receipt[field] = value.clone();
+                }
+            }
             if i.call.name == "files.read" {
-                receipt["lines"] = json!([r.data["start_line"], r.data["end_line"]]);
-                receipt["total_lines"] = r.data["total_lines"].clone();
-                receipt["next_start_line"] = r.data["next_start_line"].clone();
+                if r.data["mode"] == "bytes" {
+                    for field in [
+                        "mode",
+                        "start_byte",
+                        "end_byte",
+                        "next_start_byte",
+                        "total_bytes",
+                    ] {
+                        if let Some(value) = r.data.get(field) {
+                            receipt[field] = value.clone();
+                        }
+                    }
+                } else {
+                    receipt["lines"] = json!([r.data["start_line"], r.data["end_line"]]);
+                    receipt["total_lines"] = r.data["total_lines"].clone();
+                    receipt["next_start_line"] = r.data["next_start_line"].clone();
+                }
                 if let Some(content) = r.data["content"].as_str() {
                     let mut start = content.len().saturating_sub(384);
                     while !content.is_char_boundary(start) {
@@ -150,7 +169,10 @@ pub(crate) fn repairs(session: &SessionData, run: &Run) -> Vec<Value> {
         if i.message_index < user_boundary {
             continue;
         }
-        if !matches!(i.call.name.as_str(), "files.write" | "files.edit") {
+        if !matches!(
+            i.call.name.as_str(),
+            "files.write" | "files.edit" | "files.insert"
+        ) {
             continue;
         }
         let Some(r) = &i.result else { continue };
@@ -171,17 +193,28 @@ pub(crate) fn repairs(session: &SessionData, run: &Run) -> Vec<Value> {
                 .and_then(|v| v["attempts"].as_u64())
                 .unwrap_or(0)
                 + 1;
-            let previous = repairs.get(&name);
-            let cap = r.data["max_new_characters"]
-                .as_u64()
-                .or_else(|| previous.and_then(|v| v["max_new_characters"].as_u64()))
-                .unwrap_or(2048);
-            let size_limited = r.data["max_new_characters"].is_u64()
-                || previous.is_some_and(|v| v["size_limited"] == true);
+            // Legacy receipts advertised progressively smaller future limits.
+            // Keep the failure evidence, but never present that obsolete
+            // instruction as the current contract after reopening a session.
+            let detail = if r.data["max_new_characters"].as_u64().is_some_and(|cap| {
+                r.data["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("Next repair"))
+                    || r.data["allowed_characters"]
+                        .as_u64()
+                        .is_none_or(|limit| cap < limit)
+            }) {
+                json!(format!(
+                    "Earlier size rejection, no call executed. Argument character counts: {}. The old shrinking repair limit is obsolete; follow the current tool schema. Preserve the existing file and correct one complete edit.",
+                    r.data["argument_characters"]
+                ))
+            } else {
+                r.data["message"].clone()
+            };
             repairs.insert(
                 name.clone(),
                 json!({"path":name,"error":r.error_code,"attempts":attempts,
-                "max_new_characters":cap,"size_limited":size_limited,"detail":r.data["message"]}),
+                "detail":detail}),
             );
         }
     }
@@ -194,47 +227,22 @@ pub(crate) fn protect_process(session: &SessionData, run: &Run) -> bool {
 
 pub(crate) fn bound_repairs(session: &SessionData, run: &Run, tools: &mut [ToolDefinition]) {
     let repairs = repairs(session, run);
-    let caps: BTreeMap<_, _> = repairs
-        .iter()
-        .filter(|r| r["size_limited"] == true)
-        .filter_map(|r| Some((r["path"].as_str()?, r["max_new_characters"].as_u64()?)))
-        .collect();
     for tool in tools {
-        let fields: &[&str] = match tool.name.as_str() {
-            "files.write" => &["content"],
-            "files.edit" => &["new"],
-            _ => &[],
-        };
-        if !caps.is_empty() && !fields.is_empty() {
-            // Persist the offered per-file contract with the request schema.
-            // Do not lower the global maxLength: another file may still need
-            // a normal sized edit to finish its implementation.
-            tool.input_schema["x-werk-repair-limits"] = json!(caps);
-            tool.description.push_str(&format!(" Pending repair limits in characters of new content by workspace path: {}. These limits apply only to the named paths (including ./ and /workspace/ aliases); other paths retain the normal schema limit. Complete one small block; preserve existing files.", json!(caps)));
+        if !repairs.is_empty()
+            && matches!(
+                tool.name.as_str(),
+                "files.write" | "files.edit" | "files.insert"
+            )
+        {
+            tool.description.push_str(" Pending repair: follow this tool's current schema limits. Earlier rejections do not shrink them. Preserve existing files and correct one complete edit, leaving room below maxLength for copied anchor text.");
         }
         if crate::completion::coding(session)
             && !repairs.is_empty()
             && matches!(tool.name.as_str(), "process.run" | "process.start")
         {
-            tool.description.push_str(" Pending file repair: shell workspace is read-only until a corrected files.edit/files.write succeeds. Preserve existing files; do not delete/rebuild them to work around a rejected edit.");
+            tool.description.push_str(" Pending file repair: shell workspace is read-only until a corrected file-tool change succeeds. Preserve existing files; do not delete/rebuild them to work around a rejected edit.");
         }
     }
-}
-
-/// Apply the contract captured at dispatch, not mutable state from later calls.
-pub(crate) fn repair_schema(schema: &Value, args: &Value) -> Value {
-    let mut effective = schema.clone();
-    if let Some(name) = args["path"].as_str().and_then(|p| path(p).ok())
-        && let Some(cap) = schema["x-werk-repair-limits"][&name].as_u64()
-    {
-        for field in ["content", "new"] {
-            if let Some(property) = effective["properties"].get_mut(field) {
-                property["maxLength"] =
-                    json!(property["maxLength"].as_u64().unwrap_or(cap).min(cap));
-            }
-        }
-    }
-    effective
 }
 
 /// Observe only known paths, with bounded I/O. No recursive repository scan.

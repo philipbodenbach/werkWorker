@@ -2,9 +2,12 @@
 pub mod agents;
 pub mod api;
 pub mod attachments;
+mod browser;
 mod completion;
 pub mod context;
 pub mod core;
+mod discovery;
+mod file_io;
 pub mod harness;
 pub mod parallel;
 pub mod policy;

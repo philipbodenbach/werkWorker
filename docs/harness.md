@@ -65,10 +65,10 @@ and spent retry allowance; it never repeats the previously consumed attempt's
 notice. A distinct generation failure after a complete response starts a new
 notice immediately, even during the generic cooldown or after three episodes.
 Generation failures are bounded by the normal retry/request/time budgets; these
-observations must not be silenced by the generic assistance cap. Suggested write
-size shrinks across intervening reads, lists, plans and process calls until a
-successful `files.write` or `files.edit` is recorded. This only sizes guidance;
-it neither requires a file-writing workflow nor changes the retry allowance.
+observations must not be silenced by the generic assistance cap. Guidance refers
+to the current tool budgets and asks for one complete useful section. Successful
+file changes reset generation-progress tracking; reads and plans alone do not.
+This does not change the retry allowance.
 Saved states that suppressed such a newer attempt recover that undelivered
 evidence once, including failures suppressed during an inactive generation
 episode's cooldown. Other aid kinds retain one delivery per episode. For those
@@ -216,9 +216,12 @@ are insufficient. A host-supplied `completion` check can replace the model-selec
 check, while the current plan still gates completion. Missing tools or permissions
 remain blockers, never automatic grants.
 
-Coding tool schemas cap new file content/replacements at 4,096 characters and
-edit anchors at 2,048 characters. Existing files require hash-bound `files.edit`.
-Output-limit recovery may narrow these bounds further. Four rejected final
+With verified server context/output ceilings, coding tools use request-local
+section guidance derived from output and reasoning budgets. Character targets
+are estimates, not shrinking schema limits. Providers without verified ceilings
+retain 4,096-character new-content limits and 2,048-character edit anchors;
+output recovery uses 2,048 characters. Existing files use hash-bound `files.edit`
+or `files.insert`. Four rejected final
 answers at the same implementation/plan/check state stop with
 `completion_stalled`, never `Completed`; successful repair cycles have no fixed
 count. Owned harness echoes remain invalid even when the model changes internal
@@ -226,8 +229,8 @@ scope/trigger IDs. Arbitrary user JSON is not treated as owned feedback.
 
 Rejected file operations additionally retain a pending repair across compaction.
 During coding repair the shell workspace is read-only; corrected file-tool edits
-remain available. Repeated oversized edits get progressively smaller schema
-limits. See [working state and stalled repairs](repair-state.md) for the exact
+remain available. Rejected edits never progressively shrink schema limits.
+See [working state and stalled repairs](repair-state.md) for the exact
 rules, finite non-progress allowance and reference mechanisms.
 
 TUI runs have no aggregate step, request, tool-call or wall-time cutoff by default.

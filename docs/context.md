@@ -100,11 +100,14 @@ file steps, up to `max_retries` consecutive recoveries, inside the
 same step/request/time budgets. Partial text remains audit evidence; none of
 the incomplete response's tools execute. Every distinct generation-limit failure
 receives fresh adaptive feedback, even after intervening complete read calls.
-The suggested write size shrinks until a file change succeeds. If output cannot
-grow, the larger target does not fit after compaction, or the same available
-output budget fails again, recovery constrains
-`files.write.content`, `files.edit.old/new` and each process argv string to 2,048
-characters. The request schema and the execution validator enforce the bound;
+When output cannot grow or still fails, tools request smaller complete sections.
+With verified context/output ceilings, file guidance uses the actual request
+reservation and its selected/default reasoning profile; character targets remain
+estimates. Reads use bounded line/UTF-8 byte pages, and `files.insert` can add a
+section without copying an anchor. Providers without verified ceilings retain
+the 2,048-character recovery bound for file content/replacement strings. Each
+process argv string also retains that recovery bound.
+The request schema and execution validator enforce actual schema bounds;
 the registered tool identity and approval scope are unchanged. These temporary
 schemas survive restart. A model must create a small working increment and then
 use exact, hash-bound edits. This is conditional recovery, not a global skeleton

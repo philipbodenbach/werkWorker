@@ -110,10 +110,12 @@ impl Message {
         }
     }
     pub fn tool(call_id: &str, result: &ToolResult) -> Self {
+        let mut text_result = result.clone();
+        text_result.images.clear();
         Self {
             role: Role::Tool,
-            content: serde_json::to_string(result).expect("tool result"),
-            images: vec![],
+            content: serde_json::to_string(&text_result).expect("tool result"),
+            images: result.images.clone(),
             tool_calls: vec![],
             tool_call_id: Some(call_id.into()),
         }
@@ -274,6 +276,8 @@ pub struct ToolResult {
     pub error_code: Option<String>,
     pub artifacts: Vec<ArtifactRef>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachments::ImageAttachment>,
 }
 impl ToolResult {
     pub fn ok(data: Value) -> Self {
@@ -283,6 +287,7 @@ impl ToolResult {
             error_code: None,
             artifacts: vec![],
             truncated: false,
+            images: vec![],
         }
     }
     pub fn error(status: Outcome, code: &str) -> Self {
@@ -292,6 +297,7 @@ impl ToolResult {
             error_code: Some(code.into()),
             artifacts: vec![],
             truncated: false,
+            images: vec![],
         }
     }
 }

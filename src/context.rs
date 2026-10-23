@@ -71,7 +71,11 @@ pub(crate) fn generation_limits(
     Ok(effective)
 }
 
-pub(crate) fn bound_recovery_tools(run: &Run, tools: &mut [ToolDefinition]) {
+pub(crate) fn bound_recovery_tools(
+    run: &Run,
+    tools: &mut [ToolDefinition],
+    bound_file_sizes: bool,
+) {
     if !run.generation_recovery.split_required {
         return;
     }
@@ -81,14 +85,17 @@ pub(crate) fn bound_recovery_tools(run: &Run, tools: &mut [ToolDefinition]) {
     };
     for tool in tools {
         let fields: &[&str] = match tool.name.as_str() {
-            "files.write" => &["content"],
+            "files.write" | "files.insert" => &["content"],
             "files.edit" => &["old", "new"],
             _ => &[],
         };
         for field in fields {
+            if !bound_file_sizes {
+                continue;
+            }
             bound(&mut tool.input_schema["properties"][field]);
         }
-        if !fields.is_empty() {
+        if !fields.is_empty() && bound_file_sizes {
             tool.description.push_str(" Recovery: at most 2048 characters per content/replacement string. Make one small working increment, then extend it with files.edit; keep the last returned SHA-256.");
         }
         if matches!(tool.name.as_str(), "process.run" | "process.start") {
@@ -204,6 +211,25 @@ impl DefaultContextBuilder {
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         validate_messages(&session.messages)?;
         tools.sort_by(|a, b| a.name.cmp(&b.name));
+        let file_budget = if tools.iter().any(|t| {
+            matches!(
+                t.name.as_str(),
+                "files.read"
+                    | "files.write"
+                    | "files.edit"
+                    | "files.insert"
+                    | "files.find"
+                    | "files.search"
+            )
+        }) {
+            if let Some(provider) = provider {
+                crate::file_io::FileIoBudget::discover(session, run, provider).await?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let minimal =
             crate::harness::config(session, run)?.mode != crate::harness::HarnessMode::Classic;
         let mut prompt = session.profile.prompt.clone();
@@ -285,7 +311,10 @@ impl DefaultContextBuilder {
             .iter()
             .filter(|v| {
                 v["status"] == "present"
-                    && matches!(v["tool"].as_str(), Some("files.write" | "files.edit"))
+                    && matches!(
+                        v["tool"].as_str(),
+                        Some("files.write" | "files.edit" | "files.insert")
+                    )
             })
             .cloned()
             .collect();
@@ -312,6 +341,9 @@ impl DefaultContextBuilder {
                 .is_some_and(|e| e.code == "model_output_limit")
         });
         let output_guidance = |budget: usize| {
+            if file_budget.is_some() {
+                return String::new();
+            }
             let chunk_chars = budget
                 / (1usize
                     << output_failures
@@ -597,7 +629,12 @@ impl DefaultContextBuilder {
                 max_output_tokens: budget,
                 output_schema: run.output_schema.clone(),
             };
+            let file_budget = file_budget.as_ref();
             async move {
+                let mut request = request;
+                if let Some(b) = file_budget {
+                    request.tools = b.tools(&request.tools, budget).await;
+                }
                 if let Some(provider) = provider {
                     return provider.estimate_input_tokens(&request).await;
                 }
@@ -663,20 +700,22 @@ impl DefaultContextBuilder {
         let latest_write = session.messages.get(latest).is_some_and(|message| {
             !message.tool_calls.is_empty()
                 && message.tool_calls.iter().enumerate().all(|(n, call)| {
-                    matches!(call.name.as_str(), "files.write" | "files.edit")
-                        && session.messages.get(latest + n + 1).is_some_and(|m| {
-                            m.content.chars().count() <= 400
-                                && serde_json::from_str::<ToolResult>(&m.content).is_ok_and(|r| {
-                                    r.status == Outcome::Succeeded
-                                        && !r.truncated
-                                        && r.data["path"].is_string()
-                                        && r.data["sha256"].is_string()
-                                        && written.iter().any(|receipt| {
-                                            receipt["path"] == r.data["path"]
-                                                && receipt["sha256"] == r.data["sha256"]
-                                        })
-                                })
-                        })
+                    matches!(
+                        call.name.as_str(),
+                        "files.write" | "files.edit" | "files.insert"
+                    ) && session.messages.get(latest + n + 1).is_some_and(|m| {
+                        m.content.chars().count() <= 400
+                            && serde_json::from_str::<ToolResult>(&m.content).is_ok_and(|r| {
+                                r.status == Outcome::Succeeded
+                                    && !r.truncated
+                                    && r.data["path"].is_string()
+                                    && r.data["sha256"].is_string()
+                                    && written.iter().any(|receipt| {
+                                        receipt["path"] == r.data["path"]
+                                            && receipt["sha256"] == r.data["sha256"]
+                                    })
+                            })
+                    })
                 })
         });
         let protected = if latest_write {
@@ -868,7 +907,7 @@ impl DefaultContextBuilder {
                     .tool_calls
                     .iter()
                     .map(|c| {
-                        let arguments = if matches!(c.name.as_str(), "files.write" | "files.edit")
+                        let arguments = if matches!(c.name.as_str(), "files.write" | "files.edit" | "files.insert")
                             && session.messages[i + 1..end].iter().any(|m| {
                                 m.tool_call_id.as_deref() == Some(&c.id)
                                     && serde_json::from_str::<ToolResult>(&m.content)
@@ -982,7 +1021,7 @@ impl DefaultContextBuilder {
             if next >= output_budget {
                 break;
             }
-            if has_file_tools && !minimal {
+            if has_file_tools && !minimal && file_budget.is_none() {
                 messages[0].content = messages[0].content.replacen(
                     &output_guidance(output_budget),
                     &output_guidance(next),
@@ -1014,6 +1053,11 @@ impl DefaultContextBuilder {
             ));
         }
         validate_messages(&messages)?;
+        let tools = if let Some(b) = &file_budget {
+            b.tools(&tools, output_budget).await
+        } else {
+            tools
+        };
         let snapshot = ContextSnapshot {
             planning: Some(ContextPlanning {
                 reused_selection: previous.is_some(),

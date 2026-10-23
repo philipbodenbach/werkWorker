@@ -65,12 +65,18 @@ impl ToolRegistry {
             "files.read",
             "files.list",
             "files.search",
+            "files.find",
+            "files.read_image",
             "files.write",
             "files.edit",
+            "files.insert",
             "process.run",
             "process.start",
             "process.status",
             "process.cancel",
+            "process.wait",
+            "process.log",
+            "browser.check",
             "http.fetch",
             "skills.list",
             "skills.load",
@@ -139,9 +145,9 @@ impl Tool for Builtin {
         let (effect, description, schema) = match self.name.as_str() {
             "files.read" => (
                 Effect::Read,
-                "Read UTF-8 file text with its hash and line range. If next_start_line is present, continue there; do not reread the same truncated range",
+                "Read UTF-8 file text with its hash and line range. Continue with next_start_line, or next_start_byte for a long-line byte page. start_byte cannot be combined with line bounds; byte positions must be UTF-8 boundaries. Do not reread the same truncated range",
                 object(
-                    json!({"path":string(),"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}),
+                    json!({"path":string(),"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_byte":{"type":"integer","minimum":0}}),
                     &["path"],
                 ),
             ),
@@ -152,12 +158,26 @@ impl Tool for Builtin {
             ),
             "files.search" => (
                 Effect::Read,
-                "Search literal text in regular files directly within a directory",
+                "Search a workspace file or directory recursively. Literal by default; regex optional. Returns matched line numbers and bounded context. Follow next_offset with identical arguments; narrow path/include if scan_limited. Example: path=src, query=rotate, include=**/*.js. Read the matched range, not the whole file.",
                 object(
-                    json!({"path":string(),"query":string()}),
+                    json!({"path":string(),"query":{"type":"string","minLength":1,"maxLength":1024},"recursive":{"type":"boolean"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"hidden":{"type":"boolean"},"include":{"type":"string","maxLength":1024},"context_lines":{"type":"integer","minimum":0,"maximum":3},"offset":{"type":"integer","minimum":0,"maximum":10000},"limit":{"type":"integer","minimum":1,"maximum":100}}),
                     &["path", "query"],
                 ),
             ),
+            "files.find" => (
+                Effect::Read,
+                "Find workspace files recursively using *, ** and ? globs. Example: path=., pattern=**/*.html. Heavy dependency/build directories and symlinks are excluded. Follow next_offset; narrow path when scan_limited. No shell required.",
+                object(
+                    json!({"path":string(),"pattern":{"type":"string","maxLength":1024},"hidden":{"type":"boolean"},"offset":{"type":"integer","minimum":0,"maximum":10000},"limit":{"type":"integer","minimum":1,"maximum":100}}),
+                    &["path", "pattern"],
+                ),
+            ),
+            "files.read_image" => (
+                Effect::Read,
+                "View a bounded local PNG/JPEG image or screenshot. Returns normalized image input, dimensions and file hash; do not read binary images as text.",
+                object(json!({"path":string()}), &["path"]),
+            ),
+            "browser.check" => return crate::browser::definition(),
             "files.write" => (
                 Effect::Write,
                 "Write a workspace path (relative or /workspace/...); parent directory must already exist (use process.run to create directories). Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
@@ -174,6 +194,14 @@ impl Tool for Builtin {
                     &["path", "old", "new", "expected_hash"],
                 ),
             ),
+            "files.insert" => (
+                Effect::Write,
+                "Insert one complete section after a numbered line of an existing file, guarded by its latest sha256. after_line=0 prepends; after_line=total_lines appends. Include required newline separators in content; none are added implicitly. Reuse the returned sha256 and next_insert_after_line to append the next section. Never recreate an existing file.",
+                object(
+                    json!({"path":string(),"expected_hash":string(),"after_line":{"type":"integer","minimum":0},"content":string()}),
+                    &["path", "expected_hash", "after_line", "content"],
+                ),
+            ),
             "process.run" => (
                 Effect::Process,
                 "Sandboxed argv, no network. To verify code, supply verification with behavioral criteria and all relevant source/test paths. Run real assertions through public entry points; syntax-only checks are insufficient for interactive behavior. A successful check records file hashes; later changes require another check. /workspace persists; /tmp is fresh each call.",
@@ -186,7 +214,7 @@ impl Tool for Builtin {
                 Effect::Process,
                 "Sandboxed argv, no network. /workspace persists; /tmp is fresh each call. Keep cross-call files in /workspace. Shell argv needs explicit approval",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"}}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"},"read_only":{"type":"boolean","description":"Mount workspace read-only; other readers may proceed. Prefer for inspection/watchers. Writers still wait for this job; use process.wait or cancel."}}),
                     &["argv"],
                 ),
             ),
@@ -194,6 +222,22 @@ impl Tool for Builtin {
                 Effect::Internal,
                 "Inspect or cancel a managed job owned by the current run",
                 object(json!({"job_id":string()}), &["job_id"]),
+            ),
+            "process.wait" => (
+                Effect::Internal,
+                "Wait for a run-owned background job to exit without spending inference requests on repeated status calls. Returns on exit/cancellation or timeout. Read live output with process.log. Finished output does not itself establish verification.",
+                object(
+                    json!({"job_id":string(),"timeout_ms":{"type":"integer","minimum":1,"maximum":30000}}),
+                    &["job_id"],
+                ),
+            ),
+            "process.log" => (
+                Effect::Internal,
+                "Read a bounded live stdout/stderr byte page for a run-owned job. Follow next_offset; dropped_before indicates evicted older output. Use process.wait instead of polling unchanged logs.",
+                object(
+                    json!({"job_id":string(),"stream":{"enum":["stdout","stderr"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":4096}}),
+                    &["job_id"],
+                ),
             ),
             "http.fetch" => (
                 Effect::NetworkRead,
@@ -256,11 +300,52 @@ impl Tool for Builtin {
     async fn prepare(&self, mut args: Value, ctx: &ToolContext) -> Result<Value> {
         if matches!(
             self.name.as_str(),
-            "files.read" | "files.list" | "files.search" | "files.write" | "files.edit"
+            "files.read"
+                | "files.list"
+                | "files.search"
+                | "files.write"
+                | "files.edit"
+                | "files.insert"
+                | "files.find"
+                | "files.read_image"
         ) {
             args["path"] = json!(crate::policy::workspace_path(field(&args, "path")?)?);
         }
         match self.name.as_str() {
+            "browser.check" => return crate::browser::prepare(args, ctx).await,
+            "files.insert" => {
+                let bytes = ctx.workspace.read(field(&args, "path")?, 1_048_576).await?;
+                if hash(&bytes) != field(&args, "expected_hash")? {
+                    return Err(WorkerError::new(
+                        "write_conflict",
+                        "File hash changed before insertion; read the affected section again",
+                    ));
+                }
+                let original = String::from_utf8(bytes)
+                    .map_err(|_| WorkerError::new("binary_file", "Insert requires UTF-8 text"))?;
+                let line = args["after_line"].as_u64().ok_or_else(|| {
+                    WorkerError::new("validation_error", "Missing insertion line")
+                })?;
+                if line > original.lines().count() as u64 {
+                    return Err(WorkerError::new(
+                        "write_conflict",
+                        "Insertion line is past the end of the observed file",
+                    ));
+                }
+                let offset: usize = original
+                    .split_inclusive('\n')
+                    .take(line as usize)
+                    .map(str::len)
+                    .sum();
+                let mut content = original.clone();
+                let section = field(&args, "content")?;
+                content.insert_str(offset, section);
+                let next_line = (section.ends_with('\n') || offset == original.len())
+                    .then(|| content[..offset + section.len()].lines().count());
+                args["next_insert_after_line"] = json!(next_line);
+                args["diff"] = json!({"path":args["path"],"before":original,"after":content});
+                args["content"] = json!(content);
+            }
             "files.edit" => {
                 let bytes = ctx.workspace.read(field(&args, "path")?, 1_048_576).await?;
                 if hash(&bytes) != field(&args, "expected_hash")? {
@@ -315,29 +400,35 @@ impl Tool for Builtin {
                 let path=field(&args,"path")?;let bytes=ctx.workspace.read(path,1_048_576).await?;
                 if bytes.contains(&0){return Err(WorkerError::new("binary_file","Binary file is not text"));}
                 let text=String::from_utf8(bytes.clone()).map_err(|_|WorkerError::new("encoding_error","File is not UTF-8"))?;
+                if let Some(start) = args["start_byte"].as_u64() {
+                    if args.get("start_line").is_some() || args.get("end_line").is_some() || start > text.len() as u64 || !text.is_char_boundary(start as usize) {
+                        return Err(WorkerError::new("validation_error", "Use a UTF-8 byte boundary within the file, without line bounds"));
+                    }
+                    return Ok(ToolResult::ok(json!({"path":path,"sha256":hash(bytes),"content":&text[start as usize..],"start_byte":start,"end_byte":text.len(),"total_bytes":text.len(),"mode":"bytes"})));
+                }
                 let start=args["start_line"].as_u64().unwrap_or(1) as usize;let end=args["end_line"].as_u64().unwrap_or(u64::MAX) as usize;
                 if end<start{return Err(WorkerError::new("validation_error","Reversed line range"));}
                 let total_lines=text.lines().count();
                 let lines:Vec<_>=text.lines().skip(start-1).take(end.saturating_sub(start).saturating_add(1)).collect();
-                json!({"path":path,"sha256":hash(bytes),"start_line":start,
+                let start_byte:usize=text.split_inclusive('\n').take(start-1).map(str::len).sum();
+                json!({"path":path,"sha256":hash(bytes),"start_line":start,"start_byte":start_byte,"total_bytes":text.len(),
                     "end_line":start-1+lines.len(),"total_lines":total_lines,"content":lines.join("\n")})
             },
             "files.list"=>json!({"entries":ctx.workspace.list(field(&args,"path")?,1000).await?,"hidden":false,"recursive":false}),
-            "files.search"=>{
-                let path=field(&args,"path")?;let query=field(&args,"query")?;let mut matches=Vec::new();
-                for name in ctx.workspace.list(path,1000).await?{
-                    let file=format!("{path}/{name}");let Ok(bytes)=ctx.workspace.read(&file,262_144).await else{continue;};
-                    if bytes.contains(&0){continue;}
-                    if let Ok(text)=String::from_utf8(bytes){for (i,line) in text.lines().enumerate(){if line.contains(query){matches.push(json!({"path":file,"line":i+1,"text":line}));if matches.len()>=500{break;}}}}
-                    if matches.len()>=500{break;}
-                }json!({"matches":matches,"limit":500,"recursive":false})
+            "files.search" | "files.find" => crate::discovery::execute(&self.name, &args, ctx).await?,
+            "files.read_image" => {
+                let bytes = ctx.workspace.read(field(&args,"path")?,crate::attachments::CLIPBOARD_IMAGE_LIMIT).await?;
+                let image = crate::attachments::ImageAttachment::from_bytes(&bytes)?;
+                let mut result = ToolResult::ok(json!({"path":args["path"],"sha256":hash(bytes),"width":image.width,"height":image.height}));
+                result.images.push(image); return Ok(result);
             },
-            "files.write"|"files.edit"=>{
+            "browser.check" => return crate::browser::execute(args, ctx).await,
+            "files.write"|"files.edit"|"files.insert"=>{
                 let content=field(&args,"content")?;ctx.workspace.write(field(&args,"path")?,content.as_bytes().to_vec(),args["expected_hash"].as_str().map(str::to_owned)).await?;
                 // The full diff remains in the prepared action/approval record.
                 // Echoing growing files here exhausts context and can truncate
                 // away the hash needed for the next incremental edit.
-                json!({"path":args["path"],"sha256":hash(content),"bytes_written":content.len()})
+                json!({"path":args["path"],"sha256":hash(content),"bytes_written":content.len(),"total_lines":content.lines().count(),"next_insert_after_line":if self.name=="files.insert"{args["next_insert_after_line"].clone()}else{json!(content.lines().count())}})
             },
             "process.run"|"process.start"=>{
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
@@ -354,6 +445,8 @@ impl Tool for Builtin {
                 }
             },
             "process.status"|"process.cancel"=>ctx.jobs.status(&ctx.run_id,field(&args,"job_id")?,self.name=="process.cancel").await?,
+            "process.wait" => ctx.jobs.wait(&ctx.run_id,field(&args,"job_id")?,args["timeout_ms"].as_u64().unwrap_or(30000),ctx.cancel.clone()).await?,
+            "process.log" => ctx.jobs.log(&ctx.run_id,field(&args,"job_id")?,args["stream"].as_str().unwrap_or("stdout"),args["offset"].as_u64().map(|n|n as usize),args["length"].as_u64().unwrap_or(2048) as usize).await?,
             "http.fetch"=>fetch(field(&args,"url")?,args["method"].as_str().unwrap_or("GET"),None).await?,
             "skills.list"=>json!(ctx.skills.values().map(|s|json!({"name":s.name,"description":s.description,"hash":s.hash,"source":s.source})).collect::<Vec<_>>()),
             "skills.load"=>match ctx.skills.get(field(&args,"name")?) { Some(skill) => serde_json::to_value(skill)?, None => json!({"available":false,"name":field(&args,"name")?}) },

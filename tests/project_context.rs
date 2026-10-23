@@ -475,9 +475,18 @@ async fn directory_inspection_loads_only_its_own_rules_and_normalizes_source_ali
     assert_eq!(project.instructions.len(), 4);
     let provider = Arc::new(ScriptedProvider::new(vec![
         call("files.list", json!({"path":"/workspace/"})),
-        call("files.search", json!({"path":".","query":"needle"})),
-        call("files.search", json!({"path":"a","query":"needle"})),
-        call("files.search", json!({"path":"./a","query":"needle"})),
+        call(
+            "files.search",
+            json!({"path":".","query":"needle","recursive":false}),
+        ),
+        call(
+            "files.search",
+            json!({"path":"a","query":"needle","recursive":false}),
+        ),
+        call(
+            "files.search",
+            json!({"path":"./a","query":"needle","recursive":false}),
+        ),
         ScriptedTurn::text("Inspected the root and direct files in a."),
     ]));
     let mut host = policy();
@@ -530,7 +539,7 @@ async fn directory_inspection_loads_only_its_own_rules_and_normalizes_source_ali
         .map(|i| i.result.as_ref().unwrap())
         .collect();
     assert_eq!(results[0].status, Outcome::Succeeded);
-    assert_eq!(results[1].data["matches"][0]["path"], "./root.txt");
+    assert_eq!(results[1].data["matches"][0]["path"], "root.txt");
     assert_eq!(results[1].data["matches"].as_array().unwrap().len(), 1);
     assert_eq!(results[2].status, Outcome::CancelledBeforeStart);
     assert_eq!(results[3].data["matches"][0]["path"], "./a/local.txt");
@@ -1002,7 +1011,7 @@ async fn measure_complete_requests_with_real_profiles_and_project_loader() {
                 &source_manifest,
                 "Both modes and tasks must use identical original instruction snapshots"
             );
-            let profile = if new {
+            let mut profile = if new {
                 project
                     .scoped_profile("coding-basic", dir.path(), global.path())
                     .await
@@ -1013,6 +1022,11 @@ async fn measure_complete_requests_with_real_profiles_and_project_loader() {
                     .await
                     .unwrap()
             };
+            // Isolate instruction delivery cost while retaining today's full
+            // tool inventory in both old and new prompt strategies.
+            profile.tools = werk_worker::profiles::AgentProfile::bundled("coding-basic")
+                .unwrap()
+                .tools;
             for source in &project.instructions {
                 assert_eq!(profile.prompt.contains(&source.text), !new);
             }
@@ -1124,5 +1138,75 @@ async fn measure_complete_requests_with_real_profiles_and_project_loader() {
             );
             engine.close().await.unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn recursive_discovery_delivers_descendant_rules_before_searching() {
+    for name in ["files.find", "files.search"] {
+        let dir = tempfile::tempdir().unwrap();
+        let global = tempfile::tempdir().unwrap();
+        let project = project(dir.path()).await;
+        let args = if name == "files.find" {
+            json!({"path":"a","pattern":"**"})
+        } else {
+            json!({"path":"a","query":"local"})
+        };
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            call(name, args.clone()),
+            call(name, args),
+            ScriptedTurn::text("Inspected"),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .harness(HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let mut policy = policy();
+        policy
+            .tool_permissions
+            .insert(name.into(), ToolPermission::Allow);
+        let session = engine
+            .create_session(
+                project
+                    .scoped_profile("coding-basic", dir.path(), global.path())
+                    .await
+                    .unwrap(),
+                dir.path(),
+                policy,
+                project.scoped_metadata(),
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit("Inspect a recursively", "start", Limits::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+        let state = run.status().await.unwrap();
+        assert_eq!(
+            state.invocations[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .error_code
+                .as_deref(),
+            Some("project_instructions_required")
+        );
+        assert_eq!(
+            state.invocations[1].result.as_ref().unwrap().status,
+            Outcome::Succeeded
+        );
+        let requests = provider.requests();
+        assert_eq!(rules(&requests[1]).len(), 3);
+        assert!(
+            !rules(&requests[1])
+                .iter()
+                .any(|r| r["path"] == "b/CLAUDE.md")
+        );
+        engine.close().await.unwrap();
     }
 }

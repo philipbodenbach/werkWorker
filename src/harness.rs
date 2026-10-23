@@ -773,7 +773,10 @@ fn generation_limit(
             !previous.completed
                 || !run.invocations.iter().any(|invocation| {
                     invocation.step_id == previous.step_id
-                        && matches!(invocation.call.name.as_str(), "files.write" | "files.edit")
+                        && matches!(
+                            invocation.call.name.as_str(),
+                            "files.write" | "files.edit" | "files.insert"
+                        )
                         && invocation
                             .result
                             .as_ref()
@@ -790,7 +793,7 @@ fn generation_limit(
     let suggested_chars =
         (run.limits.reserve_output_tokens.min(4096) / (1usize << failures.min(8))).max(256);
     let budget = if run.generation_recovery.split_required {
-        "The output budget could not grow enough. File content and replacement strings now have a hard 2048-character bound in the tool schemas. For a new file, write one small working module first; extend it with files.edit using its returned SHA-256 and an exact unique anchor. Do not try the entire file again, including through a shell command.".to_owned()
+        "The output budget could not grow enough. Follow the current file tools' section-size guidance and schema limits. For a new file, write one small working module first; extend existing files using the returned SHA-256 and one complete insertion or exact edit. Do not try the entire file again, including through a shell command.".to_owned()
     } else {
         format!(
             "The next output reservation may grow from {} to {} tokens, bounded by the server ceiling and available context. Complete the current useful step; do not expand the scope to consume the larger budget.",

@@ -66,10 +66,16 @@ impl Access {
         }
         let mut tools = vec![];
         if self != Self::None {
-            tools.extend(["files.read", "files.list", "files.search"]);
+            tools.extend([
+                "files.read",
+                "files.list",
+                "files.search",
+                "files.find",
+                "files.read_image",
+            ]);
         }
         if matches!(self, Self::Write | Self::Process) {
-            tools.extend(["files.write", "files.edit"]);
+            tools.extend(["files.write", "files.edit", "files.insert"]);
         }
         if self == Self::Process {
             tools.extend([
@@ -77,6 +83,9 @@ impl Access {
                 "process.start",
                 "process.status",
                 "process.cancel",
+                "process.wait",
+                "process.log",
+                "browser.check",
             ]);
         }
         HostPolicy {
@@ -86,7 +95,7 @@ impl Access {
                 .map(|tool| crate::policy::CapabilityGrant {
                     tool: tool.into(),
                     version: "1".into(),
-                    resource: if tool.starts_with("process.") {
+                    resource: if tool.starts_with("process.") || tool == "browser.check" {
                         "workspace"
                     } else {
                         "."
@@ -623,17 +632,24 @@ fn applies(rule: &Instruction, call: &ToolCall) -> bool {
     }
     if matches!(
         call.name.as_str(),
-        "files.read" | "files.write" | "files.edit" | "files.list" | "files.search"
+        "files.read"
+            | "files.write"
+            | "files.edit"
+            | "files.insert"
+            | "files.list"
+            | "files.search"
+            | "files.find"
+            | "files.read_image"
     ) {
         let path = call.arguments["path"].as_str().unwrap_or(".");
         let Ok(path) = crate::policy::workspace_path(path) else {
             return true;
         };
         let path = normalized(path);
-        // Both listing and search inspect only direct entries of this path.
-        // Child-directory contents are untouched, so their rules need not be
-        // loaded merely to inspect an ancestor directory.
-        path.starts_with(&scope)
+        let recursive = call.name == "files.find"
+            || (call.name == "files.search"
+                && call.arguments["recursive"].as_bool().unwrap_or(true));
+        path.starts_with(&scope) || (recursive && scope.starts_with(&path))
     } else {
         !matches!(
             call.name.as_str(),

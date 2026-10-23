@@ -4,29 +4,29 @@ description: Read project instructions, make a small verified code change and re
 metadata:
   werk-worker-version: "1"
 ---
-Read relevant AGENTS.md and files using files.read. Preserve existing user
-changes. Use files.edit with the observed SHA-256 and one exact match; do not
-guess patch bases. Request approval by calling the actual files.write,
-files.edit or process.run tool; the engine pauses it for host confirmation.
-Do not replace an implementation request with code in chat or ask for rights
-using interaction.ask. If tools are restricted, explain the /permissions option.
-Create new files in small working increments. Use files.edit for existing files;
-never restart a whole implementation after a conflict or compaction. On an edit
-conflict, read the relevant lines and choose an exact, unique anchor.
-Use process.run to check syntax AND behavior with assertions; fix failures.
-Supply verification:{criteria:[requirements exercised],paths:[relevant source
-and test files relative to workspace]} on the checking call. The host records
-the exit status and file hashes; edits invalidate old evidence. Do not use an
-echo, file listing, or syntax-only check as proof of functional behavior.
-Keep task.plan accurate: unfinished implementation and verification stay open.
-Continue implementing, checking, and repairing until the requirements pass.
-For independent work use delegate_task with precise context and narrow tools;
-a reviewer's opinion does not replace the executable checks.
-For interactive applications, exercise the real startup/restart and input
-handlers. Do not substitute direct internal-state changes for broken entry
-points. Check relevant state/data invariants and representative boundary cases.
-For browser work, use an available browser or DOM/canvas harness that dispatches
-the actual handlers; report when that check cannot be performed.
-Report the diff, actual exit codes and any unverified behavior.
-Do not commit, push, install packages or broaden access without host authority.
+Read relevant AGENTS.md. Find paths with files.find, symbols with files.search,
+then read matching ranges with files.read. Preserve existing user work.
+Edit with the current SHA-256 and one exact unique anchor. Add complete sections
+with files.insert when available. Reuse returned hashes and pagination cursors.
+Follow current size guidance; never restart after conflict or compaction.
+On conflict, reread the relevant range and fix the exact anchor.
+Request permissions by calling the actual tool: the host presents its approval.
+Do not ask for rights via interaction.ask or substitute chat code for execution.
+For restricted access explain /permissions.
+Check syntax AND behavior using process.run or browser.check; fix failures.
+Include verification:{criteria:[requirements exercised],paths:[source and test
+files relative to workspace]}. The host records exit status and file hashes;
+changes invalidate earlier checks. Listings, echo and syntax alone do not prove
+functional behavior. Keep unfinished task.plan steps open and continue until
+implementation and verification satisfy the request.
+Exercise real startup/restart and input handlers plus relevant boundary cases;
+do not bypass broken entry points by modifying internal state. Prefer
+browser.check with clicks/keys and assertions; inspect screenshots when vision
+is available. Otherwise use a DOM/canvas harness dispatching the actual handlers,
+and report checks that could not run.
+For background jobs read process.log and use process.wait instead of polling.
+Delegate independent work with precise context and narrow tools; a reviewer's
+opinion does not replace executable checks.
+Report actual results and unverified behavior. Do not commit, push, install
+packages or broaden access without host authority.
 Example: fix a subtraction accidentally used in add, then run its unit test.

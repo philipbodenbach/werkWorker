@@ -1408,6 +1408,14 @@ impl SessionHandle {
             // Project every completed tool result before inserting assistant
             // feedback, preserving contiguous call/result groups.
             self.deliver_ready_children(run_id).await?;
+            let completed_jobs = self.engine.inner.jobs.completed(run_id).await;
+            if !completed_jobs.is_empty() {
+                self.update(|d| {
+                    d.messages.push(crate::harness::feedback("background_jobs_completed", json!({"jobs":completed_jobs,"detail":"Run-owned jobs finished. Use process.log for bounded output. Exit status alone is not behavioral verification."})));
+                    Ok(())
+                }).await?;
+            }
+
             // Both normal completion and restart take this path. A durable final
             // candidate is not accepted until its configured check is resolved.
             let saved = self.snapshot().await?;
@@ -1464,10 +1472,20 @@ impl SessionHandle {
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .filter(|def| data.policy.can_request(def))
+                .filter(|def| {
+                    def.name != "files.read_image"
+                        || self.engine.inner.provider.capabilities().images
+                            != crate::providers::Support::Unsupported
+                })
+                .filter(|def| {
+                    def.name != "browser.check" || crate::browser::runtime_path().is_some()
+                })
                 .collect();
-            crate::context::bound_recovery_tools(run, &mut defs);
+            let fixed_file_bounds =
+                !crate::file_io::FileIoBudget::supported(self.engine.inner.provider.as_ref());
+            crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
             if crate::completion::enabled(&data, run)? {
-                crate::completion::bound_tools(&mut defs);
+                crate::completion::bound_tools(&mut defs, fixed_file_bounds);
             }
             crate::working_state::bound_repairs(&data, run, &mut defs);
             let planning = self.engine.inner.context.build_with_provider(
@@ -1859,7 +1877,11 @@ impl SessionHandle {
                     for mut invocation in child_run.invocations.into_iter().filter(|i| {
                         matches!(
                             i.call.name.as_str(),
-                            "files.write" | "files.edit" | "process.run" | "process.start"
+                            "files.write"
+                                | "files.edit"
+                                | "files.insert"
+                                | "process.run"
+                                | "process.start"
                         )
                     }) {
                         // A child process may create code without file tools.
@@ -2549,9 +2571,25 @@ impl SessionHandle {
             .definition
             .as_ref()
             .map_or(8192, |d| d.output_limit)
-            .min(data.run(run_id)?.limits.max_output_bytes);
-        let verification = (invocation.call.name == "process.run"
-            && result.status == Outcome::Succeeded)
+            .min(data.run(run_id)?.limits.max_output_bytes)
+            .min(
+                if matches!(
+                    invocation.call.name.as_str(),
+                    "files.read" | "files.find" | "files.search"
+                ) {
+                    invocation
+                        .request_input_schema
+                        .as_ref()
+                        .and_then(|s| s[crate::file_io::BUDGET_KEY]["read_page_bytes"].as_u64())
+                        .map_or(usize::MAX, |n| n as usize)
+                } else {
+                    usize::MAX
+                },
+            );
+        let verification = (matches!(
+            invocation.call.name.as_str(),
+            "process.run" | "browser.check"
+        ) && result.status == Outcome::Succeeded)
             .then(|| result.data.get("verification").cloned())
             .flatten();
         let workspace_changes = result
@@ -2567,6 +2605,54 @@ impl SessionHandle {
                 result.artifacts.push(reference);
             }
             let mut excerpt = json!({"excerpt":String::from_utf8_lossy(&bytes[..limit]),"original_bytes":bytes.len(),"truncated":true});
+            if matches!(invocation.call.name.as_str(), "files.find" | "files.search") {
+                let key = if invocation.call.name == "files.find" {
+                    "paths"
+                } else {
+                    "matches"
+                };
+                let mut page = result.data.clone();
+                let base = page["offset"].as_u64().unwrap_or(0);
+                let original_rows = page[key].as_array().map_or(0, Vec::len);
+                let original_more = page["has_more"] == true;
+                page["truncated"] = json!(true);
+                loop {
+                    let len = page[key].as_array().map_or(0, Vec::len);
+                    let more = original_more || len < original_rows;
+                    page["has_more"] = json!(more);
+                    page["next_offset"] = if more {
+                        json!(base + len as u64)
+                    } else {
+                        Value::Null
+                    };
+                    if serde_json::to_vec(&page)?.len() <= limit {
+                        break;
+                    }
+                    if len > 1 {
+                        page[key].as_array_mut().unwrap().pop();
+                    } else {
+                        // A first long match must remain traversable even with
+                        // a tiny request page. Identity/line precede preview.
+                        page.as_object_mut().unwrap().remove("hint");
+                        if let Some(row) = page[key].as_array_mut().and_then(|a| a.first_mut())
+                            && row.is_object()
+                        {
+                            row.as_object_mut().unwrap().remove("context");
+                            row["text"] = json!(crate::completion::excerpt(
+                                row["text"].as_str().unwrap_or(""),
+                                64
+                            ));
+                        }
+                        break;
+                    }
+                }
+                if serde_json::to_vec(&page)?.len() > limit {
+                    result.status = Outcome::ValidationError;
+                    result.error_code = Some("search_page_limit".into());
+                    page = json!({"message":"A result path cannot fit the current page budget. Use process.run for bounded inspection; no continuation cursor is available."});
+                }
+                excerpt = page;
+            }
             if invocation.call.name == "files.read" {
                 if let Some(content) = result.data["content"].as_str() {
                     // Keep a valid, compact page instead of double-escaping a
@@ -2593,16 +2679,48 @@ impl SessionHandle {
                         }
                         count += 1;
                     }
-                    if count > 0 {
+                    if count > 0 && result.data["mode"] != "bytes" {
                         page["content"] = json!(kept);
                         page["end_line"] = json!(start + count - 1);
                         page["next_start_line"] = json!(start + count);
                         excerpt = page;
+                    } else {
+                        // A long/minified line must remain readable without
+                        // repeating the same oversized line forever. Byte
+                        // pages preserve literal UTF-8 bytes and a forward cursor.
+                        let start = result.data["start_byte"].as_u64().unwrap_or(0);
+                        let mut page = json!({"path":result.data["path"],"sha256":result.data["sha256"],
+                            "content":"","mode":"bytes","start_byte":start,"end_byte":start,
+                            "next_start_byte":start,"total_bytes":result.data["total_bytes"],"truncated":true});
+                        let mut end = content.len().min(limit.saturating_sub(384));
+                        while !content.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        loop {
+                            page["content"] = json!(&content[..end]);
+                            page["end_byte"] = json!(start + end as u64);
+                            page["next_start_byte"] = json!(start + end as u64);
+                            if serde_json::to_vec(&page)?.len() <= limit || end == 0 {
+                                break;
+                            }
+                            end = end.saturating_sub((end / 8).max(1));
+                            while !content.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                        }
+                        if end > 0 {
+                            excerpt = page;
+                        }
                     }
                 }
                 // A single oversized line still has an artifact/byte excerpt.
                 // Its identity must remain visible for safe subsequent edits.
                 for field in ["path", "sha256", "start_line", "total_lines"] {
+                    if excerpt["mode"] == "bytes" {
+                        // Byte pages already contain their identity. Adding line
+                        // metadata afterward would exceed the checked page cap.
+                        break;
+                    }
                     if let Some(value) = result.data.get(field) {
                         excerpt[field] = value.clone();
                     }
@@ -2640,11 +2758,13 @@ impl SessionHandle {
             result.data = excerpt;
             result.truncated = true;
         }
-        let repair_failed = matches!(invocation.call.name.as_str(), "files.write" | "files.edit")
-            && matches!(
-                result.error_code.as_deref(),
-                Some("write_conflict" | "coding_step_invalid" | "recovery_step_too_large")
-            );
+        let repair_failed = matches!(
+            invocation.call.name.as_str(),
+            "files.write" | "files.edit" | "files.insert"
+        ) && matches!(
+            result.error_code.as_deref(),
+            Some("write_conflict" | "coding_step_invalid" | "recovery_step_too_large")
+        );
         self.update(|d| {
             let i = d
                 .run_mut(run_id)?
@@ -2754,11 +2874,7 @@ impl SessionHandle {
                 )
                 .await;
         }
-        let request_schema = invocation
-            .request_input_schema
-            .as_ref()
-            .map(|schema| crate::working_state::repair_schema(schema, &invocation.call.arguments));
-        if let Some(schema) = &request_schema
+        if let Some(schema) = &invocation.request_input_schema
             && let Err(error) = validate_arguments(schema, &invocation.call.arguments)
         {
             let lengths: std::collections::BTreeMap<_, _> = ["old", "new", "content"]
@@ -2771,7 +2887,7 @@ impl SessionHandle {
                 .collect();
             let field = match def.name.as_str() {
                 "files.edit" => Some("new"),
-                "files.write" => Some("content"),
+                "files.write" | "files.insert" => Some("content"),
                 _ => None,
             };
             let exceeded = field.and_then(|field| {
@@ -2795,15 +2911,15 @@ impl SessionHandle {
                 .collect();
             result.data = json!({"message":format!("The offered tool schema rejected this call: {}. Argument lengths: {lengths:?}; allowed maxima: {limits:?}. No part executed. Correct the invalid argument; files.write creates new files only, existing files require files.edit with a current hash and exact unique anchor.", error.message),
                 "executed":false,"argument_characters":lengths,"argument_limits":limits});
-            // Anchor/shape errors are not evidence that the new-content
-            // budget is too large. Only an actual size violation shrinks it.
+            // A rejected call does not reduce the next call's size budget.
+            // Otherwise even substantially smaller corrections chase a moving
+            // limit until valid, complete edits become impossible to express.
             if let Some((field, actual, limit)) = exceeded {
-                let next = (limit / 2).max(256).min(limit);
                 result.data["message"] = json!(format!(
-                    "Argument {field} has {actual} characters; this call allowed at most {limit}. No part executed. Next repair for this path: at most {next} characters of new content. Preserve existing work and use files.edit for existing files; do not restart scaffolding."
+                    "Argument {field} has {actual} characters; this call allowed at most {limit}. No part executed. This rejection does not lower the size limit. Use the current tool schema and leave room below its limit for the exact anchor plus one complete change. Preserve existing work and use files.edit for existing files; do not restart scaffolding."
                 ));
                 result.data["allowed_characters"] = json!(limit);
-                result.data["max_new_characters"] = json!(next);
+                result.data["max_new_characters"] = json!(limit);
             }
             return self.outcome(run_id, invocation_id, result).await;
         }
@@ -2823,7 +2939,12 @@ impl SessionHandle {
         let preliminary = self.snapshot().await?;
         if matches!(
             def.name.as_str(),
-            "files.read" | "files.list" | "files.search" | "files.write" | "files.edit"
+            "files.read"
+                | "files.list"
+                | "files.search"
+                | "files.write"
+                | "files.edit"
+                | "files.insert"
         ) && let Err(error) = crate::policy::resource(def, &invocation.call.arguments)
         {
             let mut result = ToolResult::error(Outcome::ValidationError, &error.code);
@@ -2849,6 +2970,23 @@ impl SessionHandle {
         }
         // Hold the lease through preparation, approval and execution. Background
         // processes receive a cloned lease lasting through their actual cleanup.
+        if def.name == "browser.check"
+            || (def.name == "process.start" && invocation.call.arguments["read_only"] == true)
+        {
+            context.writable = false;
+        }
+        if def.name == "files.read_image"
+            && self.engine.inner.provider.capabilities().images
+                == crate::providers::Support::Unsupported
+        {
+            return self
+                .outcome(
+                    run_id,
+                    invocation_id,
+                    ToolResult::error(Outcome::Failed, "images_unsupported"),
+                )
+                .await;
+        }
         if matches!(def.effect, Effect::Read | Effect::Write | Effect::Process)
             && !matches!(def.name.as_str(), "process.status" | "process.cancel")
         {
@@ -2865,6 +3003,12 @@ impl SessionHandle {
                 {
                     context.workspace_lease = Some(lease);
                     break;
+                }
+                let jobs = self.engine.inner.jobs.running(run_id).await;
+                if !jobs.is_empty() {
+                    let mut result = ToolResult::error(Outcome::ValidationError, "workspace_busy");
+                    result.data = json!({"jobs":jobs,"message":"A running background job holds workspace access. Use process.wait (no inference while waiting) or process.cancel, then retry. Do not repeatedly read/list the locked workspace."});
+                    return self.outcome(run_id, invocation_id, result).await;
                 }
                 self.cooperative_delay(run_id, shutdown, 20).await?;
             }
@@ -2884,8 +3028,12 @@ impl SessionHandle {
                 Ok(v) => v,
                 Err(e) => {
                     let mut result = ToolResult::error(Outcome::ValidationError, &e.code);
-                    if (matches!(def.name.as_str(), "files.edit" | "files.write")
-                        && e.code == "write_conflict")
+                    if def.name == "browser.check" {
+                        result.data = json!({"message":e.message});
+                    } else if (matches!(
+                        def.name.as_str(),
+                        "files.edit" | "files.write" | "files.insert"
+                    ) && e.code == "write_conflict")
                         || (matches!(def.name.as_str(), "process.run" | "process.start")
                             && e.code == "path_denied")
                     {
@@ -2893,8 +3041,13 @@ impl SessionHandle {
                         // reasons. The model must distinguish a stale base
                         // from an absent/ambiguous replacement target.
                         let detail = if e.code == "write_conflict" {
+                            let repair = if def.name == "files.insert" {
+                                "Read the relevant range and choose a valid after_line boundary with its current SHA-256."
+                            } else {
+                                "Read the relevant range and use one exact unique anchor with its current SHA-256."
+                            };
                             format!(
-                                "{} No file was changed. Read the relevant range and use one exact unique anchor with its current SHA-256. Preserve the existing file; do not delete/recreate it to bypass this error.",
+                                "{} No file was changed. {repair} Preserve the existing file; do not delete/recreate it to bypass this error.",
                                 e.message
                             )
                         } else {
@@ -3216,8 +3369,19 @@ impl SessionHandle {
                     },
                     &e.code,
                 );
-                if matches!(def.name.as_str(), "files.edit" | "files.write")
-                    && e.code == "write_conflict"
+                if matches!(
+                    def.name.as_str(),
+                    "files.edit" | "files.write" | "files.insert"
+                ) && e.code == "write_conflict"
+                    || matches!(
+                        def.name.as_str(),
+                        "files.find"
+                            | "files.search"
+                            | "files.read_image"
+                            | "browser.check"
+                            | "process.wait"
+                            | "process.log"
+                    )
                 {
                     result.data = json!({"message": e.message});
                 }
@@ -3239,6 +3403,16 @@ impl SessionHandle {
             }
         }
         if outcome.status == Outcome::Succeeded {
+            if self.engine.inner.provider.capabilities().images
+                == crate::providers::Support::Unsupported
+            {
+                outcome.images.clear();
+            }
+            if outcome.images.len() > crate::attachments::MAX_IMAGES
+                || outcome.images.iter().any(|image| image.validate().is_err())
+            {
+                outcome = ToolResult::error(Outcome::Failed, "image_limit");
+            }
             if def.name == "task.plan" {
                 self.update(|d| {
                     d.run_mut(run_id)?.plan = prepared.clone();

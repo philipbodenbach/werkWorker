@@ -143,10 +143,13 @@ impl SessionHandle {
                 .as_array()
                 .is_none_or(|steps| steps.len() < 3)
             || !run.invocations.iter().any(|i| {
-                matches!(i.call.name.as_str(), "files.write" | "files.edit")
-                    && i.result
-                        .as_ref()
-                        .is_some_and(|r| r.status == Outcome::Succeeded)
+                matches!(
+                    i.call.name.as_str(),
+                    "files.write" | "files.edit" | "files.insert"
+                ) && i
+                    .result
+                    .as_ref()
+                    .is_some_and(|r| r.status == Outcome::Succeeded)
             })
             || self.execution_status()["effective_model_requests"]
                 .as_u64()
@@ -162,7 +165,7 @@ impl SessionHandle {
         let task = DelegateTask {
             goal: "Review acceptance criteria and missing behavior for this coding task. Inspect the existing implementation, identify gaps, and propose concrete behavioral assertions through real entry points. The parent continues implementing. Return concise evidence and test recommendations; do not implement or claim the user's task is complete.".into(),
             context: format!("User requirements:\n{}\nCurrent plan:\n{}", crate::completion::excerpt(&run.input, 8000), crate::completion::excerpt(&run.plan.to_string(), 4000)),
-            tools: Some(data.profile.tools.iter().filter(|t| matches!(t.as_str(), "files.read" | "files.list" | "files.search")).cloned().collect()),
+            tools: Some(data.profile.tools.iter().filter(|t| matches!(t.as_str(), "files.read" | "files.list" | "files.search" | "files.find")).cloned().collect()),
             read_only: true,
         };
         if task.tools.as_ref().is_none_or(Vec::is_empty) {

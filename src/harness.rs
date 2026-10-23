@@ -85,6 +85,8 @@ impl HarnessConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct HarnessState {
+    #[serde(default)]
+    pub workspace_changes: std::collections::BTreeMap<String, Value>,
     /// Host-produced receipts survive transcript truncation and compaction.
     #[serde(default)]
     pub verifications: std::collections::BTreeMap<String, Value>,
@@ -343,6 +345,7 @@ pub(crate) fn push_feedback(
 /// Count repeated calls since a changed observation, without trusting model text.
 /// Adaptive and legacy minimal use this; classic keeps its workspace-revision rule.
 pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
+    let call_key = crate::working_state::call_key(call);
     // Polling a proven active owned job is bounded by ordinary tool/step/time
     // limits; lack of a workspace write does not make waiting an error.
     if matches!(call.name.as_str(), "process.status" | "agents.status")
@@ -367,7 +370,7 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
     }
     run.invocations[repetition_boundary(run, call)..]
         .iter()
-        .filter(|i| i.call.name == call.name && i.call.arguments == call.arguments)
+        .filter(|i| crate::working_state::call_key(&i.call) == call_key)
         // The project gate requires a new decision before the first execution.
         .filter(|i| {
             !i.result.as_ref().is_some_and(|r| {
@@ -378,8 +381,10 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
         .count()
 }
 
-fn repetition_boundary(run: &Run, call: &ToolCall) -> usize {
+fn repetition_boundary(run: &Run, _call: &ToolCall) -> usize {
     let mut prior = std::collections::BTreeMap::new();
+    let mut file_hashes = std::collections::BTreeMap::new();
+    let mut checks = std::collections::BTreeSet::new();
     let mut boundary = 0;
     for (index, invocation) in run.invocations.iter().enumerate() {
         let Some(result) = invocation
@@ -389,7 +394,20 @@ fn repetition_boundary(run: &Run, call: &ToolCall) -> usize {
         else {
             continue;
         };
-        let key = fingerprint(&(&invocation.call.name, &invocation.call.arguments));
+        let key = crate::working_state::call_key(&invocation.call);
+        let file = result.data["path"]
+            .as_str()
+            .and_then(|p| crate::working_state::path(p).ok());
+        let changed_file = file.as_ref().is_some_and(|p| {
+            result.data["sha256"].is_string()
+                && file_hashes.get(p) != Some(&result.data["sha256"])
+                && result.data["sha256"] != invocation.call.arguments["expected_hash"]
+        });
+        if let Some(file) = file
+            && result.data["sha256"].is_string()
+        {
+            file_hashes.insert(file, result.data["sha256"].clone());
+        }
         let observable = invocation
             .definition
             .as_ref()
@@ -403,7 +421,14 @@ fn repetition_boundary(run: &Run, call: &ToolCall) -> usize {
             let observation = if invocation.call.name == "process.status" {
                 json!({"running":result.data["running"],"exit_code":result.data["exit_code"],"status":result.data["status"]})
             } else {
-                result.data.clone()
+                let mut data = result.data.clone();
+                if let Some(path) = data["path"]
+                    .as_str()
+                    .and_then(|p| crate::working_state::path(p).ok())
+                {
+                    data["path"] = json!(path);
+                }
+                data
             };
             let value = fingerprint(&observation);
             // A new query's first result is useful for research; repeated unchanged
@@ -412,11 +437,10 @@ fn repetition_boundary(run: &Run, call: &ToolCall) -> usize {
                 boundary = index;
             }
             prior.insert(key, value);
-        } else if (invocation.call.name != call.name || invocation.call.arguments != call.arguments)
-            && invocation
-                .definition
-                .as_ref()
-                .is_some_and(|d| matches!(d.effect, Effect::Write | Effect::Process))
+        } else if changed_file
+            || result.data["workspace_changed"] == true
+            || (result.data["verification"]["files"].is_object()
+                && checks.insert(fingerprint(&result.data["verification"])))
         {
             boundary = index + 1;
         }
@@ -451,11 +475,20 @@ pub(crate) fn read_loop_recovery(
     if recoveries >= 2 {
         return Ok(None);
     }
+    let path = call.arguments["path"]
+        .as_str()
+        .and_then(|p| crate::working_state::path(p).ok());
+    if !crate::working_state::files(session, run)
+        .iter()
+        .any(|v| v["path"].as_str() == path.as_deref() && v["status"] == "present")
+    {
+        return Ok(None);
+    }
     let Some(previous) = run
         .invocations
         .iter()
         .rev()
-        .filter(|i| i.call.name == call.name && i.call.arguments == call.arguments)
+        .filter(|i| crate::working_state::call_key(&i.call) == crate::working_state::call_key(call))
         .filter_map(|i| i.result.as_ref())
         .find(|r| r.status == Outcome::Succeeded && r.data["sha256"].is_string())
     else {

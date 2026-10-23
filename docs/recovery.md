@@ -1,5 +1,8 @@
 # Sessions, persistence and recovery
 
+For missing-file observations, protected edit repair and non-progress loops,
+see [working state and stalled repairs](repair-state.md).
+
 SQLite schema version 1 stores complete canonical session snapshots, including
 durable events, in one transaction with revision CAS. An exclusive sidecar file
 lock prevents a second host from opening the same store. WAL and FULL synchronous

@@ -162,8 +162,9 @@ adaptive support decision is based on a presumed "weak" or "strong" model.
 `input_tokens_*` diagnostics identify accounting provenance; numeric
 `ModelCompleted.metadata.werk.timings` remains observational.
 
-The repetition guard recognizes new or changed read observations and successful
-workspace actions. Unchanged reads cannot reset one another. Polling a proven
+The repetition guard recognizes new or changed read observations, changed file
+hashes, observed process mutations and distinct verification results. Unchanged
+reads, no-op edits and version checks cannot reset one another. Polling a proven
 active owned process/child remains bounded by ordinary run budgets. Failed calls
 and denials are not progress. Permission checks, approval, revocation, sandbox,
 leases, explicitly finite tool/step/request/tree/wall budgets and unknown-outcome
@@ -175,7 +176,7 @@ evidence epoch before `repetition_limit`. The redundant read is **not executed**
 its `repetition_recovery` result identifies the historical receipt and directs
 the model to an incremental edit, missing range, or behavioral check. Unchanged
 reads and failed writes do not replenish these decisions; new evidence or
-successful workspace actions use the same epoch rules as the ordinary guard.
+observed workspace changes use the same epoch rules as the ordinary guard.
 The allowance is derived from persisted tool outcomes, so resume cannot reset it.
 Denied reads without a successful receipt retain the normal guard.
 
@@ -199,11 +200,14 @@ The host hashes the named files before and after execution and records a receipt
 only from the actual tool outcome. Exit status zero, no cancellation/timeout,
 and unchanged files are required. A failed check, missing coverage of changed
 files, later process execution, or stale source/test hashes prevents completion.
-The latest check must include all changed source/test files; use one command
+The latest check must include all remaining changed source/test files; use one command
 that aggregates the relevant checks. Tests that generate fixtures should create
 them before the recorded check. Current plans and bounded evidence excerpts are
 reconstructed independently of transcript compaction. Full receipts survive
 output truncation and persistence. Child file edits and child process work also require parent validation.
+Earlier outputs removed during consolidation are checked for actual absence;
+permission errors never establish absence. Named verification files must still
+exist with their verified hashes.
 
 The harness verifies execution and file identity. It cannot prove that arbitrary
 model-written assertions cover every user requirement. Behavioral checks must
@@ -219,6 +223,12 @@ answers at the same implementation/plan/check state stop with
 `completion_stalled`, never `Completed`; successful repair cycles have no fixed
 count. Owned harness echoes remain invalid even when the model changes internal
 scope/trigger IDs. Arbitrary user JSON is not treated as owned feedback.
+
+Rejected file operations additionally retain a pending repair across compaction.
+During coding repair the shell workspace is read-only; corrected file-tool edits
+remain available. Repeated oversized edits get progressively smaller schema
+limits. See [working state and stalled repairs](repair-state.md) for the exact
+rules, finite non-progress allowance and reference mechanisms.
 
 TUI runs have no aggregate step, request, tool-call or wall-time cutoff by default.
 For headless use, select `--continuous`; SDK hosts use `Limits::continuous()`.

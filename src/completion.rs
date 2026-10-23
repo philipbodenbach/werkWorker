@@ -64,7 +64,13 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
                 .or_insert_with(|| json!({"tool":invocation.call.name,"path":invocation.call.arguments["path"],"count":count,"limit":run.limits.max_repeated_calls}));
         }
     }
-    if run.plan.is_null() && check.is_none() && files.is_empty() && repeated.is_empty() {
+    let repairs = crate::working_state::repairs(session, run);
+    if run.plan.is_null()
+        && check.is_none()
+        && files.is_empty()
+        && repeated.is_empty()
+        && repairs.is_empty()
+    {
         return Ok(None);
     }
     Ok(Some(crate::harness::feedback(
@@ -73,77 +79,19 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
             "plan_excerpt": excerpt(&run.plan.to_string(), 4096),
             "verification_excerpt": excerpt(&serde_json::to_string(&observed)?, 3072),
             "files": files,
+            "pending_repairs": repairs,
             "repeated_calls": repeated.into_values().collect::<Vec<_>>(),
-            "detail":"Current run plan and verification; historical file observations, not guarantees against external edits. Compaction does not erase files. Later writes supersede old empty listings. Reuse observed hashes/anchors with files.edit; read only missing details. Finish and verify remaining work."
+            "detail":"Current run plan and verification. Latest observations per normalized path supersede older receipts, including not_found and missing directory entries. A missing file has no valid edit hash or anchor. Compaction does not change files. Repair a rejected edit with an exact observed anchor; never delete and rebuild to bypass it. Pending repairs keep shell workspace read-only until a corrected file change succeeds. Finish and verify remaining work."
         }),
     )))
 }
 
 fn file_observations(session: &SessionData, run: &Run) -> Vec<Value> {
-    let mut files = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for invocation in std::iter::once(run)
-        .chain(session.runs.iter().rev().filter(|r| r.id != run.id))
-        .flat_map(|r| r.invocations.iter().rev())
-        .take(128)
-    {
-        if !matches!(
-            invocation.call.name.as_str(),
-            "files.read" | "files.write" | "files.edit"
-        ) {
-            continue;
-        }
-        let Some(result) = invocation
-            .result
-            .as_ref()
-            .filter(|r| r.status == Outcome::Succeeded)
-        else {
-            continue;
-        };
-        let Some(path) = result.data["path"]
-            .as_str()
-            .and_then(|p| normalized_path(p).ok())
-        else {
-            continue;
-        };
-        if !result.data["sha256"].is_string() || !seen.insert(path.clone()) {
-            continue;
-        }
-        let mut receipt =
-            json!({"path":path,"tool":invocation.call.name,"sha256":result.data["sha256"]});
-        if invocation.call.name == "files.read" {
-            receipt["lines"] = json!([result.data["start_line"], result.data["end_line"]]);
-            receipt["total_lines"] = result.data["total_lines"].clone();
-            receipt["next_start_line"] = result.data["next_start_line"].clone();
-            // Preserve a small exact observed tail for incremental edits, not
-            // a model-written summary or a fabricated unique insertion point.
-            if let Some(content) = result.data["content"].as_str() {
-                let mut start = content.len().saturating_sub(384);
-                while !content.is_char_boundary(start) {
-                    start += 1;
-                }
-                receipt["observed_tail_excerpt"] = json!(&content[start..]);
-            }
-        }
-        if serde_json::to_vec(&files).unwrap_or_default().len() + receipt.to_string().len() > 4096 {
-            break;
-        }
-        files.push(receipt);
-        if files.len() == 8 {
-            break;
-        }
-    }
-    files
+    crate::working_state::bounded_files(session, run)
 }
 
 fn normalized_path(path: &str) -> Result<String> {
-    let path = crate::policy::workspace_path(path)?;
-    Ok(std::path::Path::new(path)
-        .components()
-        .filter(|p| !matches!(p, std::path::Component::CurDir))
-        .map(|p| p.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/"))
+    crate::working_state::path(path)
 }
 
 pub(crate) async fn verification_files(
@@ -265,8 +213,20 @@ pub(crate) async fn findings(
     }
     let files: BTreeMap<String, String> =
         serde_json::from_value(evidence["files"].clone()).unwrap_or_default();
-    if files.is_empty() || touched.keys().any(|path| !files.contains_key(path)) {
+    if files.is_empty() {
         return Ok(Some("Verification does not cover every changed file. Include the implementation and test paths and rerun the behavioral checks.".into()));
+    }
+    for path in touched.keys().filter(|path| !files.contains_key(*path)) {
+        // Consolidation/renames can remove earlier outputs. Verify every
+        // remaining changed file; never require executing a deleted source.
+        // A read/permission/size error is not proof of intentional absence.
+        if !workspace
+            .read(path, 1_048_576)
+            .await
+            .is_err_and(|e| e.code == "not_found")
+        {
+            return Ok(Some("Verification does not cover every remaining changed file. Include the implementation and test paths and rerun the behavioral checks.".into()));
+        }
     }
     for (path, expected) in files {
         if !workspace

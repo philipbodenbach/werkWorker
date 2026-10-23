@@ -1469,6 +1469,7 @@ impl SessionHandle {
             if crate::completion::enabled(&data, run)? {
                 crate::completion::bound_tools(&mut defs);
             }
+            crate::working_state::bound_repairs(&data, run, &mut defs);
             let planning = self.engine.inner.context.build_with_provider(
                 &data,
                 run,
@@ -2553,6 +2554,11 @@ impl SessionHandle {
             && result.status == Outcome::Succeeded)
             .then(|| result.data.get("verification").cloned())
             .flatten();
+        let workspace_changes = result
+            .data
+            .get("workspace_changes")
+            .filter(|v| v.as_object().is_some_and(|v| !v.is_empty()))
+            .cloned();
         let bytes = serde_json::to_vec(&result.data)?;
         if bytes.len() > limit {
             if let Some(store) = &self.engine.inner.artifacts
@@ -2602,13 +2608,18 @@ impl SessionHandle {
                     }
                 }
             }
-            if let Some(verification) = &verification {
+            if invocation.call.name == "process.run" {
                 excerpt = json!({
                     "exit_code":result.data["exit_code"],
                     "stdout":result.data["stdout"],"stderr":result.data["stderr"],
-                    "verification":{"passed":verification["passed"],"receipt_retained":true},
+                    "workspace_changed":result.data["workspace_changed"],
+                    "repair_protection":result.data["repair_protection"],
                     "truncated":true
                 });
+                if let Some(verification) = &verification {
+                    excerpt["verification"] =
+                        json!({"passed":verification["passed"],"receipt_retained":true});
+                }
                 // Keep a valid process result inside the output allowance;
                 // evidence lives separately, not in a broken JSON excerpt.
                 while serde_json::to_vec(&excerpt)?.len() > limit {
@@ -2629,6 +2640,11 @@ impl SessionHandle {
             result.data = excerpt;
             result.truncated = true;
         }
+        let repair_failed = matches!(invocation.call.name.as_str(), "files.write" | "files.edit")
+            && matches!(
+                result.error_code.as_deref(),
+                Some("write_conflict" | "coding_step_invalid" | "recovery_step_too_large")
+            );
         self.update(|d| {
             let i = d
                 .run_mut(run_id)?
@@ -2651,11 +2667,18 @@ impl SessionHandle {
                     run.status = RunStatus::Running;
                 }
             }
-            if let Some(verification) = verification {
+            if verification.is_some() || workspace_changes.is_some() {
                 let mut state = crate::harness::state(d, run_id)?;
-                state
-                    .verifications
-                    .insert(invocation_id.into(), verification);
+                if let Some(verification) = verification {
+                    state
+                        .verifications
+                        .insert(invocation_id.into(), verification);
+                }
+                if let Some(changes) = workspace_changes {
+                    state
+                        .workspace_changes
+                        .insert(invocation_id.into(), changes);
+                }
                 crate::harness::save(d, run_id, &state)?;
             }
             d.emit(
@@ -2667,7 +2690,21 @@ impl SessionHandle {
             );
             Ok(())
         })
-        .await
+        .await?;
+        if repair_failed {
+            let data = self.snapshot().await?;
+            let run = data.run(run_id)?;
+            if crate::working_state::repairs(&data, run).iter().any(|r| {
+                r["attempts"].as_u64().unwrap_or(0)
+                    >= run.limits.max_repeated_calls.saturating_add(2) as u64
+            }) {
+                return Err(WorkerError::new(
+                    "repair_no_progress",
+                    "Repeated file repairs failed without changing the affected file. Existing work is retained. Inspect the last exact edit/size error before continuing; restarting scaffolding is not recovery.",
+                ));
+            }
+        }
+        Ok(())
     }
     async fn execute_invocation(
         &self,
@@ -2726,7 +2763,29 @@ impl SessionHandle {
                 )
             };
             let mut result = ToolResult::error(Outcome::ValidationError, code);
-            result.data = json!({"message":detail});
+            let limit = invocation
+                .request_input_schema
+                .as_ref()
+                .and_then(|s| {
+                    s["properties"][if def.name == "files.edit" {
+                        "new"
+                    } else {
+                        "content"
+                    }]["maxLength"]
+                        .as_u64()
+                })
+                .unwrap_or(2048);
+            let next = (limit / 2).max(256);
+            let lengths: std::collections::BTreeMap<_, _> = ["old", "new", "content"]
+                .into_iter()
+                .filter_map(|key| {
+                    invocation.call.arguments[key]
+                        .as_str()
+                        .map(|v| (key, v.chars().count()))
+                })
+                .collect();
+            result.data = json!({"message":format!("{detail} Next repair: at most {next} characters of new content. Keep the current file and implement one complete function/block; do not repeat setup or delete the file."),
+                "executed":false,"argument_characters":lengths,"max_new_characters":next});
             return self.outcome(run_id, invocation_id, result).await;
         }
         let tool = self.engine.inner.tools.get(&def.name)?;
@@ -2791,6 +2850,13 @@ impl SessionHandle {
                 self.cooperative_delay(run_id, shutdown, 20).await?;
             }
         }
+        if matches!(def.name.as_str(), "process.run" | "process.start")
+            && crate::working_state::protect_process(&preliminary, preliminary.run(run_id)?)
+        {
+            // Repair policy is enforced by the existing read-only sandbox mount,
+            // including shell/interpreter commands, not a blacklist of rm spellings.
+            context.writable = false;
+        }
         let prepared = if invocation.prepared.is_null() {
             match tool
                 .prepare(invocation.call.arguments.clone(), &context)
@@ -2807,7 +2873,15 @@ impl SessionHandle {
                         // Builtin path/file preparation emits static, non-secret
                         // reasons. The model must distinguish a stale base
                         // from an absent/ambiguous replacement target.
-                        result.data = json!({"message": e.message});
+                        let detail = if e.code == "write_conflict" {
+                            format!(
+                                "{} No file was changed. Read the relevant range and use one exact unique anchor with its current SHA-256. Preserve the existing file; do not delete/recreate it to bypass this error.",
+                                e.message
+                            )
+                        } else {
+                            e.message
+                        };
+                        result.data = json!({"message":detail});
                     }
                     return self.outcome(run_id, invocation_id, result).await;
                 }
@@ -3082,6 +3156,11 @@ impl SessionHandle {
             Ok(())
         })
         .await?;
+        let before = if def.name == "process.run" {
+            crate::working_state::capture(&data, run, &context.workspace).await
+        } else {
+            Default::default()
+        };
         let future = async {
             if crate::agents::is_agent_tool(&def.name) {
                 self.agent_tool(run_id, invocation_id, &def.name, prepared.clone(), shutdown)
@@ -3107,7 +3186,7 @@ impl SessionHandle {
                 }
             }
         };
-        let outcome = match result {
+        let mut outcome = match result {
             Ok(value) => value,
             Err(e) => {
                 let mut result = ToolResult::error(
@@ -3126,6 +3205,20 @@ impl SessionHandle {
                 result
             }
         };
+        if def.name == "process.run" {
+            let after = crate::working_state::capture(&data, run, &context.workspace).await;
+            outcome.data["workspace_changes"] = crate::working_state::changes(&before, after);
+            outcome.data["workspace_changed"] = json!(
+                outcome.data["workspace_changes"]
+                    .as_object()
+                    .is_some_and(|v| !v.is_empty())
+            );
+            if !context.writable && preliminary.policy.workspace_writable {
+                outcome.data["repair_protection"] = json!(
+                    "Workspace mounted read-only during file repair. Fix the rejected files.edit/files.write using its error receipt. Existing work was preserved; shell deletion/rewrite is not a repair."
+                );
+            }
+        }
         if outcome.status == Outcome::Succeeded {
             if def.name == "task.plan" {
                 self.update(|d| {

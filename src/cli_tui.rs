@@ -824,6 +824,9 @@ impl View {
             "repetition_limit" => {
                 "The agent repeated the same tool call too often. The history is retained. Send a follow-up naming the next concrete step; successful setup results can be reused."
             }
+            "repair_no_progress" => {
+                "Repeated file repairs failed. Existing files and error receipts are retained. Continue with a smaller complete edit using the current file content; do not restart the implementation."
+            }
             "timeout" | "network_error" | "interrupted_stream" | "inference_unresolved" => {
                 "The backend may still be processing the interrupted request. Check or restart Werk, then reconnect Worker before continuing. Saved work and session history are retained."
             }

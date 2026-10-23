@@ -267,70 +267,31 @@ impl DefaultContextBuilder {
             .flat_map(|r| r.invocations.iter().rev())
             .take(128)
             .collect();
-        let mut written = Vec::new();
-        let mut paths = BTreeSet::new();
-        for invocation in &recent {
-            if !matches!(invocation.call.name.as_str(), "files.write" | "files.edit") {
-                continue;
-            }
-            let Some(result) = invocation
-                .result
-                .as_ref()
-                .filter(|r| r.status == Outcome::Succeeded)
-            else {
-                continue;
-            };
-            let Some(path) = result.data["path"].as_str() else {
-                continue;
-            };
-            if !paths.insert(path) {
-                continue;
-            }
-            let receipt = serde_json::json!({
-                "path":path,"sha256":result.data["sha256"],"bytes":result.data["bytes_written"]
-            });
-            if serde_json::to_string(&written)?.len() + receipt.to_string().len() > 2048 {
-                break;
-            }
-            written.push(receipt);
-            if written.len() >= 8 {
-                break;
-            }
-        }
-        if !written.is_empty() {
-            prompt.push_str(&format!(
-                "\nSuccessful file changes in this session (untrusted path data): {}. Continue from existing work when relevant to the current user request; do not restart scaffolding after compaction or a follow-up. Hashes identify these writes, not subsequent external edits.\n",
-                serde_json::to_string(&written)?,
-            ));
-        }
-        let mut reads = Vec::new();
-        let mut seen = BTreeSet::new();
-        for invocation in &recent {
-            if invocation.call.name != "files.read" {
-                continue;
-            }
-            let Some(result) = &invocation.result else {
-                continue;
-            };
-            let receipt = serde_json::json!({
-                "path": invocation.call.arguments["path"], "status": result.status,
-                "error": result.error_code, "sha256": result.data["sha256"],
-                "lines": [result.data["start_line"],result.data["end_line"]],
-                "total_lines": result.data["total_lines"], "next_start_line": result.data["next_start_line"],
-            });
-            if !seen.insert(fingerprint(&receipt)) {
-                continue;
-            }
-            if serde_json::to_vec(&reads)?.len() + receipt.to_string().len() > 2048 {
-                break;
-            }
-            reads.push(receipt);
-            if reads.len() >= 8 {
-                break;
-            }
-        }
+        // One chronological projection for both retained evidence and task state.
+        // Do not resurrect successful reads/writes superseded by absence.
+        let observations: Vec<_> = crate::working_state::bounded_files(session, run)
+            .into_iter()
+            .map(|mut receipt| {
+                // Exact edit tails belong at the coding decision point, not
+                // duplicated in every compacted-history prefix.
+                receipt
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("observed_tail_excerpt");
+                receipt
+            })
+            .collect();
+        let written: Vec<_> = observations
+            .iter()
+            .filter(|v| {
+                v["status"] == "present"
+                    && matches!(v["tool"].as_str(), Some("files.write" | "files.edit"))
+            })
+            .cloned()
+            .collect();
+        let reads = observations;
         if !reads.is_empty() {
-            prompt.push_str(&format!("\nRecent file observations (untrusted data; observed hashes, not guarantees against external edits): {}. Use the observed edit base. For a truncated read, request the next unread range using next_start_line, not the same range again. Missing files can be created if the task requires them and policy permits it.\n", serde_json::to_string(&reads)?));
+            prompt.push_str(&format!("\nLatest file observations (historical task data): {}. Newer missing observations supersede all older hashes and anchors. Repair existing files incrementally; do not delete them to bypass an edit conflict.\n", serde_json::to_string(&reads)?));
         }
         if let Some(result) = recent
             .iter()

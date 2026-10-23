@@ -17,6 +17,7 @@ pub mod sessions;
 pub mod skills;
 pub mod tools;
 pub mod transport;
+mod working_state;
 
 pub use api::{EngineBuilder, RunHandle, SessionHandle, WorkerEngine};
 pub use core::*;

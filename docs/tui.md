@@ -99,7 +99,12 @@ questions clear the selection and appear immediately.
 
 Slash commands: `/help` shows commands and shortcuts, `/clear` clears only the
 visible conversation, `/cancel` cancels the active run, `/agents` opens live child details, `/permissions` explains current tools and rights, `/settings` edits session/project configuration, `/setup` reconnects through the configuration wizard when no run is active, and `/quit` closes the
-session with the same cleanup as Ctrl-Q. Commands work without a connected model.
+session with the same cleanup as Ctrl-Q. `/effort` (alias `/reasoning`) opens a
+small slider above the input: Left/Right chooses a valid protocol tier, Enter
+applies, and Escape cancels the preview. `/effort high` selects a tier directly;
+`/effort default` restores the server default. The choice is saved with the
+session and used for newly planned requests, including subagents. Reasoning
+controls require a connected provider; other local commands work offline.
 Known commands also work while answering a pending question. Other slash-prefixed
 input is treated as an answer. F2/F3 preserve any draft answer.
 
@@ -110,6 +115,12 @@ scroll offsets use the same terminal-width calculation, including wide character
 Failed attempts remain visibly interrupted. Terminal run errors show their code,
 message and next action in the transcript, including when reopening a failed chat.
 Completed and failed runs leave the session open for follow-up messages.
+Messages sent during a running task steer that run. The chat confirms when an
+update is queued and when it enters a model request. The current tool batch or
+generation finishes first; context planning and subsequent retries incorporate
+new updates before dispatch. User messages remain verbatim through compaction.
+The model is instructed to acknowledge changes and reconcile the task plan and
+verification; delivery alone is not evidence that the requested change is done.
 Pending approvals and questions appear below the conversation
 and identify their owning agent. Questions show the agent's suggested answers plus
 **Write my own answer**. Use Up/Down and Enter, or type a custom answer directly.

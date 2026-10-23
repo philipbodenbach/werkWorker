@@ -144,6 +144,7 @@ fn information_text(text: &str) -> Text<'static> {
                             | "Hard-denied tools"
                             | "Available skills"
                             | "Status"
+                            | "Reasoning"
                             | "Model requests"
                             | "Tool calls"
                             | "Draft profile"
@@ -208,7 +209,7 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r" \____/"];
-const COMMANDS: [(&str, &str); 10] = [
+const COMMANDS: [(&str, &str); 12] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
@@ -222,6 +223,8 @@ const COMMANDS: [(&str, &str); 10] = [
     ("/view", "Choose Compact or Cockpit layout"),
     ("/sessions", "Start a new chat or open a previous session"),
     ("/settings", "Edit profile, permissions, tools and skills"),
+    ("/effort", "Choose model reasoning effort; /effort <tier>"),
+    ("/reasoning", "Choose reasoning tier or server default"),
 ];
 const RESUME_REQUIRED: &str =
     "Resume the interrupted run via /sessions before sending another message.";
@@ -309,6 +312,7 @@ enum Screen {
     PermissionConsent,
     Appearance,
     Settings,
+    Effort,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -384,6 +388,7 @@ impl ScrollPane {
 }
 #[derive(Default)]
 struct View {
+    effort: crate::cli_effort::Picker,
     transcript: String,
     input: String,
     input_cursor: Option<usize>,
@@ -922,7 +927,12 @@ impl View {
                     snapshot.estimated_tokens,
                     snapshot.omitted_messages.len()
                 );
-                if !snapshot.omitted_messages.is_empty() {
+                if !snapshot.omitted_messages.is_empty()
+                    && snapshot
+                        .planning
+                        .as_ref()
+                        .is_none_or(|p| !p.reused_selection || p.compaction_candidates > 0)
+                {
                     self.append(&format!(
                         "\n  compaction · {} messages represented by bounded excerpts/summary\n",
                         snapshot.omitted_messages.len()
@@ -936,8 +946,17 @@ impl View {
             EventKind::AttemptFailed { code, .. } => {
                 self.append(&format!("\n[Attempt interrupted: {code}]\n"))
             }
+            EventKind::Diagnostic { code } if code == "steering_queued" => {
+                self.append("\n  steering · Queued for the next model request; the current step finishes first.\n");
+            }
+            EventKind::Diagnostic { code } if code == "steering_applied" => {
+                self.append("\n  steering · Included in this model request.\n");
+            }
             EventKind::Diagnostic { code } if code == "completion_pending" => {
                 self.append("\nVerification incomplete. Continuing implementation and checks; the task is not completed.\n");
+            }
+            EventKind::Diagnostic { code } if code.starts_with("compaction_low_progress:") => {
+                self.append("\n  context · Compaction freed little space. Reusing the shortened history; repeated history sweeps are stopped.\n");
             }
             EventKind::Diagnostic { code }
                 if code == "model_output_recovery" || code == "model_output_recovery_split" =>
@@ -1546,11 +1565,12 @@ fn draw(frame: &mut Frame, view: &mut View) {
                 ),
                 Line::styled(
                     clean(&format!(
-                        " {} · {} subagents · {} model requests · {} tool calls",
+                        " {} · {} subagents · {} model requests · {} tool calls · {}",
                         view.capacity.lines().next().unwrap_or("Not connected"),
                         view.agent_views.len(),
                         view.model_requests,
-                        view.tools
+                        view.tools,
+                        view.effort.label()
                     )),
                     Style::default().fg(MUTED),
                 ),
@@ -1559,7 +1579,7 @@ fn draw(frame: &mut Frame, view: &mut View) {
         );
     }
     match view.screen {
-        Screen::Conversation => {
+        Screen::Conversation | Screen::Effort => {
             let show_images = !view.session_images.is_empty() || !view.pasted_images.is_empty();
             if view.layout == LayoutMode::Cockpit || (show_images && area.width >= 70) {
                 let columns =
@@ -1567,12 +1587,13 @@ fn draw(frame: &mut Frame, view: &mut View) {
                         .split(rows[1]);
                 draw_chat(frame, view, columns[0]);
                 let session_details = format!(
-                    "Status: {}\n{}\n{}\n\n{}\n{}\n\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nF2 permissions · F3 agents\nF4 view menu · F5 settings",
+                    "Status: {}\n{}\n{}\n\n{}\n{}\n{}\n\n{}\n\n{}\n\nModel requests: {}\nTool calls: {}\n\nF2 permissions · F3 agents\nF4 view menu · F5 settings · /effort",
                     view.status,
                     view.session_id,
                     view.run_id,
                     view.capacity,
                     view.context_status,
+                    view.effort.label(),
                     view.agents,
                     view.access_summary,
                     view.model_requests,
@@ -1693,6 +1714,9 @@ fn draw(frame: &mut Frame, view: &mut View) {
                 rows[1],
             );
         }
+    }
+    if matches!(view.screen, Screen::Effort) {
+        view.effort.draw(frame, rows[1]);
     }
     let pending = view.approval.is_some() || view.interaction.is_some();
     let input_title = if !matches!(view.screen, Screen::Conversation) {
@@ -2159,6 +2183,8 @@ pub async fn show(
     }
     if let Some(session) = &session {
         let execution = session.execution_status();
+        view.effort
+            .start(session.clone(), limits.clone(), None, true);
         view.capacity = format!(
             "Inference slots: {}\n{}",
             execution["effective_model_requests"],
@@ -2213,6 +2239,23 @@ pub async fn show(
     let mut exit = Exit::Quit;
     loop {
         tokio::select! {
+            result = async { match &mut view.effort.pending { Some(task) => task.await, None => std::future::pending().await } } => {
+                view.effort.pending = None;
+                match result {
+                    Ok(Ok(options)) => {
+                        if view.effort.applying {
+                            view.append(&format!("\nReasoning effort set to {}. Saved for this session; applies to newly planned model requests.\n",options.label()));
+                            if matches!(view.screen, Screen::Effort) { view.screen = Screen::Conversation; }
+                        }
+                        view.effort.update(options);
+                        if !view.effort.quiet { view.error.clear(); }
+                    },
+                    Ok(Err(error)) if !view.effort.quiet => view.error = error.to_string(),
+                    Err(error) if !view.effort.quiet => view.error = format!("Reasoning request failed: {error}"),
+                    _ => {},
+                }
+                dirty = true;
+            },
             _ = animation_tick.tick() => {
                 if view.processing().is_some() {
                     view.spinner_frame = view.spinner_frame.wrapping_add(1);
@@ -2420,6 +2463,14 @@ pub async fn show(
                 }
                 if !matches!(view.screen, Screen::Conversation) && !(ctrl && key.code == KeyCode::Char('c')) {
                     match key.code {
+                        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if matches!(view.screen, Screen::Effort) && view.effort.pending.is_none() => {
+                            view.effort.move_selection(matches!(key.code,KeyCode::Right | KeyCode::Down));
+                        },
+                        KeyCode::Enter if matches!(view.screen, Screen::Effort) && view.effort.pending.is_none() => {
+                            if let Some(tier) = view.effort.choice() && let Some(session) = &session {
+                                view.effort.start(session.clone(),limits.clone(),Some(tier),false);
+                            }
+                        },
                         KeyCode::Esc => { view.screen = Screen::Conversation; },
                         KeyCode::Enter if matches!(view.screen, Screen::Permissions) => {
                             view.permission_selected = 1;
@@ -2575,6 +2626,14 @@ pub async fn show(
                                 view.append(&format!("\n\nPermissions · {message}\n"));
                                 view.refresh_permissions(&session.snapshot().await?);
                                 view.input.clear(); view.edited_input();
+                                return Ok(());
+                            }
+                            if let Some(tier) = crate::cli_effort::command(&input) {
+                                let session = session.as_ref().ok_or_else(|| WorkerError::new("not_connected", "Connect Werk using /setup first"))?;
+                                if view.effort.applying && view.effort.pending.is_some() { return Err(WorkerError::new("reasoning_pending", "Wait for the pending effort change")); }
+                                let tier = if tier.is_empty() { view.screen = Screen::Effort; None } else { Some(tier.to_owned()) };
+                                view.effort.start(session.clone(),limits.clone(),tier,false);
+                                view.input.clear(); view.edited_input(); view.error.clear();
                                 return Ok(());
                             }
                             if COMMANDS.iter().any(|(name, _)| *name == input) || (view.interaction.is_none() && input.starts_with('/')) {
@@ -3132,6 +3191,7 @@ mod tests {
             Screen::Permissions,
             Screen::PermissionConsent,
             Screen::Appearance,
+            Screen::Effort,
         ] {
             view.screen = screen;
             for (width, height) in [(130, 36), (40, 12), (1, 1)] {
@@ -3154,6 +3214,7 @@ mod tests {
                         Screen::PermissionConsent => "Enable tool approval requests",
                         Screen::Appearance => "Choose your layout",
                         Screen::Settings => "Settings",
+                        Screen::Effort => "Reasoning effort",
                     }));
                 }
             }

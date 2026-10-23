@@ -11,6 +11,7 @@ pub mod policy;
 pub mod profiles;
 pub mod project;
 pub mod providers;
+mod reasoning;
 pub mod runtime;
 pub mod sessions;
 pub mod skills;

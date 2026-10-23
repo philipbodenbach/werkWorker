@@ -375,6 +375,29 @@ pub struct ContextSnapshot {
     pub message_count: usize,
     pub omitted_messages: Vec<usize>,
     pub summary: Option<String>,
+    /// Selection checkpoint only; token counts are always revalidated against
+    /// the current provider, tools, reasoning and output/context limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ContextSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning: Option<ContextPlanning>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPlanning {
+    pub reused_selection: bool,
+    pub provider_estimates: usize,
+    pub input_tokens_before: usize,
+    pub compaction_candidates: usize,
+    pub ineffective_compaction: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextSource {
+    pub message_count: usize,
+    pub hash: String,
+    /// Only this projection's bounded extractive text. Model summaries are
+    /// reconstructed separately from canonical compaction records.
+    #[serde(default)]
+    pub excerpt: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionRecord {
@@ -432,6 +455,9 @@ pub struct Run {
     pub steering: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steering_messages: Vec<Message>,
+    /// Accepted steering is in canonical history but has not reached a model request yet.
+    #[serde(default)]
+    pub steering_context_pending: bool,
     pub plan: Value,
     pub similar_grants: Vec<String>,
     pub repaired_output: bool,

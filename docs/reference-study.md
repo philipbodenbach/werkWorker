@@ -1,5 +1,10 @@
 # Reference study — 2026-10-19
 
+The later [context-planning study](context-planning-study.md) compares Claude Code,
+Codex, little-coder, DSH and Hermes specifically for long-session maintenance and
+Werk Protocol admission. Its [offline measurements](benchmarks/2026-10-23-context-planning/README.md)
+are separate from this initial architecture study.
+
 References inspected before implementation, using GitHub's public content API
 at the following exact remote HEAD revisions. The original engine copied no source; subsequent release/installer scripts
 are adapted from Werk with attribution in NOTICE.

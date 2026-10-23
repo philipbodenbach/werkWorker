@@ -1,5 +1,7 @@
 #[path = "cli_config.rs"]
 mod cli_config;
+#[path = "cli_effort.rs"]
+mod cli_effort;
 #[path = "cli_setup.rs"]
 mod cli_setup;
 #[path = "cli_start.rs"]

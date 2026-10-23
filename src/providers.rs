@@ -32,6 +32,10 @@ pub struct ModelCapabilities {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRequest {
+    /// Host selection captured when planning this request. None inherits the
+    /// connection configuration; "default" explicitly restores server defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tier: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub max_output_tokens: usize,
@@ -64,6 +68,9 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    async fn reasoning_options(&self, _output: usize) -> Result<Option<ReasoningOptions>> {
+        Ok(None)
+    }
     /// Verified generation ceiling, distinct from the desired initial reserve.
     fn max_output_tokens(&self) -> Option<usize> {
         None
@@ -404,6 +411,50 @@ pub struct ReasoningLimits {
     pub output_tokens: u64,
     pub reasoning_tokens: Option<u64>,
     pub answer_reserve_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningOptions {
+    pub model: String,
+    pub requested: String,
+    pub native_effort: Option<Value>,
+    pub profile: Option<ReasoningProfile>,
+}
+impl ReasoningOptions {
+    pub fn label(&self) -> String {
+        if let Some(value) = &self.native_effort {
+            return format!("Native: {value}");
+        }
+        let tier = self.profile.as_ref().and_then(|p| {
+            let id = if self.requested == "default" {
+                p.default_tier.as_deref()
+            } else {
+                Some(self.requested.as_str())
+            };
+            p.tiers.iter().find(|t| Some(t.id.as_str()) == id)
+        });
+        let label = tier.map_or_else(|| self.requested.clone(), |t| t.label.clone());
+        let label = if self.requested == "default" {
+            if tier.is_some() {
+                format!("Server default: {label}")
+            } else {
+                "Server default (not reported)".into()
+            }
+        } else {
+            label
+        };
+        format!(
+            "{label}{}{}",
+            tier.and_then(|t| t.reasoning_tokens)
+                .map(|n| format!("; {n} reasoning tokens"))
+                .unwrap_or_default(),
+            if tier.is_some_and(|t| !t.available) {
+                " (unavailable at these limits)"
+            } else {
+                ""
+            }
+        )
+    }
 }
 
 pub fn validate_reasoning_tier(value: &Value) -> Result<()> {
@@ -856,23 +907,37 @@ impl WerkProvider {
             if key == "reasoning_tier" {
                 continue;
             }
-            if key == "reasoning_effort" && value.is_null() {
+            if key == "reasoning_effort" && (value.is_null() || request.reasoning_tier.is_some()) {
                 continue;
             }
             body[key] = value.clone();
         }
+        if let Some(tier) = &request.reasoning_tier {
+            validate_reasoning_tier(&json!(tier))?;
+            if tier != "default" && !self.supports_reasoning_tiers() {
+                return Err(WorkerError::new(
+                    "invalid_reasoning_tier",
+                    "This server does not advertise reasoning tiers",
+                ));
+            }
+        }
         if self.supports_reasoning_tiers()
-            && !self
-                .config
-                .options
-                .get("reasoning_effort")
-                .is_some_and(|v| !v.is_null())
+            && (request.reasoning_tier.is_some()
+                || !self
+                    .config
+                    .options
+                    .get("reasoning_effort")
+                    .is_some_and(|v| !v.is_null()))
         {
-            let tier = self
-                .config
-                .options
-                .get("reasoning_tier")
-                .and_then(Value::as_str)
+            let tier = request
+                .reasoning_tier
+                .as_deref()
+                .or_else(|| {
+                    self.config
+                        .options
+                        .get("reasoning_tier")
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("default");
             body["werk"] = json!({"reasoning":{"tier":tier}});
         }
@@ -1149,6 +1214,25 @@ pub fn wire_message(message: &Message) -> Value {
 }
 #[async_trait]
 impl ModelProvider for WerkProvider {
+    async fn reasoning_options(&self, output: usize) -> Result<Option<ReasoningOptions>> {
+        Ok(Some(ReasoningOptions {
+            model: self.config.model.clone(),
+            requested: self
+                .config
+                .options
+                .get("reasoning_tier")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .into(),
+            native_effort: self
+                .config
+                .options
+                .get("reasoning_effort")
+                .filter(|v| !v.is_null())
+                .cloned(),
+            profile: self.reasoning_profile(&self.config.model, output).await?,
+        }))
+    }
     fn max_output_tokens(&self) -> Option<usize> {
         self.output_limit
     }

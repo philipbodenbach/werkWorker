@@ -129,10 +129,22 @@ numbers unchanged. It is displayed as **Native** and preserved until explicitly
 changed. It cannot be combined with `reasoning_tier`; native overrides bypass
 managed tier mapping. `capabilities.reasoning` is a capability declaration only.
 
-Use `/setup` to change reasoning and reconnect. This starts a new session and
-does not change an in-flight request or restart the model server. Setup does not
-test model-specific reasoning levels by generating a response; if Werk rejects
-a level, the run reports that error without silently choosing another level.
+Use `/effort` or `/reasoning` in chat to open the model's protocol-backed tier
+slider above the input. Left/Right (or Up/Down) selects a valid value, Enter
+applies it, and Escape discards the preview. The conversation stays visible.
+Direct commands such as `/effort high`, `/reasoning low`, and
+`/effort default` also work. Only available tiers appear on the slider;
+unavailable direct selections are rejected. `default` follows Werk's reported default and current limits, and clears
+an inherited native override for this session. No inference is used for discovery.
+
+Chat selections are saved with the current session and apply to newly planned
+requests in the parent and its existing subagents. A request already planned or
+streaming retains its captured selection across counting, dispatch and retries.
+Token-count caches and request fingerprints include the selection. Reopening the
+same session restores its choice for the same provider/model; new sessions use
+connection/project defaults. `/setup` continues to configure connection/project
+defaults and reconnect. If Werk rejects a tier under changed limits, Worker
+reports the error without silently choosing another tier.
 
 Directly entered keys exist only in the process for the connection/session.
 They are masked on screen and are absent from settings, prompts, tool arguments

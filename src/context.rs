@@ -16,7 +16,7 @@ pub(crate) fn image_token_reserve(request: &ModelRequest) -> usize {
 
 /// Conservative serialized wire bytes plus template margin, not a tokenizer count.
 pub fn estimate_request(request: &ModelRequest) -> usize {
-    let wire = serde_json::json!({
+    let mut wire = serde_json::json!({
         "messages": request.messages.iter().map(|m| {
             if m.images.is_empty() { wire_message(m) } else {
                 let mut text = m.clone(); text.images.clear(); wire_message(&text)
@@ -25,6 +25,9 @@ pub fn estimate_request(request: &ModelRequest) -> usize {
         "tools": request.tools.iter().map(|t| serde_json::json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.input_schema}})).collect::<Vec<_>>(),
         "response_format": request.output_schema,
     });
+    if let Some(tier) = &request.reasoning_tier {
+        wire["werk"] = serde_json::json!({"reasoning":{"tier":tier}});
+    }
     // Base64 bytes are transport, not text tokens. Normalized images are at most
     // 1024px; reserve 8192 tokens each when no native image counter exists.
     // This is an estimate; server admission remains authoritative.
@@ -163,6 +166,15 @@ pub trait ContextBuilder: Send + Sync {
     }
 }
 pub struct DefaultContextBuilder;
+fn truncate_summary(summary: &mut String) {
+    if summary.len() > 1536 {
+        let mut start = summary.len() - 1536;
+        while !summary.is_char_boundary(start) {
+            start += 1;
+        }
+        summary.drain(..start);
+    }
+}
 #[async_trait]
 impl ContextBuilder for DefaultContextBuilder {
     async fn build(
@@ -432,6 +444,7 @@ impl DefaultContextBuilder {
             }
             dynamic.extend(crate::harness::adaptive_feedback(session, run)?);
         }
+        prompt.push_str("\nNew user messages during a run update the active task. Apply their constraints to the next useful action, reconcile any conflicting plan, and acknowledge the change briefly. Preserve earlier requirements that still apply. Completion and verification must cover the updated task.\n");
         if crate::completion::enabled(session, run)? {
             prompt.push_str("\nComplete every plan step honestly. Keep changes incremental; create files once, then edit unique observed anchors.\n");
             if crate::harness::config(session, run)?.completion.is_some() {
@@ -542,13 +555,69 @@ impl DefaultContextBuilder {
             }
             head
         };
-        let compacted: BTreeSet<usize> = session
+        let mut compacted: BTreeSet<usize> = session
             .compactions
             .iter()
             .flat_map(|c| c.message_indices.iter().copied())
             .collect();
+        // A working selection is durable, but never a cached admission decision.
+        // Reuse only an unchanged canonical prefix, including after resume and
+        // follow-ups. Legacy snapshots take the bounded cold-planning path.
+        let previous = run
+            .contexts
+            .last()
+            .or_else(|| {
+                session
+                    .runs
+                    .iter()
+                    .rev()
+                    .filter(|r| r.id != run.id)
+                    .find_map(|r| r.contexts.last())
+            })
+            .filter(|snapshot| {
+                snapshot.source.as_ref().is_some_and(|source| {
+                    source.message_count <= session.messages.len()
+                        && source.hash
+                            == fingerprint(&(
+                                &session.id,
+                                &session.messages[..source.message_count],
+                            ))
+                })
+            });
+        let mut summary = String::new();
+        if let Some(snapshot) = previous {
+            let selected: BTreeSet<_> = snapshot.omitted_messages.iter().copied().collect();
+            // Retain user/system constraints and complete tool pairs even if a
+            // host edited a snapshot. Reprotect the current group; a saved write
+            // may be shortened again below while preserving its explanation.
+            let latest = session
+                .messages
+                .iter()
+                .enumerate()
+                .rfind(|(i, m)| *i >= run.history_start && m.role == Role::Assistant)
+                .map_or(session.messages.len(), |(i, _)| i);
+            for (index, message) in session.messages.iter().enumerate().take(latest) {
+                let end = index + 1 + message.tool_calls.len();
+                if message.role == Role::Assistant
+                    && end <= latest
+                    && snapshot
+                        .source
+                        .as_ref()
+                        .is_some_and(|s| end <= s.message_count)
+                    && (index..end).all(|n| selected.contains(&n))
+                {
+                    compacted.extend(index..end);
+                }
+            }
+            summary = snapshot
+                .source
+                .as_ref()
+                .map(|s| s.excerpt.clone())
+                .unwrap_or_default();
+            truncate_summary(&mut summary);
+        }
         let mut messages = compose(
-            prefix(&compacted, ""),
+            prefix(&compacted, &summary),
             session
                 .messages
                 .iter()
@@ -557,8 +626,11 @@ impl DefaultContextBuilder {
                 .map(|(_, m)| m.clone())
                 .collect(),
         );
+        let provider_estimates = std::sync::atomic::AtomicUsize::new(0);
         let estimate = |m: &Vec<Message>, budget: usize| {
+            provider_estimates.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let request = ModelRequest {
+                reasoning_tier: crate::reasoning::selected(session),
                 messages: m.clone(),
                 tools: tools.clone(),
                 max_output_tokens: budget,
@@ -599,13 +671,19 @@ impl DefaultContextBuilder {
             .filter(|m| matches!(m.role, Role::System | Role::Developer | Role::User))
             .cloned()
             .collect();
-        let base = estimate(&fixed, output_budget).await?;
+        let initial_tokens = estimate(&messages, output_budget).await?;
+        let needs_compaction = initial_tokens > available;
+        // Normal turns need only the complete request count. The stable-prefix
+        // measurement is useful only when selecting a compaction target.
+        let base = if needs_compaction {
+            estimate(&fixed, output_budget).await?
+        } else {
+            0
+        };
         let target = base
             .saturating_add(available.saturating_sub(base) * 4 / 5)
             .min(available);
-        let needs_compaction = estimate(&messages, output_budget).await? > available;
         let mut omitted = compacted.clone();
-        let mut summary = String::new();
         // Compact completed groups even during a long run, keeping the latest
         // assistant/tool group from THIS run and every user/system constraint
         // verbatim. A previous turn's final answer must be compactable, or one
@@ -722,6 +800,38 @@ impl DefaultContextBuilder {
         let mut last = last_candidate(&omitted, preserve_setup);
         let mut pending_groups = 0;
         let mut pending_bytes = 0;
+        let mut counted_batches = 0;
+        let mut total_candidates = 0;
+        // Price only candidate selection locally. Native counts need not be
+        // additive/monotone (templates, skill restoration and images); the
+        // final chosen request always has a full provider admission estimate.
+        let remaining_bytes = |omitted: &BTreeSet<usize>, preserve_setup: bool| -> usize {
+            session
+                .messages
+                .iter()
+                .enumerate()
+                .take(protected)
+                .filter(|(n, m)| {
+                    m.role == Role::Assistant
+                        && !omitted.contains(n)
+                        && !(preserve_setup && retained.contains(n))
+                        && n + 1 + m.tool_calls.len() <= protected
+                })
+                .map(|(n, m)| {
+                    serde_json::to_vec(&session.messages[n..n + 1 + m.tool_calls.len()])
+                        .map_or(0, |bytes| bytes.len())
+                })
+                .sum()
+        };
+        let batch_goal = |bytes: usize, tokens: usize| -> usize {
+            bytes
+                .saturating_mul(tokens.saturating_sub(target))
+                .checked_div(tokens.saturating_sub(base).max(1))
+                .unwrap_or(bytes)
+                .max(8192)
+        };
+        let mut pending_goal =
+            batch_goal(remaining_bytes(&omitted, preserve_setup), initial_tokens);
         // Compaction has shared costs: retained evidence adds messages, and
         // moving an image can invalidate a learned image-token estimate. A
         // first omitted group can therefore cost more even when several
@@ -731,7 +841,7 @@ impl DefaultContextBuilder {
             messages.clone(),
             summary.clone(),
             omitted.clone(),
-            estimate(&messages, output_budget).await?,
+            initial_tokens,
         );
         while needs_compaction && best.3 > target {
             if i >= latest && best.3 <= available {
@@ -743,6 +853,8 @@ impl DefaultContextBuilder {
                     preserve_setup = false;
                     i = 0;
                     last = last_candidate(&omitted, preserve_setup);
+                    counted_batches = 0;
+                    pending_goal = batch_goal(remaining_bytes(&omitted, preserve_setup), best.3);
                 } else {
                     break;
                 }
@@ -821,22 +933,20 @@ impl DefaultContextBuilder {
                 ));
             }
             // Keep recent excerpts within a fixed byte bound. Full sources stay canonical.
-            if summary.len() > 1536 {
-                let mut start = summary.len() - 1536;
-                while !summary.is_char_boundary(start) {
-                    start += 1;
-                }
-                summary = summary[start..].to_owned();
-            }
-            // Native token counting can be remote and relatively expensive.
-            // Explore small batches of whole eligible groups instead of paying
-            // for every tiny omission. Always evaluate the final candidate in
-            // this pass. No batch is admitted without the full native/fallback
-            // calculation, including all constraints and image reserves.
-            if pending_groups < 4 && pending_bytes < 8192 && Some(i) != last {
+            truncate_summary(&mut summary);
+            // At most four counted candidates per retention pass. If local
+            // sizing or optional evidence repeatedly defeats compaction, skip
+            // to the last eligible group instead of another tokenizer sweep.
+            if Some(i) != last
+                && (counted_batches >= 3
+                    || (pending_bytes < pending_goal
+                        && (pending_goal > 8192 || pending_groups < 4)))
+            {
                 i = end;
                 continue;
             }
+            counted_batches += 1;
+            total_candidates += 1;
             pending_groups = 0;
             pending_bytes = 0;
             let history: Vec<_> = session
@@ -888,6 +998,7 @@ impl DefaultContextBuilder {
                     );
                 }
             }
+            pending_goal = batch_goal(remaining_bytes(&omitted, preserve_setup), estimated);
             i = end;
         }
         let (mut messages, summary, omitted, mut estimated) = best;
@@ -925,6 +1036,14 @@ impl DefaultContextBuilder {
             estimated = estimate(&messages, output_budget).await?;
         }
         if estimated > available {
+            if base <= retention_available && total_candidates > 0 && estimated >= initial_tokens {
+                return Err(WorkerError::new(
+                    "compaction_no_progress",
+                    format!(
+                        "Context compaction made no token progress after {total_candidates} bounded candidates ({initial_tokens} -> {estimated} input tokens; {available} available). Repeated compaction was stopped. Current work and constraints remain intact; reduce the current tool result or use a larger per-request context. The task is not complete."
+                    ),
+                ));
+            }
             return Err(WorkerError::new(
                 "context_overflow",
                 format!(
@@ -935,8 +1054,25 @@ impl DefaultContextBuilder {
         }
         validate_messages(&messages)?;
         let snapshot = ContextSnapshot {
+            planning: Some(ContextPlanning {
+                reused_selection: previous.is_some(),
+                provider_estimates: provider_estimates.load(std::sync::atomic::Ordering::Relaxed),
+                input_tokens_before: initial_tokens,
+                compaction_candidates: total_candidates,
+                ineffective_compaction: total_candidates > 0
+                    && initial_tokens.saturating_sub(estimated) < (available / 20).max(1),
+            }),
+            source: Some(ContextSource {
+                message_count: session.messages.len(),
+                hash: fingerprint(&(&session.id, &session.messages)),
+                excerpt: summary.clone(),
+            }),
             id: id("ctx"),
-            hash: fingerprint(&(&messages, &tools)),
+            hash: if let Some(tier) = crate::reasoning::selected(session) {
+                fingerprint(&(&messages, &tools, tier))
+            } else {
+                fingerprint(&(&messages, &tools))
+            },
             estimated_tokens: estimated,
             message_count: messages.len(),
             omitted_messages: omitted.into_iter().collect(),
@@ -948,6 +1084,7 @@ impl DefaultContextBuilder {
         };
         Ok((
             ModelRequest {
+                reasoning_tier: crate::reasoning::selected(session),
                 messages,
                 tools,
                 max_output_tokens: output_budget,

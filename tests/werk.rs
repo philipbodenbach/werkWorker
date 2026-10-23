@@ -98,6 +98,7 @@ async fn request_fingerprints_include_native_reasoning_configuration_without_cre
         .unwrap();
     let changed = WerkProvider::connect(high, None).await.unwrap();
     let request = ModelRequest {
+        reasoning_tier: None,
         messages: vec![Message::text(Role::User, "Task")],
         tools: vec![],
         max_output_tokens: 2048,
@@ -160,6 +161,7 @@ async fn protocol_reasoning_tiers_are_opaque_and_defaults_reach_count_and_genera
                 .all(|r| r.method == "GET")
         );
         let request = ModelRequest {
+            reasoning_tier: None,
             messages: vec![Message::text(Role::User, "hi")],
             tools: vec![],
             max_output_tokens: 2048,
@@ -215,6 +217,59 @@ async fn reasoning_tiers_require_advertised_protocol_and_do_not_replace_native_e
 }
 
 #[tokio::test]
+async fn request_effort_snapshot_overrides_native_config_and_has_separate_token_counts() {
+    let server=Server::start(|request| match request.path.as_str() {
+        "/werk/v1/capabilities" => control(json!({"capabilities":[
+            {"id":"api.chat.reasoning","status":"supported","detail":"fixture","operations":["profile","tiers"]},
+            {"id":"api.chat.token_count","status":"supported","detail":"fixture","operations":["count_tokens"]}]})),
+        "/werk/v1/chat/count_tokens" => control(json!({"model":"fixture-model","input_tokens":match request.body["werk"]["reasoning"]["tier"].as_str(){Some("custom-v2")=>42,Some("default")=>64,_=>88}})),
+        _=>werk(request),
+    }).await;
+    let mut config = config(&server.origin, false);
+    config
+        .options
+        .insert("reasoning_effort".into(), json!("native"));
+    let provider = WerkProvider::connect(config, None).await.unwrap();
+    let mut fingerprints = std::collections::BTreeSet::new();
+    for (tier, tokens) in [(None, 88), (Some("custom-v2"), 42), (Some("default"), 64)] {
+        let request = ModelRequest {
+            reasoning_tier: tier.map(str::to_owned),
+            messages: vec![Message::text(Role::User, "same input")],
+            tools: vec![],
+            max_output_tokens: 4096,
+            output_schema: None,
+        };
+        fingerprints.insert(provider.request_fingerprint(&request));
+        assert_eq!(
+            provider.count_input_tokens(&request).await.unwrap(),
+            Some(tokens)
+        );
+        let mut stream = provider.stream(request).await.unwrap();
+        while let Some(delta) = stream.next().await {
+            delta.unwrap();
+        }
+    }
+    assert_eq!(fingerprints.len(), 3);
+    let records = server.requests.lock().unwrap();
+    let posts: Vec<_> = records.iter().filter(|r| r.method == "POST").collect();
+    assert_eq!(posts.len(), 6);
+    for (pair, tier) in posts
+        .chunks(2)
+        .zip([None, Some("custom-v2"), Some("default")])
+    {
+        assert!(pair[0].path.ends_with("count_tokens"));
+        for request in pair {
+            if let Some(tier) = tier {
+                assert_eq!(request.body["werk"]["reasoning"]["tier"], tier);
+                assert!(request.body.get("reasoning_effort").is_none());
+            } else {
+                assert_eq!(request.body["reasoning_effort"], "native");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn reasoning_effort_reaches_token_count_and_both_chat_transports() {
     for streaming in [false, true] {
         for effort in [
@@ -248,6 +303,7 @@ async fn reasoning_effort_reaches_token_count_and_both_chat_transports() {
             }
             let provider = WerkProvider::connect(configuration, None).await.unwrap();
             let request = ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "Task")],
                 tools: vec![ToolDefinition {
                     name: "files.read".into(),
@@ -362,6 +418,7 @@ async fn protocol_reasoning_defaults_are_model_scoped_fresh_and_never_frozen_as_
         }
         let mut stream = provider
             .stream(ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "Task")],
                 tools: vec![],
                 max_output_tokens: 1024,
@@ -410,6 +467,7 @@ async fn rejected_reasoning_keeps_server_explanation_without_credentials_or_retr
             .unwrap();
         let error = provider
             .stream(ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "Task")],
                 tools: vec![],
                 max_output_tokens: 1024,
@@ -471,6 +529,7 @@ async fn streaming_timeout_measures_inactivity_not_total_generation_time() {
         let result = async {
             let mut stream = provider
                 .stream(ModelRequest {
+                    reasoning_tier: None,
                     messages: vec![Message::text(Role::User, "generate")],
                     tools: vec![],
                     max_output_tokens: 1024,
@@ -599,6 +658,7 @@ async fn abandoning_an_unpolled_inference_stream_blocks_new_dispatch() {
         .await
         .unwrap();
     let request = ModelRequest {
+        reasoning_tier: None,
         messages: vec![Message::text(Role::User, "Task")],
         tools: vec![],
         max_output_tokens: 1024,
@@ -637,6 +697,7 @@ async fn cancelling_before_response_headers_blocks_inference_and_token_counting(
             .unwrap(),
     );
     let request = ModelRequest {
+        reasoning_tier: None,
         messages: vec![Message::text(Role::User, "Task")],
         tools: vec![],
         max_output_tokens: 1024,
@@ -689,6 +750,7 @@ async fn incomplete_stream_blocks_followups_but_reported_output_limit_does_not()
             .await
             .unwrap();
         let request = ModelRequest {
+            reasoning_tier: None,
             messages: vec![Message::text(Role::User, "Task")],
             tools: vec![],
             max_output_tokens: 1024,
@@ -815,6 +877,7 @@ async fn backend_error_messages_are_preserved_and_credentials_redacted() {
         .unwrap();
         let response = provider
             .stream(ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "write a file")],
                 tools: vec![],
                 max_output_tokens: 64,
@@ -1035,6 +1098,7 @@ async fn streaming_wire_usage_and_native_allowlist_are_separate_from_grants() {
     );
     let mut stream = provider
         .stream(ModelRequest {
+            reasoning_tier: None,
             messages: vec![Message::text(Role::User, "hi")],
             tools: vec![],
             max_output_tokens: 64,
@@ -1111,6 +1175,7 @@ async fn concurrency_discovery_matches_alias_and_falls_back_gracefully() {
         assert_eq!(provider.concurrency().max_requests, expected, "{case}");
         let mut stream = provider
             .stream(ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "hi")],
                 tools: vec![],
                 max_output_tokens: 64,
@@ -1166,6 +1231,7 @@ async fn server_context_discovery_uses_per_request_minimum_and_requires_evidence
     let provider = WerkProvider::connect(cfg, None).await.unwrap();
     let result = provider
         .stream(ModelRequest {
+            reasoning_tier: None,
             messages: vec![Message::text(Role::User, "hi")],
             tools: vec![],
             max_output_tokens: 64,
@@ -1297,6 +1363,7 @@ async fn protocol_native_count_keeps_large_current_file_work_in_context() {
         "identical request counts must be cached"
     );
     let original = ModelRequest {
+        reasoning_tier: None,
         messages: vec![
             Message::text(Role::System, "Keep the complete user source"),
             Message::text(Role::User, source),
@@ -1355,6 +1422,7 @@ async fn native_counter_respects_protocol_retryability_and_model_identity() {
                 .await
                 .unwrap();
         let request = ModelRequest {
+            reasoning_tier: None,
             messages: vec![Message::text(Role::User, "hi")],
             tools: vec![],
             max_output_tokens: 64,
@@ -1501,6 +1569,7 @@ async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_coun
         .images
         .push(attachments::ImageAttachment::from_bytes(encoded.get_ref()).unwrap());
     let request = ModelRequest {
+        reasoning_tier: None,
         messages: vec![message],
         tools: vec![],
         max_output_tokens: 128,
@@ -1518,6 +1587,7 @@ async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_coun
     assert_eq!(
         provider
             .count_input_tokens(&ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "text after image")],
                 tools: vec![],
                 max_output_tokens: 128,
@@ -1683,6 +1753,7 @@ async fn observed_image_overhead_is_bounded_scoped_and_never_an_exact_count() {
     let mut user = Message::text(Role::User, "Use this reference");
     user.images.push(picture);
     let request = ModelRequest {
+        reasoning_tier: None,
         messages: vec![user],
         tools: vec![],
         max_output_tokens: 4096,

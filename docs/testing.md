@@ -77,6 +77,15 @@ Context tests verify rolling compaction within a single long tool run, follow-up
 turns after a large final code response in the same session, preserved
 constraints/tool pairs, server-sized reserves, oversized input rejection before
 dispatch, learned smaller limits and nonretryable truncated tool output.
+`tests/context_planning.rs` additionally bounds count requests for a 120-read
+history, checks one-count continuation after durable resume, invalidates changed
+prefixes, rechecks smaller limits, and stops ineffective compaction without
+changing canonical history. Its ignored saved-session replay requires explicit
+`WW_REPLAY_DATABASE`/`WW_REPLAY_SESSION` or a private `WW_REPLAY_SNAPSHOT` JSON file;
+it opens the database read-only and uses an offline approximate counter, never
+credentials or a live model. Run it with
+`cargo test --test context_planning saved_session_planning_replay -- --ignored --nocapture`.
+The fixture deliberately has no count cache, so every planning estimate is visible.
 The TUI PTY test also checks keyboard/mouse scrolling, code-block colors, visible
 run errors and follow-ups after failure without creating another session.
 Permission regressions cover upgrading a restricted chat while awaiting an answer,

@@ -484,6 +484,7 @@ impl werk_worker::context::ContextBuilder for FixedRecoveryContext {
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         Ok((
             ModelRequest {
+                reasoning_tier: None,
                 messages: vec![Message::text(Role::User, "Implement")],
                 // Deliberately ignore engine recovery changes: the replay guard
                 // must still reject an identical custom-builder request.
@@ -498,6 +499,8 @@ impl werk_worker::context::ContextBuilder for FixedRecoveryContext {
             ContextSnapshot {
                 id: id("ctx"),
                 hash: "custom-fixed-context-hash".into(),
+                source: None,
+                planning: None,
                 estimated_tokens: 8,
                 message_count: 1,
                 omitted_messages: vec![],

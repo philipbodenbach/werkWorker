@@ -59,7 +59,7 @@ struct Active {
     task: tokio::task::JoinHandle<()>,
 }
 pub(crate) struct EngineInner {
-    provider: Arc<dyn ModelProvider>,
+    pub(crate) provider: Arc<dyn ModelProvider>,
     store: Arc<dyn SessionStore>,
     tools: ToolRegistry,
     skills: SkillRegistry,
@@ -1102,6 +1102,7 @@ impl SessionHandle {
                     invocations: vec![],
                     steering: vec![],
                     steering_messages: vec![],
+                    steering_context_pending: false,
                     plan: Value::Null,
                     similar_grants: vec![],
                     repaired_output: false,
@@ -1389,6 +1390,11 @@ impl SessionHandle {
                 project_pending(d, run_id)?;
                 crate::harness::refresh(d, run_id)?;
                 if d.run(run_id)?.final_text.is_none() {
+                    if !d.run(run_id)?.steering.is_empty()
+                        || !d.run(run_id)?.steering_messages.is_empty()
+                    {
+                        d.run_mut(run_id)?.steering_context_pending = true;
+                    }
                     let steering = std::mem::take(&mut d.run_mut(run_id)?.steering);
                     for input in steering {
                         d.messages.push(Message::text(Role::User, input));
@@ -1424,7 +1430,7 @@ impl SessionHandle {
                     continue;
                 }
             }
-            let data = self.snapshot().await?;
+            let data = self.model_context_snapshot().await?;
             let mut effective_run = data.run(run_id)?.clone();
             effective_run.limits = crate::context::generation_limits(
                 &effective_run.limits,
@@ -1470,13 +1476,35 @@ impl SessionHandle {
                 self.engine.inner.provider.as_ref(),
             );
             tokio::pin!(planning);
-            let (request, snapshot) = loop {
+            let (mut request, mut snapshot) = loop {
                 tokio::select! {
                     result = &mut planning => break result?,
                     _ = tokio::time::sleep(Duration::from_millis(20)) => self.check_running_without_wait(run_id, shutdown)?,
                     _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Context planning cancelled")),
                 }
             };
+            // Token counting/compaction can be slow. Do not dispatch a plan
+            // built before a user update arrived during that work.
+            let saved = self.snapshot().await?;
+            if !saved.run(run_id)?.steering.is_empty()
+                || !saved.run(run_id)?.steering_messages.is_empty()
+            {
+                continue 'steps;
+            }
+            // A custom context builder may not yet carry the optional setting.
+            // Enforce the captured host choice and count that actual request.
+            if let Some(tier) = crate::reasoning::selected(&data)
+                && request.reasoning_tier.as_ref() != Some(&tier)
+            {
+                request.reasoning_tier = Some(tier);
+                snapshot.hash = fingerprint(&request);
+                snapshot.estimated_tokens = self
+                    .engine
+                    .inner
+                    .provider
+                    .estimate_input_tokens(&request)
+                    .await?;
+            }
             if effective_run
                 .generation_recovery
                 .last_failed_output_tokens
@@ -1507,6 +1535,11 @@ impl SessionHandle {
                 r.metrics.steps = r.metrics.steps.saturating_add(1);
                 r.metrics.estimated_input_tokens = snapshot.estimated_tokens;
                 r.contexts.push(snapshot.clone());
+                if snapshot.planning.as_ref().is_some_and(|p| p.ineffective_compaction) {
+                    d.emit(Some(run_id), EventKind::Diagnostic {
+                        code: "compaction_low_progress: bounded search ended; reuse the working selection instead of repeating the history sweep".into(),
+                    });
+                }
                 crate::harness::delivered(d, run_id, &step_id, &request, &request_fingerprint)?;
                 crate::project::delivered(d, &step_id, &request)?;
                 d.emit(
@@ -1534,34 +1567,52 @@ impl SessionHandle {
             let (message, usage, metadata, completed_attempt) = loop {
                 self.check_running(run_id, shutdown).await?;
                 let attempt_id = id("attempt");
-                self.update(|d| {
-                    let r = d.run_mut(run_id)?;
-                    if r.limits.requests_exhausted(r.metrics.model_requests) {
-                        return Err(WorkerError::new(
-                            "request_budget",
-                            "Maximum model requests reached",
-                        ));
-                    }
-                    r.metrics.model_requests = r.metrics.model_requests.saturating_add(1);
-                    r.attempts.push(ModelAttempt {
-                        attempt_id: attempt_id.clone(),
-                        step_id: step_id.clone(),
-                        started_at_ms: now_ms(),
-                        completed: false,
-                        error: None,
-                        partial_text: String::new(),
-                    });
-                    d.emit(
-                        Some(run_id),
-                        EventKind::ModelRequest {
+                let admitted = self
+                    .update(|d| {
+                        let r = d.run_mut(run_id)?;
+                        // Also check atomically at retry/admission: a model retry
+                        // must not replay a stale prompt after accepted steering.
+                        if !r.steering.is_empty() || !r.steering_messages.is_empty() {
+                            return Ok(false);
+                        }
+                        if r.limits.requests_exhausted(r.metrics.model_requests) {
+                            return Err(WorkerError::new(
+                                "request_budget",
+                                "Maximum model requests reached",
+                            ));
+                        }
+                        r.metrics.model_requests = r.metrics.model_requests.saturating_add(1);
+                        r.attempts.push(ModelAttempt {
                             attempt_id: attempt_id.clone(),
                             step_id: step_id.clone(),
-                            context_hash: snapshot.hash.clone(),
-                        },
-                    );
-                    Ok(())
-                })
-                .await?;
+                            started_at_ms: now_ms(),
+                            completed: false,
+                            error: None,
+                            partial_text: String::new(),
+                        });
+                        let steering_applied = std::mem::take(&mut r.steering_context_pending);
+                        if steering_applied {
+                            d.emit(
+                                Some(run_id),
+                                EventKind::Diagnostic {
+                                    code: "steering_applied".into(),
+                                },
+                            );
+                        }
+                        d.emit(
+                            Some(run_id),
+                            EventKind::ModelRequest {
+                                attempt_id: attempt_id.clone(),
+                                step_id: step_id.clone(),
+                                context_hash: snapshot.hash.clone(),
+                            },
+                        );
+                        Ok(true)
+                    })
+                    .await?;
+                if !admitted {
+                    continue 'steps;
+                }
                 let attempt = self
                     .model_attempt(run_id, &attempt_id, request.clone(), shutdown)
                     .await;
@@ -2076,7 +2127,7 @@ impl SessionHandle {
     }
     async fn compact_history(&self, run_id: &str, shutdown: &CancellationToken) -> Result<()> {
         self.check_running(run_id, shutdown).await?;
-        let data = self.snapshot().await?;
+        let data = self.model_context_snapshot().await?;
         let mut effective_run = data.run(run_id)?.clone();
         effective_run.limits = crate::context::effective_limits(
             &effective_run.limits,
@@ -2111,6 +2162,7 @@ impl SessionHandle {
             return Ok(());
         }
         let mut request = crate::providers::ModelRequest {
+            reasoning_tier: crate::reasoning::selected(&data),
             messages: vec![
                 Message::text(
                     Role::System,
@@ -3249,6 +3301,12 @@ impl RunHandle {
                 let mut message = Message::text(Role::User, input);
                 message.images = images;
                 r.steering_messages.push(message);
+                d.emit(
+                    Some(&self.id),
+                    EventKind::Diagnostic {
+                        code: "steering_queued".into(),
+                    },
+                );
                 Ok(receipt)
             })
             .await

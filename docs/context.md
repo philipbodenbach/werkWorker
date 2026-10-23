@@ -149,18 +149,37 @@ an old empty listing must not encourage rebuilding files that were later saved.
 
 Excerpts include source message indices, roles, tool names and up to 400
 characters of each source content; the accumulated excerpt is capped at 1,536
-UTF-8 bytes. The builder evaluates successive omissions cumulatively. It counts
-a candidate after four whole eligible groups or at least 8 KiB of source messages
-have been removed, keeping the smallest counted complete candidate.
-It always evaluates the last eligible
-group in each retention pass. Batching reduces remote token-count calls; it may
-omit a few more older groups than testing every small omission individually.
+UTF-8 bytes. The builder persists its selection with a canonical-history prefix
+hash. Following requests and resumed sessions reuse that selection when the
+prefix still matches, append new work, and recheck the full request against current
+provider/reasoning/output limits. User/system constraints and the newest working
+group remain protected. Legacy snapshots without a checkpoint use bounded cold
+planning; an edited or truncated source invalidates the checkpoint.
+
+When compaction is necessary, local serialized sizes and the measured excess
+choose batches of whole eligible groups. Each retention pass evaluates at most
+four complete candidates, including its final eligible group. Optional excerpts
+can add one summary-free alternative per candidate; output borrowing can add up
+to three final admission checks. The normal fitting path needs only one full
+provider estimate, instead of measuring the fixed prefix and history repeatedly.
+Local sizing guides selection only; the cheapest fully counted request wins.
 An initial candidate can temporarily grow when
 retained receipts are added or an image moves to a position without a learned
 reserve; this must not prevent later groups from being compacted together.
 The chosen request must still pass the unchanged full admission calculation.
-These are
-explicitly labeled incomplete, untrusted excerpts, not a claim of lossless
+
+`ContextSnapshot.planning` records selection reuse, provider-estimate calls,
+candidate count, initial input size and low compaction progress. These are planner
+invocations, not necessarily HTTP calls: provider caches, image fallback and
+transport retries can change the HTTP count. A reduction smaller than 5% of the
+available input budget emits `compaction_low_progress`; the selected context is
+still retained, preventing another full-history sweep. If all bounded candidates
+fail to reduce input and the request cannot fit, `compaction_no_progress` stops
+the attempt with an actionable error rather than declaring task completion or
+automatically restarting the same maintenance loop. The full transcript remains
+in storage. The TUI suppresses duplicate compaction notices on reused selections.
+
+Extractive summaries are explicitly labeled incomplete, untrusted excerpts, not a claim of lossless
 semantic summarization. The model may need to reread evidence through granted
 tools. If the fixed excerpt allowance would crowd out current work, older
 excerpts are further removed to fit the available budget. Canonical messages,

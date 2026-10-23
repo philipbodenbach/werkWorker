@@ -29,6 +29,7 @@ fn images_are_bounded_and_text_wire_format_is_unchanged() {
     assert_eq!(wire["content"][0], json!({"type":"text","text":"hello"}));
     assert_eq!(wire["content"][1]["image_url"]["url"], image.data_url());
     let request = ModelRequest {
+        reasoning_tier: None,
         messages: vec![message],
         tools: vec![],
         max_output_tokens: 100,

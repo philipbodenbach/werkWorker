@@ -20,6 +20,8 @@ operations return `Result<T, WorkerError>` with a stable machine-readable code.
 | `run.wait().await` | Terminal result after outcomes, local job cleanup and final commit |
 | `run.status().await` | Run snapshot, pending requests, attempts, outcomes and metrics |
 | `run.steer(input, command_id).await` | Queue input before next model request; current batch finishes |
+| `session.reasoning_options(&limits).await` | Query model tiers/default for the active run's effective output reserve, or supplied idle limits |
+| `session.set_reasoning_tier(tier, &limits).await` | Validate and save effort for newly planned parent and child requests; `default` restores the server default |
 | `run.cancel(reason, command_id).await` | Signal cancellation; use `wait` for cleanup completion |
 | `run.respond_to_approval(request_id, decision, command_id).await` | Address one exact durable request |
 | `run.respond_to_interaction(request_id, answer, command_id).await` | Supply one durable answer |
@@ -55,6 +57,22 @@ when resetting its rule to `ask`, as the CLI editor does.
 sessions waiting for input/approval. Active descendants still block changes;
 workspace writability cannot change during an already prepared approval.
 SDK/headless defaults remain unchanged.
+
+`ModelRequest.reasoning_tier` captures an optional session override before token
+counting. `None` inherits the connection; `Some("default")` explicitly follows
+the protocol default and suppresses an inherited native effort. Custom context
+builders and Rust request literals must include the field (`None` to inherit).
+Older serialized requests omit it and continue to deserialize. Provider count
+cache keys and request fingerprints distinguish the captured selection.
+
+Steering emits `Diagnostic` codes `steering_queued` and `steering_applied` for
+acceptance and inclusion at the next model-request boundary, respectively.
+These confirm delivery, not semantic compliance or completed implementation.
+
+`ContextSnapshot.source` is an optional canonical-prefix selection checkpoint;
+`planning` contains optional planner count/progress diagnostics. Custom builders
+can use `None` for both fields. Older serialized snapshots remain readable.
+Neither field is a cached permission, token admission or model-completion claim.
 
 Every event carries schema version, opaque event/session/run IDs, monotonic
 session cursor and Unix-millisecond timestamp. `EventKind` is a typed Serde

@@ -375,11 +375,21 @@ async fn delegation_is_idempotent_and_global_capacity_is_bounded() {
         .await
         .unwrap();
     wait_for_children(&run).await;
-    run.delegate(vec![task("extra")], "extra").await.unwrap();
-    run.delegate(vec![task("extra")], "extra").await.unwrap();
-    assert_eq!(run.subagents().await.unwrap().len(), 3);
+    run.delegate(vec![task("extra")], "review_extra")
+        .await
+        .unwrap();
+    run.delegate(vec![task("extra")], "review_extra")
+        .await
+        .unwrap();
+    let children = run.subagents().await.unwrap();
+    assert_eq!(children.len(), 3);
+    let explicit = children.iter().find(|child| child.goal == "extra").unwrap();
     assert_eq!(
-        run.delegate(vec![task("changed")], "extra")
+        explicit.run.as_ref().unwrap().limits.max_model_requests,
+        Limits::default().max_model_requests
+    );
+    assert_eq!(
+        run.delegate(vec![task("changed")], "review_extra")
             .await
             .unwrap_err()
             .code,
@@ -885,28 +895,55 @@ impl ModelProvider for CodingReviewProbe {
 #[tokio::test]
 async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
     use werk_worker::policy::ToolPermission;
-    for capacity in [1, 2] {
+    for (capacity, completed, no_op, looping) in [
+        (1, false, false, false),
+        (2, false, false, false),
+        (2, true, false, false),
+        (2, false, true, false),
+        (2, false, false, true),
+    ] {
         let plan = json!({"steps":[
             {"id":"shell","description":"Create shell","status":"completed"},
-            {"id":"behavior","description":"Implement behavior","status":"completed"},
-            {"id":"verify","description":"Verify behavior","status":"completed"}
+            {"id":"behavior","description":"Implement behavior","status":if completed { "completed" } else { "in_progress" }},
+            {"id":"verify","description":"Verify behavior","status":if completed { "completed" } else { "pending" }}
         ]});
+        let mut finished_plan = plan.clone();
+        for step in finished_plan["steps"].as_array_mut().unwrap() {
+            step["status"] = json!("completed");
+        }
         let mut turns = vec![
             tool_turn("plan", "task.plan", plan),
             tool_turn(
                 "write",
-                "files.write",
-                json!({"path":"game.txt","content":"incomplete"}),
+                if no_op { "files.edit" } else { "files.write" },
+                if no_op {
+                    json!({"path":"game.txt","old":"incomplete","new":"incomplete","expected_hash":hash("incomplete")})
+                } else {
+                    json!({"path":"game.txt","content":"incomplete"})
+                },
             ),
         ];
+        turns.push(tool_turn("finished-plan", "task.plan", finished_plan));
         turns.extend((0..6).map(|_| ScriptedTurn::text("Everything is done")));
         let provider = Arc::new(CodingReviewProbe {
             capacity,
             root: ScriptedProvider::new(turns),
-            child: ScriptedProvider::new(vec![
-                tool_turn("inspect", "files.read", json!({"path":"game.txt"})),
-                ScriptedTurn::text("The implementation lacks a behavior test."),
-            ]),
+            child: ScriptedProvider::new(if looping {
+                (0..10)
+                    .map(|offset| {
+                        tool_turn(
+                            &format!("inspect_{offset}"),
+                            "files.read",
+                            json!({"path":"game.txt","start_byte":offset}),
+                        )
+                    })
+                    .collect()
+            } else {
+                vec![
+                    tool_turn("inspect", "files.read", json!({"path":"game.txt"})),
+                    ScriptedTurn::text("The implementation lacks a behavior test."),
+                ]
+            }),
             seen: Mutex::new(vec![]),
         });
         let engine = WorkerEngine::builder(provider.clone())
@@ -914,6 +951,9 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
             .await
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
+        if no_op {
+            std::fs::write(dir.path().join("game.txt"), "incomplete").unwrap();
+        }
         let session = engine
             .create_session(
                 AgentProfile {
@@ -921,14 +961,20 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
                     schema_version: 1,
                     prompt: "Implement and verify".into(),
                     skills: vec![],
-                    tools: ["files.read", "files.write", "task.plan", "delegate_task"]
-                        .map(str::to_owned)
-                        .to_vec(),
+                    tools: [
+                        "files.read",
+                        "files.write",
+                        "files.edit",
+                        "task.plan",
+                        "delegate_task",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
                 },
                 dir.path(),
                 HostPolicy {
                     workspace_writable: true,
-                    tool_permissions: ["files.read", "files.write"]
+                    tool_permissions: ["files.read", "files.write", "files.edit"]
                         .map(|n| (n.into(), ToolPermission::Allow))
                         .into(),
                     ..Default::default()
@@ -941,13 +987,73 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
             .submit("Build game", "start", Limits::continuous(), None)
             .await
             .unwrap();
+        run.steer(
+            "Keep keyboard controls and use one file",
+            "updated-requirements",
+        )
+        .await
+        .unwrap();
         let result = run.wait().await.unwrap();
         assert_eq!(result.status, RunStatus::Failed, "{:?}", result.error);
         assert_eq!(result.error.unwrap().code, "completion_stalled");
+        {
+            let requests = provider.seen.lock().unwrap();
+            let root = requests
+                .iter()
+                .find(|request| {
+                    !request.messages.iter().any(|message| {
+                        message.role == Role::System && message.content.contains("delegated worker")
+                    })
+                })
+                .unwrap();
+            let delegation = root
+                .tools
+                .iter()
+                .find(|tool| tool.name == "delegate_task")
+                .unwrap();
+            assert!(
+                delegation
+                    .description
+                    .contains(&format!("Effective configured inference slots: {capacity}"))
+            );
+            assert!(delegation.description.contains(&format!(
+                "Recommended total active helpers for this parent: at most {}",
+                capacity - 1
+            )));
+        }
+        if no_op {
+            let snapshot = run.status().await.unwrap();
+            let edit = snapshot
+                .invocations
+                .iter()
+                .find(|invocation| invocation.call.name == "files.edit")
+                .unwrap();
+            let receipt = edit.result.as_ref().unwrap();
+            assert_eq!(receipt.status, Outcome::Succeeded, "{receipt:?}");
+            assert_eq!(receipt.data["sha256"], hash("incomplete"));
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+                "incomplete"
+            );
+        }
         let children = run.subagents().await.unwrap();
-        assert_eq!(children.len(), usize::from(capacity == 2));
+        assert_eq!(
+            children.len(),
+            usize::from(capacity == 2 && !completed && !no_op)
+        );
         if let Some(child) = children.first() {
-            assert_eq!(child.run.as_ref().unwrap().status, RunStatus::Completed);
+            let review = child.run.as_ref().unwrap();
+            assert!(!review.limits.continuous);
+            assert_eq!(review.limits.max_model_requests, 6);
+            assert_eq!(review.limits.max_tool_invocations, 8);
+            assert!(review.metrics.model_requests <= 6);
+            if looping {
+                assert_eq!(review.status, RunStatus::Failed);
+                assert_eq!(review.error.as_ref().unwrap().code, "request_budget");
+                assert_eq!(review.metrics.model_requests, 6);
+            } else {
+                assert_eq!(review.status, RunStatus::Completed);
+            }
             let saved = engine
                 .open_session(&child.session_id)
                 .await
@@ -957,6 +1063,14 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
                 .unwrap();
             assert!(!saved.policy.workspace_writable);
             assert_eq!(saved.profile.tools, vec!["files.read"]);
+            assert!(review.input.contains("Latest file receipts"));
+            assert!(
+                review
+                    .input
+                    .contains("Keep keyboard controls and use one file")
+            );
+            assert!(review.input.contains(&hash("incomplete")));
+            assert!(review.input.contains("game.txt"));
         }
         assert!(result.text.is_none());
         engine.close().await.unwrap();

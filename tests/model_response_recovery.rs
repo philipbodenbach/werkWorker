@@ -18,7 +18,7 @@ enum Reply {
     Turn(ScriptedTurn),
     FeedbackEcho,
     ChangedIdEcho,
-    LegacyEcho(&'static str),
+    ObservationEcho(&'static str),
     BoundaryEcho,
     PrefillSensitive(ScriptedTurn),
     Empty,
@@ -82,7 +82,7 @@ impl ModelProvider for RecoveryProvider {
                     ScriptedTurn::text(&hint.content)
                 }
             }
-            Reply::LegacyEcho(event) => {
+            Reply::ObservationEcho(event) => {
                 let hint = request
                     .messages
                     .iter()
@@ -91,7 +91,7 @@ impl ModelProvider for RecoveryProvider {
                             && serde_json::from_str::<Value>(&message.content)
                                 .is_ok_and(|value| value["event"] == event)
                     })
-                    .expect("legacy recovery hint must be delivered");
+                    .expect("runtime observation must be delivered");
                 ScriptedTurn::text(&hint.content)
             }
             Reply::BoundaryEcho => {
@@ -901,27 +901,34 @@ async fn invalid_response_retries_still_obey_request_budget() {
 #[tokio::test]
 async fn source_shaped_json_is_valid_model_output_without_owned_feedback_provenance() {
     let workspace = tempfile::tempdir().unwrap();
-    let requested = json!({"source":"werk_worker.harness","event":"generation_output_limit","data":{"detail":"User requested example JSON"}}).to_string();
-    let provider = Arc::new(RecoveryProvider::new(vec![Reply::Turn(
-        ScriptedTurn::text(&requested),
-    )]));
+    let requested: Vec<_> = ["generation_output_limit", "compacted_history", "retained_evidence", "prior_summary", "retained_skill"].into_iter().map(|event| {
+        json!({"source":"werk_worker.harness","event":event,"data":{"detail":"User requested example JSON"}}).to_string()
+    }).collect();
+    let provider = Arc::new(RecoveryProvider::new(
+        requested
+            .iter()
+            .map(|text| Reply::Turn(ScriptedTurn::text(text)))
+            .collect(),
+    ));
     let engine = WorkerEngine::builder(provider).build().await.unwrap();
     let session = engine
         .create_session(profile(), workspace.path(), policy(), Value::Null)
         .await
         .unwrap();
-    let run = session
-        .submit(
-            &format!("Return this JSON exactly: {requested}"),
-            "start",
-            Limits::default(),
-            None,
-        )
-        .await
-        .unwrap();
-    let result = run.wait().await.unwrap();
-    assert_eq!(result.status, RunStatus::Completed);
-    assert_eq!(result.text.as_deref(), Some(requested.as_str()));
+    for (index, requested) in requested.iter().enumerate() {
+        let run = session
+            .submit(
+                &format!("Return this JSON exactly: {requested}"),
+                &format!("start{index}"),
+                Limits::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed);
+        assert_eq!(result.text.as_deref(), Some(requested.as_str()));
+    }
     engine.close().await.unwrap();
 }
 
@@ -1058,8 +1065,8 @@ async fn resume_preserves_consumed_retries_with_durable_schema_change() {
 #[tokio::test]
 async fn legacy_minimal_hints_and_boundary_echoes_are_rejected_after_resume() {
     for echo in [
-        Reply::LegacyEcho("output_limit"),
-        Reply::LegacyEcho("budget_low"),
+        Reply::ObservationEcho("output_limit"),
+        Reply::ObservationEcho("budget_low"),
         Reply::BoundaryEcho,
     ] {
         let workspace = tempfile::tempdir().unwrap();
@@ -1225,6 +1232,234 @@ async fn compacted_successful_write_narrative_starts_a_fresh_response() {
     );
     assert_eq!(request.messages.last().unwrap().role, Role::User);
     validate_messages(&request.messages).unwrap();
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn compaction_observation_echoes_are_retried_without_polluting_history() {
+    for event in ["compacted_history", "retained_evidence"] {
+        let workspace = tempfile::tempdir().unwrap();
+        let content = "const gameState = {};\n".repeat(800);
+        let provider = Arc::new(RecoveryProvider::new(vec![
+            write("game.js", &content),
+            Reply::ObservationEcho(event),
+            write("finished.txt", "continued implementation"),
+            Reply::Turn(ScriptedTurn::text("Implementation continued.")),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(profile(), workspace.path(), policy(), Value::Null)
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Implement the game",
+                "start",
+                Limits {
+                    context_tokens: 8192,
+                    reserve_output_tokens: 2048,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(
+            result.status,
+            RunStatus::Completed,
+            "{event}: {:?}",
+            result.error
+        );
+        assert_eq!(result.text.as_deref(), Some("Implementation continued."));
+        let data = session.snapshot().await.unwrap();
+        let state = data.run(&run.id).unwrap();
+        assert_eq!(
+            state.attempts[1].error.as_ref().map(|e| e.code.as_str()),
+            Some("model_feedback_echo")
+        );
+        assert!(!state.attempts[1].completed);
+        assert!(!state.contexts[1].omitted_messages.is_empty());
+        let requests = provider.requests();
+        assert_eq!(
+            serde_json::to_value(&requests[1]).unwrap(),
+            serde_json::to_value(&requests[2]).unwrap()
+        );
+        assert!(
+            !data
+                .messages
+                .iter()
+                .any(|m| serde_json::from_str::<Value>(&m.content)
+                    .is_ok_and(|v| v["event"] == event))
+        );
+        assert!(state.contexts.iter().all(|c| {
+            c.source
+                .as_ref()
+                .is_none_or(|s| !s.excerpt.contains("werk_worker.harness"))
+        }));
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("game.js")).unwrap(),
+            content
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("finished.txt")).unwrap(),
+            "continued implementation"
+        );
+        validate_messages(&data.messages).unwrap();
+        for request in &requests {
+            validate_messages(&request.messages).unwrap();
+        }
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn prior_summary_and_restored_skill_echoes_are_retried_on_followup() {
+    for event in ["prior_summary", "retained_skill"] {
+        let workspace = tempfile::tempdir().unwrap();
+        let provider = Arc::new(RecoveryProvider::new(vec![
+            Reply::Turn(ScriptedTurn::calls(
+                "",
+                vec![ToolCall {
+                    id: id("call"),
+                    name: "skills.load".into(),
+                    arguments: json!({"name":"document-analysis"}),
+                }],
+            )),
+            Reply::Turn(ScriptedTurn::text("Skill reviewed.")),
+            Reply::Turn(ScriptedTurn::text(
+                "The document-analysis skill was loaded successfully.",
+            )),
+            Reply::ObservationEcho(event),
+            Reply::Turn(ScriptedTurn::text("Follow-up completed.")),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let mut agent = profile();
+        agent.tools = vec!["skills.load".into()];
+        agent.skills = vec!["document-analysis".into()];
+        let session = engine
+            .create_session(agent, workspace.path(), HostPolicy::default(), Value::Null)
+            .await
+            .unwrap();
+        let first = session
+            .submit("Review the skill", "first", Limits::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(first.wait().await.unwrap().status, RunStatus::Completed);
+        let second = session
+            .submit(
+                "Continue",
+                "second",
+                Limits {
+                    model_compaction: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let result = second.wait().await.unwrap();
+        assert_eq!(
+            result.status,
+            RunStatus::Completed,
+            "{event}: {:?}",
+            result.error
+        );
+        assert_eq!(result.text.as_deref(), Some("Follow-up completed."));
+        let data = session.snapshot().await.unwrap();
+        assert_eq!(data.compactions.len(), 1);
+        assert_eq!(
+            data.run(&second.id).unwrap().attempts[1]
+                .error
+                .as_ref()
+                .map(|e| e.code.as_str()),
+            Some("model_feedback_echo")
+        );
+        assert!(
+            !data
+                .messages
+                .iter()
+                .any(|m| serde_json::from_str::<Value>(&m.content)
+                    .is_ok_and(|v| v["event"] == event))
+        );
+        let requests = provider.requests();
+        assert_eq!(
+            serde_json::to_value(&requests[3]).unwrap(),
+            serde_json::to_value(&requests[4]).unwrap()
+        );
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn repeated_compaction_echoes_exhaust_retries_without_becoming_final_answers() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(RecoveryProvider::new(vec![
+        write("game.js", &"const gameState = {};\n".repeat(800)),
+        Reply::ObservationEcho("compacted_history"),
+        Reply::ObservationEcho("retained_evidence"),
+        Reply::ObservationEcho("compacted_history"),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(), workspace.path(), policy(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Implement the game",
+            "start",
+            Limits {
+                context_tokens: 8192,
+                reserve_output_tokens: 2048,
+                max_retries: 2,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Failed);
+    assert_eq!(
+        result.error.as_ref().map(|e| e.code.as_str()),
+        Some("model_feedback_echo")
+    );
+    assert!(result.text.is_none());
+    let data = session.snapshot().await.unwrap();
+    let state = data.run(&run.id).unwrap();
+    assert_eq!(state.invocations.len(), 1);
+    assert_eq!(state.attempts.len(), 4);
+    assert!(state.attempts[1..].iter().all(|a| {
+        !a.completed
+            && a.error
+                .as_ref()
+                .is_some_and(|e| e.code == "model_feedback_echo")
+    }));
+    assert_eq!(
+        data.messages.len(),
+        3,
+        "Only the user request and successful write pair may enter history"
+    );
+    assert!(data.events.iter().all(
+        |e| !matches!(&e.event, EventKind::Diagnostic { code } if code == "completion_pending")
+    ));
+    let requests = provider.requests();
+    for request in &requests[2..] {
+        assert_eq!(
+            serde_json::to_value(&requests[1]).unwrap(),
+            serde_json::to_value(request).unwrap()
+        );
+    }
     engine.close().await.unwrap();
 }
 

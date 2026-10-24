@@ -1385,7 +1385,6 @@ impl SessionHandle {
                     .await?;
                 continue;
             }
-            self.maybe_start_review(run_id).await?;
             self.update(|d| {
                 project_pending(d, run_id)?;
                 crate::harness::refresh(d, run_id)?;
@@ -1405,6 +1404,9 @@ impl SessionHandle {
                 Ok(())
             })
             .await?;
+            // Reviews must see the latest accepted user constraints, including
+            // steering that arrived while the previous tool was running.
+            self.maybe_start_review(run_id).await?;
             // Project every completed tool result before inserting assistant
             // feedback, preserving contiguous call/result groups.
             self.deliver_ready_children(run_id).await?;
@@ -1483,6 +1485,12 @@ impl SessionHandle {
                 .collect();
             let fixed_file_bounds =
                 !crate::file_io::FileIoBudget::supported(self.engine.inner.provider.as_ref());
+            crate::parallel::describe_delegation(
+                &mut defs,
+                &self.engine.inner.execution,
+                &self.engine.inner.provider.concurrency(),
+                data.parent.as_ref().map_or(0, |parent| parent.depth),
+            );
             crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
             if crate::completion::enabled(&data, run)? {
                 crate::completion::bound_tools(&mut defs, fixed_file_bounds);

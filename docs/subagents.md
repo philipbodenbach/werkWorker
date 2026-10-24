@@ -3,16 +3,36 @@
 werkWorker can orchestrate background child sessions while the parent continues
 working. All bundled profiles expose `delegate_task`, `agents.status`,
 `agents.wait`, `agents.cancel` and `agents.message`. The model can delegate; SDK/RPC hosts can also delegate explicitly.
-For coding tasks with at least three plan steps and a successful file change, the
+For coding tasks with at least three plan steps, remaining plan work and an actual file change, the
 harness starts one read-only acceptance review if at least two configured model
 slots are verified, no child was already delegated, and host policy permits it.
-The reviewer receives the requirements and current plan and can inspect files.
+The reviewer receives the requirements, recent user corrections, current plan and
+bounded file observations (historical paths/hashes) and can inspect files. Automatic
+reviews have a small finite budget even when their parent runs continuously;
+explicitly delegated tasks retain their inherited limits. A review that exhausts
+its budget is reported as incomplete and is not automatically started again.
+Automatic review ceilings are six model requests, eight tool calls, eight steps
+and three minutes, further reduced by tighter inherited limits and the parent
+deadline. They share the existing tree request budget; admission leaves room for
+parent work but does not reserve requests against concurrent consumption.
 Completed child results arrive at the parent's next model decision while work
 continues, without waiting for running siblings. Automatic delivery occurs once
 per child and remains recorded across resume. Review observations may describe
 an earlier file revision; the parent must check them against its current work.
 It cannot write files, execute processes, or replace the parent’s behavior tests. Children run in the same
 engine, not by spawning another CLI binary.
+
+The model's `delegate_task` description includes the effective configured inference
+capacity without requiring a separate status call. It recommends at most one helper
+with two slots, and at most two helpers with larger capacity, subject to host child
+and depth limits. This includes existing automatic reviews. The advice is to assign
+an independent, bounded investigation/review and continue separate work rather than
+immediately waiting or polling. Small and sequential tasks should remain local.
+This is a recommendation, not a reserved inference slot or an increase in permissions;
+explicit delegation still follows the existing scheduler and policy. `agents.status`
+also reports execution capacity. Busy counters stay out of the tool description so
+they do not change the prompt prefix on every admission. More slots do not guarantee
+more GPU throughput or shorter task completion time.
 
 This design uses the goal/context and isolated-conversation pattern described
 in [Hermes delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation/).

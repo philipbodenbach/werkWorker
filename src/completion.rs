@@ -47,6 +47,7 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
     };
     let mut repeated = BTreeMap::new();
     let mut considered = std::collections::BTreeSet::new();
+    let mut counts = None;
     for invocation in run.invocations.iter().rev().take(128) {
         if !editing {
             break;
@@ -55,7 +56,19 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
         if !considered.insert(key.clone()) {
             continue;
         }
-        let count = crate::harness::repetitions(run, &invocation.call);
+        let count = if matches!(
+            invocation.call.name.as_str(),
+            "process.status" | "agents.status"
+        ) {
+            // Active owned jobs have a special waiting exemption. Preserve the
+            // exact argument/result check rather than generalizing that policy.
+            crate::harness::repetitions(run, &invocation.call)
+        } else {
+            *counts
+                .get_or_insert_with(|| crate::harness::repetition_counts(run))
+                .get(&crate::working_state::call_key(&invocation.call))
+                .unwrap_or(&0)
+        };
         if count >= 2
             && count >= run.limits.max_repeated_calls.saturating_sub(1)
             && repeated.len() < 4

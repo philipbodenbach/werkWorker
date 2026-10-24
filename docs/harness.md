@@ -226,6 +226,12 @@ answers at the same implementation/plan/check state stop with
 `completion_stalled`, never `Completed`; successful repair cycles have no fixed
 count. Owned harness echoes remain invalid even when the model changes internal
 scope/trigger IDs. Arbitrary user JSON is not treated as owned feedback.
+Request-local compaction observations (`compacted_history`, `retained_evidence`,
+`prior_summary`, and `retained_skill`) use the same durable projection for prompt
+construction and echo detection. A copied observation is rejected before entering
+canonical conversation history or the completion gate and consumes the existing
+response-retry allowance. It cannot become a final answer or a recursively quoted
+history excerpt. The original tool receipts and saved files remain intact.
 
 Rejected file operations additionally retain a pending repair across compaction.
 During coding repair the shell workspace is read-only; corrected file-tool edits

@@ -70,7 +70,7 @@ impl Tool for AgentTool {
                 vec!["tasks"],
             ),
             "agents.status" => (
-                "Inspect the status of your directly delegated agents; the host handles approvals and questions.",
+                "Inspect your directly delegated agents and current configured/free inference capacity. Status does not reserve slots; avoid polling while useful independent work remains. The host handles approvals and questions.",
                 json!({}),
                 vec![],
             ),
@@ -137,19 +137,25 @@ impl SessionHandle {
         let data = self.snapshot().await?;
         let run = data.run(run_id)?;
         if data.parent.is_some()
+            || run.final_text.is_some()
             || !crate::completion::enabled(&data, run)?
             || !run.children.is_empty()
-            || run.plan["steps"]
-                .as_array()
-                .is_none_or(|steps| steps.len() < 3)
+            || run.plan["steps"].as_array().is_none_or(|steps| {
+                steps.len() < 3
+                    || !steps.iter().any(|step| {
+                        matches!(step["status"].as_str(), Some("pending" | "in_progress"))
+                    })
+            })
             || !run.invocations.iter().any(|i| {
                 matches!(
                     i.call.name.as_str(),
                     "files.write" | "files.edit" | "files.insert"
-                ) && i
-                    .result
-                    .as_ref()
-                    .is_some_and(|r| r.status == Outcome::Succeeded)
+                ) && i.result.as_ref().is_some_and(|r| {
+                    r.status == Outcome::Succeeded
+                        && r.data["sha256"].as_str().is_some_and(|hash| {
+                            i.call.arguments["expected_hash"].as_str() != Some(hash)
+                        })
+                })
             })
             || self.execution_status()["effective_model_requests"]
                 .as_u64()
@@ -162,9 +168,48 @@ impl SessionHandle {
         {
             return Ok(());
         }
+        // Bound automatic helpers even for continuous parents. At admission,
+        // leave some finite tree budget for the parent; concurrent work can still
+        // consume it, so this is not a synthesis reservation.
+        let mut limits = run.limits.clone();
+        limits.continuous = false;
+        limits.max_model_requests = limits.max_model_requests.min(6);
+        if !run.limits.continuous {
+            let remaining = run
+                .limits
+                .max_model_requests
+                .saturating_sub(run.tree_model_requests);
+            if remaining <= 2 {
+                return Ok(());
+            }
+            limits.max_model_requests = limits.max_model_requests.min(remaining - 2);
+        }
+        limits.max_tool_invocations = limits.max_tool_invocations.min(8);
+        limits.max_steps = limits.max_steps.min(8);
+        limits.max_wall_ms = limits.max_wall_ms.min(180_000);
+        let mut updates: Vec<_> = data
+            .messages
+            .iter()
+            .skip(run.history_start + 1)
+            .filter(|message| message.role == Role::User)
+            .rev()
+            .take(4)
+            .map(|message| crate::completion::excerpt(&message.content, 800))
+            .collect();
+        updates.reverse();
+        let mut receipts = Vec::new();
+        let mut receipt_bytes = 2;
+        for receipt in crate::working_state::bounded_files(&data, run) {
+            let metadata = json!({"path":receipt["path"],"status":receipt["status"],"sha256":receipt["sha256"],"total_lines":receipt["total_lines"],"total_bytes":receipt["total_bytes"]});
+            receipt_bytes += metadata.to_string().len() + 1;
+            if receipt_bytes > 4096 {
+                break;
+            }
+            receipts.push(metadata);
+        }
         let task = DelegateTask {
-            goal: "Review acceptance criteria and missing behavior for this coding task. Inspect the existing implementation, identify gaps, and propose concrete behavioral assertions through real entry points. The parent continues implementing. Return concise evidence and test recommendations; do not implement or claim the user's task is complete.".into(),
-            context: format!("User requirements:\n{}\nCurrent plan:\n{}", crate::completion::excerpt(&run.input, 8000), crate::completion::excerpt(&run.plan.to_string(), 4000)),
+            goal: "Perform one focused acceptance review of the remaining coding work. Inspect only relevant current files; prioritize concrete missing behavior and behavioral assertions through real entry points. The parent continues implementing. You have at most 6 model requests and 8 tool calls: finish with concise evidence and test recommendations within that budget, even if inspection is incomplete. Do not implement, repeat broad searches, or claim the user's task is complete.".into(),
+            context: format!("User requirements (bounded):\n{}\nRecent user updates, in chronological order (bounded):\n{}\nCurrent plan (bounded):\n{}\nLatest file receipts (historical observations; recheck before relying on changing files):\n{}", crate::completion::excerpt(&run.input, 4000), crate::completion::excerpt(&serde_json::to_string(&updates)?, 3200), crate::completion::excerpt(&run.plan.to_string(), 2500), serde_json::to_string(&receipts)?),
             tools: Some(data.profile.tools.iter().filter(|t| matches!(t.as_str(), "files.read" | "files.list" | "files.search" | "files.find")).cloned().collect()),
             read_only: true,
         };
@@ -179,7 +224,12 @@ impl SessionHandle {
             return Ok(());
         }
         match self
-            .delegate(run_id, vec![task], &format!("review_{run_id}"))
+            .delegate_with_limits(
+                run_id,
+                vec![task],
+                &format!("review_{run_id}"),
+                Some(limits),
+            )
             .await
         {
             Ok(_) => Ok(()),
@@ -291,6 +341,19 @@ impl SessionHandle {
         run_id: &str,
         tasks: Vec<DelegateTask>,
         command_id: &str,
+    ) -> Result<Vec<ChildStatus>> {
+        self.delegate_with_limits(run_id, tasks, command_id, None)
+            .await
+    }
+
+    // Only internal automatic helpers can supply tighter child budgets. Public
+    // delegation IDs never select policy or override inherited limits.
+    async fn delegate_with_limits(
+        &self,
+        run_id: &str,
+        tasks: Vec<DelegateTask>,
+        command_id: &str,
+        child_limits: Option<Limits>,
     ) -> Result<Vec<ChildStatus>> {
         validate_id(command_id)?;
         self.engine.ensure_open()?;
@@ -437,7 +500,7 @@ impl SessionHandle {
                 Ok(())
             })
             .await?;
-            let mut limits = run.limits.clone();
+            let mut limits = child_limits.clone().unwrap_or_else(|| run.limits.clone());
             if run.deadline_ms > 0 && run.approval_wait_started_at_ms.is_none() {
                 limits.max_wall_ms = limits
                     .max_wall_ms
@@ -635,11 +698,11 @@ impl SessionHandle {
                 )
                 .await?;
                 let statuses = self.children(run_id).await?;
-                json!({"agents":statuses.iter().map(|c|json!({"session_id":c.session_id,"goal":c.goal.chars().take(160).collect::<String>(),"status":c.run.as_ref().map(|r|r.status)})).collect::<Vec<_>>()})
+                json!({"execution":self.execution_status(),"agents":statuses.iter().map(|c|json!({"session_id":c.session_id,"goal":c.goal.chars().take(160).collect::<String>(),"status":c.run.as_ref().map(|r|r.status)})).collect::<Vec<_>>()})
             }
             "agents.status" => {
                 let statuses = self.children(run_id).await?;
-                json!({"agents":statuses.iter().map(|c|json!({"session_id":c.session_id,"goal":c.goal.chars().take(160).collect::<String>(),"status":c.run.as_ref().map(|r|r.status)})).collect::<Vec<_>>()})
+                json!({"execution":self.execution_status(),"agents":statuses.iter().map(|c|json!({"session_id":c.session_id,"goal":c.goal.chars().take(160).collect::<String>(),"status":c.run.as_ref().map(|r|r.status)})).collect::<Vec<_>>()})
             }
             "agents.wait" => {
                 let results = self.collect_children(run_id, shutdown).await?;

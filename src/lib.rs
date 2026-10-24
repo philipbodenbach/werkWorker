@@ -16,6 +16,8 @@ pub mod project;
 pub mod providers;
 mod read_progress;
 mod reasoning;
+#[cfg(test)]
+mod repetition_tests;
 pub mod runtime;
 pub mod sessions;
 pub mod skills;

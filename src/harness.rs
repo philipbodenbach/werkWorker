@@ -283,6 +283,24 @@ pub(crate) fn is_feedback_echo(
             .chain(crate::read_progress::working_page(session, run)?.map(|(_, page)| page))
             .filter(|observation| request.messages.contains(observation)),
     );
+    if state.config.mode != HarnessMode::Classic
+        && let Some(context) = run.contexts.last()
+        && let Some(source) = &context.source
+    {
+        // These observations exist only in the built request, not in canonical
+        // history or adaptive aid records. Reconstruct ownership from the saved
+        // selection and durable receipts, never from a model/user source label.
+        owned.extend(
+            crate::context::CompactionFeedback::new(session, run)
+                .messages(
+                    session,
+                    &context.omitted_messages.iter().copied().collect(),
+                    &source.excerpt,
+                )
+                .into_iter()
+                .filter(|observation| request.messages.contains(observation)),
+        );
+    }
     if state.config.mode == HarnessMode::Minimal {
         // Planning precedes the step charge and its first attempt. Every
         // transport retry uses that same admitted request, so reconstruct the
@@ -374,7 +392,7 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
     {
         return 1;
     }
-    run.invocations[repetition_boundary(run, call)..]
+    run.invocations[repetition_boundary(run)..]
         .iter()
         .filter(|i| crate::working_state::call_key(&i.call) == call_key)
         // The project gate requires a new decision before the first execution.
@@ -387,7 +405,25 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
         .count()
 }
 
-fn repetition_boundary(run: &Run, _call: &ToolCall) -> usize {
+/// Count the same progress epoch once when a context observation examines many
+/// calls. This index is request-local: fresh tool outcomes always rebuild it.
+pub(crate) fn repetition_counts(run: &Run) -> std::collections::BTreeMap<String, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    for invocation in &run.invocations[repetition_boundary(run)..] {
+        if invocation.result.as_ref().is_some_and(|result| {
+            result.status == Outcome::CancelledBeforeStart
+                && result.error_code.as_deref() == Some("project_instructions_required")
+        }) {
+            continue;
+        }
+        *counts
+            .entry(crate::working_state::call_key(&invocation.call))
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn repetition_boundary(run: &Run) -> usize {
     let mut prior = std::collections::BTreeMap::new();
     let mut file_hashes = std::collections::BTreeMap::new();
     let mut checks = std::collections::BTreeSet::new();
@@ -426,6 +462,10 @@ fn repetition_boundary(run: &Run, _call: &ToolCall) -> usize {
             // Exclude elapsed time/output churn from job status evidence.
             let observation = if invocation.call.name == "process.status" {
                 json!({"running":result.data["running"],"exit_code":result.data["exit_code"],"status":result.data["status"]})
+            } else if invocation.call.name == "agents.status" {
+                // Capacity is useful scheduling data, but changing free slots
+                // alone must not make repeated status polling task progress.
+                json!({"agents":result.data["agents"]})
             } else {
                 let mut data = result.data.clone();
                 if let Some(path) = data["path"]

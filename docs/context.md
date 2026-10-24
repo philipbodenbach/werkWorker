@@ -5,6 +5,25 @@ and the per-turn workspace ledgers below describe preserved legacy `classic` run
 the default [adaptive harness](harness.md) keeps dynamic evidence out of the system
 prefix and restores omitted loaded skills as lower-authority data.
 
+Adaptive/minimal preparation skips construction of the discarded classic prompt.
+Coding repetition feedback builds one request-local count index for ordinary
+calls instead of rehashing the entire observation history for each candidate.
+Fresh outcomes rebuild the index; active job/status polling retains its existing
+special handling. Neither optimization drops evidence or changes context limits.
+`repetition_tests` compares the old per-call counts with this index across path
+aliases, project gates, file changes, denials and active status calls. Its timing
+output measures only local repetition-count preparation, not model throughput or
+end-to-end task completion. The opt-in `context_prompt_replay` checks whole request
+hashes for a fixed saved snapshot; baselines must be renewed after intentional
+prompt changes.
+
+On 2026-10-24 the local debug-profile comparison with 348 synthetic invocations,
+128 distinct queries and 80-byte result contents measured 3,934 ms versus 35 ms
+per count-preparation pass (three iterations, identical counts). Reproduce with
+`cargo test --offline --locked --lib count_preparation_comparison -- --nocapture`.
+This roughly 113-fold reduction applies only to that repeated-counting workload;
+it is not an inference or whole-task speedup claim.
+
 Every model attempt, including children, retries and optional model summaries,
 passes an engine preflight. The effective context is the minimum of the run's
 `Limits.context_tokens` and the provider's known context size. The initial

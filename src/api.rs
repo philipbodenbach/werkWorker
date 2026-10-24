@@ -2765,6 +2765,7 @@ impl SessionHandle {
             result.error_code.as_deref(),
             Some("write_conflict" | "coding_step_invalid" | "recovery_step_too_large")
         );
+        let track_read = crate::read_progress::enabled(&data, data.run(run_id)?, &invocation.call)?;
         self.update(|d| {
             let i = d
                 .run_mut(run_id)?
@@ -2811,6 +2812,47 @@ impl SessionHandle {
             Ok(())
         })
         .await?;
+        if track_read {
+            let data = self.snapshot().await?;
+            let run = data.run(run_id)?;
+            // Inspect fresh, bounded receipts before deciding whether a read
+            // repeated old evidence. This also permits externally changed files.
+            if let Some(progress) =
+                crate::read_progress::latest(run).filter(|p| p.invocation_id == invocation_id)
+            {
+                if progress.repeated >= run.limits.max_repeated_calls.saturating_add(2) {
+                    return Err(WorkerError::new(
+                        "repetition_limit",
+                        format!(
+                            "Repeated reads of {} returned already observed bytes without a new file version. Fresh content and hashes are retained; make a targeted edit or behavioral check. The task is not complete.",
+                            progress.path
+                        ),
+                    ));
+                }
+                if progress.repeated >= run.limits.max_repeated_calls {
+                    self.update(|d| {
+                        d.emit(
+                            Some(run_id),
+                            EventKind::Diagnostic {
+                                code: format!(
+                                    "read_recovery:{}",
+                                    progress.repeated - run.limits.max_repeated_calls + 1
+                                ),
+                            },
+                        );
+                        Ok(())
+                    })
+                    .await?;
+                }
+            } else if crate::harness::repeated_calls(&data, run, &invocation.call)?
+                > run.limits.max_repeated_calls
+            {
+                return Err(WorkerError::new(
+                    "repetition_limit",
+                    "Repeated failed reads without new evidence; permissions and existing files are unchanged",
+                ));
+            }
+        }
         if repair_failed {
             let data = self.snapshot().await?;
             let run = data.run(run_id)?;
@@ -2844,13 +2886,10 @@ impl SessionHandle {
         let data = self.snapshot().await?;
         let run = data.run(run_id)?;
         if crate::harness::config(&data, run)?.mode != crate::harness::HarnessMode::Classic
+            && !crate::read_progress::enabled(&data, run, &invocation.call)?
             && crate::harness::repeated_calls(&data, run, &invocation.call)?
                 > run.limits.max_repeated_calls
         {
-            if let Some(result) = crate::harness::read_loop_recovery(&data, run, &invocation.call)?
-            {
-                return self.outcome(run_id, invocation_id, result).await;
-            }
             return Err(WorkerError::new(
                 "repetition_limit",
                 "Repeated identical calls without new evidence exceeded the run limit",
@@ -3076,6 +3115,7 @@ impl SessionHandle {
         let run = data.run(run_id)?;
         if crate::harness::repeated_calls(&data, run, &invocation.call)?
             > run.limits.max_repeated_calls
+            && !crate::read_progress::enabled(&data, run, &invocation.call)?
         {
             return Err(WorkerError::new(
                 "repetition_limit",

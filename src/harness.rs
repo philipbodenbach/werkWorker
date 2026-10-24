@@ -277,6 +277,12 @@ pub(crate) fn is_feedback_echo(
             .into_iter()
             .filter(|observation| request.messages.contains(observation)),
     );
+    owned.extend(
+        crate::read_progress::feedback(session, run)?
+            .into_iter()
+            .chain(crate::read_progress::working_page(session, run)?.map(|(_, page)| page))
+            .filter(|observation| request.messages.contains(observation)),
+    );
     if state.config.mode == HarnessMode::Minimal {
         // Planning precedes the step charge and its first attempt. Every
         // transport retry uses that same admitted request, so reconstruct the
@@ -448,60 +454,6 @@ fn repetition_boundary(run: &Run, _call: &ToolCall) -> usize {
     boundary
 }
 
-/// Stop the redundant read, then give a coding agent two concrete chances to
-/// change course before stopping the run. Receipts persist across resume; reads,
-/// failed writes and alternating blocked reads cannot replenish this allowance.
-pub(crate) fn read_loop_recovery(
-    session: &SessionData,
-    run: &Run,
-    call: &ToolCall,
-) -> Result<Option<ToolResult>> {
-    if config(session, run)?.mode != HarnessMode::Adaptive
-        || !crate::completion::enabled(session, run)?
-        || call.name != "files.read"
-        || !session.profile.tools.iter().any(|t| t == "files.edit")
-    {
-        return Ok(None);
-    }
-    let epoch = &run.invocations[repetition_boundary(run, call)..];
-    let recoveries = epoch
-        .iter()
-        .filter(|i| {
-            i.result
-                .as_ref()
-                .is_some_and(|r| r.error_code.as_deref() == Some("repetition_recovery"))
-        })
-        .count();
-    if recoveries >= 2 {
-        return Ok(None);
-    }
-    let path = call.arguments["path"]
-        .as_str()
-        .and_then(|p| crate::working_state::path(p).ok());
-    if !crate::working_state::files(session, run)
-        .iter()
-        .any(|v| v["path"].as_str() == path.as_deref() && v["status"] == "present")
-    {
-        return Ok(None);
-    }
-    let Some(previous) = run
-        .invocations
-        .iter()
-        .rev()
-        .filter(|i| crate::working_state::call_key(&i.call) == crate::working_state::call_key(call))
-        .filter_map(|i| i.result.as_ref())
-        .find(|r| r.status == Outcome::Succeeded && r.data["sha256"].is_string())
-    else {
-        return Ok(None);
-    };
-    let mut result = ToolResult::error(Outcome::ValidationError, "repetition_recovery");
-    result.data = json!({
-        "executed":false,"recovery":recoveries + 1,
-        "last_observation":{"path":previous.data["path"],"sha256":previous.data["sha256"],"start_line":previous.data["start_line"],"end_line":previous.data["end_line"],"total_lines":previous.data["total_lines"],"next_start_line":previous.data["next_start_line"]},
-        "message":"Repeated unchanged read was not executed. This is a historical receipt, not a new filesystem observation. Compaction did not erase successful work. Reuse the observed contents/hash to implement one remaining part with files.edit and a unique anchor, or run the relevant behavioral check. If details are missing, request only an unread range. Do not restart scaffolding or repeat this read. Two recovery decisions are available without new evidence; further identical loops stop the run."
-    });
-    Ok(Some(result))
-}
 pub(crate) fn repeated_calls(session: &SessionData, run: &Run, call: &ToolCall) -> Result<usize> {
     Ok(if config(session, run)?.mode != HarnessMode::Classic {
         repetitions(run, call)

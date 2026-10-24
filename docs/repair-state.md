@@ -39,9 +39,32 @@ being confused with implementation progress.
   Receipts report the actual attempted and allowed sizes;
   the final stalled-repair error includes the path and last concrete error.
   Code is never mechanically truncated or partially executed.
-- Read aliases share repetition counts. Unchanged version checks and no-op file
-  edits do not reset them. Observed file mutations and distinct verification
-  results permit continued work. Existing changed-read/research behavior remains.
+- Coding read recovery measures the union of delivered byte ranges per normalized
+  path and SHA-256, replayed from persisted tool receipts. Different line/byte
+  arguments over covered content do not count as new evidence. Only returned,
+  bounded content counts, so pagination into unseen content remains useful.
+  Fresh reads still pass the ordinary permissions and filesystem checks: an
+  external edit can be discovered even through an identical read request.
+  Repeated reads return their exact content/hash and a separate recovery notice,
+  giving the model a usable edit anchor after compaction rather than withholding
+  the content. After the configured repeat allowance there are two recovery
+  decisions; continued redundant reads stop with work retained, never Completed.
+  No-op writes, argument variations and unrelated version commands do not reset
+  that allowance. New file versions, unseen bytes and distinct verification
+  receipts do. The canonical receipts survive resume; no new database is needed.
+  If compaction removes that working page, a bounded UTF-8 excerpt is restored
+  from its persisted receipt, with its original hash and explicit historical
+  provenance. It is not duplicated while the original tool result is visible,
+  and a superseding version/missing-file observation prevents restoration.
+- Large rejected atomic file proposals are shortened only in the model-visible
+  history. Their paths, hashes, tool pairing and error receipts remain, and the
+  complete rejected arguments stay in canonical session history. Failed drafts
+  are never presented as applied code. This prevents an unsuccessful whole-file
+  rewrite from consuming the context required to repair the existing file.
+- Output-limit recovery grows only into measured free context. Once small-step
+  recovery is selected it uses the configured initial output reserve, rather than
+  carrying a historical whole-window target into every later request. All final
+  requests retain ordinary token counting and the 512-token safety margin.
 - Completion after consolidation requires verification of all remaining changed
   files. Earlier outputs confirmed absent on disk do not require recreation just
   to obtain a hash. Inaccessible/oversized files are not treated as absent;
@@ -58,6 +81,17 @@ workspaces, including actual bubblewrap execution. No model, API key or local
 inference server is needed. They cover deletion after a failed edit, stale
 receipts after compaction/resume, output truncation, alias/version-check loops,
 stable argument ceilings and recovery to verified completion.
+
+Validation of read-coverage recovery on 2026-10-24: 275 tests passed with real
+sandbox/browser checks required, and four optional replays excluded. Strict
+Clippy passed. Two relevant replays were run separately, reading the failed
+session without model requests: the read detector identifies the stalled prefix
+at tool invocation 21 of the original 348; the context builder admits the saved
+708-message session using fixture token estimates (seven cold counts, one warm
+count). These are offline regressions, not a claim that the original game was
+completed. Scripted end-to-end tests exercise recovery through exact edits and
+current-file behavioral verification before Completed, as well as refusal of
+runtime-feedback echoes and continued no-progress loops.
 
 Validation on 2026-10-23: 252 Rust tests passed (two opt-in replay tests skipped
 by the ordinary suite), plus nine Python tests, strict Clippy and rustfmt. The

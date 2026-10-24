@@ -64,10 +64,16 @@ pub(crate) fn generation_limits(
     provider: &dyn ModelProvider,
 ) -> Result<Limits> {
     let mut effective = effective_limits(limits, provider.capabilities().context_tokens)?;
-    effective.reserve_output_tokens = recovery
-        .target_output_tokens
-        .unwrap_or(effective.reserve_output_tokens)
-        .min(output_ceiling(&effective, provider));
+    effective.reserve_output_tokens = (if recovery.split_required {
+        // Small-step recovery must not carry a whole-window output target
+        // forever after the request planner already found it could not fit.
+        effective.reserve_output_tokens
+    } else {
+        recovery
+            .target_output_tokens
+            .unwrap_or(effective.reserve_output_tokens)
+    })
+    .min(output_ceiling(&effective, provider));
     Ok(effective)
 }
 
@@ -436,6 +442,7 @@ impl DefaultContextBuilder {
                 dynamic.extend(crate::harness::minimal_feedback(session, run)?);
             }
             dynamic.extend(crate::harness::adaptive_feedback(session, run)?);
+            dynamic.extend(crate::read_progress::feedback(session, run)?);
         }
         prompt.push_str("\nNew user messages during a run update the active task. Apply their constraints to the next useful action, reconcile any conflicting plan, and acknowledge the change briefly. Preserve earlier requirements that still apply. Completion and verification must cover the updated task.\n");
         if crate::completion::enabled(session, run)? {
@@ -523,6 +530,7 @@ impl DefaultContextBuilder {
             }
             messages
         };
+        let working_page = crate::read_progress::working_page(session, run)?;
         let compose = |mut head: Vec<Message>, mut history: Vec<Message>| {
             if minimal {
                 // Keep initial user constraints/images at their original
@@ -541,6 +549,13 @@ impl DefaultContextBuilder {
                 head.extend(observations);
             }
             head.extend(history);
+            if let Some((call_id, page)) = &working_page
+                && !head
+                    .iter()
+                    .any(|m| m.tool_call_id.as_ref() == Some(call_id))
+            {
+                head.push(page.clone());
+            }
             head.extend(dynamic.clone());
             // This builder requests a fresh decision, never assistant prefill.
             if head.last().is_some_and(|m| m.role == Role::Assistant) {
@@ -548,6 +563,44 @@ impl DefaultContextBuilder {
             }
             head
         };
+        // Failed atomic file proposals are not working code. Keep their exact
+        // arguments in canonical history, but do not pin an output-sized rejected
+        // rewrite into the next prompt. Preserve pairing, path/hash and error.
+        let mut rejected: BTreeMap<usize, Message> = BTreeMap::new();
+        for invocation in session.runs.iter().flat_map(|r| &r.invocations) {
+            if !matches!(
+                invocation.call.name.as_str(),
+                "files.write" | "files.edit" | "files.insert"
+            ) || !invocation.result.as_ref().is_some_and(|r| {
+                matches!(r.status, Outcome::Failed | Outcome::ValidationError)
+                    && matches!(
+                        r.error_code.as_deref(),
+                        Some("write_conflict" | "coding_step_invalid" | "recovery_step_too_large")
+                    )
+            }) {
+                continue;
+            }
+            let Some(original) = session.messages.get(invocation.message_index) else {
+                continue;
+            };
+            let message = rejected
+                .entry(invocation.message_index)
+                .or_insert_with(|| original.clone());
+            if let Some(call) = message
+                .tool_calls
+                .iter_mut()
+                .find(|c| c.id == invocation.call.id)
+            {
+                for field in ["content", "old", "new"] {
+                    if let Some(text) = call.arguments[field].as_str().filter(|s| s.len() > 1024) {
+                        call.arguments[field] = serde_json::json!(format!(
+                            "[Rejected {field} omitted: {} bytes, never applied. Exact proposal remains in session history. Use the current file content for a small repair.]",
+                            text.len()
+                        ));
+                    }
+                }
+            }
+        }
         let mut compacted: BTreeSet<usize> = session
             .compactions
             .iter()
@@ -616,7 +669,7 @@ impl DefaultContextBuilder {
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| !compacted.contains(i))
-                .map(|(_, m)| m.clone())
+                .map(|(i, m)| rejected.get(&i).unwrap_or(m).clone())
                 .collect(),
         );
         let provider_estimates = std::sync::atomic::AtomicUsize::new(0);
@@ -664,12 +717,37 @@ impl DefaultContextBuilder {
         // erase every useful tool result on every turn. Apply headroom only to
         // the space actually available for compactable history, and compact
         // only when the full request reaches its input limit.
+        let mut initial_tokens = estimate(&messages, output_budget).await?;
+        if output_budget > minimum_base {
+            // Grow output only into measured free space. A previous length
+            // failure must not force compaction down to one input token.
+            let next = run
+                .limits
+                .context_tokens
+                .saturating_sub(initial_tokens.saturating_add(576))
+                .max(minimum_base)
+                .min(output_budget);
+            if next < output_budget {
+                if has_file_tools && !minimal && file_budget.is_none() {
+                    messages[0].content = messages[0].content.replacen(
+                        &output_guidance(output_budget),
+                        &output_guidance(next),
+                        1,
+                    );
+                }
+                output_budget = next;
+                available = run
+                    .limits
+                    .context_tokens
+                    .saturating_sub(output_budget + 512);
+                initial_tokens = estimate(&messages, output_budget).await?;
+            }
+        }
         let fixed: Vec<_> = messages
             .iter()
             .filter(|m| matches!(m.role, Role::System | Role::Developer | Role::User))
             .cloned()
             .collect();
-        let initial_tokens = estimate(&messages, output_budget).await?;
         let needs_compaction = initial_tokens > available;
         // Normal turns need only the complete request count. The stable-prefix
         // measurement is useful only when selecting a compaction target.
@@ -955,7 +1033,7 @@ impl DefaultContextBuilder {
                 .enumerate()
                 .filter_map(|(n, m)| {
                     if !omitted.contains(&n) {
-                        Some(m.clone())
+                        Some(rejected.get(&n).unwrap_or(m).clone())
                     } else if n == latest
                         && latest_write
                         && (!m.content.is_empty() || !m.images.is_empty())

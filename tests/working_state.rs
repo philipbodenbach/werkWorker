@@ -264,15 +264,15 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
     );
     let data = session.snapshot().await.unwrap();
     let receipts: Vec<_> = data
-        .run(&run.id)
-        .unwrap()
-        .invocations
+        .events
         .iter()
-        .filter_map(|i| i.result.as_ref())
-        .filter(|r| r.error_code.as_deref() == Some("repetition_recovery"))
+        .filter_map(|e| match &e.event {
+            EventKind::Diagnostic { code } if code.starts_with("read_recovery:") => Some(code),
+            _ => None,
+        })
         .collect();
     assert_eq!(receipts.len(), 2);
-    assert_eq!(receipts[1].data["recovery"], 2);
+    assert_eq!(receipts[1], "read_recovery:2");
     engine.close().await.unwrap();
 }
 

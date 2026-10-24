@@ -15,6 +15,52 @@ fn write(root: &Path, path: &str, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+#[tokio::test]
+async fn optional_subagent_model_survives_project_settings_save() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        CONFIG,
+        r#"{"version":1,"model":"main","subagent_model":"helper"}"#,
+    );
+    let project = Project::load(dir.path()).await.unwrap();
+    let mut config = project.config.clone();
+    config.profile = Some("coding-basic".into());
+    project.save(dir.path(), &config).await.unwrap();
+    assert_eq!(
+        Project::load(dir.path())
+            .await
+            .unwrap()
+            .config
+            .subagent_model
+            .as_deref(),
+        Some("helper")
+    );
+    for bytes in [b"{}".as_slice(), br#"{"subagent_model":null}"#] {
+        let config = ProjectConfig::parse(bytes).unwrap();
+        assert!(config.subagent_model.is_none());
+        assert!(
+            serde_json::to_value(config)
+                .unwrap()
+                .get("subagent_model")
+                .is_none()
+        );
+    }
+    for model in [
+        "".to_owned(),
+        "  ".into(),
+        "bad\nmodel".into(),
+        "x".repeat(513),
+    ] {
+        assert!(
+            ProjectConfig::parse(
+                &serde_json::to_vec(&serde_json::json!({"subagent_model":model})).unwrap()
+            )
+            .is_err()
+        );
+    }
+}
+
 #[test]
 fn project_reasoning_distinguishes_inheritance_from_explicit_server_default() {
     let inherited = ProjectConfig::parse(b"{}").unwrap();

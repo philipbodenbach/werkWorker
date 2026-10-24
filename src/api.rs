@@ -249,7 +249,7 @@ impl WorkerEngine {
     }
     pub fn execution_status(&self) -> Value {
         let info = self.inner.provider.concurrency();
-        json!({"config":self.inner.execution,"inference":info,"context_tokens":self.inner.provider.capabilities().context_tokens,"effective_model_requests":self.inner.execution.effective_requests(&info),"free_model_slots":self.inner.model_slots.available_permits(),"free_subagent_slots":self.inner.child_slots.available_permits()})
+        json!({"config":self.inner.execution,"inference":info,"context_tokens":self.inner.provider.capabilities().context_tokens,"effective_model_requests":self.inner.execution.effective_requests(&info),"free_model_slots":self.inner.model_slots.available_permits().min(self.inner.host_model_slots.available_permits()),"free_subagent_slots":self.inner.child_slots.available_permits()})
     }
     async fn inference_for(&self, metadata: &Value) -> Result<Arc<ModelBinding>> {
         let model = metadata.get(MODEL_BINDING).filter(|v| !v.is_null());

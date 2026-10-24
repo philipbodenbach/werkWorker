@@ -128,14 +128,19 @@ Example model tool arguments:
 A batch has 1–32 tasks, subject to available host limits. Goal/context are
 bounded to 8,192/16,384 bytes at the SDK boundary. Tools may only narrow the
 parent profile; omission inherits it. Children inherit profile instructions,
-pinned skills, provider/model, workspace and host grants, but start a fresh
+pinned skills, workspace and host grants, but start a fresh
 conversation containing only the supplied goal/context. They receive no copy
 of the parent's conversation, prior tool results or reusable approvals.
+By default they also inherit the parent's provider/model. The optional project
+setting `subagent_model` selects a different model on the same Werk connection
+for every child, including automatic reviews and descendants. The selection is
+saved with each child and restored on reopen. See [project configuration](project-configuration.md).
 
 `read_only` removes workspace write permission; it is **not** a blanket denial
 of an independently granted network-write connector. Narrow `tools` as well
 when a task should be entirely observational. At maximum depth, child profiles
-lose all delegation/control tools. No child selects a new model, workspace,
+lose all delegation/control tools. The project setting is host-applied; the
+`delegate_task` arguments do not select a model. No child selects a new workspace,
 credential, principal or sandbox. Ancestor cancellation, expiry and hard policy
 denials are checked before new tool execution, including live grant revocation.
 
@@ -164,8 +169,10 @@ silently, even if its delivery markers were already persisted.
 
 ## Concurrency and workspace safety
 
-A shared adjustable admission limiter covers every provider stream, from admission through stream
-completion/drop. Waiting for children, approvals or tools does not consume an
+A shared host admission limit and adjustable per-model limits cover every
+provider stream, from admission through completion/drop. Children targeting the
+same model share its discovered slots; different models still share the host
+limit and the root tree's request budget. Waiting for children, approvals or tools does not consume an
 inference slot. Separate sessions can overlap inference and safe reads even in
 the same workspace. Tool calls within one session remain ordered.
 

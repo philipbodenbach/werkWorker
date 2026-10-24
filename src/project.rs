@@ -692,18 +692,26 @@ pub(crate) fn require_for_calls(
 
 /// Children/forks inherit immutable sources, not another run's delivery proof.
 pub(crate) fn inherited_metadata(session: &SessionData) -> Result<serde_json::Value> {
-    let Some((mut context, _)) = contract(session)? else {
-        return Ok(if session.metadata["project_config"].is_object() {
-            serde_json::json!({"project_config":session.metadata["project_config"]})
-        } else {
-            serde_json::Value::Null
-        });
-    };
-    context.delivered.clear();
-    Ok(
+    let mut metadata = if let Some((mut context, _)) = contract(session)? {
+        context.delivered.clear();
         serde_json::json!({"project_config":session.metadata["project_config"],
-        "project_instructions":session.metadata["project_instructions"], CONTEXT_KEY:context}),
-    )
+            "project_instructions":session.metadata["project_instructions"], CONTEXT_KEY:context})
+    } else if session.metadata["project_config"].is_object() {
+        serde_json::json!({"project_config":session.metadata["project_config"]})
+    } else {
+        serde_json::Value::Null
+    };
+    if let Some(model) = session
+        .metadata
+        .get(crate::api::MODEL_BINDING)
+        .filter(|v| !v.is_null())
+    {
+        if !metadata.is_object() {
+            metadata = serde_json::json!({});
+        }
+        metadata[crate::api::MODEL_BINDING] = model.clone();
+    }
+    Ok(metadata)
 }
 
 pub(crate) fn deferred_result(paths: &[String]) -> ToolResult {

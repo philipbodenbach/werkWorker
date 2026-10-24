@@ -76,7 +76,7 @@ impl SessionHandle {
         Ok(options)
     }
 
-    /// Applies to newly planned requests in this root session and its children.
+    /// Applies to newly planned requests in this root and children using its model.
     /// Revalidate availability before persisting; never silently coerce a tier.
     pub async fn set_reasoning_tier(
         &self,

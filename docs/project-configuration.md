@@ -145,6 +145,27 @@ tools and bundled skills; arbitrary scripts/plugins are not loaded automatically
 A test command is an argv array included as a **suggestion** in the prompt. Merely
 opening the project never executes it. There are no startup hooks.
 
+`subagent_model` optionally selects one model for **all** delegated children,
+including automatic reviews and nested helpers. For example, add
+`"subagent_model": "your-helper-model"` alongside the existing `model` field.
+Omission or `null` preserves the default: children use the parent's model.
+This does not enable additional delegation or change review triggers, budgets,
+tools, permissions or depth limits. The main session keeps its selected model.
+
+The child uses the same Werk origin, authentication and transport settings.
+WerkWorker discovers its own context/output limits and capacity, and uses the
+child model's server reasoning default rather than a different model's effort
+setting or deployment pin. Other explicit connection capability overrides and
+sampling options remain inherited. A missing model, unknown child context limit,
+or provider without model selection produces a delegation error; it does not
+silently fall back to the main model. Preload both models with `werk serve` when
+desired; Worker does not launch another server.
+
+The option applies to new CLI `tui` and `run` sessions through their project
+snapshot. Existing sessions retain their saved choice; editing the project file
+does not reroute them. Project settings saves preserve this field. SDK hosts pass
+`Project::metadata()` or `Project::scoped_metadata()` to `create_session`.
+
 `reasoning_tier` is an optional tier ID reported by WerkProtocol. Omission inherits
 the connection's value; explicit `null` or `"default"` selects the server's current
 default, even when the global connection specifies a tier or native effort. The

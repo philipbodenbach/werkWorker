@@ -86,10 +86,17 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
     {
         return Ok(None);
     }
+    // Keep the checkpoint independently bounded, so a long step list cannot
+    // crowd out the next action. Do not duplicate it in the plan excerpt.
+    let mut plan = run.plan.clone();
+    if let Some(plan) = plan.as_object_mut() {
+        plan.remove("checkpoint");
+    }
     Ok(Some(crate::harness::feedback(
         "coding_task_state",
         json!({
-            "plan_excerpt": excerpt(&run.plan.to_string(), 4096),
+            "plan_excerpt": excerpt(&plan.to_string(), 4096),
+            "work_cycle": crate::work_cycle::observation(run, &state.verifications),
             "verification_excerpt": excerpt(&serde_json::to_string(&observed)?, 3072),
             "files": files,
             "pending_repairs": repairs,

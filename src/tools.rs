@@ -267,9 +267,13 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Replace the current run's short visible task plan",
+                "Track outcome milestones for multi-step work. Keep the current milestone in_progress; mark completed only from evidence. For coding, build a runnable version, review it, then repair concrete gaps. Save checkpoint at phase changes so the next action and interface decisions survive compaction. Replace the current plan, including its checkpoint; do not replan after every read.",
                 object(
-                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}}}),
+                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}},
+                        "checkpoint":{"type":"object","properties":{
+                            "next_action":{"type":"string","maxLength":512},
+                            "decisions":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":256}}
+                        },"required":["next_action"],"additionalProperties":false}}),
                     &["steps"],
                 ),
             ),

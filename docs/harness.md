@@ -265,6 +265,11 @@ remain available. Rejected edits never progressively shrink schema limits.
 See [working state and stalled repairs](repair-state.md) for the exact
 rules, finite non-progress allowance and reference mechanisms.
 
+Before those last-resort stops, coding runs use a durable plan checkpoint and
+immediate steering to finish a first working version, review it, and repair
+concrete gaps. See [implementation and review cycles](work-cycle.md) for the
+source comparison, progress rules, and validation limits.
+
 TUI runs have no aggregate step, request, tool-call or wall-time cutoff by default.
 For headless use, select `--continuous`; SDK hosts use `Limits::continuous()`.
 `--limits limits.json` supplies explicit budgets instead. The explicit `Limits.continuous` flag disables those four aggregate cutoffs;

@@ -534,7 +534,16 @@ impl DefaultContextBuilder {
         }
         prompt.push_str("\nNew user messages during a run update the active task. Apply their constraints to the next useful action, reconcile any conflicting plan, and acknowledge the change briefly. Preserve earlier requirements that still apply. Completion and verification must cover the updated task.\n");
         if crate::completion::enabled(session, run)? {
-            prompt.push_str("\nComplete every plan step honestly. Keep changes incremental; create files once, then edit unique observed anchors.\n");
+            if tools.iter().any(|t| {
+                matches!(
+                    t.name.as_str(),
+                    "files.write" | "files.edit" | "files.insert"
+                )
+            }) || (session.policy.workspace_writable
+                && tools.iter().any(|t| t.name == "process.run"))
+            {
+                prompt.push_str(crate::work_cycle::GUIDANCE);
+            }
             if crate::harness::config(session, run)?.completion.is_some() {
                 prompt.push_str("A host-configured acceptance command will check each final candidate. Fix reported failures before claiming completion.\n");
             } else {
@@ -566,6 +575,7 @@ impl DefaultContextBuilder {
             messages
         };
         let working_page = crate::read_progress::working_page(session, run)?;
+        let work_continuation = crate::work_cycle::continuation(session, run)?;
         let compose = |mut head: Vec<Message>, mut history: Vec<Message>| {
             if minimal {
                 // Keep initial user constraints/images at their original
@@ -593,7 +603,9 @@ impl DefaultContextBuilder {
             }
             head.extend(dynamic.clone());
             // This builder requests a fresh decision, never assistant prefill.
-            if head.last().is_some_and(|m| m.role == Role::Assistant) {
+            if let Some(continuation) = &work_continuation {
+                head.push(continuation.clone());
+            } else if head.last().is_some_and(|m| m.role == Role::Assistant) {
                 head.push(crate::harness::continuation());
             }
             head

@@ -278,6 +278,14 @@ pub(crate) fn is_feedback_echo(
             .filter(|observation| request.messages.contains(observation)),
     );
     owned.extend(
+        crate::work_cycle::continuation(session, run)?
+            .into_iter()
+            .filter(|observation| {
+                request.messages.last() == Some(observation)
+                    && !session.messages.contains(observation)
+            }),
+    );
+    owned.extend(
         crate::failure_progress::feedback(session, run)?
             .into_iter()
             .filter(|observation| request.messages.contains(observation)),

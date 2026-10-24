@@ -24,6 +24,7 @@ pub mod sessions;
 pub mod skills;
 pub mod tools;
 pub mod transport;
+mod work_cycle;
 mod working_state;
 
 pub use api::{EngineBuilder, RunHandle, SessionHandle, WorkerEngine};

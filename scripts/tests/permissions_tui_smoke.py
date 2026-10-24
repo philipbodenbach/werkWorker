@@ -34,6 +34,10 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
     # Isolate permission UI behavior from coding acceptance tests.
     harness = root / "harness.json"
     harness.write_text(json.dumps({"coding_checks": False}))
+    # Scripted requests use conservative bytes-as-tokens sizing. Give the
+    # large-paste UI check room for tool/policy schemas and conversation history.
+    limits = root / "limits.json"
+    limits.write_text(json.dumps({"context_tokens": 65_536, "continuous": True}))
     script = root / "script.json"
     script.write_text(json.dumps([
         turn("interaction.ask", {"question": "May I write files?", "choices": ["continue"]}),
@@ -58,7 +62,8 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
 
     def start(store, extra):
         return subprocess.Popen(
-            [str(binary), "--harness-config", str(harness), "--workspace", str(workspace), "--store", str(root / store)] + extra,
+            [str(binary), "--harness-config", str(harness), "--limits", str(limits),
+             "--workspace", str(workspace), "--store", str(root / store)] + extra,
             stdin=slave, stdout=slave, stderr=slave, env=env)
 
     def wait(token, present=True):
@@ -171,9 +176,7 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         assert sum(i.get("approval") is not None for i in state("state.sqlite")["runs"][0]["invocations"]) == 1
         # Large paste blocks stay compact in the TUI, but the model receives all text.
         first = "\n".join(f"Large pasted line {n}: Grüße 世界" for n in range(24))
-        # The scripted provider uses conservative bytes-as-tokens sizing.
-        # Leave room for tool/policy schemas; this test checks lossless paste,
-        # while the editor unit tests cover the full 64 KiB input capacity.
+        # Editor unit tests cover the full 64 KiB input capacity.
         second = "very long single line " + "x" * 16_000
         os.write(master, b"Read: \x1b[200~" + first.encode() + b"\x1b[201~")
         wait("[Pasted text #1 +24 lines]")

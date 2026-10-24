@@ -68,6 +68,17 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    /// Model selector on this connection, when supported. Not a provider identity.
+    fn model_id(&self) -> Option<&str> {
+        None
+    }
+    /// Host-selected child model on the same service; never changes credentials.
+    async fn for_model(&self, _model: &str) -> Result<Arc<dyn ModelProvider>> {
+        Err(WorkerError::new(
+            "subagent_model_unsupported",
+            "This provider does not support selecting a subagent model",
+        ))
+    }
     async fn reasoning_options(&self, _output: usize) -> Result<Option<ReasoningOptions>> {
         Ok(None)
     }
@@ -947,6 +958,11 @@ impl WerkProvider {
         Ok(body)
     }
     pub async fn connect(config: WerkConfig, secret: Option<String>) -> Result<Self> {
+        let client = WerkClient::new(&config, secret)?;
+        Self::connect_client(config, client).await
+    }
+
+    async fn connect_client(config: WerkConfig, client: WerkClient) -> Result<Self> {
         for (key, value) in &config.options {
             match key.as_str() {
                 "reasoning_effort" => validate_reasoning_effort(value)?,
@@ -974,7 +990,6 @@ impl WerkProvider {
                 "Choose reasoning_tier or native reasoning_effort, not both",
             ));
         }
-        let client = WerkClient::new(&config, secret)?;
         let info = client.control("/werk/v1/info").await?;
         if info["service"] != "werk1112" || info["protocol"] != json!({"major":1,"minor":0}) {
             return Err(WorkerError::new(
@@ -1236,6 +1251,43 @@ pub fn wire_message(message: &Message) -> Value {
 }
 #[async_trait]
 impl ModelProvider for WerkProvider {
+    fn model_id(&self) -> Option<&str> {
+        Some(&self.config.model)
+    }
+    async fn for_model(&self, model: &str) -> Result<Arc<dyn ModelProvider>> {
+        let mut config = self.config.clone();
+        config.model = model.into();
+        // The parent's deployment pin, token ceiling and effort belong to its
+        // model. Discover the child's limits and use its server reasoning default.
+        config.deployment = None;
+        config.capabilities.context_tokens = None;
+        config.options.remove("reasoning_tier");
+        config.options.remove("reasoning_effort");
+        let mut client = self.client.clone();
+        client.deployment = None;
+        let provider = Self::connect_client(config, client).await?;
+        if provider.discovery["generation_limits"].is_null()
+            && !provider.discovery["models"]["data"]
+                .as_array()
+                .is_some_and(|models| {
+                    models
+                        .iter()
+                        .any(|entry| entry["id"].as_str() == Some(model))
+                })
+        {
+            return Err(WorkerError::new(
+                "subagent_model_unavailable",
+                format!("Subagent model '{model}' is not advertised by Werk"),
+            ));
+        }
+        if provider.capabilities().context_tokens.is_none() {
+            return Err(WorkerError::new(
+                "context_limit_unknown",
+                format!("Werk did not report a context limit for subagent model '{model}'"),
+            ));
+        }
+        Ok(Arc::new(provider))
+    }
     async fn reasoning_options(&self, output: usize) -> Result<Option<ReasoningOptions>> {
         Ok(Some(ReasoningOptions {
             model: self.config.model.clone(),

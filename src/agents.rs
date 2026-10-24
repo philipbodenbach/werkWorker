@@ -288,7 +288,7 @@ impl SessionHandle {
     }
 
     pub fn execution_status(&self) -> Value {
-        self.engine.execution_status()
+        self.model_execution_status()
     }
     pub(crate) async fn children(&self, run_id: &str) -> Result<Vec<ChildStatus>> {
         let records = self.snapshot().await?.run(run_id)?.children.clone();
@@ -440,14 +440,27 @@ impl SessionHandle {
             if task.read_only {
                 policy.workspace_writable = false;
             }
+            let mut metadata = crate::project::inherited_metadata(&data)?;
+            // Persist the actual selection for this child. Changing the project
+            // file later cannot reroute an already-created child on reopen.
+            let model = data
+                .metadata
+                .get(crate::api::MODEL_BINDING)
+                .filter(|v| !v.is_null())
+                .or_else(|| {
+                    data.metadata["project_config"]
+                        .get("subagent_model")
+                        .filter(|v| !v.is_null())
+                });
+            if let Some(model) = model {
+                if !metadata.is_object() {
+                    metadata = json!({});
+                }
+                metadata[crate::api::MODEL_BINDING] = model.clone();
+            }
             let child = self
                 .engine
-                .create_session(
-                    profile,
-                    &data.workspace,
-                    policy,
-                    crate::project::inherited_metadata(&data)?,
-                )
+                .create_session(profile, &data.workspace, policy, metadata)
                 .await?;
             let child_id = child.id().await;
             let command = id("child");

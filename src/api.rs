@@ -48,7 +48,16 @@ fn response_recovery_failures(run: &Run) -> usize {
         .count()
 }
 
+// Shared per-model state. Children keep the same engine, store, tree budgets,
+// workspace locks and cancellation, while token accounting follows their model.
+struct ModelBinding {
+    provider: Arc<dyn ModelProvider>,
+    slots: Arc<crate::parallel::InferenceSlots>,
+}
+pub(crate) const MODEL_BINDING: &str = "_werkworker_model";
+
 struct SessionRuntime {
+    inference: Arc<ModelBinding>,
     deleted: AtomicBool,
     data: Arc<Mutex<SessionData>>,
     workspace: Workspace,
@@ -76,6 +85,8 @@ pub(crate) struct EngineInner {
     fatal: Mutex<BTreeMap<String, WorkerError>>,
     pub(crate) execution: crate::parallel::ExecutionConfig,
     model_slots: Arc<crate::parallel::InferenceSlots>,
+    host_model_slots: Arc<crate::parallel::InferenceSlots>,
+    models: Mutex<BTreeMap<String, Arc<ModelBinding>>>,
     pub(crate) child_slots: Arc<tokio::sync::Semaphore>,
     pub(crate) child_permits: Mutex<BTreeMap<String, tokio::sync::OwnedSemaphorePermit>>,
     pub(crate) delegation: Mutex<()>,
@@ -162,6 +173,10 @@ impl EngineBuilder {
         Ok(WorkerEngine {
             inner: Arc::new(EngineInner {
                 model_slots: crate::parallel::InferenceSlots::new(slots),
+                host_model_slots: crate::parallel::InferenceSlots::new(
+                    self.execution.max_model_requests,
+                ),
+                models: Mutex::new(BTreeMap::new()),
                 child_slots: Arc::new(tokio::sync::Semaphore::new(self.execution.max_subagents)),
                 child_permits: Mutex::new(BTreeMap::new()),
                 delegation: Mutex::new(()),
@@ -236,6 +251,44 @@ impl WorkerEngine {
         let info = self.inner.provider.concurrency();
         json!({"config":self.inner.execution,"inference":info,"context_tokens":self.inner.provider.capabilities().context_tokens,"effective_model_requests":self.inner.execution.effective_requests(&info),"free_model_slots":self.inner.model_slots.available_permits(),"free_subagent_slots":self.inner.child_slots.available_permits()})
     }
+    async fn inference_for(&self, metadata: &Value) -> Result<Arc<ModelBinding>> {
+        let model = metadata.get(MODEL_BINDING).filter(|v| !v.is_null());
+        let model = match model {
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .filter(|s| {
+                        !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control)
+                    })
+                    .ok_or_else(|| {
+                        WorkerError::new("subagent_model", "Invalid persisted subagent model")
+                    })?,
+            ),
+            None => None,
+        };
+        if model.is_none() || model == self.inner.provider.model_id() {
+            return Ok(Arc::new(ModelBinding {
+                provider: self.inner.provider.clone(),
+                slots: self.inner.model_slots.clone(),
+            }));
+        }
+        let model = model.unwrap();
+        let mut models = self.inner.models.lock().await;
+        if let Some(binding) = models.get(model) {
+            return Ok(binding.clone());
+        }
+        let provider = self.inner.provider.for_model(model).await?;
+        let binding = Arc::new(ModelBinding {
+            slots: crate::parallel::InferenceSlots::new(
+                self.inner
+                    .execution
+                    .effective_requests(&provider.concurrency()),
+            ),
+            provider,
+        });
+        models.insert(model.into(), binding.clone());
+        Ok(binding)
+    }
     pub fn tools(&self) -> Vec<ToolDefinition> {
         self.inner.tools.definitions()
     }
@@ -286,8 +339,10 @@ impl WorkerEngine {
             compactions: vec![],
         };
         data.emit(None, EventKind::SessionCreated);
+        let inference = self.inference_for(&data.metadata).await?;
         self.inner.store.save(&data, None).await?;
         let runtime = Arc::new(SessionRuntime {
+            inference,
             deleted: AtomicBool::new(false),
             data: Arc::new(Mutex::new(data.clone())),
             workspace,
@@ -479,6 +534,7 @@ impl WorkerEngine {
         for name in &data.profile.tools {
             self.inner.tools.get(name)?;
         }
+        let inference = self.inference_for(&data.metadata).await?;
         let previous = data.revision;
         crate::harness::migrate(&mut data)?;
         let mut recovery_events = Vec::new();
@@ -516,6 +572,7 @@ impl WorkerEngine {
         data.revision += 1;
         self.inner.store.save(&data, Some(previous)).await?;
         let runtime = Arc::new(SessionRuntime {
+            inference,
             deleted: AtomicBool::new(false),
             data: Arc::new(Mutex::new(data)),
             workspace,
@@ -634,6 +691,18 @@ impl Drop for EngineInner {
 }
 
 impl SessionHandle {
+    pub(crate) fn provider(&self) -> &Arc<dyn ModelProvider> {
+        &self.runtime.inference.provider
+    }
+
+    pub(crate) fn model_execution_status(&self) -> Value {
+        let info = self.provider().concurrency();
+        json!({"config":self.engine.inner.execution,"inference":info,
+            "context_tokens":self.provider().capabilities().context_tokens,
+            "effective_model_requests":self.engine.inner.execution.effective_requests(&info),
+            "free_model_slots":self.runtime.inference.slots.available_permits().min(self.engine.inner.host_model_slots.available_permits()),
+            "free_subagent_slots":self.engine.inner.child_slots.available_permits()})
+    }
     pub async fn id(&self) -> String {
         self.runtime.data.lock().await.id.clone()
     }
@@ -952,8 +1021,7 @@ impl SessionHandle {
             ));
         }
         if !images.is_empty()
-            && self.engine.inner.provider.capabilities().images
-                == crate::providers::Support::Unsupported
+            && self.provider().capabilities().images == crate::providers::Support::Unsupported
         {
             return Err(WorkerError::new(
                 "images_unsupported",
@@ -1445,7 +1513,7 @@ impl SessionHandle {
             effective_run.limits = crate::context::generation_limits(
                 &effective_run.limits,
                 &effective_run.generation_recovery,
-                self.engine.inner.provider.as_ref(),
+                self.provider().as_ref(),
             )?;
             let run = &effective_run;
             if response_recovery_failures(run) > run.limits.max_retries as usize {
@@ -1476,7 +1544,7 @@ impl SessionHandle {
                 .filter(|def| data.policy.can_request(def))
                 .filter(|def| {
                     def.name != "files.read_image"
-                        || self.engine.inner.provider.capabilities().images
+                        || self.provider().capabilities().images
                             != crate::providers::Support::Unsupported
                 })
                 .filter(|def| {
@@ -1484,11 +1552,11 @@ impl SessionHandle {
                 })
                 .collect();
             let fixed_file_bounds =
-                !crate::file_io::FileIoBudget::supported(self.engine.inner.provider.as_ref());
+                !crate::file_io::FileIoBudget::supported(self.provider().as_ref());
             crate::parallel::describe_delegation(
                 &mut defs,
                 &self.engine.inner.execution,
-                &self.engine.inner.provider.concurrency(),
+                &self.provider().concurrency(),
                 data.parent.as_ref().map_or(0, |parent| parent.depth),
             );
             crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
@@ -1500,7 +1568,7 @@ impl SessionHandle {
                 &data,
                 run,
                 defs,
-                self.engine.inner.provider.as_ref(),
+                self.provider().as_ref(),
             );
             tokio::pin!(planning);
             let (mut request, mut snapshot) = loop {
@@ -1525,12 +1593,7 @@ impl SessionHandle {
             {
                 request.reasoning_tier = Some(tier);
                 snapshot.hash = fingerprint(&request);
-                snapshot.estimated_tokens = self
-                    .engine
-                    .inner
-                    .provider
-                    .estimate_input_tokens(&request)
-                    .await?;
+                snapshot.estimated_tokens = self.provider().estimate_input_tokens(&request).await?;
             }
             if effective_run
                 .generation_recovery
@@ -1554,8 +1617,8 @@ impl SessionHandle {
                 .await?;
                 continue 'steps;
             }
-            let count_source = self.engine.inner.provider.input_token_source(&request);
-            let request_fingerprint = self.engine.inner.provider.request_fingerprint(&request);
+            let count_source = self.provider().input_token_source(&request);
+            let request_fingerprint = self.provider().request_fingerprint(&request);
             let step_id = id("step");
             self.update(|d| {
                 let r = d.run_mut(run_id)?;
@@ -1654,11 +1717,11 @@ impl SessionHandle {
                             if error.code == "model_output_limit" {
                                 let limits = crate::context::effective_limits(
                                     &run.limits,
-                                    self.engine.inner.provider.capabilities().context_tokens,
+                                    self.provider().capabilities().context_tokens,
                                 )?;
                                 let ceiling = crate::context::output_ceiling(
                                     &limits,
-                                    self.engine.inner.provider.as_ref(),
+                                    self.provider().as_ref(),
                                 );
                                 let recovery = &mut run.generation_recovery;
                                 recovery
@@ -2162,7 +2225,7 @@ impl SessionHandle {
         let mut effective_run = data.run(run_id)?.clone();
         effective_run.limits = crate::context::effective_limits(
             &effective_run.limits,
-            self.engine.inner.provider.capabilities().context_tokens,
+            self.provider().capabilities().context_tokens,
         )?;
         let run = &effective_run;
         let mut indices = Vec::new();
@@ -2354,20 +2417,15 @@ impl SessionHandle {
             let data = self.snapshot().await?;
             let limits = crate::context::effective_limits(
                 &data.run(run_id)?.limits,
-                self.engine.inner.provider.capabilities().context_tokens,
+                self.provider().capabilities().context_tokens,
             )?;
             // Another session can evict an earlier planning count while this
             // run waits. Recount on a cache miss instead of falsely rejecting
             // a valid request using the conservative byte fallback.
-            let input_tokens = self
-                .engine
-                .inner
-                .provider
-                .estimate_input_tokens(&request)
-                .await?;
+            let input_tokens = self.provider().estimate_input_tokens(&request).await?;
             if request.max_output_tokens == 0
                 || request.max_output_tokens
-                    > crate::context::output_ceiling(&limits, self.engine.inner.provider.as_ref())
+                    > crate::context::output_ceiling(&limits, self.provider().as_ref())
                 || input_tokens
                     .saturating_add(request.max_output_tokens)
                     .saturating_add(512)
@@ -2378,16 +2436,17 @@ impl SessionHandle {
                     "Request exceeds effective context/output budget before dispatch",
                 ));
             }
-            self.engine.inner.provider.refresh_concurrency().await;
-            self.engine.inner.model_slots.set_limit(
+            self.provider().refresh_concurrency().await;
+            self.runtime.inference.slots.set_limit(
                 self.engine
                     .inner
                     .execution
-                    .effective_requests(&self.engine.inner.provider.concurrency()),
+                    .effective_requests(&self.provider().concurrency()),
             );
-            let _slot = self.engine.inner.model_slots.acquire().await;
+            let _slot = self.runtime.inference.slots.acquire().await;
+            let _host_slot = self.engine.inner.host_model_slots.acquire().await;
             self.charge_tree_request(run_id).await?;
-            let mut stream = self.engine.inner.provider.stream(request.clone()).await?;
+            let mut stream = self.provider().stream(request.clone()).await?;
             let mut assembler = ResponseAssembler::default();
             let limit = self.snapshot().await?.run(run_id)?.limits.max_output_bytes;
             let mut pending = Vec::new();
@@ -2484,10 +2543,7 @@ impl SessionHandle {
                 }
             }
             if let Some(usage) = &result.1 {
-                self.engine
-                    .inner
-                    .provider
-                    .observe_completed_usage(&request, usage);
+                self.provider().observe_completed_usage(&request, usage);
             }
             Ok(result)
         };
@@ -3023,8 +3079,7 @@ impl SessionHandle {
             context.writable = false;
         }
         if def.name == "files.read_image"
-            && self.engine.inner.provider.capabilities().images
-                == crate::providers::Support::Unsupported
+            && self.provider().capabilities().images == crate::providers::Support::Unsupported
         {
             return self
                 .outcome(
@@ -3451,9 +3506,7 @@ impl SessionHandle {
             }
         }
         if outcome.status == Outcome::Succeeded {
-            if self.engine.inner.provider.capabilities().images
-                == crate::providers::Support::Unsupported
-            {
+            if self.provider().capabilities().images == crate::providers::Support::Unsupported {
                 outcome.images.clear();
             }
             if outcome.images.len() > crate::attachments::MAX_IMAGES

@@ -30,7 +30,7 @@ impl SessionHandle {
             }
             data.metadata[KEY] = root.metadata.get(KEY).cloned().unwrap_or(Value::Null);
         }
-        if data.metadata[KEY]["provider"].as_str() != Some(&self.engine.inner.provider.identity())
+        if data.metadata[KEY]["provider"].as_str() != Some(&self.provider().identity())
             && let Some(metadata) = data.metadata.as_object_mut()
         {
             metadata.remove(KEY);
@@ -46,23 +46,20 @@ impl SessionHandle {
             crate::context::generation_limits(
                 &run.limits,
                 &run.generation_recovery,
-                self.engine.inner.provider.as_ref(),
+                self.provider().as_ref(),
             )?
         } else {
-            crate::context::effective_limits(
-                limits,
-                self.engine.inner.provider.capabilities().context_tokens,
-            )?
+            crate::context::effective_limits(limits, self.provider().capabilities().context_tokens)?
         };
         let output = effective
             .reserve_output_tokens
             .min(crate::context::output_ceiling(
                 &effective,
-                self.engine.inner.provider.as_ref(),
+                self.provider().as_ref(),
             ));
         let mut options = tokio::time::timeout(
             Duration::from_secs(5),
-            self.engine.inner.provider.reasoning_options(output),
+            self.provider().reasoning_options(output),
         )
         .await
         .map_err(|_| WorkerError::new("reasoning_timeout", "Reasoning profile timed out"))??
@@ -117,8 +114,7 @@ impl SessionHandle {
                     "Session metadata must be an object to save reasoning controls",
                 ));
             }
-            data.metadata[KEY] =
-                json!({"provider":self.engine.inner.provider.identity(),"tier":tier});
+            data.metadata[KEY] = json!({"provider":self.provider().identity(),"tier":tier});
             data.emit(
                 None,
                 EventKind::Diagnostic {

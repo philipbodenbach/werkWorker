@@ -116,6 +116,9 @@ impl Access {
 pub struct ProjectConfig {
     pub version: u32,
     pub model: Option<String>,
+    /// Optional model for every delegated child; omission inherits the parent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_model: Option<String>,
     pub profile: Option<String>,
     pub context_tokens: Option<usize>,
     pub output_tokens: Option<usize>,
@@ -149,6 +152,7 @@ impl Default for ProjectConfig {
         Self {
             version: 1,
             model: None,
+            subagent_model: None,
             profile: None,
             context_tokens: None,
             output_tokens: None,
@@ -167,10 +171,10 @@ impl ProjectConfig {
         let config: Self = serde_json::from_slice(bytes)?;
         if config.version != 1
             || bytes.len() > 65_536
-            || config
-                .model
-                .as_ref()
-                .is_some_and(|s| s.is_empty() || s.len() > 512 || s.chars().any(char::is_control))
+            || [config.model.as_ref(), config.subagent_model.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|s| s.trim().is_empty() || s.len() > 512 || s.chars().any(char::is_control))
             || config
                 .context_tokens
                 .is_some_and(|n| !(1024..=2_000_000).contains(&n))
@@ -689,7 +693,11 @@ pub(crate) fn require_for_calls(
 /// Children/forks inherit immutable sources, not another run's delivery proof.
 pub(crate) fn inherited_metadata(session: &SessionData) -> Result<serde_json::Value> {
     let Some((mut context, _)) = contract(session)? else {
-        return Ok(serde_json::Value::Null);
+        return Ok(if session.metadata["project_config"].is_object() {
+            serde_json::json!({"project_config":session.metadata["project_config"]})
+        } else {
+            serde_json::Value::Null
+        });
     };
     context.delivered.clear();
     Ok(

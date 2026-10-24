@@ -280,7 +280,7 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
     assert_eq!(receipts[1], "read_recovery:2");
     assert_eq!(provider.requests().len(), 8);
     assert!(
-        !provider.requests()[7]
+        provider.requests()[7]
             .tools
             .iter()
             .any(|t| t.name == "files.read")

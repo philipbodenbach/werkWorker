@@ -90,12 +90,11 @@ async fn varied_covered_ranges_stop_after_recovery_but_new_pages_remain_availabl
         .unwrap();
         let notices = saved.events.iter().filter(|e| matches!(&e.event, EventKind::Diagnostic { code } if code.starts_with("read_recovery:"))).count();
         assert_eq!(notices, if new_pages { 0 } else { 2 });
-        assert_eq!(
+        assert!(
             provider.requests()[5]
                 .tools
                 .iter()
-                .any(|t| t.name == "files.read"),
-            new_pages
+                .any(|t| t.name == "files.read")
         );
         if !new_pages {
             let r = saved.run(&run.id).unwrap();
@@ -336,7 +335,7 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
         .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
         .await
         .unwrap();
-    assert!(!after.tools.iter().any(|t| t.name == "files.read"));
+    assert!(after.tools.iter().any(|t| t.name == "files.read"));
     assert!(after.tools.iter().any(|t| t.name == "files.edit"));
     let pages: Vec<_> = after
         .messages
@@ -351,8 +350,374 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
     engine.close().await.unwrap();
 }
 
+fn restored_pages(request: &ModelRequest) -> Vec<Value> {
+    request
+        .messages
+        .iter()
+        .filter_map(|m| {
+            let value: Value = serde_json::from_str(&m.content).ok()?;
+            (value["event"] == "restored_read_page").then(|| {
+                assert_eq!(m.role, Role::Assistant);
+                value["data"].clone()
+            })
+        })
+        .collect()
+}
+
+struct ReasoningCounter(u64);
+#[async_trait::async_trait]
+impl ModelProvider for ReasoningCounter {
+    fn identity(&self) -> String {
+        "working-context-reasoning-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            context_tokens: Some(16384),
+            ..Default::default()
+        }
+    }
+    fn max_output_tokens(&self) -> Option<usize> {
+        Some(4096)
+    }
+    async fn reasoning_options(&self, output: usize) -> Result<Option<ReasoningOptions>> {
+        Ok(Some(serde_json::from_value(json!({
+            "model":"fixture", "requested":"default", "native_effort":null,
+            "profile":{"schema_version":1,"model":"fixture","supported":true,
+                "default_tier":"high","default_adjusted_to_limits":false,
+                "limits":{"context_tokens":16384,"output_tokens":output,"reasoning_tokens":self.0,"answer_reserve_tokens":512},
+                "tiers":[{"id":"high","label":"High","available":true,"reasoning_tokens":self.0,"minimum_output_tokens":self.0 + 512}]}
+        }))?))
+    }
+    async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
+        Ok(serde_json::to_vec(request)?.len() / 4 + 256)
+    }
+    async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+        panic!("context budget check never generates")
+    }
+}
+
 #[tokio::test]
-async fn read_loop_automatically_switches_to_edit_and_verified_completion() {
+async fn compaction_preserves_edited_code_when_latest_reads_target_another_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let lines = [
+        format!("const G = {{board: []}}; // {}\n", "state α ".repeat(90)),
+        format!(
+            "function step() {{ G.board.push(1); }} // {}\n",
+            "step β ".repeat(90)
+        ),
+        format!(
+            "function spawnDust() {{ return G.board.length; }} // {}\n",
+            "tail γ ".repeat(90)
+        ),
+    ];
+    let js = lines.concat();
+    let html = "<canvas id=game></canvas><script src=game.js></script>\n";
+    let mut turns = vec![
+        call("files.write", json!({"path":"index.html","content":html})),
+        call("files.write", json!({"path":"game.js","content":js})),
+    ];
+    for line in 1..=3 {
+        turns.push(call(
+            "files.read",
+            json!({"path":"game.js","start_line":line,"end_line":line}),
+        ));
+    }
+    // Exercise retention before another stall, independently of the mandatory
+    // check phase tested in work_cycle.rs after six investigation calls.
+    turns.push(read("index.html"));
+    turns.push(call(
+        "files.search",
+        json!({"path":".","query":"placeholder__resume"}),
+    ));
+    let (engine, session, _) = fixture(turns, dir.path(), false).await;
+    let run = session
+        .submit(
+            "Finish a runnable game, then verify it",
+            "start",
+            Limits {
+                max_steps: 7,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    let mut saved: SessionData =
+        serde_json::from_slice(&serde_json::to_vec(&session.snapshot().await.unwrap()).unwrap())
+            .unwrap();
+    // All reads/writes have left the rolling transcript, while the search and
+    // durable receipts survive. The most recent read concerns HTML, not JS.
+    let indices = saved.run(&run.id).unwrap().invocations[..6]
+        .iter()
+        .flat_map(|i| [i.message_index, i.message_index + 1])
+        .collect();
+    saved.compactions.push(CompactionRecord {
+        id: id("compact"),
+        run_id: run.id.clone(),
+        attempt_id: id("attempt"),
+        message_indices: indices,
+        source_hash: "fixture".into(),
+        summary: "Earlier code omitted".into(),
+    });
+    let canonical = serde_json::to_value(&saved).unwrap();
+    let tools = || {
+        engine
+            .tools()
+            .into_iter()
+            .filter(|t| saved.profile.tools.contains(&t.name))
+            .collect()
+    };
+    let (request, snapshot) = DefaultContextBuilder
+        .build(&saved, saved.run(&run.id).unwrap(), tools())
+        .await
+        .unwrap();
+    assert!(request.tools.iter().any(|t| t.name == "files.read"));
+    let pages = restored_pages(&request);
+    assert_eq!(
+        pages.len(),
+        2,
+        "restore current JS and HTML from successful writes, without duplicate read ranges"
+    );
+    for line in &lines {
+        assert!(pages.iter().any(|p| {
+            p["path"] == "game.js"
+                && p["sha256"] == hash(&js)
+                && p["content"]
+                    .as_str()
+                    .is_some_and(|s| s.contains(line.trim_end()))
+        }));
+    }
+    assert!(pages.iter().any(|p| {
+        p["path"] == "index.html"
+            && p["content"]
+                .as_str()
+                .is_some_and(|s| s.trim_end() == html.trim_end())
+    }));
+    assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
+    validate_messages(&request.messages).unwrap();
+
+    // Optional restoration must not make an otherwise admissible request fail.
+    let mut tight = saved.clone();
+    tight.run_mut(&run.id).unwrap().limits.context_tokens =
+        snapshot.estimated_tokens + request.max_output_tokens + 512 - js.len();
+    let (request, snapshot) = DefaultContextBuilder
+        .build(&tight, tight.run(&run.id).unwrap(), tools())
+        .await
+        .unwrap();
+    assert!(
+        snapshot.estimated_tokens + request.max_output_tokens + 512
+            <= tight.run(&run.id).unwrap().limits.context_tokens
+    );
+    assert!(request.tools.iter().any(|t| t.name == "files.read"));
+    validate_messages(&request.messages).unwrap();
+
+    // Restored code competes with input, while thinking and tool JSON share
+    // the reserved output. High effort must reduce the advertised edit size,
+    // not silently spend the answer allowance a second time.
+    let mut thinking = saved.clone();
+    thinking.metadata["_werkworker_reasoning"] =
+        json!({"provider":"working-context-reasoning-fixture","tier":"high"});
+    thinking.run_mut(&run.id).unwrap().limits.context_tokens = 16384;
+    thinking
+        .run_mut(&run.id)
+        .unwrap()
+        .limits
+        .reserve_output_tokens = 4096;
+    let mut previous_target = u64::MAX;
+    for reasoning in [0, 2048, 3072] {
+        let (request, snapshot) = DefaultContextBuilder
+            .build_with_provider(
+                &thinking,
+                thinking.run(&run.id).unwrap(),
+                tools(),
+                &ReasoningCounter(reasoning),
+            )
+            .await
+            .unwrap();
+        assert_eq!(request.reasoning_tier.as_deref(), Some("high"));
+        assert_eq!(restored_pages(&request).len(), 2);
+        assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16384);
+        let edit = request
+            .tools
+            .iter()
+            .find(|t| t.name == "files.edit")
+            .unwrap();
+        let budget = &edit.input_schema["x-werk-file-io"];
+        assert_eq!(budget["reasoning_tokens"], reasoning);
+        assert_eq!(budget["output_tokens"], request.max_output_tokens);
+        let target = budget["target_new_characters"].as_u64().unwrap();
+        assert!(target < previous_target);
+        if reasoning == 2048 {
+            assert_eq!(target, 3328);
+        }
+        previous_target = target;
+    }
+
+    // Later observations invalidate historical code regardless of whether the
+    // change came from a file edit, shell command, or a missing-file result.
+    for kind in ["edit", "process", "missing"] {
+        let mut changed = saved.clone();
+        let current = changed.run_mut(&run.id).unwrap();
+        let mut change = current.invocations.last().unwrap().clone();
+        change.invocation_id = id("change");
+        change.call.id = id("call");
+        change.call.arguments = json!({"path":"game.js"});
+        change.call.name = match kind {
+            "edit" => "files.edit",
+            "process" => "process.run",
+            _ => "files.read",
+        }
+        .into();
+        change.result = Some(match kind {
+            "edit" => ToolResult::ok(json!({"path":"game.js","sha256":hash("updated code")})),
+            "process" => ToolResult::ok(
+                json!({"workspace_changes":{"game.js":{"status":"present","sha256":hash("updated code")}}}),
+            ),
+            _ => ToolResult::error(Outcome::Failed, "not_found"),
+        });
+        current.invocations.push(change);
+        let (request, _) = DefaultContextBuilder
+            .build(&changed, changed.run(&run.id).unwrap(), tools())
+            .await
+            .unwrap();
+        assert!(
+            restored_pages(&request)
+                .iter()
+                .all(|p| p["path"] != "game.js"),
+            "{kind} must invalidate stale code"
+        );
+    }
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn successful_edit_retains_current_head_and_tail_without_rereading() {
+    let dir = tempfile::tempdir().unwrap();
+    let before = format!(
+        "header before α\n{}middle contract Δ\n{}tail anchor Ω\n",
+        "body αβγ\n".repeat(1000),
+        "body αβγ\n".repeat(1000)
+    );
+    let after = before.replacen("header before α", "header after β", 1);
+    std::fs::write(dir.path().join("state.txt"), &before).unwrap();
+    let turns = vec![
+        call(
+            "files.read",
+            json!({"path":"state.txt","start_line":1,"end_line":1}),
+        ),
+        call(
+            "files.read",
+            json!({"path":"state.txt","start_line":900,"end_line":1800}),
+        ),
+        call("files.read", json!({"path":"state.txt","start_line":2003})),
+        call(
+            "files.edit",
+            json!({"path":"state.txt","expected_hash":hash(&before),"old":"header before α","new":"header after β"}),
+        ),
+    ];
+    let (engine, session, _) = fixture(turns, dir.path(), false).await;
+    let run = session
+        .submit(
+            "Update the header while preserving the rest",
+            "start",
+            Limits {
+                max_steps: 4,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("state.txt")).unwrap(),
+        after
+    );
+    let mut saved = session.snapshot().await.unwrap();
+    let indices = saved
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, Role::Assistant | Role::Tool))
+        .map(|(i, _)| i)
+        .collect();
+    saved.compactions.push(CompactionRecord {
+        id: id("compaction"),
+        run_id: run.id.clone(),
+        attempt_id: id("attempt"),
+        message_indices: indices,
+        source_hash: "fixture".into(),
+        summary: "Previous reads omitted".into(),
+    });
+    let canonical = serde_json::to_value(&saved).unwrap();
+    let tools = || {
+        engine
+            .tools()
+            .into_iter()
+            .filter(|t| saved.profile.tools.contains(&t.name))
+            .collect()
+    };
+    let (request, _) = DefaultContextBuilder
+        .build(&saved, saved.run(&run.id).unwrap(), tools())
+        .await
+        .unwrap();
+    let pages = restored_pages(&request);
+    assert_eq!(pages.len(), 3);
+    assert!(
+        pages
+            .iter()
+            .any(|p| p["content"].as_str().unwrap().contains("middle contract Δ"))
+    );
+    assert!(
+        pages
+            .iter()
+            .all(|p| p["sha256"] == hash(&after) && p["source_kind"] == "successful_file_change")
+    );
+    assert!(
+        pages
+            .iter()
+            .any(|p| p["content"].as_str().unwrap().contains("header after β"))
+    );
+    assert!(
+        pages
+            .iter()
+            .any(|p| p["content"].as_str().unwrap().contains("tail anchor Ω"))
+    );
+    assert!(
+        !pages
+            .iter()
+            .any(|p| p["content"].as_str().unwrap().contains("header before α"))
+    );
+    assert!(
+        pages
+            .iter()
+            .map(|p| p["content"].as_str().unwrap().len())
+            .sum::<usize>()
+            <= 12_288
+    );
+    validate_messages(&request.messages).unwrap();
+    assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
+    // Prepared proposals only count when their content matches a successful
+    // current-version receipt; stale or corrupted data cannot be restored.
+    let mut invalid = saved.clone();
+    invalid
+        .run_mut(&run.id)
+        .unwrap()
+        .invocations
+        .last_mut()
+        .unwrap()
+        .prepared["content"] = json!("not the committed content");
+    let (request, _) = DefaultContextBuilder
+        .build(&invalid, invalid.run(&run.id).unwrap(), tools())
+        .await
+        .unwrap();
+    assert!(restored_pages(&request).is_empty());
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn read_recovery_supports_edit_and_verified_completion() {
     if let Err(error) = runtime::Sandbox::default().doctor().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
@@ -380,7 +745,11 @@ async fn read_loop_automatically_switches_to_edit_and_verified_completion() {
                 .is_some_and(|r| r["data"]["verification"]["passed"] == true)
             {
                 ScriptedTurn::text("Implemented and verified")
-            } else if !request.tools.iter().any(|t| t.name == "files.read") {
+            } else if request
+                .messages
+                .iter()
+                .any(|m| m.content.contains("\"automatic_recovery\":true"))
+            {
                 assert!(
                     request
                         .messages
@@ -473,7 +842,7 @@ async fn read_loop_automatically_switches_to_edit_and_verified_completion() {
     );
     let requests = provider.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 5);
-    assert!(!requests[2].tools.iter().any(|t| t.name == "files.read"));
+    assert!(requests[2].tools.iter().any(|t| t.name == "files.read"));
     assert!(requests[3].tools.iter().any(|t| t.name == "files.read"));
     for request in requests.iter() {
         validate_messages(&request.messages).unwrap();
@@ -650,7 +1019,7 @@ async fn bounded_read_recovery_can_verify_without_forcing_an_edit() {
         "one"
     );
     let requests = provider.requests();
-    assert!(!requests[5].tools.iter().any(|t| t.name == "files.read"));
+    assert!(requests[5].tools.iter().any(|t| t.name == "files.read"));
     assert!(requests[6].tools.iter().any(|t| t.name == "files.read"));
     assert!(
         !requests[6]
@@ -715,20 +1084,43 @@ async fn saved_read_loop_recovers_an_actionable_request() {
         .into_iter()
         .filter(|t| saved.profile.tools.contains(&t.name) && saved.policy.can_request(t))
         .collect();
-    let (request, _) = DefaultContextBuilder
+    let (request, snapshot) = DefaultContextBuilder
         .build_with_provider(&saved, run, tools, &Offline)
         .await
         .unwrap();
-    assert!(!request.tools.iter().any(|t| t.name == "files.read"));
-    assert!(request.tools.iter().any(|t| t.name == "files.edit"));
-    assert!(request.tools.iter().any(|t| t.name == "process.run"));
+    assert!(
+        request
+            .tools
+            .iter()
+            .all(|t| matches!(t.name.as_str(), "process.run" | "interaction.ask"))
+    );
+    let check = request
+        .tools
+        .iter()
+        .find(|t| t.name == "process.run")
+        .unwrap();
+    assert!(
+        check.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "verification")
+    );
     assert!(
         request
             .messages
             .iter()
             .any(|m| m.content.contains("\"automatic_recovery\":true"))
     );
-    let receipt = run.invocations.last().unwrap().result.as_ref().unwrap();
+    let receipt = run
+        .invocations
+        .iter()
+        .rev()
+        .find(|i| i.call.name == "files.read")
+        .unwrap()
+        .result
+        .as_ref()
+        .unwrap();
     let hash = receipt.data["sha256"].as_str().unwrap();
     let content = receipt.data["content"].as_str().unwrap();
     let prefix: String = content.chars().take(100).collect();
@@ -736,8 +1128,27 @@ async fn saved_read_loop_recovers_an_actionable_request() {
     assert!(request.messages.iter().any(|m| m.content.contains(hash) && m.content.contains(&escaped[1..escaped.len()-1])));
     assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
     validate_messages(&request.messages).unwrap();
+    let pages = restored_pages(&request);
+    for needle in ["const SHAPES =", "const state =", "function spawnDust("] {
+        assert!(
+            pages.iter().any(|p| p["path"] == "game.js"
+                && p["content"].as_str().is_some_and(|s| s.contains(needle))),
+            "missing working code: {needle}"
+        );
+    }
+    assert!(pages.iter().any(|p| {
+        p["path"] == "index.html"
+            && p["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("src=\"game.js\""))
+    }));
+    assert!(
+        snapshot.estimated_tokens + request.max_output_tokens + 512 <= run.limits.context_tokens
+    );
     eprintln!(
-        "saved read loop: actionable recovery request retains content/hash; history unchanged"
+        "saved read loop: {} working pages; {} input tokens (offline estimate); behavioral check requested; history unchanged",
+        pages.len(),
+        snapshot.estimated_tokens
     );
     engine.close().await.unwrap();
 }
@@ -1173,7 +1584,7 @@ async fn alternating_reads_and_failed_writes_cannot_replenish_recovery_or_bypass
         if !denied {
             assert_eq!(recoveries[1], "read_recovery:2");
             assert!(
-                !provider
+                provider
                     .requests()
                     .last()
                     .unwrap()

@@ -330,7 +330,7 @@ impl DefaultContextBuilder {
         provider: Option<&dyn ModelProvider>,
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         validate_messages(&session.messages)?;
-        crate::read_progress::recovery_tools(session, run, &mut tools)?;
+        crate::work_cycle::check_tools(session, run, &mut tools)?;
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         let file_budget = if tools.iter().any(|t| {
             matches!(
@@ -574,7 +574,7 @@ impl DefaultContextBuilder {
             messages.extend(compaction_feedback.messages(session, omitted, summary));
             messages
         };
-        let working_page = crate::read_progress::working_page(session, run)?;
+        let working_pages = crate::read_progress::working_pages(session, run)?;
         let work_continuation = crate::work_cycle::continuation(session, run)?;
         let compose = |mut head: Vec<Message>, mut history: Vec<Message>| {
             if minimal {
@@ -594,12 +594,13 @@ impl DefaultContextBuilder {
                 head.extend(observations);
             }
             head.extend(history);
-            if let Some((call_id, page)) = &working_page
-                && !head
+            for (call_id, page) in &working_pages {
+                if !head
                     .iter()
                     .any(|m| m.tool_call_id.as_ref() == Some(call_id))
-            {
-                head.push(page.clone());
+                {
+                    head.push(page.clone());
+                }
             }
             head.extend(dynamic.clone());
             // This builder requests a fresh decision, never assistant prefill.
@@ -708,6 +709,39 @@ impl DefaultContextBuilder {
                 .map(|s| s.excerpt.clone())
                 .unwrap_or_default();
             truncate_summary(&mut summary);
+        }
+        let rejected_context = run.attempts.last().is_some_and(|a| {
+            a.error
+                .as_ref()
+                .is_some_and(|e| e.code == "context_overflow")
+        }) && crate::failure_progress::enabled(session, run)?;
+        if work_continuation.is_some() || rejected_context {
+            // A recovery decision gets the durable task/checkpoint and current
+            // file pages, not another replay of its own investigation narrative.
+            // Keep all user/system constraints and the two latest complete
+            // assistant/tool groups. Canonical history stays untouched.
+            let recent = session
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(i, m)| *i >= run.history_start && m.role == Role::Assistant)
+                .rev()
+                .take(2)
+                .last()
+                .map_or(run.history_start, |(i, _)| i);
+            for (index, message) in session
+                .messages
+                .iter()
+                .enumerate()
+                .take(recent)
+                .skip(run.history_start)
+            {
+                let end = index + 1 + message.tool_calls.len();
+                if message.role == Role::Assistant && end <= recent {
+                    compacted.extend(index..end);
+                }
+            }
+            summary = "Work-cycle recovery: older investigation groups omitted. Continue from the retained task, checkpoint, current file pages and latest tool results.".into();
         }
         let mut messages = compose(
             prefix(&compacted, &summary),
@@ -1127,6 +1161,18 @@ impl DefaultContextBuilder {
             i = end;
         }
         let (mut messages, summary, omitted, mut estimated) = best;
+        // Working pages are a retention preference, never a new context limit.
+        // If even compacted history cannot fit, retry once without these copies.
+        // Canonical tool pairs and user constraints stay intact; files.read stays
+        // available for a specific missing range. Count the actual request again.
+        if estimated > available
+            && messages
+                .iter()
+                .any(|m| working_pages.iter().any(|(_, page)| m == page))
+        {
+            messages.retain(|m| !working_pages.iter().any(|(_, page)| m == page));
+            estimated = estimate(&messages, output_budget).await?;
+        }
         // The configured output reserve is a maximum, not a reason to reject a
         // nearly fitting request. After compaction, lend at most one quarter to
         // input (never reduce below 2048 unless configured smaller). Recount the

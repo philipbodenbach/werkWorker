@@ -40,7 +40,11 @@ async fn finish(run: &RunHandle) -> RunResult {
 }
 async fn approval(run: &RunHandle) -> ApprovalRequest {
     let mut events = run.events(0);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // This is a test-hang guard, not the worker's approval/work deadline.
+    // Cold CI builds can leave enough filesystem writeback to delay SQLite's
+    // durable approval event beyond five seconds. Deadline behavior is tested
+    // separately with explicit run limits below.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(event) = events.next().await {
             if let EventKind::ApprovalRequested { request } = event.unwrap().event {
                 return request;

@@ -3,6 +3,66 @@ use crate::{core::*, runtime::Workspace};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+/// Recognize obvious source inspection, not arbitrary program semantics. Unknown
+/// commands still use the normal verification contract. In particular, loading
+/// application code, VM evaluation and assertions are not classified as dumps.
+fn inspection_only(arguments: &Value) -> bool {
+    let Some(argv) = arguments["argv"].as_array() else {
+        return false;
+    };
+    let Some(program) = argv.first().and_then(Value::as_str) else {
+        return false;
+    };
+    let program = program.rsplit('/').next().unwrap_or(program);
+    let reader = |name: &str| {
+        matches!(
+            name,
+            "cat" | "head" | "tail" | "sed" | "rg" | "grep" | "wc" | "ls" | "stat" | "pwd"
+        )
+    };
+    if reader(program) {
+        return true;
+    }
+    if matches!(program, "sh" | "bash" | "dash" | "zsh")
+        && argv.get(1).and_then(Value::as_str) == Some("-c")
+        && let Some(script) = argv.get(2).and_then(Value::as_str)
+    {
+        // Only a simple reader or pipeline. Do not guess about substitutions,
+        // conditionals, assertions, redirections or compound shell programs.
+        return !script.contains([';', '&', '$', '`', '>', '<', '\n', '\\', '\'', '"'])
+            && script
+                .split('|')
+                .all(|part| part.split_whitespace().next().is_some_and(reader));
+    }
+    false
+}
+
+pub(crate) fn verification_rejection(arguments: &Value, result: &Value) -> Option<&'static str> {
+    if inspection_only(arguments) {
+        return Some(
+            "This command only inspected source or file metadata. Its output is available, but it is not a behavioral check and does not clear a pending check phase. Exercise the implementation entry point and assert its behavior.",
+        );
+    }
+    let argv = arguments["argv"].as_array()?;
+    let program = argv.first()?.as_str()?.rsplit('/').next()?;
+    let option = argv.get(1).and_then(Value::as_str);
+    let syntax_only = match program {
+        "node" => matches!(option, Some("--check" | "-c")),
+        "sh" | "bash" | "dash" | "zsh" => option == Some("-n"),
+        "python" | "python3" => {
+            option == Some("-m")
+                && matches!(
+                    argv.get(2).and_then(Value::as_str),
+                    Some("py_compile" | "compileall")
+                )
+        }
+        _ => false,
+    };
+    // A parser failure is concrete repair evidence. A successful parse does
+    // not execute the entry point and must not unlock a behavioral checkpoint.
+    (syntax_only && result["exit_code"] == 0).then_some("Syntax validation passed, but the implementation has not been exercised. This is not a behavioral check and does not clear the pending check phase. Execute the current entry point and assert the main interaction; record its failure if it is not runnable yet.")
+}
+
 pub(crate) fn coding(session: &SessionData) -> bool {
     session.profile.name == "coding-basic"
         || session.profile.skills.iter().any(|s| s == "coding-basic")
@@ -230,6 +290,11 @@ pub(crate) async fn findings(
     let evidence = receipts
         .get(&invocation.invocation_id)
         .unwrap_or(&result.data["verification"]);
+    if invocation.call.name == "process.run"
+        && let Some(reason) = verification_rejection(&invocation.call.arguments, &result.data)
+    {
+        return Ok(Some(reason.into()));
+    }
     if result.status != Outcome::Succeeded || evidence["passed"] != true {
         return Ok(Some("The latest verification failed or modified the files being verified. Inspect its result, repair the implementation/test, and rerun against unchanged source files.".into()));
     }
@@ -289,7 +354,59 @@ pub(crate) fn progress(run: &Run) -> String {
         .filter_map(|r| Some((r.data["path"].as_str()?, r.data["sha256"].as_str()?)))
         .collect();
     let check = run.invocations.iter().rev()
-        .find(|i| matches!(i.call.name.as_str(), "process.run" | "browser.check") && i.call.arguments.get("verification").is_some())
+        .find(|i| matches!(i.call.name.as_str(), "process.run" | "browser.check") && i.call.arguments.get("verification").is_some()
+            && !(i.call.name == "process.run" && i.result.as_ref().is_some_and(|r| verification_rejection(&i.call.arguments, &r.data).is_some())))
         .map(|i| json!({"arguments":i.call.arguments,"result":i.result.as_ref().map(|r| json!({"status":r.status,"verification":r.data["verification"],"exit_code":r.data["exit_code"]}))}));
     fingerprint(&(&run.plan, files, check))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_inspection_is_not_execution_and_unknown_programs_are_not_guessed() {
+        for argv in [
+            json!(["/bin/cat", "counter.sh"]),
+            json!(["sh", "-c", "cat counter.sh | head -n 5"]),
+        ] {
+            assert!(inspection_only(&json!({"argv":argv})), "{argv}");
+        }
+        for argv in [
+            json!([
+                "node",
+                "-e",
+                "const fs=require('fs'),vm=require('vm');let g={};vm.runInNewContext(fs.readFileSync('game.js','utf8'),g);require('assert').equal(g.increment(0),1)"
+            ]),
+            json!(["node", "-e", "require('./game.js');console.log('started')"]),
+            json!([
+                "node",
+                "-e",
+                "const fs=require('fs');const s=fs.readFileSync('game.js','utf8');new Function(s)()"
+            ]),
+            json!(["sh", "-c", ". ./counter.sh; test \"$(increment 0)\" = 1"]),
+            json!(["sh", "-c", "test \"$(cat state.txt)\" = 1"]),
+            json!(["cargo", "test"]),
+            json!(["./custom-smoke-test"]),
+        ] {
+            assert!(!inspection_only(&json!({"argv":argv})), "{argv}");
+        }
+    }
+
+    #[test]
+    fn successful_syntax_is_not_behavior_but_parser_failures_allow_repair() {
+        for argv in [
+            json!(["node", "--check", "game.js"]),
+            json!(["/bin/sh", "-n", "counter.sh"]),
+            json!(["python3", "-m", "py_compile", "main.py"]),
+        ] {
+            let args = json!({"argv":argv});
+            assert!(verification_rejection(&args, &json!({"exit_code":0})).is_some());
+            assert!(verification_rejection(&args, &json!({"exit_code":1})).is_none());
+        }
+        assert!(
+            verification_rejection(&json!({"argv":["node","game.js"]}), &json!({"exit_code":0}))
+                .is_none()
+        );
+    }
 }

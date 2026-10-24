@@ -443,7 +443,11 @@ impl Tool for Builtin {
                     let mut result = serde_json::to_value(&output)?;
                     if !before.is_empty() {
                         let after = crate::completion::verification_files(&args, &ctx.workspace).await?;
-                        result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                        if let Some(reason) = crate::completion::verification_rejection(&args, &result) {
+                            result["verification_rejected"] = json!(reason);
+                        } else {
+                            result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                        }
                     }
                     result
                 }

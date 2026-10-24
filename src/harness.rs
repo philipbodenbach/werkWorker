@@ -293,7 +293,11 @@ pub(crate) fn is_feedback_echo(
     owned.extend(
         crate::read_progress::feedback(session, run)?
             .into_iter()
-            .chain(crate::read_progress::working_page(session, run)?.map(|(_, page)| page))
+            .chain(
+                crate::read_progress::working_pages(session, run)?
+                    .into_iter()
+                    .map(|(_, page)| page),
+            )
             .filter(|observation| request.messages.contains(observation)),
     );
     if state.config.mode != HarnessMode::Classic

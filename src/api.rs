@@ -1516,6 +1516,20 @@ impl SessionHandle {
                 self.provider().as_ref(),
             )?;
             let run = &effective_run;
+            // Phase refusals finish at admission, before execute_invocation.
+            // They must still obey the existing exact-call repetition guard.
+            if let Some(invocation) = run.invocations.last().filter(|i| {
+                i.result
+                    .as_ref()
+                    .is_some_and(|r| r.error_code.as_deref() == Some("work_cycle_check_required"))
+            }) && crate::harness::repeated_calls(&data, run, &invocation.call)?
+                > run.limits.max_repeated_calls
+            {
+                return Err(WorkerError::new(
+                    "repetition_limit",
+                    "Repeated identical calls without new evidence exceeded the run limit",
+                ));
+            }
             if response_recovery_failures(run) > run.limits.max_retries as usize {
                 let error = run
                     .attempts
@@ -1618,6 +1632,24 @@ impl SessionHandle {
                 continue 'steps;
             }
             let count_source = self.provider().input_token_source(&request);
+            if crate::failure_progress::enabled(&data, run)?
+                && run.attempts.last().is_some_and(|a| {
+                    a.error
+                        .as_ref()
+                        .is_some_and(|e| e.code == "context_overflow")
+                })
+                && let Some(previous) = run.contexts.last()
+                && previous
+                    .source
+                    .as_ref()
+                    .is_some_and(|s| s.message_count == data.messages.len())
+                && snapshot.estimated_tokens >= previous.estimated_tokens
+            {
+                return Err(WorkerError::new(
+                    "context_overflow",
+                    "Checkpoint recovery did not reduce the rejected input; the unchanged request was not retried",
+                ));
+            }
             let request_fingerprint = self.provider().request_fingerprint(&request);
             let step_id = id("step");
             self.update(|d| {
@@ -1752,6 +1784,31 @@ impl SessionHandle {
                             // resend the identical rejected request. Steps/tree budget bound retries.
                             continue 'steps;
                         }
+                        if error.code == "context_overflow" {
+                            let data = self.snapshot().await?;
+                            let run = data.run(run_id)?;
+                            let failures = run
+                                .attempts
+                                .iter()
+                                .rev()
+                                .take_while(|a| !a.completed)
+                                .filter(|a| {
+                                    a.error
+                                        .as_ref()
+                                        .is_some_and(|e| e.code == "context_overflow")
+                                })
+                                .count();
+                            if run.limits.max_retries > 0
+                                && failures == 1
+                                && crate::failure_progress::enabled(&data, run)?
+                            {
+                                // One bounded checkpoint recovery, without
+                                // inventing a server limit or dropping user
+                                // constraints. Admission above requires a
+                                // smaller counted/estimated input before retry.
+                                continue 'steps;
+                            }
+                        }
                         if matches!(
                             error.code.as_str(),
                             "model_output_limit" | "model_empty_response" | "model_feedback_echo"
@@ -1828,6 +1885,11 @@ impl SessionHandle {
                     } else {
                         None
                     };
+                    let deferred = if missing.is_empty() {
+                        crate::work_cycle::deferred_call(&request, call)
+                    } else {
+                        Some(crate::project::deferred_result(&missing))
+                    };
                     let invocation_id = id("invocation");
                     invocations.push(ToolInvocation {
                         request_input_schema: request
@@ -1845,14 +1907,13 @@ impl SessionHandle {
                         message_index: d.messages.len(),
                         call: call.clone(),
                         definition,
-                        status: if missing.is_empty() {
-                            InvocationStatus::Prepared
-                        } else {
+                        status: if deferred.is_some() {
                             InvocationStatus::Finished
+                        } else {
+                            InvocationStatus::Prepared
                         },
                         prepared: Value::Null,
-                        result: (!missing.is_empty())
-                            .then(|| crate::project::deferred_result(&missing)),
+                        result: deferred.clone(),
                         approval: None,
                         interaction: None,
                     });
@@ -1863,12 +1924,12 @@ impl SessionHandle {
                             name: call.name.clone(),
                         },
                     );
-                    if !missing.is_empty() {
+                    if let Some(result) = deferred {
                         d.emit(
                             Some(run_id),
                             EventKind::ToolCompleted {
                                 invocation_id,
-                                result: crate::project::deferred_result(&missing),
+                                result,
                             },
                         );
                     }

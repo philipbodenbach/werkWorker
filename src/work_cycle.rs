@@ -18,6 +18,65 @@ pub(crate) const GUIDANCE: &str = concat!(
 );
 
 const REFOCUS_AFTER: usize = 6;
+const CHECK_AFTER_CHANGES: usize = 3;
+
+/// A due behavioral check is an execution phase, not another suggestion to
+/// inspect. Offer the permitted check tool with its verification contract for
+/// the next decision. A recorded check restores the normal tool catalog; if
+/// execution is unavailable, retain all existing capabilities instead of
+/// creating a recovery dead end. Already admitted calls retain their authority.
+pub(crate) fn check_tools(
+    session: &SessionData,
+    run: &Run,
+    tools: &mut Vec<ToolDefinition>,
+) -> Result<()> {
+    if !crate::failure_progress::enabled(session, run)? {
+        return Ok(());
+    }
+    let state = crate::harness::state(session, &run.id)?;
+    if observation(run, &state.verifications)["check_due"] != true {
+        return Ok(());
+    }
+    if !tools
+        .iter()
+        .any(|t| t.name == "process.run" && session.policy.can_request(t))
+    {
+        return Ok(());
+    }
+    // Reporting a real blocker must remain possible in the check phase.
+    tools.retain(|t| matches!(t.name.as_str(), "process.run" | "interaction.ask"));
+    let check = tools.iter_mut().find(|t| t.name == "process.run").unwrap();
+    check.input_schema["x-werk-work-cycle"] = json!("check");
+    if let Some(required) = check.input_schema["required"].as_array_mut()
+        && !required.iter().any(|v| v == "verification")
+    {
+        required.push(json!("verification"));
+    }
+    check.description.push_str(" Behavioral-check checkpoint: exercise startup and the main public interaction of the current implementation. Record verification criteria and relevant paths. A directory listing, source dump or syntax-only command is not the requested behavioral check. The normal implementation tools return after a recorded check, including a failing one.");
+    Ok(())
+}
+
+/// Reject fresh proposals outside the request's explicit check phase before
+/// preparation/approval. Never revoke calls admitted in an earlier decision.
+pub(crate) fn deferred_call(
+    request: &crate::providers::ModelRequest,
+    call: &ToolCall,
+) -> Option<ToolResult> {
+    if request.tools.iter().any(|t| t.name == call.name)
+        || !request
+            .tools
+            .iter()
+            .any(|t| t.name == "process.run" && t.input_schema["x-werk-work-cycle"] == "check")
+    {
+        return None;
+    }
+    let mut result = ToolResult::error(Outcome::ValidationError, "work_cycle_check_required");
+    result.data = json!({
+        "requested_tool":call.name,"next_tool":"process.run",
+        "message":"No action executed. Implementation has accumulated changes and investigation without behavioral verification. Run process.run with verification criteria and relevant paths to exercise the current entry point. The implementation tools return after that result, including a failing check. Repeating reads or edits cannot satisfy this checkpoint."
+    });
+    Some(result)
+}
 
 /// Immediate steering, like a runtime continuation rather than another old
 /// assistant diagnosis. Only fixed host text goes in this transport boundary.
@@ -27,13 +86,18 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
     }
     let state = crate::harness::state(session, &run.id)?;
     let cycle = observation(run, &state.verifications);
-    if cycle["refocus"] != true {
+    if cycle["refocus"] != true && cycle["check_due"] != true {
         return Ok(None);
     }
+    let reason = if cycle["check_due"] == true {
+        "Implementation and investigation have accumulated without a new behavioral check. More reads or small edits do not clear this checkpoint."
+    } else {
+        "Investigation has continued without implementation or a new check result."
+    };
     Ok(Some(Message::text(
         Role::User,
         format!(
-            "[Runtime work-cycle recovery, not a new user request or approval] Investigation has continued without implementation or a new check result. Return to the user's requested outcome and the current milestone in coding_task_state. {} Reuse the saved checkpoint and evidence. If an exact anchor or one necessary fact is missing, fetch that specific part once and proceed. Do not restart broad inspection or substitute another plan/status message for the work. Existing permissions and completion requirements still apply.",
+            "[Runtime work-cycle recovery, not a new user request or approval] {reason} Return to the user's requested outcome and the current milestone in coding_task_state. {} Reuse the saved checkpoint and evidence. If an exact anchor or one necessary fact is missing, fetch that specific part once and proceed. Do not restart broad inspection or substitute another plan/status message for the work. Existing permissions and completion requirements still apply.",
             cycle["next_action"].as_str().unwrap_or_default()
         ),
     )))
@@ -48,6 +112,8 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
     let mut last_check = None;
     let mut investigation = 0usize;
     let mut changes_since_check = 0usize;
+    let mut investigation_since_check = 0usize;
+    let mut check_due = false;
     for (position, invocation) in run.invocations.iter().enumerate() {
         let Some(result) = &invocation.result else {
             continue;
@@ -96,7 +162,13 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
             invocation.call.name.as_str(),
             "process.run" | "browser.check"
         ) && evidence["passed"].is_boolean()
-            && evidence["files"].as_object().is_some_and(|v| !v.is_empty());
+            && evidence["files"].as_object().is_some_and(|v| !v.is_empty())
+            && !(invocation.call.name == "process.run"
+                && crate::completion::verification_rejection(
+                    &invocation.call.arguments,
+                    &result.data,
+                )
+                .is_some());
         if is_check {
             last_check = Some((position, invocation, evidence));
             // Ignore model-authored criterion labels and command spelling.
@@ -111,6 +183,8 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
             if checks.insert(key) {
                 investigation = 0;
                 changes_since_check = 0;
+                investigation_since_check = 0;
+                check_due = false;
                 continue;
             }
         }
@@ -124,11 +198,21 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
                 ))
         {
             investigation += 1;
+            investigation_since_check += 1;
         }
+        // Latch the phase: an already-admitted edit or an observed external
+        // change cannot erase a check that became due earlier in this cycle.
+        check_due |= changes_since_check > 0
+            && (investigation >= REFOCUS_AFTER
+                || (changes_since_check >= CHECK_AFTER_CHANGES
+                    && investigation_since_check >= REFOCUS_AFTER));
     }
-    // A later edit invalidates the review phase. This is a suggestion only;
-    // completion still checks all required files/criteria with the real gate.
+    // A later edit invalidates review; a due check remains latched above.
+    // Completion still checks all required files/criteria with the real gate.
+    // Straight implementation can finish its first version. Interleaved small
+    // edits must not erase accumulated investigation and postpone execution.
     let phase = match last_check {
+        _ if check_due => "check",
         Some((position, _, evidence)) if last_change.is_none_or(|(n, _)| n <= position) => {
             if evidence["passed"] == true {
                 "review"
@@ -139,6 +223,9 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         _ => "build",
     };
     let next_action = match phase {
+        "check" => {
+            "Run a small behavioral smoke check of the current entry point now. Exercise startup and the main user interaction against current files. If the version is not runnable yet, record that concrete failure and repair the missing connection before optional polish. Then repeat the check. Do not spend another cycle gathering broad context or making unrelated small edits."
+        }
         "repair" => {
             "Fix the concrete failure in latest_check, then rerun the behavioral check. Keep the working version and its interfaces."
         }
@@ -177,8 +264,10 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         }),
         "investigation_calls_since_progress": investigation,
         "changes_since_check": changes_since_check,
+        "investigation_calls_since_check": investigation_since_check,
+        "check_due": check_due,
         "refocus": investigation >= REFOCUS_AFTER,
-        "trust": "Observed work plus user/plan excerpts; phase is guidance, not verified completion. Full user messages and newer steering govern scope."
+        "trust": "Observed work plus user/plan excerpts; phase directs workflow, not verified completion. Full user messages and newer steering govern scope."
     })
 }
 

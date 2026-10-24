@@ -1,0 +1,27 @@
+{
+  "rust_all": {
+    "passed_executions": 160
+  },
+  "context": {
+    "passed_executions": 12
+  },
+  "werk": {
+    "passed_executions": 21
+  },
+  "infrastructure_evals": {
+    "passed": 8,
+    "sandbox_required": true
+  },
+  "pty_smokes": [
+    "tui",
+    "subagents",
+    "permissions",
+    "setup",
+    "sessions",
+    "selection"
+  ],
+  "python_unittests": {
+    "passed": 9
+  },
+  "live_inference": false
+}

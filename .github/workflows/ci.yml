@@ -23,6 +23,12 @@ jobs:
       - run: cargo test --locked --all-targets -- --nocapture
       - run: python3 -m unittest discover -s scripts/tests
       - run: python3 scripts/tests/tui_smoke.py target/debug/ww
+      - run: python3 scripts/tests/selection_tui_smoke.py target/debug/ww
+      - run: python3 scripts/tests/permissions_tui_smoke.py target/debug/ww
+      - run: python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
+      - run: python3 scripts/tests/sessions_tui_smoke.py target/debug/ww
+      - run: python3 scripts/tests/setup_smoke.py target/debug/ww
+      - run: python3 scripts/tests/effort_tui_smoke.py target/debug/ww
       - run: cargo run --locked --example eval
       - run: cargo run --locked --example coding
       - run: cargo run --locked --example automation

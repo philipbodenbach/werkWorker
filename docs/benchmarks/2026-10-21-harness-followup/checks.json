@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-21",
+  "baseline_revision": "3c35c67e8d9aad18034889f838eb3d41fd9a0e86",
+  "workspace": "local uncommitted patch",
+  "test_environment": {
+    "REQUIRE_SANDBOX": "1",
+    "WERK_WORKER_BWRAP": "/home/philipbodenbach/.local/share/werk-worker/tools/bubblewrap/usr/bin/bwrap",
+    "cargo_config": "/tmp/werkworker-followup-checks.toml",
+    "isolation": "existing Linux namespace sandbox; no fallback"
+  },
+  "checks": [
+    {
+      "command": "cargo fmt --check",
+      "status": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed"
+    },
+    {
+      "command": "cargo clippy --locked --offline --all-targets -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "command": "cargo test --config /tmp/werkworker-followup-checks.toml --locked --offline --all-targets --no-fail-fast -- --nocapture",
+      "status": "passed",
+      "passed": 181,
+      "suites": 26,
+      "failed": 0,
+      "ignored": 0,
+      "skipped_sandbox_cases": 0
+    },
+    {
+      "command": "python3 -m unittest discover -s scripts/tests",
+      "status": "passed",
+      "passed": 9
+    },
+    {
+      "command": "python3 scripts/tests/setup_smoke.py target/debug/ww",
+      "status": "passed",
+      "verification": "Real PTY; saved sessions, approvals, scoped root instructions, reconnect and terminal restoration"
+    },
+    {
+      "command": "python3 scripts/tests/permissions_tui_smoke.py target/debug/ww",
+      "status": "passed",
+      "verification": "Real PTY with temporary workspace"
+    },
+    {
+      "command": "python3 scripts/tests/sessions_tui_smoke.py target/debug/ww",
+      "status": "passed",
+      "verification": "Real PTY with temporary workspace"
+    },
+    {
+      "command": "cargo run --config /tmp/werkworker-followup-checks.toml --locked --offline --example eval",
+      "status": "passed",
+      "passed": 8
+    }
+  ],
+  "not_run": [
+    "Live-model quality or inference comparisons",
+    "Windows/macOS/ARM native CI",
+    "Release/package installation checks",
+    "Remaining full CI PTY scenarios"
+  ],
+  "measurement_limits": [
+    "Conservative complete-request byte estimates, not native tokenizer counts",
+    "Old context contract evaluated in patched runtime, not an old binary",
+    "No prefix/KV-cache, live-model competence or inference speed claims"
+  ]
+}

@@ -2,6 +2,16 @@
 use crate::core::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
+
+/// Explicit host choices for a tool, independent of profile membership.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPermission {
+    Deny,
+    Ask,
+    Allow,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +42,13 @@ pub struct HostPolicy {
     pub hard_denied_tools: Vec<String>,
     pub allow_similar: bool,
     pub workspace_writable: bool,
+    /// Trusted host opt-in: valid tool actions may request explicit approval
+    /// without a preconfigured grant. FullAccess alone cannot skip this;
+    /// explicit tool rules or remembered host approvals may override it.
+    pub request_approvals: bool,
+    pub tool_permissions: BTreeMap<String, ToolPermission>,
+    /// User-approved scopes remembered by the host, including in request mode.
+    pub remembered_grants: Vec<CapabilityGrant>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyDecision {
@@ -56,13 +73,24 @@ pub fn relative_path(path: &str) -> Result<()> {
     }
     Ok(())
 }
+/// The sandbox mount names the same confined workspace as a relative tool path.
+/// This is a lexical alias only; traversal and arbitrary absolute paths stay denied.
+pub fn workspace_path(path: &str) -> Result<&str> {
+    let relative = if path == "/workspace" || path == "/workspace/" {
+        "."
+    } else {
+        path.strip_prefix("/workspace/").unwrap_or(path)
+    };
+    relative_path(relative)?;
+    Ok(relative)
+}
 pub fn resource(def: &ToolDefinition, args: &Value) -> Result<String> {
     match def.effect {
         Effect::Internal => Ok("internal".into()),
         Effect::Process => Ok("workspace".into()),
         Effect::Read | Effect::Write => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-            relative_path(path)?;
+            let path = workspace_path(path)?;
             Ok(path.trim_start_matches("./").to_string())
         }
         Effect::NetworkRead | Effect::ExternalWrite => {
@@ -79,6 +107,25 @@ pub fn resource(def: &ToolDefinition, args: &Value) -> Result<String> {
     }
 }
 impl HostPolicy {
+    /// Omit tools with no requestable scope from the model's catalogue.
+    /// Concrete arguments are still evaluated before preparation/execution.
+    pub fn can_request(&self, def: &ToolDefinition) -> bool {
+        if self.hard_denied_tools.contains(&def.name)
+            || self.tool_permissions.get(&def.name) == Some(&ToolPermission::Deny)
+            || def.effect == Effect::Write && !self.workspace_writable
+        {
+            return false;
+        }
+        def.effect == Effect::Internal
+            || self.tool_permissions.contains_key(&def.name)
+            || self.request_approvals
+            || self.grants.iter().chain(&self.remembered_grants).any(|g| {
+                g.tool == def.name
+                    && g.version == def.version
+                    && g.expires_at_ms.is_none_or(|t| t > now_ms())
+            })
+    }
+
     pub fn evaluate(
         &self,
         def: &ToolDefinition,
@@ -86,6 +133,10 @@ impl HostPolicy {
         similar: &[String],
     ) -> PolicyDecision {
         if self.hard_denied_tools.contains(&def.name) {
+            return PolicyDecision::Deny;
+        }
+        let permission = self.tool_permissions.get(&def.name);
+        if permission == Some(&ToolPermission::Deny) {
             return PolicyDecision::Deny;
         }
         if def.effect == Effect::Internal {
@@ -97,6 +148,26 @@ impl HostPolicy {
         let Ok(target) = resource(def, args) else {
             return PolicyDecision::Deny;
         };
+        if self.remembered_grants.iter().any(|g| {
+            g.tool == def.name
+                && g.version == def.version
+                && g.expires_at_ms.is_none_or(|t| t > now_ms())
+                && g.arguments_hash
+                    .as_ref()
+                    .is_none_or(|h| h == &fingerprint(args))
+                && (g.resource == target
+                    || matches!(def.effect, Effect::Read | Effect::Write) && g.resource == ".")
+        }) {
+            return PolicyDecision::Allow;
+        }
+        match permission {
+            Some(ToolPermission::Allow) => return PolicyDecision::Allow,
+            Some(ToolPermission::Ask) => return PolicyDecision::Ask,
+            _ => {}
+        }
+        if self.request_approvals {
+            return PolicyDecision::Ask;
+        }
         let granted = self.grants.iter().find(|g| {
             g.tool == def.name
                 && g.version == def.version

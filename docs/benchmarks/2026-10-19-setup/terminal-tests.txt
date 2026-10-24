@@ -1,0 +1,5 @@
+$ python3 scripts/tests/tui_smoke.py target/debug/ww
+PTY: approval, answer, slash preview/completion/commands, Ctrl-C reset, double Ctrl-C exit and terminal restoration passed.
+
+$ python3 scripts/tests/setup_smoke.py target/debug/ww
+PASS: PTY setup, masked key paste, auth retry, model discovery, budgets, authenticated chat and approval, saved global/project configs (0600), project rules and permission separation, reconnect, environment reference, double Ctrl-C and terminal restoration.

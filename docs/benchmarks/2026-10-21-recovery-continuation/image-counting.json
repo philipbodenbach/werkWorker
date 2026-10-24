@@ -1,0 +1,10 @@
+{
+  "measurement": "Scripted WerkProtocol image-counting fixtures, before and after batching eligible omissions",
+  "native_counter_fixture": "2100 plus serialized text-message bytes divided by four; reported image overhead 443",
+  "limits": {"context_tokens": 16384, "reserve_output_tokens": 4096, "safety_tokens": 512},
+  "cases": [
+    {"initial_image": true, "large_rejected_proposal_retained": true, "count_requests_before": 76, "count_requests_after": 49, "model_requests_before": 13, "model_requests_after": 13, "status_before": "completed", "status_after": "completed"},
+    {"initial_image": false, "earlier_task_before_image": true, "count_requests_before": 71, "count_requests_after": 55, "model_requests_before": 12, "model_requests_after": 12, "status_before": "completed", "status_after": "completed"}
+  ],
+  "scope": "HTTP count-call reduction only; not a native tokenizer measurement or a live inference speed claim"
+}

@@ -11,6 +11,17 @@ capabilities, and approval of a prepared invocation. A denial or unavailable
 sandbox is never retried through a host shell. Internal questions/plans/allowed
 skill metadata require no extra external permission.
 
+The interactive host may opt into `HostPolicy.request_approvals`. This exposes
+valid registered actions for approval even without prewritten resource grants.
+Every non-internal action returns **Ask** in this mode, even with FullAccess or
+a previously reusable scope. Hard denies, path validation and read-only child
+restrictions are checked first. This is host authority, not a model instruction:
+`interaction.ask` answers cannot enable it. The TUI confirmation invokes the
+trusted `session.enable_tool_approvals` API, records the host command, expands
+registered tool/skill availability and persists the policy in the same session.
+Existing skill snapshots are retained; newly available skills are snapshotted.
+No action executes merely because this mode was enabled.
+
 ## Linux backend
 
 Bubblewrap creates user, mount, PID, network, IPC and UTS namespaces with
@@ -26,7 +37,9 @@ Files use `openat2` with `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`.
 Relative paths only; no traversal, symlinks, special files or foreign mounts.
 File and process tools see the same allocated workspace. Edits compare the
 observed hash and atomically rename in a pinned parent. Worker-owned mutations
-are serialized and active shared workspaces are rejected across sessions.
+and writable processes hold exclusive operation leases across overlapping
+workspaces in one engine; reads and inference can overlap across sessions.
+Background processes retain their lease until actual cleanup.
 External writers are not filesystem transactions: an external process modifying
 the same inode at the instant after comparison can race an edit. Use an isolated
 staged workspace where concurrent untrusted writers are possible.
@@ -83,3 +96,28 @@ session ownership, hash, seven-day retention and size. Quotas: 4 MiB/artifact,
 1,024 artifacts/store. Expired data is denied, not silently re-exposed. Operator
 cleanup/export is explicit; secure erasure and automatic garbage collection are
 not claimed.
+
+## Delegated workers
+
+Children inherit grants and may only narrow tools/workspace write access. Fresh
+conversations are context separation, not separate filesystem containers. Parent
+revocation, cancellation and expiry remain effective for new child tool starts;
+reusable approvals are not inherited. Child results are untrusted data. Active
+children, nesting and total tree model requests are bounded. A child cannot
+address another root through the delegation tools. `read_only` restricts workspace
+writes, not independently granted network-write brokers. See [subagents](subagents.md).
+
+## Interactive setup and project metadata
+
+Global connection files contain no API-key values; typed keys remain in memory,
+while an environment **name** can be remembered. The project format cannot select
+a server origin or credential source. Project/model profiles and instruction files
+are lower-trust context and never become grants or sandbox settings. Test commands
+are suggestions, not startup hooks. TUI access choices are explicit, session-only
+and still require per-action approval; existing `--grants` takes precedence.
+
+Project metadata reads use the pinned workspace reader, reject symlinks and path
+traversal, and are bounded. They currently require Linux when files exist; other
+platforms fail closed. Sources/hashes/text are frozen into each CLI session;
+subagents inherit them without gaining authority. See [setup](setup.md) and
+[project configuration](project-configuration.md) for scope and platform limits.

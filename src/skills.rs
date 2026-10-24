@@ -103,12 +103,20 @@ impl SkillRegistry {
     }
     /// Host-selected directory only. Symlinked metadata/resources are rejected.
     pub async fn load_directory(&mut self, root: &Path) -> Result<()> {
+        match tokio::fs::symlink_metadata(root).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+            Ok(_) => {}
+        }
         let name = root
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| WorkerError::new("invalid_skill", "Invalid directory name"))?;
         let workspace = crate::runtime::Workspace::open(root).await?;
-        let data = workspace.read("SKILL.md", 65_536).await?;
+        let data = match workspace.read("SKILL.md", 65_536).await {
+            Err(e) if e.code == "not_found" => return Ok(()),
+            result => result?,
+        };
         let text = String::from_utf8(data)
             .map_err(|_| WorkerError::new("invalid_skill", "Skill must be UTF-8"))?;
         self.register(Skill::parse(name, &root.display().to_string(), &text)?)

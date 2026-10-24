@@ -36,6 +36,20 @@ impl Drop for Server {
 }
 impl Server {
     pub async fn start(handler: impl Fn(&Request) -> Response + Send + Sync + 'static) -> Self {
+        Self::with_body_delay(handler, None).await
+    }
+    /// Delay individual chat response chunks, leaving discovery responses immediate.
+    pub async fn with_body_delay(
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+        delay: Option<(usize, std::time::Duration)>,
+    ) -> Self {
+        Self::with_chat_delays(handler, None, delay).await
+    }
+    pub async fn with_chat_delays(
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+        header_delay: Option<std::time::Duration>,
+        delay: Option<(usize, std::time::Duration)>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("local HTTP test listener");
@@ -102,8 +116,24 @@ impl Server {
                         header.push_str(&format!("{k}: {v}\r\n"));
                     }
                     header.push_str("\r\n");
+                    if request.path == "/v1/chat/completions"
+                        && let Some(pause) = header_delay
+                    {
+                        tokio::time::sleep(pause).await;
+                    }
                     let _ = socket.write_all(header.as_bytes()).await;
-                    let _ = socket.write_all(&response.body).await;
+                    if let Some((size, pause)) =
+                        delay.filter(|_| request.path == "/v1/chat/completions")
+                    {
+                        for chunk in response.body.chunks(size) {
+                            tokio::time::sleep(pause).await;
+                            if socket.write_all(chunk).await.is_err() {
+                                break;
+                            }
+                        }
+                    } else {
+                        let _ = socket.write_all(&response.body).await;
+                    }
                     let _ = socket.shutdown().await;
                 });
             }

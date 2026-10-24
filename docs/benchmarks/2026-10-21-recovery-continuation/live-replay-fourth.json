@@ -1,0 +1,1143 @@
+{
+  "schema_version": 1,
+  "test_attempt": 4,
+  "source": "real screenshot task replay with unchanged stored prompt and image",
+  "artifact_root": "/tmp/werkworker-screenshot-replay-svutb6jc",
+  "original_session": "session_7f21eb90-514b-4763-aec7-b423032a1618",
+  "replay_session": "session_2a771cf0-54aa-46c1-9d2b-caedbb0d0fed",
+  "replay_run": "run_c80b6928-16f7-44d3-be6b-61eafd2c5292",
+  "model": "qwen3.8-27b-ud-q4_k_xl",
+  "backend": "llama.cpp / CUDA",
+  "model_output_is_live": true,
+  "scripted_model_responses": false,
+  "manual_generated_file_edits": false,
+  "fixture_sha256": "62d02db488ae62aed1f3933d5fb6306629700350ae8e1b343d2dfe848d1b9eb1",
+  "limits": {
+    "context_tokens": 16384,
+    "max_model_requests": 60,
+    "max_output_bytes": 65536,
+    "max_repeated_calls": 3,
+    "max_retries": 2,
+    "max_steps": 48,
+    "max_tool_invocations": 64,
+    "max_wall_ms": 900000,
+    "model_compaction": false,
+    "reserve_output_tokens": 4096
+  },
+  "input_image_count": 1,
+  "started_at_utc": "2026-10-21T22:46:17.078000+00:00",
+  "status": "failed",
+  "error": {
+    "code": "wall_budget",
+    "message": "Run wall-time budget reached",
+    "retry_after_ms": null,
+    "retryable": false
+  },
+  "elapsed_seconds": 901.8,
+  "metrics": {
+    "approval_wait_ms": 0,
+    "estimated_input_tokens": 7842,
+    "first_text_ms": 122906,
+    "first_tool_ms": 15068,
+    "input_tokens": 99949,
+    "model_requests": 22,
+    "output_tokens": 6841,
+    "steps": 21,
+    "tool_invocations": 19,
+    "total_ms": 900126
+  },
+  "source_workspace_unchanged": true,
+  "files": {
+    "index.html": 2918,
+    "tetris.html": 2388,
+    "main.js": 6376,
+    "tetris/index.html": 575,
+    "tetris/game.js": 93
+  },
+  "attempt_failures": [
+    {
+      "attempt_id": "attempt_7cd3a2fe-2eb6-4e12-bad2-2aff51e92764",
+      "error": {
+        "code": "model_output_limit",
+        "message": "Server stopped at its output token limit; increase reserve_output_tokens or split the work into smaller tool calls. Incomplete output is not executable",
+        "retry_after_ms": null,
+        "retryable": false
+      }
+    },
+    {
+      "attempt_id": "attempt_97563c64-2251-4401-9dee-09a0f38bcca4",
+      "error": {
+        "code": "timeout",
+        "message": "Provider attempt failed",
+        "retry_after_ms": null,
+        "retryable": true
+      }
+    },
+    {
+      "attempt_id": "attempt_d8341f2f-3e5e-44d8-9d23-184b708af376",
+      "error": {
+        "code": "wall_budget",
+        "message": "Run wall-time budget reached",
+        "retry_after_ms": null,
+        "retryable": false
+      }
+    }
+  ],
+  "tools": [
+    {
+      "tool": "skills.list",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 2,
+      "result_bytes": 640
+    },
+    {
+      "tool": "files.list",
+      "path": "/",
+      "status": "validation_error",
+      "error_code": "path_denied",
+      "argument_bytes": 13,
+      "result_bytes": 228
+    },
+    {
+      "tool": "files.list",
+      "path": "/workspace",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 22,
+      "result_bytes": 179
+    },
+    {
+      "tool": "files.list",
+      "path": "/workspace/tetris",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 29,
+      "result_bytes": 165
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 33,
+      "result_bytes": 884
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 34,
+      "result_bytes": 2727
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 40,
+      "result_bytes": 873
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris/game.js",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 37,
+      "result_bytes": 358
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 52,
+      "result_bytes": 259
+    },
+    {
+      "tool": "process.run",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 68,
+      "result_bytes": 2730
+    },
+    {
+      "tool": "process.run",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 86,
+      "result_bytes": 250
+    },
+    {
+      "tool": "task.plan",
+      "path": null,
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 410,
+      "result_bytes": 500
+    },
+    {
+      "tool": "files.write",
+      "path": "/workspace/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 3163,
+      "result_bytes": 213
+    },
+    {
+      "tool": "files.write",
+      "path": "/workspace/main.js",
+      "status": "validation_error",
+      "error_code": "not_found",
+      "argument_bytes": 6330,
+      "result_bytes": 108
+    },
+    {
+      "tool": "files.list",
+      "path": "/workspace",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 22,
+      "result_bytes": 179
+    },
+    {
+      "tool": "files.write",
+      "path": "/workspace/main.js",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 6624,
+      "result_bytes": 210
+    },
+    {
+      "tool": "files.search",
+      "path": "/workspace",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 40,
+      "result_bytes": 804
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris/index.html",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 40,
+      "result_bytes": 873
+    },
+    {
+      "tool": "files.read",
+      "path": "/workspace/tetris/game.js",
+      "status": "succeeded",
+      "error_code": null,
+      "argument_bytes": 37,
+      "result_bytes": 358
+    }
+  ],
+  "message_sizes": [
+    {
+      "index": 0,
+      "role": "user",
+      "content_bytes": 205,
+      "tool_call_bytes": 2,
+      "image_count": 1
+    },
+    {
+      "index": 1,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 84,
+      "image_count": 0
+    },
+    {
+      "index": 2,
+      "role": "tool",
+      "content_bytes": 616,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 3,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 94,
+      "image_count": 0
+    },
+    {
+      "index": 4,
+      "role": "tool",
+      "content_bytes": 218,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 5,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 103,
+      "image_count": 0
+    },
+    {
+      "index": 6,
+      "role": "tool",
+      "content_bytes": 163,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 7,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 110,
+      "image_count": 0
+    },
+    {
+      "index": 8,
+      "role": "tool",
+      "content_bytes": 150,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 9,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 114,
+      "image_count": 0
+    },
+    {
+      "index": 10,
+      "role": "tool",
+      "content_bytes": 861,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 11,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 115,
+      "image_count": 0
+    },
+    {
+      "index": 12,
+      "role": "tool",
+      "content_bytes": 2704,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 13,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 121,
+      "image_count": 0
+    },
+    {
+      "index": 14,
+      "role": "tool",
+      "content_bytes": 853,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 15,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 118,
+      "image_count": 0
+    },
+    {
+      "index": 16,
+      "role": "tool",
+      "content_bytes": 338,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 17,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 133,
+      "image_count": 0
+    },
+    {
+      "index": 18,
+      "role": "tool",
+      "content_bytes": 239,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 19,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 150,
+      "image_count": 0
+    },
+    {
+      "index": 20,
+      "role": "tool",
+      "content_bytes": 2710,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 21,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 168,
+      "image_count": 0
+    },
+    {
+      "index": 22,
+      "role": "tool",
+      "content_bytes": 230,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 23,
+      "role": "assistant",
+      "content_bytes": 192,
+      "tool_call_bytes": 490,
+      "image_count": 0
+    },
+    {
+      "index": 24,
+      "role": "tool",
+      "content_bytes": 467,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 25,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 3245,
+      "image_count": 0
+    },
+    {
+      "index": 26,
+      "role": "tool",
+      "content_bytes": 199,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 27,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 6412,
+      "image_count": 0
+    },
+    {
+      "index": 28,
+      "role": "tool",
+      "content_bytes": 99,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 29,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 103,
+      "image_count": 0
+    },
+    {
+      "index": 30,
+      "role": "tool",
+      "content_bytes": 163,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 31,
+      "role": "assistant",
+      "content_bytes": 79,
+      "tool_call_bytes": 6706,
+      "image_count": 0
+    },
+    {
+      "index": 32,
+      "role": "tool",
+      "content_bytes": 196,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 33,
+      "role": "assistant",
+      "content_bytes": 0,
+      "tool_call_bytes": 123,
+      "image_count": 0
+    },
+    {
+      "index": 34,
+      "role": "tool",
+      "content_bytes": 755,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 35,
+      "role": "assistant",
+      "content_bytes": 133,
+      "tool_call_bytes": 121,
+      "image_count": 0
+    },
+    {
+      "index": 36,
+      "role": "tool",
+      "content_bytes": 853,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    },
+    {
+      "index": 37,
+      "role": "assistant",
+      "content_bytes": 54,
+      "tool_call_bytes": 118,
+      "image_count": 0
+    },
+    {
+      "index": 38,
+      "role": "tool",
+      "content_bytes": 338,
+      "tool_call_bytes": 2,
+      "image_count": 0
+    }
+  ],
+  "contexts": [
+    {
+      "estimated_tokens": 9898,
+      "hash": "f97a5a09c3a83a8f7c8b6ff3748818f1614e4950323635095055b6593048cd84",
+      "id": "ctx_e2170539-6970-4b90-8f7e-17acefbe245b",
+      "message_count": 2,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2648,
+      "hash": "9a66ee703c7ba00170f30cb07829d8277082d53639d91d8bb9b499a5bdb3dbb0",
+      "id": "ctx_8776f42e-1bbd-49e1-8a3d-e5228e59d207",
+      "message_count": 4,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2875,
+      "hash": "67983118631ba58579fb8007014cab9d76519bb82e4026345dcb448134b3a830",
+      "id": "ctx_ea7dc258-7963-4dca-bed6-5de97340213e",
+      "message_count": 8,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2823,
+      "hash": "637bb6143c4c204a0df3c7fe87166ca1a8964ab52baa604d0c42bc32ff78f4a3",
+      "id": "ctx_01dc7a61-d820-4a50-a91d-ce6978aaf009",
+      "message_count": 8,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 2907,
+      "hash": "5e8b27027ceffc594c4d131a4bca853c3d2e891680889013ff9398636249737d",
+      "id": "ctx_99741d37-422b-48ad-8814-41a8789f5d23",
+      "message_count": 10,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 3253,
+      "hash": "1c6f425782fd0ddad1f107f0cb1488b1c0136449178f98e972752763c8565c3d",
+      "id": "ctx_05747425-b37e-4980-90b0-642e4e85a2f1",
+      "message_count": 12,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 4349,
+      "hash": "b53f72ccc9514e58c2b7dfb1c680f4651b5b9a77c065e2160715e09b8044f221",
+      "id": "ctx_2f34c25b-6428-4daf-81fe-4cb265bc2fb5",
+      "message_count": 14,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 4702,
+      "hash": "05d8a6dec9e0e8571e0398119f033c1b9160946fea27582ee1c51e9ed27a8fe5",
+      "id": "ctx_bf20bd1b-fb0c-4ecd-b5d2-07c228a2040e",
+      "message_count": 16,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 4904,
+      "hash": "429a0a5b1da8e083fe253a89d22ccbf7a99d40f447adcf381ca0d7e3bd371e4f",
+      "id": "ctx_9f9420f7-58b1-4aa5-b74d-e0f2a08122b1",
+      "message_count": 18,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 5074,
+      "hash": "eedb51e03f1a90cf01cd029a9ebd39bd3e4779f40175dab5597e9f523dc797cb",
+      "id": "ctx_04992f47-17f4-4d9f-9a43-711daa744913",
+      "message_count": 20,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 6186,
+      "hash": "100319250358d0c6f020cb565b4e2180c073e8d65a369b5de331170ef610e23e",
+      "id": "ctx_fb9c7f58-a712-41b5-9da9-57e8ad3b4e3e",
+      "message_count": 22,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 6323,
+      "hash": "e35d385690591724e57a1b7a2a7cf70bdce05c28a19631f68dbcba5350835cc6",
+      "id": "ctx_173c8f77-e294-4bb7-8e89-62b1dbc40b92",
+      "message_count": 24,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 6620,
+      "hash": "9c1d34d81d399d9e7d4e5342db0444cd7a7a97416aa7a0e0472bce3e6df3147e",
+      "id": "ctx_2e4f3f5b-4973-4b7a-bc3f-93f90f646919",
+      "message_count": 26,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 7964,
+      "hash": "ec016d694a6cfaa5878de6d479dc96e875d5aacf1d0ceddcb3318f714491c204",
+      "id": "ctx_1f54b344-d76f-40c1-ac1e-aad2c9aaabe1",
+      "message_count": 28,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 8181,
+      "hash": "94ea373b983ad938990c27ea88416c72e7fb0c0f629175519e08e48f3f83876f",
+      "id": "ctx_bc7edaa3-70f4-43ee-b423-25b5373fb938",
+      "message_count": 30,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 10559,
+      "hash": "7ad07d159d66a09ff6f28b50a20fc72c0c0c4fe8c12c599c7b0a2bd0b85463bd",
+      "id": "ctx_7f3daa99-6246-4937-b9bf-0a34d748582d",
+      "message_count": 32,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 10501,
+      "hash": "3b2e09bad6725f60563512517bc5dc65af417d3720d9e4fd608fdbdaba20fe9c",
+      "id": "ctx_dfef13c2-2b03-4ff3-b5a7-41e8fad72e74",
+      "message_count": 32,
+      "omitted_messages": [],
+      "summary_bytes": 0
+    },
+    {
+      "estimated_tokens": 9611,
+      "hash": "86ae03f3eaadcc3231fde7e6df0154001134f0444c54242bcadb4b3fe3873cfd",
+      "id": "ctx_502825ad-969f-468c-8d4a-aaf4df43ed6c",
+      "message_count": 20,
+      "omitted_messages": [
+        1,
+        2,
+        5,
+        6,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        19,
+        20,
+        21,
+        22,
+        25,
+        26
+      ],
+      "summary_bytes": 1168
+    },
+    {
+      "estimated_tokens": 7750,
+      "hash": "14adf764cad11720e4c1fcb7667e264ca63bd6e012e3f490c9accc6d2828d8ce",
+      "id": "ctx_3a2fd0d5-efeb-483c-bcc7-14db22e86e0d",
+      "message_count": 22,
+      "omitted_messages": [
+        1,
+        2,
+        5,
+        6,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        19,
+        20,
+        21,
+        22,
+        25,
+        26,
+        27,
+        28
+      ],
+      "summary_bytes": 1536
+    },
+    {
+      "estimated_tokens": 8005,
+      "hash": "35cfdc6e35495863663390397dfb18bdcee05f7bb45310acf07864bf8e749403",
+      "id": "ctx_96e47423-99be-4d76-b362-8a29c83fc73b",
+      "message_count": 22,
+      "omitted_messages": [
+        1,
+        2,
+        5,
+        6,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        19,
+        20,
+        21,
+        22,
+        25,
+        26,
+        27,
+        28
+      ],
+      "summary_bytes": 1536
+    },
+    {
+      "estimated_tokens": 7842,
+      "hash": "e3315842624ade3849c6d14abc42407c764c1070efe737604d7820b16ff0e903",
+      "id": "ctx_40c1acec-4929-40e5-b1d3-9af4e361543d",
+      "message_count": 18,
+      "omitted_messages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        19,
+        20,
+        21,
+        22,
+        25,
+        26,
+        27,
+        28
+      ],
+      "summary_bytes": 1536
+    }
+  ],
+  "model_summary_compaction_count": 0,
+  "rolling_compaction_contexts": 4,
+  "werk_requests": [
+    {
+      "id": 75,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "cancelled",
+      "started_ms": 1792623579534,
+      "elapsed_seconds": 97.556975711,
+      "prompt_tokens": null,
+      "cached_tokens": null,
+      "output_tokens": null,
+      "first_output_seconds": 63.541731908,
+      "decode_tokens_per_second": null,
+      "prefill_tokens_per_second": null
+    },
+    {
+      "id": 74,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792623517672,
+      "elapsed_seconds": 10.283961277,
+      "prompt_tokens": 7493,
+      "cached_tokens": 1890,
+      "output_tokens": 42,
+      "first_output_seconds": 7.22069617,
+      "decode_tokens_per_second": 35.96287603682256,
+      "prefill_tokens_per_second": 1223.4666270708642
+    },
+    {
+      "id": 73,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792623467349,
+      "elapsed_seconds": 13.96236274,
+      "prompt_tokens": 7238,
+      "cached_tokens": 1890,
+      "output_tokens": 66,
+      "first_output_seconds": 9.945403299,
+      "decode_tokens_per_second": 36.81763944262557,
+      "prefill_tokens_per_second": 1090.224651920094
+    },
+    {
+      "id": 72,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792623418593,
+      "elapsed_seconds": 12.762778914,
+      "prompt_tokens": 9099,
+      "cached_tokens": 1890,
+      "output_tokens": 37,
+      "first_output_seconds": 9.992916306,
+      "decode_tokens_per_second": 35.980912612087835,
+      "prefill_tokens_per_second": 1159.906711900186
+    },
+    {
+      "id": 71,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792623305902,
+      "elapsed_seconds": 77.258935992,
+      "prompt_tokens": 9989,
+      "cached_tokens": 7448,
+      "output_tokens": 2491,
+      "first_output_seconds": 6.268824297,
+      "decode_tokens_per_second": 36.62499401039465,
+      "prefill_tokens_per_second": 1070.302578456212
+    },
+    {
+      "id": 70,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792623291239,
+      "elapsed_seconds": 10.363028796,
+      "prompt_tokens": 10047,
+      "cached_tokens": 7153,
+      "output_tokens": 26,
+      "first_output_seconds": 7.897706149,
+      "decode_tokens_per_second": 35.023674657003724,
+      "prefill_tokens_per_second": 951.4888630760182
+    },
+    {
+      "id": 69,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792623210425,
+      "elapsed_seconds": 76.091499352,
+      "prompt_tokens": 7669,
+      "cached_tokens": 7448,
+      "output_tokens": 2410,
+      "first_output_seconds": 7.725264683,
+      "decode_tokens_per_second": 36.87445847333131,
+      "prefill_tokens_per_second": 207.8358830062661
+    },
+    {
+      "id": 68,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "cancelled",
+      "started_ms": 1792623085300,
+      "elapsed_seconds": 124.280030205,
+      "prompt_tokens": null,
+      "cached_tokens": null,
+      "output_tokens": null,
+      "first_output_seconds": 124.278904907,
+      "decode_tokens_per_second": null,
+      "prefill_tokens_per_second": null
+    },
+    {
+      "id": 67,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "length",
+      "started_ms": 1792622944709,
+      "elapsed_seconds": 129.894379012,
+      "prompt_tokens": 7452,
+      "cached_tokens": 5984,
+      "output_tokens": 4096,
+      "first_output_seconds": 4.580814227,
+      "decode_tokens_per_second": 32.90918620081828,
+      "prefill_tokens_per_second": 1012.5122511913228
+    },
+    {
+      "id": 66,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622904142,
+      "elapsed_seconds": 36.530310082,
+      "prompt_tokens": 6108,
+      "cached_tokens": 5726,
+      "output_tokens": 1231,
+      "first_output_seconds": 2.675652544,
+      "decode_tokens_per_second": 37.129142153942674,
+      "prefill_tokens_per_second": 679.0978309757498
+    },
+    {
+      "id": 65,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622891126,
+      "elapsed_seconds": 9.200312454,
+      "prompt_tokens": 5811,
+      "cached_tokens": 4609,
+      "output_tokens": 174,
+      "first_output_seconds": 3.560984229,
+      "decode_tokens_per_second": 37.01914208776473,
+      "prefill_tokens_per_second": 839.371993326923
+    },
+    {
+      "id": 64,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622880840,
+      "elapsed_seconds": 6.389077081,
+      "prompt_tokens": 5674,
+      "cached_tokens": 4434,
+      "output_tokens": 53,
+      "first_output_seconds": 3.071528339,
+      "decode_tokens_per_second": 36.9234284727007,
+      "prefill_tokens_per_second": 932.0035746846784
+    },
+    {
+      "id": 63,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622870916,
+      "elapsed_seconds": 5.997880022,
+      "prompt_tokens": 4562,
+      "cached_tokens": 4220,
+      "output_tokens": 48,
+      "first_output_seconds": 3.08371893,
+      "decode_tokens_per_second": 36.85614050175028,
+      "prefill_tokens_per_second": 340.18984980916537
+    },
+    {
+      "id": 62,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622861945,
+      "elapsed_seconds": 5.172051693,
+      "prompt_tokens": 4392,
+      "cached_tokens": 3867,
+      "output_tokens": 43,
+      "first_output_seconds": 2.23949619,
+      "decode_tokens_per_second": 37.48112868753291,
+      "prefill_tokens_per_second": 573.2054302752915
+    },
+    {
+      "id": 61,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622852353,
+      "elapsed_seconds": 5.842052797,
+      "prompt_tokens": 4190,
+      "cached_tokens": 2737,
+      "output_tokens": 31,
+      "first_output_seconds": 3.218953884,
+      "decode_tokens_per_second": 37.91510929336021,
+      "prefill_tokens_per_second": 978.7556802183576
+    },
+    {
+      "id": 60,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622843612,
+      "elapsed_seconds": 4.9970495360000005,
+      "prompt_tokens": 3837,
+      "cached_tokens": 2391,
+      "output_tokens": 31,
+      "first_output_seconds": 2.470451984,
+      "decode_tokens_per_second": 35.96204264402218,
+      "prefill_tokens_per_second": 1010.9724772181615
+    },
+    {
+      "id": 59,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622834704,
+      "elapsed_seconds": 5.120542753,
+      "prompt_tokens": 2741,
+      "cached_tokens": 2307,
+      "output_tokens": 31,
+      "first_output_seconds": 2.559893928,
+      "decode_tokens_per_second": 35.09435286579354,
+      "prefill_tokens_per_second": 468.5818058538176
+    },
+    {
+      "id": 58,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622826276,
+      "elapsed_seconds": 4.641762411,
+      "prompt_tokens": 2395,
+      "cached_tokens": 1890,
+      "output_tokens": 29,
+      "first_output_seconds": 2.24518706,
+      "decode_tokens_per_second": 33.50691455621247,
+      "prefill_tokens_per_second": 464.9805214595416
+    },
+    {
+      "id": 57,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622816793,
+      "elapsed_seconds": 4.65014557,
+      "prompt_tokens": 2311,
+      "cached_tokens": 2161,
+      "output_tokens": 30,
+      "first_output_seconds": 2.128779948,
+      "decode_tokens_per_second": 34.6398723405238,
+      "prefill_tokens_per_second": 160.46281755591593
+    },
+    {
+      "id": 56,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622808462,
+      "elapsed_seconds": 4.604972546,
+      "prompt_tokens": 2363,
+      "cached_tokens": 1890,
+      "output_tokens": 26,
+      "first_output_seconds": 2.083093685,
+      "decode_tokens_per_second": 36.59822329702132,
+      "prefill_tokens_per_second": 431.1048040387138
+    },
+    {
+      "id": 55,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622795635,
+      "elapsed_seconds": 8.325511471,
+      "prompt_tokens": 2136,
+      "cached_tokens": 1890,
+      "output_tokens": 26,
+      "first_output_seconds": 5.861045912,
+      "decode_tokens_per_second": 36.58828330589212,
+      "prefill_tokens_per_second": 372.4755695393719
+    },
+    {
+      "id": 54,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "tool_calls",
+      "started_ms": 1792622784144,
+      "elapsed_seconds": 7.803095784,
+      "prompt_tokens": 1894,
+      "cached_tokens": 1890,
+      "output_tokens": 16,
+      "first_output_seconds": 5.281982838,
+      "decode_tokens_per_second": 27.672947272658092,
+      "prefill_tokens_per_second": 8.96286237972959
+    }
+  ],
+  "log_safety": "No prompt, image payload, source code, tool arguments, API key, compaction summary or model response text included.",
+  "syntax": {
+    "file": "index.html",
+    "status": "passed",
+    "scripts": [
+      {
+        "script_index": 0,
+        "source": "main.js",
+        "bytes": 6376,
+        "returncode": 0,
+        "stderr": ""
+      }
+    ],
+    "remaining_placeholders": []
+  },
+  "browser": {
+    "file": "index.html",
+    "servedViaLocalHttp": true,
+    "errors": [],
+    "blockedNetwork": [
+      "https://fonts.googleapis.com"
+    ],
+    "checks": [
+      "local entry loads with canvas and no JavaScript exception",
+      "start and gameplay keys dispatched without JavaScript exceptions"
+    ],
+    "initial": {
+      "stats": {
+        "frames": 0,
+        "canvasDraws": 0,
+        "audioNodes": 0,
+        "listeners": [
+          {
+            "type": "keydown",
+            "target": "window"
+          },
+          {
+            "type": "keyup",
+            "target": "window"
+          }
+        ]
+      },
+      "title": "Retro Tetris \u2014 Paper Film Grain",
+      "canvases": [
+        {
+          "id": "game",
+          "width": 680,
+          "height": 620
+        },
+        {
+          "id": "grain",
+          "width": 1360,
+          "height": 900
+        }
+      ],
+      "controls": []
+    },
+    "canvasChanged": false,
+    "finalStats": {
+      "frames": 0,
+      "canvasDraws": 0,
+      "audioNodes": 0,
+      "listeners": [
+        {
+          "type": "keydown",
+          "target": "window"
+        },
+        {
+          "type": "keyup",
+          "target": "window"
+        },
+        {
+          "type": "pointerdown",
+          "target": "window"
+        },
+        {
+          "type": "touchstart",
+          "target": "window"
+        },
+        {
+          "type": "click",
+          "target": "window"
+        }
+      ]
+    },
+    "status": "failed",
+    "failure": "Game must run a rendered animation loop"
+  }
+}

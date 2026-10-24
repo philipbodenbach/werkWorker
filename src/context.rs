@@ -530,6 +530,7 @@ impl DefaultContextBuilder {
             }
             dynamic.extend(crate::harness::adaptive_feedback(session, run)?);
             dynamic.extend(crate::read_progress::feedback(session, run)?);
+            dynamic.extend(crate::failure_progress::feedback(session, run)?);
         }
         prompt.push_str("\nNew user messages during a run update the active task. Apply their constraints to the next useful action, reconcile any conflicting plan, and acknowledge the change briefly. Preserve earlier requirements that still apply. Completion and verification must cover the updated task.\n");
         if crate::completion::enabled(session, run)? {

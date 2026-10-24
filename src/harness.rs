@@ -278,6 +278,11 @@ pub(crate) fn is_feedback_echo(
             .filter(|observation| request.messages.contains(observation)),
     );
     owned.extend(
+        crate::failure_progress::feedback(session, run)?
+            .into_iter()
+            .filter(|observation| request.messages.contains(observation)),
+    );
+    owned.extend(
         crate::read_progress::feedback(session, run)?
             .into_iter()
             .chain(crate::read_progress::working_page(session, run)?.map(|(_, page)| page))
@@ -423,6 +428,19 @@ pub(crate) fn repetition_counts(run: &Run) -> std::collections::BTreeMap<String,
     counts
 }
 
+/// Criteria are model-authored descriptions, not fresh verification evidence.
+/// Ignore them (and timing metadata) when deciding whether a check progressed.
+pub(crate) fn verification_observation(result: &ToolResult) -> Option<String> {
+    let verification = &result.data["verification"];
+    verification["files"].as_object()?;
+    Some(fingerprint(&json!({
+        "files":verification["files"],"passed":verification["passed"],
+        "exit_code":result.data["exit_code"],
+        "stdout":result.data["stdout"],"stderr":result.data["stderr"],
+        "errors":result.data["errors"],"actions":result.data["actions"]
+    })))
+}
+
 fn repetition_boundary(run: &Run) -> usize {
     let mut prior = std::collections::BTreeMap::new();
     let mut file_hashes = std::collections::BTreeMap::new();
@@ -485,8 +503,7 @@ fn repetition_boundary(run: &Run) -> usize {
             prior.insert(key, value);
         } else if changed_file
             || result.data["workspace_changed"] == true
-            || (result.data["verification"]["files"].is_object()
-                && checks.insert(fingerprint(&result.data["verification"])))
+            || verification_observation(result).is_some_and(|key| checks.insert(key))
         {
             boundary = index + 1;
         }

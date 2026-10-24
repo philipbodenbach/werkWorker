@@ -7,6 +7,7 @@ mod completion;
 pub mod context;
 pub mod core;
 mod discovery;
+mod failure_progress;
 mod file_io;
 pub mod harness;
 pub mod parallel;

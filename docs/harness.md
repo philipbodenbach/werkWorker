@@ -172,23 +172,39 @@ recovery remain binding. No aid increases them or authorizes another action.
 
 For adaptive coding runs with `files.edit` available, successful `files.read`
 calls are checked against previously delivered byte ranges and file hashes.
-Repeated covered bytes trigger automatic recovery at `max_repeated_calls`,
-without terminating the run or asking the user to resume it. The default context
+Repeated covered bytes trigger automatic recovery at `max_repeated_calls`.
+The default context
 builder temporarily omits `files.read` from the next request when an edit or
 check tool is requestable, steering the model toward a concrete change or
 behavioral check. The latest exact read content and hash remain available;
 compaction restores a bounded working excerpt when its receipt is omitted.
 Focused searches remain available for missing anchors. No tool permissions
-change, and already admitted or custom-builder reads still execute normally,
-including permission and file-version checks.
+change, and already admitted or custom-builder reads still execute permission
+and file-version checks before the progress guard evaluates the fresh receipt.
 
 New bytes, a changed file, an observed workspace mutation or a distinct
-verification receipt restore the ordinary tool selection. Unchanged reads and
-failed writes do not reset the evidence counter. Recovery is reconstructed from
-persisted receipts across compaction/resume; `read_recovery:<count>` diagnostics
-remain informational, even beyond the old two-decision allowance. This does not
-guarantee model progress or bypass completion checks and explicitly finite run
-budgets. Denied/failed reads and other tools retain their existing guards.
+verification outcome restore the ordinary tool selection. Renaming verification
+criteria is not a new outcome. Unchanged reads and failed/no-op writes do not reset
+the evidence counter. After two more redundant reads beyond the recovery threshold,
+the run stops with `read_no_progress`, retaining the last tool receipt and existing
+work. The default is recovery after three redundant reads and a stop at five.
+
+Adaptive coding runs also count repeated nonzero `process.run` outcomes by working
+directory, exit code and exact stdout/stderr, independently of command spelling,
+verification descriptions and timing metadata. Silent nonzero exits count only
+when accompanied by a failed verification receipt; truncated results are excluded.
+Reads, searches, plans and repeated diagnoses do not reset this counter. Observed
+file changes, including external changes, start a new failure budget; no-op edits
+do not. A `check_progress` observation warns at `max_repeated_calls` occurrences
+and `check_no_progress` stops after two further occurrences (five by default),
+reporting the last command and a bounded failure excerpt. This catches alternating
+search/read/test loops even when each search has different arguments. It is an
+exact outcome guard, not a semantic classifier of model prose or changing errors.
+
+Both circuit breakers reconstruct their counters from persisted tool receipts
+across compaction/resume and remain active in continuous mode. They stop incomplete
+work honestly rather than treating recovery as completion. Denied/failed reads
+and other tools retain their existing guards.
 
 ## Coding acceptance and continuous work
 

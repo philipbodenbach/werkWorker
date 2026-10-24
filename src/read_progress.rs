@@ -64,8 +64,8 @@ pub(crate) fn latest(run: &Run) -> Option<ReadProgress> {
             continue;
         };
         if result.data["workspace_changed"] == true
-            || (result.data["verification"]["files"].is_object()
-                && checks.insert(fingerprint(&result.data["verification"])))
+            || crate::harness::verification_observation(result)
+                .is_some_and(|key| checks.insert(key))
         {
             repeated = 0;
             latest = None;
@@ -124,6 +124,12 @@ pub(crate) fn enabled(session: &SessionData, run: &Run, call: &ToolCall) -> Resu
         && session.profile.tools.iter().any(|t| t == "files.edit"))
 }
 
+/// Two further redundant reads may follow the recovery warning, even in a
+/// continuous run. Evaluate after execution so external changes are observed.
+pub(crate) fn stop_limit(run: &Run) -> usize {
+    run.limits.max_repeated_calls.max(1).saturating_add(2)
+}
+
 /// Narrow the next decision after a read loop, without changing capabilities or
 /// rejecting already admitted calls. Reconstruct from receipts on every request
 /// so compaction/resume preserves recovery and new evidence restores reads.
@@ -176,8 +182,10 @@ pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Messag
         "path":p.path,"sha256":p.hash,"new_bytes":p.new_bytes,
         "reads_without_new_information":p.repeated,
         "automatic_recovery":recovery,
+        "stop_after_redundant_reads":stop_limit(run),
+        "remaining_redundant_reads":stop_limit(run).saturating_sub(p.repeated),
         "detail":if recovery {
-            "The run is continuing automatically after redundant reads. Use the retained exact content and sha256 for one targeted edit, implement the next missing section, or run a behavioral check with verification.criteria and verification.paths. files.read is temporarily omitted when an edit/check tool is available; new bytes, a changed file or a new verification receipt restore it. If an exact anchor is missing, use a focused files.search when available. Do not ask the user to restart or repeat setup. Do not make a no-op edit just to restore reads. Continue the original task; recovery is not completion."
+            "Redundant reads triggered a bounded recovery attempt. The run stops at stop_after_redundant_reads if no new evidence arrives, including in continuous mode. Use the retained exact content and sha256 for one targeted edit or a different behavioral check. files.read is temporarily omitted when an edit/check tool is available; new bytes, a changed file or a distinct verification outcome restore it. If an exact anchor is missing, use a focused files.search. Renaming verification criteria, no-op edits and repeating the same failure are not progress. Continue the original task; recovery is not completion."
         } else {
             "The latest read checked the file version and returned exact content in its tool receipt. It adds no unseen bytes for this version. Use the available content and hash for one targeted edit or behavioral check. If compaction removed a needed exact anchor, read only that range and then act on it. Changing line/byte arguments over covered content is not progress. Do not restart scaffolding. Completion still requires verification."
         }

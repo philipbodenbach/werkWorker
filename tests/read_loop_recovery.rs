@@ -23,7 +23,7 @@ fn read(path: &str) -> ScriptedTurn {
 }
 
 #[tokio::test]
-async fn varied_ranges_recover_without_stopping_and_new_pages_keep_reads_available() {
+async fn varied_covered_ranges_stop_after_recovery_but_new_pages_remain_available() {
     for new_pages in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -76,13 +76,20 @@ async fn varied_ranges_recover_without_stopping_and_new_pages_keep_reads_availab
             .await
             .unwrap();
         let result = run.wait().await.unwrap();
-        assert_eq!(result.error.unwrap().code, "step_budget");
+        assert_eq!(
+            result.error.unwrap().code,
+            if new_pages {
+                "step_budget"
+            } else {
+                "read_no_progress"
+            }
+        );
         let saved: SessionData = serde_json::from_slice(
             &serde_json::to_vec(&session.snapshot().await.unwrap()).unwrap(),
         )
         .unwrap();
         let notices = saved.events.iter().filter(|e| matches!(&e.event, EventKind::Diagnostic { code } if code.starts_with("read_recovery:"))).count();
-        assert_eq!(notices, if new_pages { 0 } else { 3 });
+        assert_eq!(notices, if new_pages { 0 } else { 2 });
         assert_eq!(
             provider.requests()[5]
                 .tools
@@ -607,16 +614,15 @@ async fn read_recovery_keeps_reads_when_no_edit_or_check_is_requestable() {
 }
 
 #[tokio::test]
-async fn reads_beyond_the_old_stop_limit_continue_to_verification_without_forcing_an_edit() {
+async fn bounded_read_recovery_can_verify_without_forcing_an_edit() {
     if let Err(error) = runtime::Sandbox::default().doctor().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("game.txt"), "one").unwrap();
-    // A custom builder or model may still request reads that were omitted from
-    // the current catalogue. The old implementation failed on the sixth read.
-    let mut turns: Vec<_> = (0..8).map(|_| read("game.txt")).collect();
+    // The model can switch to verification before exhausting recovery.
+    let mut turns: Vec<_> = (0..5).map(|_| read("game.txt")).collect();
     turns.extend([
         call(
             "process.run",
@@ -644,10 +650,10 @@ async fn reads_beyond_the_old_stop_limit_continue_to_verification_without_forcin
         "one"
     );
     let requests = provider.requests();
-    assert!(!requests[8].tools.iter().any(|t| t.name == "files.read"));
-    assert!(requests[9].tools.iter().any(|t| t.name == "files.read"));
+    assert!(!requests[5].tools.iter().any(|t| t.name == "files.read"));
+    assert!(requests[6].tools.iter().any(|t| t.name == "files.read"));
     assert!(
-        !requests[9]
+        !requests[6]
             .messages
             .iter()
             .any(|m| m.content.contains("\"automatic_recovery\":true"))
@@ -749,6 +755,7 @@ async fn fixture(
     let names = [
         "files.read",
         "files.list",
+        "files.search",
         "files.write",
         "files.edit",
         "process.run",
@@ -778,6 +785,246 @@ async fn fixture(
         .await
         .unwrap();
     (engine, session, provider)
+}
+
+fn failing_check(n: usize) -> ScriptedTurn {
+    call(
+        "process.run",
+        json!({
+            "argv":["/bin/sh","-c",format!("printf 'TypeError: g.board is undefined\\n' >&2; exit 1 # attempt {n}")],
+            "verification":{"criteria":[format!("Check the state mismatch, attempt {n}")],"paths":["game.txt"]}
+        }),
+    )
+}
+
+#[tokio::test]
+async fn repeated_failure_survives_searches_new_reads_noop_edits_compaction_and_resume() {
+    if let Err(error) = runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let content = "one\ntwo\nthree\nfour\nfive\nsix\n";
+    std::fs::write(dir.path().join("game.txt"), content).unwrap();
+    let mut turns = Vec::new();
+    for n in 1..=3 {
+        turns.extend([
+            call(
+                "files.search",
+                json!({"path":"game.txt","query":format!("missing-symbol-{n}")}),
+            ),
+            call(
+                "files.read",
+                json!({"path":"game.txt","start_line":n,"end_line":n}),
+            ),
+            failing_check(n),
+        ]);
+    }
+    let steps = turns.len() as u32;
+    let (engine, session, _) = fixture(turns, dir.path(), false).await;
+    let run = session
+        .submit(
+            "Fix the mismatch",
+            "start",
+            Limits {
+                max_steps: steps,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    let mut saved = session.snapshot().await.unwrap();
+    let indices = saved
+        .run(&run.id)
+        .unwrap()
+        .invocations
+        .iter()
+        .flat_map(|i| [i.message_index, i.message_index + 1])
+        .collect();
+    saved.compactions.push(CompactionRecord {
+        id: id("compact"),
+        run_id: run.id.clone(),
+        attempt_id: id("attempt"),
+        message_indices: indices,
+        source_hash: "fixture".into(),
+        summary: "The agent keeps diagnosing a state mismatch.".into(),
+    });
+    let persisted = saved.run_mut(&run.id).unwrap();
+    persisted.status = RunStatus::Interrupted;
+    persisted.error = None;
+    persisted.limits = Limits::continuous();
+    let store = Arc::new(werk_worker::sessions::InMemoryStore::default());
+    use werk_worker::sessions::SessionStore;
+    store.save(&saved, None).await.unwrap();
+    engine.close().await.unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        call(
+            "files.edit",
+            json!({"path":"game.txt","expected_hash":hash(content),"old":"one","new":"one"}),
+        ),
+        failing_check(4),
+        call(
+            "files.search",
+            json!({"path":"game.txt","query":"another diagnosis"}),
+        ),
+        call(
+            "files.read",
+            json!({"path":"game.txt","start_line":4,"end_line":4}),
+        ),
+        failing_check(5),
+        call(
+            "files.write",
+            json!({"path":"must-not-run","content":"bad"}),
+        ),
+    ]));
+    let fresh = WorkerEngine::builder(provider.clone())
+        .store(store)
+        .build()
+        .await
+        .unwrap();
+    let resumed = fresh.resume_run(&saved.id, &run.id).await.unwrap();
+    let result = resumed.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Failed);
+    let error = result.error.unwrap();
+    assert_eq!(error.code, "check_no_progress");
+    assert!(error.message.contains("5 times"));
+    assert!(error.message.contains("g.board is undefined"));
+    assert_eq!(provider.requests().len(), 5);
+    let warning = provider.requests()[0]
+        .messages
+        .iter()
+        .find_map(|m| {
+            serde_json::from_str::<Value>(&m.content)
+                .ok()
+                .filter(|v| v["event"] == "check_progress")
+        })
+        .unwrap();
+    assert_eq!(warning["data"]["same_failure_occurrences"], 3);
+    assert_eq!(warning["data"]["remaining_attempts"], 2);
+    assert!(!dir.path().join("must-not-run").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        content
+    );
+    fresh.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn actual_file_change_rearms_failure_recovery() {
+    if let Err(error) = runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "one").unwrap();
+    let (engine,session,provider)=fixture(vec![
+        failing_check(1),failing_check(2),edit("one","two"),failing_check(3),failing_check(4),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],"verification":{"criteria":["Corrected state"],"paths":["game.txt"]}})),
+        ScriptedTurn::text("Verified the correction"),
+    ],dir.path(),false).await;
+    let run = session
+        .submit(
+            "Fix the state",
+            "start",
+            Limits {
+                max_repeated_calls: 1,
+                ..Limits::continuous()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert!(
+        !provider.requests()[3]
+            .messages
+            .iter()
+            .any(|m| m.content.contains("\"event\":\"check_progress\""))
+    );
+    assert!(
+        !provider
+            .requests()
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.content.contains("\"event\":\"check_progress\""))
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn new_diagnostic_results_restore_reads_without_requiring_file_changes() {
+    if let Err(error) = runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "one").unwrap();
+    let mut turns = vec![read("game.txt"), read("game.txt")];
+    for n in 1..=3 {
+        turns.extend([
+            call("process.run",json!({
+                "argv":["/bin/sh","-c",format!("printf 'Different diagnostic {n}\\n' >&2; exit 1")],
+                "verification":{"criteria":["Inspect the failure"],"paths":["game.txt"]}
+            })),
+            read("game.txt"),read("game.txt"),
+        ]);
+    }
+    turns.extend([
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"criteria":["Existing state is valid"],"paths":["game.txt"]}})),
+        ScriptedTurn::text("Verified existing state"),
+    ]);
+    let (engine, session, _) = fixture(turns, dir.path(), false).await;
+    let run = session
+        .submit(
+            "Investigate the state",
+            "start",
+            Limits {
+                max_repeated_calls: 1,
+                ..Limits::continuous()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn continuous_read_loop_stops_and_preserves_the_last_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "one").unwrap();
+    let (engine, session, provider) = fixture(
+        (0..12).map(|_| read("game.txt")).collect(),
+        dir.path(),
+        false,
+    )
+    .await;
+    let run = session
+        .submit("Fix the state", "start", Limits::continuous(), None)
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.error.unwrap().code, "read_no_progress");
+    assert_eq!(provider.requests().len(), 6);
+    let saved = session.snapshot().await.unwrap();
+    let invocations = &saved.run(&run.id).unwrap().invocations;
+    assert_eq!(invocations.len(), 6);
+    assert_eq!(
+        invocations[5].result.as_ref().unwrap().data["content"],
+        "one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "one"
+    );
+    engine.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -907,7 +1154,7 @@ async fn alternating_reads_and_failed_writes_cannot_replenish_recovery_or_bypass
             if denied {
                 "repetition_limit"
             } else {
-                "step_budget"
+                "read_no_progress"
             }
         );
         let saved: SessionData = serde_json::from_slice(
@@ -922,9 +1169,9 @@ async fn alternating_reads_and_failed_writes_cannot_replenish_recovery_or_bypass
                 _ => None,
             })
             .collect();
-        assert_eq!(recoveries.len(), if denied { 0 } else { 4 });
+        assert_eq!(recoveries.len(), if denied { 0 } else { 2 });
         if !denied {
-            assert_eq!(recoveries[3], "read_recovery:4");
+            assert_eq!(recoveries[1], "read_recovery:2");
             assert!(
                 !provider
                     .requests()

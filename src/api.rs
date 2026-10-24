@@ -2884,11 +2884,18 @@ impl SessionHandle {
             if let Some(progress) =
                 crate::read_progress::latest(run).filter(|p| p.invocation_id == invocation_id)
             {
-                // A successful redundant read is recoverable, not a terminal
-                // run failure. The next request steers away from reading and
-                // retains exact content for an edit/check. Keep executing fresh
-                // reads from already admitted batches or custom builders so
-                // permissions, external changes and new ranges are still seen.
+                // Allow bounded recovery, then stop even in continuous mode.
+                // The receipt is already persisted and external changes/new
+                // ranges have been checked before applying this guard.
+                if progress.repeated >= crate::read_progress::stop_limit(run) {
+                    return Err(WorkerError::new(
+                        "read_no_progress",
+                        format!(
+                            "{} reads returned no new bytes or changed file versions despite recovery. Last read: {}. Work and receipts are retained; the task is incomplete.",
+                            progress.repeated, progress.path
+                        ),
+                    ));
+                }
                 if progress.repeated >= run.limits.max_repeated_calls {
                     self.update(|d| {
                         d.emit(
@@ -2910,6 +2917,26 @@ impl SessionHandle {
                 return Err(WorkerError::new(
                     "repetition_limit",
                     "Repeated failed reads without new evidence; permissions and existing files are unchanged",
+                ));
+            }
+        }
+        if invocation.call.name == "process.run" {
+            let data = self.snapshot().await?;
+            let run = data.run(run_id)?;
+            if crate::failure_progress::enabled(&data, run)?
+                && let Some(progress) = crate::failure_progress::latest(run)
+                && progress.invocation_id == invocation_id
+                && progress.occurrences >= crate::failure_progress::stop_limit(run)
+            {
+                return Err(WorkerError::new(
+                    "check_no_progress",
+                    format!(
+                        "The same command failure occurred {} times without a file change despite recovery (exit {}). Last command: {}. Failure: {}. Work and receipts are retained; the task is incomplete.",
+                        progress.occurrences,
+                        progress.exit_code,
+                        crate::completion::excerpt(&progress.command.to_string(), 300),
+                        crate::completion::excerpt(&progress.detail, 1000)
+                    ),
                 ));
             }
         }

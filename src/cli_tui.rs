@@ -827,6 +827,9 @@ impl View {
             "repair_no_progress" => {
                 "Repeated file repairs failed. Existing files and error receipts are retained. Continue with a smaller complete edit using the current file content; do not restart the implementation."
             }
+            "read_no_progress" | "check_no_progress" => {
+                "Circuit breaker stopped a loop after bounded recovery. Work and tool receipts are retained. Continue with a concrete correction or a different diagnostic; the task is still incomplete."
+            }
             "timeout" | "network_error" | "interrupted_stream" | "inference_unresolved" => {
                 "The backend may still be processing the interrupted request. Check or restart Werk, then reconnect Worker before continuing. Saved work and session history are retained."
             }

@@ -124,6 +124,39 @@ pub(crate) fn enabled(session: &SessionData, run: &Run, call: &ToolCall) -> Resu
         && session.profile.tools.iter().any(|t| t == "files.edit"))
 }
 
+/// Narrow the next decision after a read loop, without changing capabilities or
+/// rejecting already admitted calls. Reconstruct from receipts on every request
+/// so compaction/resume preserves recovery and new evidence restores reads.
+pub(crate) fn recovery_tools(
+    session: &SessionData,
+    run: &Run,
+    tools: &mut Vec<ToolDefinition>,
+) -> Result<()> {
+    let Some(progress) =
+        latest(run).filter(|p| p.repeated > 0 && p.repeated >= run.limits.max_repeated_calls)
+    else {
+        return Ok(());
+    };
+    let Some(invocation) = run
+        .invocations
+        .iter()
+        .find(|i| i.invocation_id == progress.invocation_id)
+    else {
+        return Ok(());
+    };
+    if enabled(session, run, &invocation.call)?
+        && tools.iter().any(|tool| {
+            matches!(
+                tool.name.as_str(),
+                "files.edit" | "files.insert" | "files.write" | "process.run" | "browser.check"
+            ) && session.policy.can_request(tool)
+        })
+    {
+        tools.retain(|tool| tool.name != "files.read");
+    }
+    Ok(())
+}
+
 pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Message>> {
     let Some(progress) = latest(run) else {
         return Ok(None);
@@ -138,10 +171,16 @@ pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Messag
     if !enabled(session, run, &invocation.call)? {
         return Ok(None);
     }
+    let recovery = progress.repeated > 0 && progress.repeated >= run.limits.max_repeated_calls;
     Ok(Some(progress).filter(|p| p.repeated > 0).map(|p| crate::harness::feedback("read_progress", json!({
         "path":p.path,"sha256":p.hash,"new_bytes":p.new_bytes,
         "reads_without_new_information":p.repeated,
-        "detail":"The latest read checked the file version and returned exact content in its tool receipt. It adds no unseen bytes for this version. Use the available content and hash for one targeted edit or behavioral check. If compaction removed a needed exact anchor, read only that range and then act on it. Changing line/byte arguments over covered content is not progress. Do not restart scaffolding. Completion still requires verification."
+        "automatic_recovery":recovery,
+        "detail":if recovery {
+            "The run is continuing automatically after redundant reads. Use the retained exact content and sha256 for one targeted edit, implement the next missing section, or run a behavioral check with verification.criteria and verification.paths. files.read is temporarily omitted when an edit/check tool is available; new bytes, a changed file or a new verification receipt restore it. If an exact anchor is missing, use a focused files.search when available. Do not ask the user to restart or repeat setup. Do not make a no-op edit just to restore reads. Continue the original task; recovery is not completion."
+        } else {
+            "The latest read checked the file version and returned exact content in its tool receipt. It adds no unseen bytes for this version. Use the available content and hash for one targeted edit or behavioral check. If compaction removed a needed exact anchor, read only that range and then act on it. Changing line/byte arguments over covered content is not progress. Do not restart scaffolding. Completion still requires verification."
+        }
     }))))
 }
 

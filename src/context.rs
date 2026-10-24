@@ -330,6 +330,7 @@ impl DefaultContextBuilder {
         provider: Option<&dyn ModelProvider>,
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         validate_messages(&session.messages)?;
+        crate::read_progress::recovery_tools(session, run, &mut tools)?;
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         let file_budget = if tools.iter().any(|t| {
             matches!(

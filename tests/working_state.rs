@@ -229,7 +229,7 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
     }
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("game.txt"), "working").unwrap();
-    let (engine, session, _) = fixture(
+    let (engine, session, provider) = fixture(
         vec![
             read("game.txt"),
             process(&["python3", "--version"]),
@@ -239,7 +239,11 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
             read("/workspace/game.txt"),
             process(&["sh", "-c", "python3 --version"]),
             read("game.txt"),
-            ScriptedTurn::text("must not finish"),
+            call("process.run", json!({
+                "argv":["python3","-c","from pathlib import Path; assert Path('game.txt').read_text() == 'working'"],
+                "verification":{"criteria":["Existing content is working"],"paths":["game.txt"]}
+            })),
+            ScriptedTurn::text("Verified existing content"),
         ],
         dir.path(),
     )
@@ -257,7 +261,7 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
         .await
         .unwrap();
     let result = run.wait().await.unwrap();
-    assert_eq!(result.error.unwrap().code, "repetition_limit");
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
         "working"
@@ -271,8 +275,20 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
             _ => None,
         })
         .collect();
-    assert_eq!(receipts.len(), 2);
-    assert_eq!(receipts[1], "read_recovery:2");
+    assert_eq!(receipts.len(), 3);
+    assert_eq!(receipts[2], "read_recovery:3");
+    assert!(
+        !provider.requests()[8]
+            .tools
+            .iter()
+            .any(|t| t.name == "files.read")
+    );
+    assert!(
+        provider.requests()[9]
+            .tools
+            .iter()
+            .any(|t| t.name == "files.read")
+    );
     engine.close().await.unwrap();
 }
 

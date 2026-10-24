@@ -2884,15 +2884,11 @@ impl SessionHandle {
             if let Some(progress) =
                 crate::read_progress::latest(run).filter(|p| p.invocation_id == invocation_id)
             {
-                if progress.repeated >= run.limits.max_repeated_calls.saturating_add(2) {
-                    return Err(WorkerError::new(
-                        "repetition_limit",
-                        format!(
-                            "Repeated reads of {} returned already observed bytes without a new file version. Fresh content and hashes are retained; make a targeted edit or behavioral check. The task is not complete.",
-                            progress.path
-                        ),
-                    ));
-                }
+                // A successful redundant read is recoverable, not a terminal
+                // run failure. The next request steers away from reading and
+                // retains exact content for an edit/check. Keep executing fresh
+                // reads from already admitted batches or custom builders so
+                // permissions, external changes and new ranges are still seen.
                 if progress.repeated >= run.limits.max_repeated_calls {
                     self.update(|d| {
                         d.emit(

@@ -170,15 +170,25 @@ and denials are not progress. Permission checks, approval, revocation, sandbox,
 leases, explicitly finite tool/step/request/tree/wall budgets and unknown-outcome
 recovery remain binding. No aid increases them or authorizes another action.
 
-For adaptive coding runs with `files.edit` available, a repeated `files.read`
-with a previous successful hash receipt gets up to two recovery decisions per
-evidence epoch before `repetition_limit`. The redundant read is **not executed**:
-its `repetition_recovery` result identifies the historical receipt and directs
-the model to an incremental edit, missing range, or behavioral check. Unchanged
-reads and failed writes do not replenish these decisions; new evidence or
-observed workspace changes use the same epoch rules as the ordinary guard.
-The allowance is derived from persisted tool outcomes, so resume cannot reset it.
-Denied reads without a successful receipt retain the normal guard.
+For adaptive coding runs with `files.edit` available, successful `files.read`
+calls are checked against previously delivered byte ranges and file hashes.
+Repeated covered bytes trigger automatic recovery at `max_repeated_calls`,
+without terminating the run or asking the user to resume it. The default context
+builder temporarily omits `files.read` from the next request when an edit or
+check tool is requestable, steering the model toward a concrete change or
+behavioral check. The latest exact read content and hash remain available;
+compaction restores a bounded working excerpt when its receipt is omitted.
+Focused searches remain available for missing anchors. No tool permissions
+change, and already admitted or custom-builder reads still execute normally,
+including permission and file-version checks.
+
+New bytes, a changed file, an observed workspace mutation or a distinct
+verification receipt restore the ordinary tool selection. Unchanged reads and
+failed writes do not reset the evidence counter. Recovery is reconstructed from
+persisted receipts across compaction/resume; `read_recovery:<count>` diagnostics
+remain informational, even beyond the old two-decision allowance. This does not
+guarantee model progress or bypass completion checks and explicitly finite run
+budgets. Denied/failed reads and other tools retain their existing guards.
 
 ## Coding acceptance and continuous work
 

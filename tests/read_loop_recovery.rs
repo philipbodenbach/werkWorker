@@ -23,7 +23,7 @@ fn read(path: &str) -> ScriptedTurn {
 }
 
 #[tokio::test]
-async fn varied_ranges_over_the_same_bytes_are_bounded_but_new_pages_are_allowed() {
+async fn varied_ranges_recover_without_stopping_and_new_pages_keep_reads_available() {
     for new_pages in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -76,20 +76,20 @@ async fn varied_ranges_over_the_same_bytes_are_bounded_but_new_pages_are_allowed
             .await
             .unwrap();
         let result = run.wait().await.unwrap();
-        assert_eq!(
-            result.error.unwrap().code,
-            if new_pages {
-                "step_budget"
-            } else {
-                "repetition_limit"
-            }
-        );
+        assert_eq!(result.error.unwrap().code, "step_budget");
         let saved: SessionData = serde_json::from_slice(
             &serde_json::to_vec(&session.snapshot().await.unwrap()).unwrap(),
         )
         .unwrap();
         let notices = saved.events.iter().filter(|e| matches!(&e.event, EventKind::Diagnostic { code } if code.starts_with("read_recovery:"))).count();
-        assert_eq!(notices, if new_pages { 0 } else { 2 });
+        assert_eq!(notices, if new_pages { 0 } else { 3 });
+        assert_eq!(
+            provider.requests()[5]
+                .tools
+                .iter()
+                .any(|t| t.name == "files.read"),
+            new_pages
+        );
         if !new_pages {
             let r = saved.run(&run.id).unwrap();
             let (request, _) = DefaultContextBuilder
@@ -292,6 +292,7 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
             "start",
             Limits {
                 max_steps: 3,
+                max_repeated_calls: 1,
                 ..Limits::default()
             },
             None,
@@ -325,9 +326,11 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
         summary: "Earlier reads omitted".into(),
     });
     let (after, _) = DefaultContextBuilder
-        .build(&saved, saved.run(&run.id).unwrap(), vec![])
+        .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
         .await
         .unwrap();
+    assert!(!after.tools.iter().any(|t| t.name == "files.read"));
+    assert!(after.tools.iter().any(|t| t.name == "files.edit"));
     let pages: Vec<_> = after
         .messages
         .iter()
@@ -338,6 +341,136 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
     assert!(pages[0].content.contains(&hash("exact anchor αβγ")));
     assert_eq!(pages[0].role, Role::Assistant);
     validate_messages(&after.messages).unwrap();
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn read_loop_automatically_switches_to_edit_and_verified_completion() {
+    if let Err(error) = runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    struct Recovering {
+        requests: std::sync::Mutex<Vec<ModelRequest>>,
+    }
+    #[async_trait::async_trait]
+    impl ModelProvider for Recovering {
+        fn identity(&self) -> String {
+            "read-loop-recovery".into()
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            ScriptedProvider::new(vec![]).capabilities()
+        }
+        async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+            let result = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::Tool)
+                .and_then(|m| serde_json::from_str::<Value>(&m.content).ok());
+            let turn = if result
+                .as_ref()
+                .is_some_and(|r| r["data"]["verification"]["passed"] == true)
+            {
+                ScriptedTurn::text("Implemented and verified")
+            } else if !request.tools.iter().any(|t| t.name == "files.read") {
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|m| m.content.contains("\"automatic_recovery\":true"))
+                );
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|m| m.role == Role::Tool && m.content.contains("one"))
+                );
+                edit("one", "two")
+            } else if result
+                .as_ref()
+                .is_some_and(|r| r["data"]["sha256"] == hash("two"))
+            {
+                call(
+                    "process.run",
+                    json!({
+                        "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],
+                        "verification":{"criteria":["Final fixture content is two"],"paths":["game.txt"]}
+                    }),
+                )
+            } else {
+                read("game.txt")
+            };
+            self.requests.lock().unwrap().push(request);
+            Ok(Box::pin(futures_util::stream::iter(
+                turn.deltas.into_iter().map(Ok),
+            )))
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "one").unwrap();
+    let provider = Arc::new(Recovering {
+        requests: Default::default(),
+    });
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let names = ["files.read", "files.edit", "process.run"];
+    let session = engine
+        .create_session(
+            AgentProfile {
+                schema_version: 1,
+                name: "coding-basic".into(),
+                prompt: "Implement and verify".into(),
+                tools: names.map(str::to_owned).to_vec(),
+                skills: vec![],
+            },
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                tool_permissions: names.map(|n| (n.into(), ToolPermission::Allow)).into(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Change one to two and verify it",
+            "start",
+            Limits {
+                max_repeated_calls: 1,
+                max_steps: 10,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "two"
+    );
+    let saved = session.snapshot().await.unwrap();
+    assert!(
+        saved
+            .run(&run.id)
+            .unwrap()
+            .invocations
+            .iter()
+            .all(|i| i.result.as_ref().unwrap().status == Outcome::Succeeded)
+    );
+    let requests = provider.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 5);
+    assert!(!requests[2].tools.iter().any(|t| t.name == "files.read"));
+    assert!(requests[3].tools.iter().any(|t| t.name == "files.read"));
+    for request in requests.iter() {
+        validate_messages(&request.messages).unwrap();
+    }
     engine.close().await.unwrap();
 }
 
@@ -434,6 +567,175 @@ fn edit(before: &str, after: &str) -> ScriptedTurn {
         json!({"path":"game.txt","expected_hash":hash(before),"old":before,"new":after}),
     )
 }
+#[tokio::test]
+async fn read_recovery_keeps_reads_when_no_edit_or_check_is_requestable() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "one").unwrap();
+    let (engine, session, _) =
+        fixture(vec![read("game.txt"), read("game.txt")], dir.path(), false).await;
+    let run = session
+        .submit(
+            "Inspect",
+            "start",
+            Limits {
+                max_steps: 2,
+                max_repeated_calls: 1,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    let mut saved = session.snapshot().await.unwrap();
+    saved.policy.hard_denied_tools.extend(
+        [
+            "files.edit",
+            "files.write",
+            "files.insert",
+            "process.run",
+            "browser.check",
+        ]
+        .map(str::to_owned),
+    );
+    let (request, _) = DefaultContextBuilder
+        .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
+        .await
+        .unwrap();
+    assert!(request.tools.iter().any(|t| t.name == "files.read"));
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn reads_beyond_the_old_stop_limit_continue_to_verification_without_forcing_an_edit() {
+    if let Err(error) = runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("game.txt"), "one").unwrap();
+    // A custom builder or model may still request reads that were omitted from
+    // the current catalogue. The old implementation failed on the sixth read.
+    let mut turns: Vec<_> = (0..8).map(|_| read("game.txt")).collect();
+    turns.extend([
+        call(
+            "process.run",
+            json!({
+                "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],
+                "verification":{"criteria":["Existing content is one"],"paths":["game.txt"]}
+            }),
+        ),
+        ScriptedTurn::text("Verified existing content"),
+    ]);
+    let (engine, session, provider) = fixture(turns, dir.path(), false).await;
+    let run = session
+        .submit(
+            "Verify the existing file",
+            "start",
+            Limits::continuous(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "one"
+    );
+    let requests = provider.requests();
+    assert!(!requests[8].tools.iter().any(|t| t.name == "files.read"));
+    assert!(requests[9].tools.iter().any(|t| t.name == "files.read"));
+    assert!(
+        !requests[9]
+            .messages
+            .iter()
+            .any(|m| m.content.contains("\"automatic_recovery\":true"))
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "explicit read-only replay of a saved read loop; no model or workspace execution"]
+async fn saved_read_loop_recovers_an_actionable_request() {
+    struct Offline;
+    #[async_trait::async_trait]
+    impl ModelProvider for Offline {
+        fn identity(&self) -> String {
+            "offline-read-recovery-fixture".into()
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities::default()
+        }
+        async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
+            // Same offline approximation as the context-planning replay. This
+            // validates recovery context, not a live tokenizer or image budget.
+            let mut text = request.clone();
+            let images: usize = text
+                .messages
+                .iter_mut()
+                .map(|m| {
+                    let count = m.images.len();
+                    m.images.clear();
+                    count
+                })
+                .sum();
+            Ok(serde_json::to_vec(&text)?.len() / 4 + 256 + images * 443)
+        }
+        async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+            panic!("offline replay never generates")
+        }
+    }
+    let path = std::env::var("WW_REPLAY_DATABASE").expect("WW_REPLAY_DATABASE");
+    let id = std::env::var("WW_REPLAY_SESSION").expect("WW_REPLAY_SESSION");
+    let db =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let raw: String = db
+        .query_row("SELECT data FROM sessions WHERE id = ?1", [&id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let saved: SessionData = serde_json::from_str(&raw).unwrap();
+    let canonical = serde_json::to_value(&saved).unwrap();
+    let run = saved.runs.last().unwrap();
+    assert_eq!(run.error.as_ref().unwrap().code, "repetition_limit");
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![])))
+        .build()
+        .await
+        .unwrap();
+    let tools = engine
+        .tools()
+        .into_iter()
+        .filter(|t| saved.profile.tools.contains(&t.name) && saved.policy.can_request(t))
+        .collect();
+    let (request, _) = DefaultContextBuilder
+        .build_with_provider(&saved, run, tools, &Offline)
+        .await
+        .unwrap();
+    assert!(!request.tools.iter().any(|t| t.name == "files.read"));
+    assert!(request.tools.iter().any(|t| t.name == "files.edit"));
+    assert!(request.tools.iter().any(|t| t.name == "process.run"));
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("\"automatic_recovery\":true"))
+    );
+    let receipt = run.invocations.last().unwrap().result.as_ref().unwrap();
+    let hash = receipt.data["sha256"].as_str().unwrap();
+    let content = receipt.data["content"].as_str().unwrap();
+    let prefix: String = content.chars().take(100).collect();
+    let escaped = serde_json::to_string(&prefix).unwrap();
+    assert!(request.messages.iter().any(|m| m.content.contains(hash) && m.content.contains(&escaped[1..escaped.len()-1])));
+    assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
+    validate_messages(&request.messages).unwrap();
+    eprintln!(
+        "saved read loop: actionable recovery request retains content/hash; history unchanged"
+    );
+    engine.close().await.unwrap();
+}
+
 async fn fixture(
     turns: Vec<ScriptedTurn>,
     dir: &std::path::Path,
@@ -584,21 +886,30 @@ async fn alternating_reads_and_failed_writes_cannot_replenish_recovery_or_bypass
                 read("a"),
             ]
         };
-        let (engine, session, _) = fixture(turns, dir.path(), denied).await;
+        let steps = turns.len() as u32;
+        let (engine, session, provider) = fixture(turns, dir.path(), denied).await;
         let run = session
             .submit(
                 "Inspect and implement",
                 "start",
                 Limits {
                     max_repeated_calls: 1,
-                    ..Limits::continuous()
+                    max_steps: steps,
+                    ..Limits::default()
                 },
                 None,
             )
             .await
             .unwrap();
         let result = run.wait().await.unwrap();
-        assert_eq!(result.error.unwrap().code, "repetition_limit");
+        assert_eq!(
+            result.error.unwrap().code,
+            if denied {
+                "repetition_limit"
+            } else {
+                "step_budget"
+            }
+        );
         let saved: SessionData = serde_json::from_slice(
             &serde_json::to_vec(&session.snapshot().await.unwrap()).unwrap(),
         )
@@ -611,9 +922,18 @@ async fn alternating_reads_and_failed_writes_cannot_replenish_recovery_or_bypass
                 _ => None,
             })
             .collect();
-        assert_eq!(recoveries.len(), if denied { 0 } else { 2 });
+        assert_eq!(recoveries.len(), if denied { 0 } else { 4 });
         if !denied {
-            assert_eq!(recoveries[1], "read_recovery:2");
+            assert_eq!(recoveries[3], "read_recovery:4");
+            assert!(
+                !provider
+                    .requests()
+                    .last()
+                    .unwrap()
+                    .tools
+                    .iter()
+                    .any(|t| t.name == "files.read")
+            );
         }
         assert_eq!(std::fs::read_to_string(dir.path().join("a")).unwrap(), "a");
         engine.close().await.unwrap();

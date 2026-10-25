@@ -175,7 +175,8 @@ pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Messag
 }
 
 /// Preserve a bounded working set, not just the last read of an unrelated file.
-/// Prioritize the most recently edited file and the latest read file. Receipts
+/// Prioritize milestone/edited files and retain recent read files even before
+/// the first mutation. Switching to HTML must not evict already-read code. Receipts
 /// remain lower-authority history; hashes must match the latest observation,
 /// including process changes and missing-file receipts. Never read disk here.
 pub(crate) fn working_pages(session: &SessionData, run: &Run) -> Result<Vec<(String, Message)>> {
@@ -243,15 +244,33 @@ pub(crate) fn working_pages(session: &SessionData, run: &Run) -> Result<Vec<(Str
             break;
         }
     }
-    if paths.is_empty() && latest(run).is_none_or(|p| p.repeated == 0) {
-        return Ok(Vec::new());
-    }
     if let Some(path) = read.call.arguments["path"]
         .as_str()
         .and_then(|p| crate::working_state::path(p).ok())
         && !paths.contains(&path)
     {
         paths.push(path);
+    }
+    for invocation in run
+        .invocations
+        .iter()
+        .rev()
+        .filter(|i| i.call.name == "files.read")
+    {
+        if paths.len() >= 4 {
+            break;
+        }
+        if let Some(result) = invocation
+            .result
+            .as_ref()
+            .filter(|r| r.status == Outcome::Succeeded)
+            && let Some(path) = result.data["path"]
+                .as_str()
+                .and_then(|p| crate::working_state::path(p).ok())
+            && !paths.contains(&path)
+        {
+            paths.push(path);
+        }
     }
     let invocations: Vec<_> = session
         .runs

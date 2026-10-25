@@ -365,6 +365,26 @@ fn restored_pages(request: &ModelRequest) -> Vec<Value> {
 }
 
 struct ReasoningCounter(u64);
+
+struct LimitedWorkingSetCounter;
+#[async_trait::async_trait]
+impl ModelProvider for LimitedWorkingSetCounter {
+    fn identity(&self) -> String {
+        "limited-working-set-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+    async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
+        // Stable instructions/tools plus optional file evidence. Two pages
+        // exceed the input allowance; one useful page fits at full output.
+        Ok(10_000 + restored_pages(request).len() * 1_000)
+    }
+    async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+        panic!("working-set budget check never generates")
+    }
+}
+
 #[async_trait::async_trait]
 impl ModelProvider for ReasoningCounter {
     fn identity(&self) -> String {
@@ -510,6 +530,32 @@ async fn compaction_preserves_edited_code_when_latest_reads_target_another_file(
             <= tight.run(&run.id).unwrap().limits.context_tokens
     );
     assert!(request.tools.iter().any(|t| t.name == "files.read"));
+    validate_messages(&request.messages).unwrap();
+
+    // Under a tight native/provider budget, preserve the highest-priority
+    // page that fits. Dropping every restored page recreates the read loop.
+    let mut constrained = saved.clone();
+    constrained.run_mut(&run.id).unwrap().limits.context_tokens = 16_384;
+    constrained
+        .run_mut(&run.id)
+        .unwrap()
+        .limits
+        .reserve_output_tokens = 4_096;
+    let (request, snapshot) = DefaultContextBuilder
+        .build_with_provider(
+            &constrained,
+            constrained.run(&run.id).unwrap(),
+            tools(),
+            &LimitedWorkingSetCounter,
+        )
+        .await
+        .unwrap();
+    let retained = restored_pages(&request);
+    assert_eq!(retained.len(), 1, "retain what fits instead of all-or-none");
+    assert_eq!(retained[0]["path"], "game.js");
+    assert_eq!(retained[0]["sha256"], hash(&js));
+    assert_eq!(request.max_output_tokens, 4_096);
+    assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16_384);
     validate_messages(&request.messages).unwrap();
 
     // Restored code competes with input, while thinking and tool JSON share
@@ -1030,37 +1076,38 @@ async fn bounded_read_recovery_can_verify_without_forcing_an_edit() {
     engine.close().await.unwrap();
 }
 
+struct OfflineReadReplay;
+#[async_trait::async_trait]
+impl ModelProvider for OfflineReadReplay {
+    fn identity(&self) -> String {
+        "offline-read-recovery-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+    async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
+        // Same offline approximation as the context-planning replay. This
+        // validates recovery context, not a live tokenizer or image budget.
+        let mut text = request.clone();
+        let images: usize = text
+            .messages
+            .iter_mut()
+            .map(|m| {
+                let count = m.images.len();
+                m.images.clear();
+                count
+            })
+            .sum();
+        Ok(serde_json::to_vec(&text)?.len() / 4 + 256 + images * 443)
+    }
+    async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+        panic!("offline replay never generates")
+    }
+}
+
 #[tokio::test]
 #[ignore = "explicit read-only replay of a saved read loop; no model or workspace execution"]
 async fn saved_read_loop_recovers_an_actionable_request() {
-    struct Offline;
-    #[async_trait::async_trait]
-    impl ModelProvider for Offline {
-        fn identity(&self) -> String {
-            "offline-read-recovery-fixture".into()
-        }
-        fn capabilities(&self) -> ModelCapabilities {
-            ModelCapabilities::default()
-        }
-        async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
-            // Same offline approximation as the context-planning replay. This
-            // validates recovery context, not a live tokenizer or image budget.
-            let mut text = request.clone();
-            let images: usize = text
-                .messages
-                .iter_mut()
-                .map(|m| {
-                    let count = m.images.len();
-                    m.images.clear();
-                    count
-                })
-                .sum();
-            Ok(serde_json::to_vec(&text)?.len() / 4 + 256 + images * 443)
-        }
-        async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
-            panic!("offline replay never generates")
-        }
-    }
     let path = std::env::var("WW_REPLAY_DATABASE").expect("WW_REPLAY_DATABASE");
     let id = std::env::var("WW_REPLAY_SESSION").expect("WW_REPLAY_SESSION");
     let db =
@@ -1085,7 +1132,7 @@ async fn saved_read_loop_recovers_an_actionable_request() {
         .filter(|t| saved.profile.tools.contains(&t.name) && saved.policy.can_request(t))
         .collect();
     let (request, snapshot) = DefaultContextBuilder
-        .build_with_provider(&saved, run, tools, &Offline)
+        .build_with_provider(&saved, run, tools, &OfflineReadReplay)
         .await
         .unwrap();
     assert!(
@@ -1668,5 +1715,108 @@ async fn compacted_coding_context_ends_with_observed_files_instead_of_stale_empt
             .ends_with("// NEXT_SECTION")
     );
     assert!(request.messages[0].content.find("NEXT_SECTION").is_none());
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "read-only replay of a pre-implementation read loop; set WW_REPLAY_SNAPSHOT"]
+async fn saved_initial_read_loop_keeps_code_when_switching_to_html() {
+    let raw =
+        std::fs::read(std::env::var("WW_REPLAY_SNAPSHOT").expect("WW_REPLAY_SNAPSHOT")).unwrap();
+    let saved: SessionData = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(
+        saved.runs.last().unwrap().error.as_ref().unwrap().code,
+        "read_no_progress"
+    );
+    let canonical = serde_json::to_value(&saved).unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![])))
+        .build()
+        .await
+        .unwrap();
+    // Both the first recovery decision (after inspecting HTML again) and the
+    // persisted stopped run must retain the JS interfaces without any edit.
+    for count in [13, 15] {
+        let mut prefix = saved.clone();
+        let run = prefix.runs.last_mut().unwrap();
+        run.invocations.truncate(count);
+        assert!(run.invocations.iter().all(|i| !matches!(
+            i.call.name.as_str(),
+            "files.write" | "files.edit" | "files.insert"
+        )));
+        let end = run.invocations.last().unwrap().message_index + 2;
+        prefix.messages.truncate(end);
+        run.contexts.retain(|c| {
+            c.source
+                .as_ref()
+                .is_some_and(|source| source.message_count <= end)
+        });
+        let tools = engine
+            .tools()
+            .into_iter()
+            .filter(|t| prefix.profile.tools.contains(&t.name) && prefix.policy.can_request(t))
+            .collect();
+        let (request, snapshot) = DefaultContextBuilder
+            .build_with_provider(
+                &prefix,
+                prefix.runs.last().unwrap(),
+                tools,
+                &OfflineReadReplay,
+            )
+            .await
+            .unwrap();
+        assert!(
+            request
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("before the first implementation change")
+        );
+        assert!(request.tools.iter().any(|t| t.name == "files.edit"));
+        assert!(request.tools.iter().any(|t| t.name == "files.read"));
+        let mut pages = restored_pages(&request);
+        // Recent receipts need no restored duplicate: both forms are usable
+        // file evidence at this decision boundary.
+        pages.extend(
+            request
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::Tool)
+                .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+                .map(|v| v["data"].clone()),
+        );
+        for needle in ["const SHAPES =", "const state =", "function spawnDust("] {
+            assert!(
+                pages.iter().any(|p| p["path"] == "game.js"
+                    && p["content"].as_str().is_some_and(|s| s.contains(needle))),
+                "missing {needle} after {count} calls"
+            );
+        }
+        assert!(pages.iter().any(|p| {
+            p["path"] == "index.html"
+                && p["content"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("src=\"game.js\""))
+        }));
+        assert!(
+            request
+                .messages
+                .iter()
+                .filter(|m| !m.tool_calls.is_empty())
+                .count()
+                <= 2
+        );
+        assert!(
+            snapshot.estimated_tokens + request.max_output_tokens + 512
+                <= prefix.runs.last().unwrap().limits.context_tokens
+        );
+        validate_messages(&request.messages).unwrap();
+        eprintln!(
+            "initial-read replay after {count} calls: {} working pages, {} input tokens (offline estimate), original tools retained",
+            pages.len(),
+            snapshot.estimated_tokens
+        );
+    }
+    assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
     engine.close().await.unwrap();
 }

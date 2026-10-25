@@ -86,19 +86,31 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
     }
     let state = crate::harness::state(session, &run.id)?;
     let cycle = observation(run, &state.verifications);
-    if cycle["refocus"] != true && cycle["check_due"] != true {
+    // A pre-existing workspace can stall before this run's first mutation.
+    // Distinguish redundant coverage from useful initial investigation; do not
+    // require a write to qualify for context recovery or infer task intent.
+    let read_recovery = crate::read_progress::latest(run)
+        .is_some_and(|p| p.repeated >= run.limits.max_repeated_calls.max(1));
+    if cycle["refocus"] != true && cycle["check_due"] != true && !read_recovery {
         return Ok(None);
     }
     let reason = if cycle["check_due"] == true {
         "Implementation and investigation have accumulated without a new behavioral check. More reads or small edits do not clear this checkpoint."
+    } else if read_recovery {
+        "Repeated reads returned already-known content without a changed file version. This also requires recovery before the first implementation change."
     } else {
         "Investigation has continued without implementation or a new check result."
+    };
+    let next_action = if read_recovery && cycle["check_due"] != true {
+        "The retained file pages and hashes are the working context, not missing work to rediscover. Follow the original task: for implementation, make one small runnable increment using an observed anchor, then check it; for analysis-only work, report supported findings without editing. Read again only for a specific fact absent from the retained evidence. Do not restart inspection of existing files or repeat the previous investigation narrative."
+    } else {
+        cycle["next_action"].as_str().unwrap_or_default()
     };
     Ok(Some(Message::text(
         Role::User,
         format!(
             "[Runtime work-cycle recovery, not a new user request or approval] {reason} Return to the user's requested outcome and the current milestone in coding_task_state. {} Reuse the saved checkpoint and evidence. If an exact anchor or one necessary fact is missing, fetch that specific part once and proceed. Do not restart broad inspection or substitute another plan/status message for the work. Existing permissions and completion requirements still apply.",
-            cycle["next_action"].as_str().unwrap_or_default()
+            next_action
         ),
     )))
 }

@@ -348,6 +348,103 @@ async fn investigation_before_any_implementation_does_not_force_edits() {
 }
 
 #[tokio::test]
+async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit() {
+    if let Err(error) = sandbox().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    for implement in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let before =
+            "# Public counter\nincrement() { printf '%s\\n' \"$1\"; }\n# End of implementation\n";
+        let after = before.replace("\"$1\"", "\"$(($1 + 1))\"");
+        std::fs::write(dir.path().join("counter.sh"), before).unwrap();
+        std::fs::write(
+            dir.path().join("notes.txt"),
+            "Public contract: increment 0 must produce 1",
+        )
+        .unwrap();
+        let mut turns = vec![
+            call("files.read", json!({"path":"counter.sh"})),
+            call("files.read", json!({"path":"notes.txt"})),
+            call(
+                "files.read",
+                json!({"path":"counter.sh","start_line":1,"end_line":1}),
+            ),
+            call("files.read", json!({"path":"notes.txt"})),
+            call("files.read", json!({"path":"counter.sh","start_line":3})),
+        ];
+        if implement {
+            turns.extend([
+                call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":after})),
+                verify(),
+            ]);
+        }
+        turns.push(ScriptedTurn::text(if implement {
+            "Increment implemented and verified"
+        } else {
+            "The current increment returns its input unchanged; no edits made"
+        }));
+        let (engine, session, provider) = fixture(turns, dir.path()).await;
+        let goal = if implement {
+            "Repair the existing counter so increment increases its input by one"
+        } else {
+            "Analyze the counter only. Do not modify any files"
+        };
+        let run = session
+            .submit(goal, "start", Limits::continuous(), None)
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        let requests = provider.requests();
+        let recovery = &requests[5];
+        let steering = recovery.messages.last().unwrap();
+        assert_eq!(steering.role, Role::User);
+        assert!(
+            steering
+                .content
+                .contains("before the first implementation change")
+        );
+        assert!(steering.content.contains("analysis-only"));
+        assert!(
+            recovery
+                .messages
+                .iter()
+                .any(|m| m.role == Role::User && m.content == goal)
+        );
+        assert!(
+            recovery
+                .messages
+                .iter()
+                .any(|m| m.content.contains("increment()"))
+        );
+        assert!(
+            recovery
+                .messages
+                .iter()
+                .any(|m| m.content.contains("Public contract:"))
+        );
+        assert!(
+            recovery
+                .messages
+                .iter()
+                .filter(|m| !m.tool_calls.is_empty())
+                .count()
+                <= 2
+        );
+        assert!(recovery.tools.iter().any(|t| t.name == "files.read"));
+        assert_eq!(cycle(recovery).unwrap()["check_due"], false);
+        validate_messages(&recovery.messages).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("counter.sh")).unwrap(),
+            if implement { after } else { before.into() }
+        );
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn repeated_small_edits_cannot_postpone_a_behavioral_check() {
     if let Err(error) = sandbox().doctor().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");

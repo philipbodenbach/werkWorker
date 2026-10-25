@@ -66,8 +66,9 @@ the current milestone. With an implementation change since the latest check,
 this also makes behavioral verification due as described below. This is a
 workflow transition, **not a new stop limit**.
 Different shell reads, searches, plan updates and no-op edits cannot reset it.
-A new check result clears the pending check; more edits cannot clear it. Initial
-read-only exploration and background-job waiting do not trigger this recovery.
+A new check result clears the pending check; more edits cannot clear it. Useful
+initial exploration and background-job waiting do not trigger this recovery.
+Redundant initial reads have their own recovery path, described below.
 The host does not bypass permissions, fabricate edits or mark anything complete.
 
 The host emits the current checkpoint with the next decision rather than
@@ -129,7 +130,7 @@ alone did not resolve this failure.
 Read repetition no longer removes `files.read` from the implementation tools.
 It restores current-version pages of the active milestone, the most recently
 edited file and the latest read file from durable receipts, including when
-their original message groups have been compacted. This retention starts after implementation, before
+their original message groups have been compacted. This retention starts with the first reads, before
 another repeated-read warning. It does not depend on the model writing a plan
 checkpoint. The working set is bounded to eight pages and 12 KiB of content;
 covered pages are deduplicated, with wider pages preferred at the same offset.
@@ -147,8 +148,10 @@ context budget. The active milestone takes priority over incidental side edits.
 Each restored page carries its original source, offset and hash as historical,
 lower-authority evidence. Later edits, observed shell changes and missing-file
 observations invalidate older versions. Nothing is silently reread or counted
-as new progress. If restored copies prevent context admission, the builder
-removes those optional copies and recounts once; the model can still request a
+as new progress. If all restored copies prevent context admission, the builder
+retains the highest-priority prefix that fits the provider's token count. After
+counting the mandatory context, bounded binary selection takes at most three
+additional counts for the eight optional pages. The model can still request a
 specific missing range. Repeated reads and identical calls retain their existing
 last-resort stop limits. No tool permission or completion requirement is relaxed.
 
@@ -246,3 +249,79 @@ task incomplete. This is a remaining false-verification boundary, **not** eviden
 that the game completed or that every investigation loop has been eliminated.
 The changes fix reproducible context-loss and workflow-admission faults; the
 real-model result does not justify calling the overall completion problem solved.
+
+## Follow-up: repeated inspection before the first change
+
+The next saved failure contained 15 calls and no file mutation. Three reads
+already covered all 235 lines of `game.js`, but the model repeatedly requested
+the same sections. The previous recovery required an implementation change;
+the working set also favored the latest read and had no edited file to retain.
+Switching to `index.html` therefore lost useful JavaScript context. The
+repeated-read breaker eventually stopped the run without a runnable increment.
+
+At the existing repeated-read recovery threshold, the host now rebuilds the
+decision context even before the first mutation. It retains the original task,
+checkpoint, current file evidence and two recent complete tool groups. Immediate
+steering asks implementation tasks to produce a small runnable increment and
+check it; analysis-only tasks should report supported findings without editing.
+Useful initial reads do not trigger this transition. The original tools remain
+available; permissions, completion requirements and stop limits are unchanged.
+
+The bounded working set now also includes recently read distinct files, up to
+four paths, after prioritizing milestone/edited files. This starts during initial
+inspection and uses the same eight-page/12-KiB content limit and current-version
+validation. Switching from code to markup no longer selects only the markup.
+No model-name, language, reasoning-effort or provider-specific branch is involved.
+
+The regular regression exercises both implementation and analysis-only requests
+against real files before any mutation. It checks retained code and notes,
+fresh recovery, unchanged read permissions, an actual shell assertion after
+repair, and an unchanged workspace for the analysis-only case. The optional
+`saved_initial_read_loop_keeps_code_when_switching_to_html` replay accepts
+`WW_REPLAY_SNAPSHOT=/path/to/session.json` and checks the actual saved failure at
+calls 13 and 15. Both retain JavaScript state, shapes and the append anchor plus
+the HTML script reference. Its offline token approximation is not a live
+image-token measurement or proof of model completion.
+
+Validation for this change: 306 regular Rust tests passed, with 10 opt-in tests
+ignored; the new saved-run replay passed separately. All local GitHub workflow
+steps passed, including Python tests, Clippy, the seven TUI/setup smokes, three
+examples, packaging and installation from the extracted package. These results
+do not represent a remote pipeline run.
+
+The repeated pasted failure was the same persisted run: its ID, start time and
+15 invocations were unchanged. `Opened saved session` replays that history.
+Starting the executable again does not start a new conversation; use `/sessions`
+and `New session`, then submit the task, to obtain a fresh run.
+
+An isolated genuinely fresh 16,384-token live run with the original image, existing
+files and default reasoning configuration still repeated reads after the first
+pre-implementation recovery change. Its context snapshots exposed another fault:
+when all restored pages exceeded the input allowance, the old fallback discarded
+every page, including those that would fit. The constrained-context regression
+reproduced this with zero retained pages instead of one. The budget selection
+above fixes that all-or-none fallback and preserves the full output reserve in
+the regression. The admitted request is recounted; no provider limit is guessed
+and no reasoning tokens are silently reassigned.
+
+The final isolated live test used executable SHA-256
+`0b46c3d46681a40dc02259aff7d9661bd1a234734ce8501551a54b54c9b1d6d1`,
+the original task/image and hash-verified initial project files. It kept the
+16,384-token context, 4,096-token output reserve, default/native reasoning and
+repetition limits. Continuous budget renewal was disabled in the test clone so
+the original 900,000-ms wall allowance bounded the experiment; neither the user
+database nor running user services were changed.
+
+This run executed 37 tools. Call 25 changed HTML but duplicated existing footer
+elements; call 28 appended JavaScript. Call 35 entered the check phase and ran
+`node --check game.js`, which failed with `SyntaxError: Unexpected token '}'`.
+Two further reads followed, then the test exhausted its wall budget. The game
+did not complete. The first edit, a failed check and avoiding the original
+read-only stop are not sufficient evidence that end-to-end convergence is fixed.
+This remains an open behavioral limitation, not a successful game benchmark.
+
+After the final context-budget change, all 306 regular Rust tests and all local
+workflow steps passed again (10 opt-in tests ignored). The saved initial-read
+replay passed separately. The constrained-context regression first failed on
+the old all-or-none fallback and passed with partial retention. No installed
+user binary was replaced; the tested builds and databases are isolated artifacts.

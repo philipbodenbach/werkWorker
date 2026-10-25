@@ -1162,16 +1162,48 @@ impl DefaultContextBuilder {
         }
         let (mut messages, summary, omitted, mut estimated) = best;
         // Working pages are a retention preference, never a new context limit.
-        // If even compacted history cannot fit, retry once without these copies.
-        // Canonical tool pairs and user constraints stay intact; files.read stays
-        // available for a specific missing range. Count the actual request again.
+        // Retain the highest-priority prefix that fits instead of dropping all
+        // code when only some copies exceed the budget. There are at most eight
+        // pages: binary selection needs at most three extra provider counts.
+        // Canonical tool pairs, constraints and the output reserve stay intact.
         if estimated > available
             && messages
                 .iter()
                 .any(|m| working_pages.iter().any(|(_, page)| m == page))
         {
+            let with_pages = messages.clone();
+            let present: Vec<_> = working_pages
+                .iter()
+                .map(|(_, page)| page)
+                .filter(|page| messages.contains(page))
+                .collect();
             messages.retain(|m| !working_pages.iter().any(|(_, page)| m == page));
             estimated = estimate(&messages, output_budget).await?;
+            if estimated <= available {
+                let mut fits = 0;
+                let mut exceeds = present.len();
+                while fits + 1 < exceeds {
+                    let keep = fits + (exceeds - fits) / 2;
+                    let candidate: Vec<_> = with_pages
+                        .iter()
+                        .filter(|m| {
+                            present
+                                .iter()
+                                .position(|page| *page == *m)
+                                .is_none_or(|index| index < keep)
+                        })
+                        .cloned()
+                        .collect();
+                    let counted = estimate(&candidate, output_budget).await?;
+                    if counted <= available {
+                        fits = keep;
+                        messages = candidate;
+                        estimated = counted;
+                    } else {
+                        exceeds = keep;
+                    }
+                }
+            }
         }
         // The configured output reserve is a maximum, not a reason to reject a
         // nearly fitting request. After compaction, lend at most one quarter to

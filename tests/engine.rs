@@ -32,8 +32,10 @@ fn grant(tool: &str, preapproved: bool) -> CapabilityGrant {
         preapproved,
     }
 }
+// Guard against hung tests, not production deadlines. Match approval()'s
+// allowance for filesystem/SQLite writeback under parallel CI load.
 async fn finish(run: &RunHandle) -> RunResult {
-    tokio::time::timeout(std::time::Duration::from_secs(5), run.wait())
+    tokio::time::timeout(std::time::Duration::from_secs(30), run.wait())
         .await
         .expect("run stalled")
         .unwrap()
@@ -58,11 +60,16 @@ async fn approval(run: &RunHandle) -> ApprovalRequest {
 
 #[tokio::test]
 async fn approval_time_is_paused_but_work_after_approval_still_has_a_deadline() {
+    // Real filesystem work competes with the other all-targets tests. Keep
+    // enough active headroom for it, while waiting beyond that budget for
+    // approval and deliberately stalling much longer afterwards.
+    const WORK_MS: u64 = 2_000;
+    const APPROVAL_MS: u64 = WORK_MS + 100;
     for stall_after_approval in [false, true] {
         let workspace = TempDir::new().unwrap();
         let mut next = ScriptedTurn::text("Done");
         if stall_after_approval {
-            next.delay_ms = 2000;
+            next.delay_ms = 30_000;
         }
         let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![
             ScriptedTurn::calls(
@@ -95,7 +102,7 @@ async fn approval_time_is_paused_but_work_after_approval_still_has_a_deadline() 
                 "Write",
                 "start",
                 Limits {
-                    max_wall_ms: 500,
+                    max_wall_ms: WORK_MS,
                     ..Default::default()
                 },
                 None,
@@ -104,7 +111,7 @@ async fn approval_time_is_paused_but_work_after_approval_still_has_a_deadline() 
             .unwrap();
         let request = approval(&run).await;
         let old_deadline = run.status().await.unwrap().deadline_ms;
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(APPROVAL_MS)).await;
         assert_eq!(
             run.status().await.unwrap().status,
             RunStatus::WaitingApproval
@@ -117,10 +124,10 @@ async fn approval_time_is_paused_but_work_after_approval_still_has_a_deadline() 
             assert_eq!(result.status, RunStatus::Failed);
             assert_eq!(result.error.unwrap().code, "wall_budget");
         } else {
-            assert_eq!(result.status, RunStatus::Completed);
+            assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
         }
         let state = run.status().await.unwrap();
-        assert!(state.metrics.approval_wait_ms >= 600);
+        assert!(state.metrics.approval_wait_ms >= APPROVAL_MS);
         assert_eq!(
             state.deadline_ms - old_deadline,
             state.metrics.approval_wait_ms

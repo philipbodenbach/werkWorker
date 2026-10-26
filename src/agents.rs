@@ -168,6 +168,15 @@ impl SessionHandle {
         {
             return Ok(());
         }
+        // Review a runnable candidate, not the first scaffold. Starting a
+        // second investigator after the first write consumed shared context,
+        // requests and reasoning time while the parent still had no version to
+        // exercise. A current passing check is the handoff to review.
+        let state = crate::harness::state(&data, run_id)?;
+        if crate::work_cycle::observation(run, &state.verifications)["suggested_phase"] != "review"
+        {
+            return Ok(());
+        }
         // Bound automatic helpers even for continuous parents. At admission,
         // leave some finite tree budget for the parent; concurrent work can still
         // consume it, so this is not a synthesis reservation.

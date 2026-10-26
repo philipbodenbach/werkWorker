@@ -281,11 +281,12 @@ async fn rejected_large_rewrite_and_escalated_output_do_not_poison_repair_contex
 #[tokio::test]
 async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("game.txt"), "exact anchor αβγ").unwrap();
+    let anchor = "exact anchor αβγ\n[\"A4\",1]\nC:\\notes\n```\n";
+    std::fs::write(dir.path().join("game.txt"), anchor).unwrap();
     let (engine, session, _) = fixture(
         vec![
-            read("game.txt"),
-            read("game.txt"),
+            call("files.read", json!({"path":"game.txt","start_byte":0})),
+            call("files.read", json!({"path":"game.txt","start_byte":0})),
             call("files.list", json!({"path":"."})),
         ],
         dir.path(),
@@ -343,10 +344,47 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
         .filter(|m| m.content.contains("restored_read_page"))
         .collect();
     assert_eq!(pages.len(), 1);
-    assert!(pages[0].content.contains("exact anchor αβγ"));
-    assert!(pages[0].content.contains(&hash("exact anchor αβγ")));
+    assert!(
+        pages[0].content.contains(anchor),
+        "anchors must be verbatim, not JSON-escaped"
+    );
+    assert!(pages[0].content.contains(&hash(anchor)));
     assert_eq!(pages[0].role, Role::Assistant);
     validate_messages(&after.messages).unwrap();
+    let restored = restored_pages(&after).remove(0);
+    assert_eq!(restored["content"], anchor);
+    engine.close().await.unwrap();
+
+    // Use the rendered evidence as an actual edit anchor, including its quote,
+    // backslash, Unicode and fence characters; do not repair escapes by hand.
+    let replacement = format!("{anchor}implemented\n");
+    let (engine, session, _) = fixture(
+        vec![call(
+            "files.edit",
+            json!({"path":"game.txt", "expected_hash":restored["sha256"],
+            "old":restored["content"], "new":replacement}),
+        )],
+        dir.path(),
+        false,
+    )
+    .await;
+    let run = session
+        .submit(
+            "Apply the retained anchor",
+            "edit",
+            Limits {
+                max_steps: 1,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        replacement
+    );
     engine.close().await.unwrap();
 }
 
@@ -355,10 +393,23 @@ fn restored_pages(request: &ModelRequest) -> Vec<Value> {
         .messages
         .iter()
         .filter_map(|m| {
-            let value: Value = serde_json::from_str(&m.content).ok()?;
+            let header = m.content.lines().next()?;
+            let value: Value = serde_json::from_str(header).ok()?;
             (value["event"] == "restored_read_page").then(|| {
                 assert_eq!(m.role, Role::Assistant);
-                value["data"].clone()
+                let mut data = value["data"].clone();
+                if data["content_format"] == "verbatim_fence" {
+                    let (_, framed) = m.content.split_once('\n').unwrap();
+                    let (opening, body) = framed.split_once('\n').unwrap();
+                    let fence = opening.strip_suffix("text").unwrap();
+                    assert!(fence.len() >= 3 && fence.bytes().all(|b| b == b'`'));
+                    let bytes = data["content_bytes"].as_u64().unwrap() as usize;
+                    let content = &body[..bytes];
+                    assert!(!content.contains(fence));
+                    assert_eq!(&body[bytes..], format!("\n{fence}"));
+                    data["content"] = json!(content);
+                }
+                data
             })
         })
         .collect()
@@ -366,7 +417,9 @@ fn restored_pages(request: &ModelRequest) -> Vec<Value> {
 
 struct ReasoningCounter(u64);
 
-struct LimitedWorkingSetCounter;
+struct LimitedWorkingSetCounter {
+    oversized_first: bool,
+}
 #[async_trait::async_trait]
 impl ModelProvider for LimitedWorkingSetCounter {
     fn identity(&self) -> String {
@@ -378,7 +431,20 @@ impl ModelProvider for LimitedWorkingSetCounter {
     async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
         // Stable instructions/tools plus optional file evidence. Two pages
         // exceed the input allowance; one useful page fits at full output.
-        Ok(10_000 + restored_pages(request).len() * 1_000)
+        Ok(10_000
+            + restored_pages(request)
+                .iter()
+                .map(|page| {
+                    if self.oversized_first
+                        && page["start_byte"] == 0
+                        && page["content"].as_str().unwrap().len() > 1024
+                    {
+                        3_000
+                    } else {
+                        1_000
+                    }
+                })
+                .sum::<usize>())
     }
     async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
         panic!("working-set budget check never generates")
@@ -541,22 +607,34 @@ async fn compaction_preserves_edited_code_when_latest_reads_target_another_file(
         .unwrap()
         .limits
         .reserve_output_tokens = 4_096;
-    let (request, snapshot) = DefaultContextBuilder
-        .build_with_provider(
-            &constrained,
-            constrained.run(&run.id).unwrap(),
-            tools(),
-            &LimitedWorkingSetCounter,
-        )
-        .await
-        .unwrap();
-    let retained = restored_pages(&request);
-    assert_eq!(retained.len(), 1, "retain what fits instead of all-or-none");
-    assert_eq!(retained[0]["path"], "game.js");
-    assert_eq!(retained[0]["sha256"], hash(&js));
-    assert_eq!(request.max_output_tokens, 4_096);
-    assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16_384);
-    validate_messages(&request.messages).unwrap();
+    for oversized_first in [false, true] {
+        let (request, snapshot) = DefaultContextBuilder
+            .build_with_provider(
+                &constrained,
+                constrained.run(&run.id).unwrap(),
+                tools(),
+                &LimitedWorkingSetCounter { oversized_first },
+            )
+            .await
+            .unwrap();
+        let retained = restored_pages(&request);
+        assert_eq!(retained.len(), 1, "retain what fits instead of all-or-none");
+        assert_eq!(
+            retained[0]["path"],
+            if oversized_first {
+                "index.html"
+            } else {
+                "game.js"
+            }
+        );
+        assert_eq!(
+            retained[0]["sha256"],
+            hash(if oversized_first { html } else { &js })
+        );
+        assert_eq!(request.max_output_tokens, 4_096);
+        assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16_384);
+        validate_messages(&request.messages).unwrap();
+    }
 
     // Restored code competes with input, while thinking and tool JSON share
     // the reserved output. High effort must reduce the advertised edit size,
@@ -744,6 +822,34 @@ async fn successful_edit_retains_current_head_and_tail_without_rereading() {
     );
     validate_messages(&request.messages).unwrap();
     assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
+    let mut constrained = saved.clone();
+    constrained.run_mut(&run.id).unwrap().limits.context_tokens = 16_384;
+    constrained
+        .run_mut(&run.id)
+        .unwrap()
+        .limits
+        .reserve_output_tokens = 4_096;
+    let (request, snapshot) = DefaultContextBuilder
+        .build_with_provider(
+            &constrained,
+            constrained.run(&run.id).unwrap(),
+            tools(),
+            &LimitedWorkingSetCounter {
+                oversized_first: true,
+            },
+        )
+        .await
+        .unwrap();
+    let retained = restored_pages(&request);
+    assert_eq!(retained.len(), 1);
+    assert!(
+        retained[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("tail anchor Ω")
+    );
+    assert_eq!(retained[0]["sha256"], hash(&after));
+    assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16_384);
     // Prepared proposals only count when their content matches a successful
     // current-version receipt; stale or corrupted data cannot be restored.
     let mut invalid = saved.clone();
@@ -889,7 +995,13 @@ async fn read_recovery_supports_edit_and_verified_completion() {
     let requests = provider.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 5);
     assert!(requests[2].tools.iter().any(|t| t.name == "files.read"));
-    assert!(requests[3].tools.iter().any(|t| t.name == "files.read"));
+    assert!(
+        requests[3]
+            .tools
+            .iter()
+            .any(|t| t.name == "process.run" && t.input_schema["x-werk-work-cycle"] == "check")
+    );
+    assert!(requests[4].tools.iter().any(|t| t.name == "files.read"));
     for request in requests.iter() {
         validate_messages(&request.messages).unwrap();
     }
@@ -1496,7 +1608,10 @@ async fn fresh_repeated_reads_restore_content_then_recover_to_verified_completio
         call("files.write",json!({"path":"game.txt","content":"one"})),
         read("game.txt"), read("game.txt"),
         call("files.write",json!({"path":"game.txt","content":"overwrite"})),
-        edit("one","two"), read("game.txt"), read("game.txt"), edit("two","three"),
+        edit("one","two"),
+        // Review the first recovery increment; its concrete failure permits repair.
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
+        read("game.txt"), read("game.txt"), edit("two","three"),
         call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified final content"),
     ],dir.path(),false).await;
@@ -1562,7 +1677,17 @@ async fn fresh_repeated_reads_restore_content_then_recover_to_verified_completio
             .unwrap()
             .contains("supply expected_hash")
     );
-    assert!(invocations[8].result.as_ref().unwrap().data["verification"]["passed"] == true);
+    assert!(invocations[5].result.as_ref().unwrap().data["verification"]["passed"] == false);
+    assert!(
+        provider.requests()[6]
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Runtime work-cycle recovery"),
+        "a failed recovery review must keep goal-focused repair active"
+    );
+    assert!(invocations[9].result.as_ref().unwrap().data["verification"]["passed"] == true);
     for request in provider.requests() {
         validate_messages(&request.messages).unwrap();
     }
@@ -1818,5 +1943,73 @@ async fn saved_initial_read_loop_keeps_code_when_switching_to_html() {
         );
     }
     assert_eq!(serde_json::to_value(&saved).unwrap(), canonical);
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn complete_prepared_file_survives_before_its_first_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = format!(
+        "{}\nconst sharedInterface = 'middle-contract';\n{}\n",
+        "a".repeat(7000),
+        "z".repeat(3000)
+    );
+    let first = format!("{}NEXT_ANCHOR", "a".repeat(3000));
+    let second = format!("{}NEXT_ANCHOR", "a".repeat(6000));
+    let tail = format!(
+        "{}\nconst sharedInterface = 'middle-contract';\n{}\n",
+        "a".repeat(1000),
+        "z".repeat(3000)
+    );
+    let (engine, session, _) = fixture(vec![
+        call("files.write", json!({"path":"game.js","content":first})),
+        call("files.edit", json!({"path":"game.js","expected_hash":hash(&first),"old":"NEXT_ANCHOR","new":format!("{}NEXT_ANCHOR", "a".repeat(3000))})),
+        call("files.edit", json!({"path":"game.js","expected_hash":hash(&second),"old":"NEXT_ANCHOR","new":tail})),
+    ], dir.path(), false).await;
+    let run = session
+        .submit(
+            "Build the game",
+            "start",
+            Limits {
+                context_tokens: 65536,
+                max_steps: 3,
+                ..Limits::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().error.unwrap().code, "step_budget");
+    let mut saved = session.snapshot().await.unwrap();
+    assert_eq!(
+        saved.run(&run.id).unwrap().invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .status,
+        Outcome::Succeeded,
+        "{:?}",
+        saved.run(&run.id).unwrap().invocations[0].result
+    );
+
+    saved.messages.retain(|m| m.role == Role::User);
+    saved.run_mut(&run.id).unwrap().contexts.clear();
+    let (request, _) = DefaultContextBuilder
+        .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
+        .await
+        .unwrap();
+    let mut pages = restored_pages(&request);
+    pages.sort_by_key(|p| p["start_byte"].as_u64().unwrap());
+    assert!(pages.iter().all(|p| p["sha256"] == hash(&content)));
+    let actual: String = pages
+        .iter()
+        .map(|p| p["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actual, content,
+        "A fully known 10 KiB file must not lose its middle or require rereading"
+    );
+    assert_eq!(saved.run(&run.id).unwrap().invocations.len(), 3);
+    validate_messages(&request.messages).unwrap();
     engine.close().await.unwrap();
 }

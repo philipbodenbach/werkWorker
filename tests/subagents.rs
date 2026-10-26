@@ -895,12 +895,17 @@ impl ModelProvider for CodingReviewProbe {
 #[tokio::test]
 async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
     use werk_worker::policy::ToolPermission;
-    for (capacity, completed, no_op, looping) in [
-        (1, false, false, false),
-        (2, false, false, false),
-        (2, true, false, false),
-        (2, false, true, false),
-        (2, false, false, true),
+    if let Err(error) = werk_worker::runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    for (capacity, completed, no_op, looping, checked) in [
+        (1, false, false, false, true),
+        (2, false, false, false, false),
+        (2, false, false, false, true),
+        (2, true, false, false, true),
+        (2, false, true, false, true),
+        (2, false, false, true, true),
     ] {
         let plan = json!({"steps":[
             {"id":"shell","description":"Create shell","status":"completed"},
@@ -923,6 +928,18 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
                 },
             ),
         ];
+        if checked {
+            turns.push(tool_turn("check-version", "process.run", json!({
+                "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = incomplete"],
+                "verification":{"criteria":["The initial fixture state is persisted"],"paths":["game.txt"]}
+            })));
+            // Review of a passing first candidate cannot replace a later failed
+            // acceptance check or turn the remaining task into a success.
+            turns.push(tool_turn("remaining-check", "process.run", json!({
+                "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = complete"],
+                "verification":{"criteria":["The complete fixture state is persisted"],"paths":["game.txt"]}
+            })));
+        }
         turns.push(tool_turn("finished-plan", "task.plan", finished_plan));
         turns.extend((0..6).map(|_| ScriptedTurn::text("Everything is done")));
         let provider = Arc::new(CodingReviewProbe {
@@ -967,6 +984,7 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
                         "files.edit",
                         "task.plan",
                         "delegate_task",
+                        "process.run",
                     ]
                     .map(str::to_owned)
                     .to_vec(),
@@ -974,7 +992,7 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
                 dir.path(),
                 HostPolicy {
                     workspace_writable: true,
-                    tool_permissions: ["files.read", "files.write", "files.edit"]
+                    tool_permissions: ["files.read", "files.write", "files.edit", "process.run"]
                         .map(|n| (n.into(), ToolPermission::Allow))
                         .into(),
                     ..Default::default()
@@ -1039,7 +1057,7 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
         let children = run.subagents().await.unwrap();
         assert_eq!(
             children.len(),
-            usize::from(capacity == 2 && !completed && !no_op)
+            usize::from(capacity == 2 && !completed && !no_op && checked)
         );
         if let Some(child) = children.first() {
             let review = child.run.as_ref().unwrap();

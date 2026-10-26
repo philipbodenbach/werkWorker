@@ -1,5 +1,115 @@
 # Keep implementation moving toward the requested result
 
+## Current status: action admission and resource-safe validation
+
+The follow-up still does **not** establish reliable real-model completion. The
+latest candidate fixes further concrete recovery dead ends, while live inference
+has been stopped after the user reported system-wide freezes. Scripted success
+is orchestration coverage, not a replacement for the original game acceptance
+test with both native/default and explicit reasoning.
+
+The latest changes are provider-independent:
+
+- After a failed check, allow two diagnostic calls, then offer repair/check
+  tools instead of continuing broad inspection. The same action phase applies
+  to post-change repeated-read recovery. Admission also rejects out-of-phase
+  calls returned by providers. A stale edit reopens inspection. Initial useful
+  investigation and analysis-only requests do not force writes.
+- Keep recovery active if a passing process receipt precedes any recovery edit.
+  A source dump returning zero must not by itself restore ordinary exploration.
+  Actual recovery changes require a new check; browser checks remain available
+  when configured and permitted. Generic shell evidence still cannot prove
+  arbitrary test-code semantics or full task coverage.
+- Offer the existing hash-bound `files.write` replacement operation during
+  repair. A complete runnable replacement no longer needs to repeat the entire
+  old file as an edit anchor. Missing hashes remain create-only, stale hashes
+  cannot overwrite, and policy/completion checks remain in force. This addresses
+  a live proposal of a complete 10,125-byte game rejected by the previous coding
+  schema. That proposal was not applied by the agent and is not a completed run.
+- Restore prepared current source before its first read, filling known middle
+  sections when the existing eight-page/12-KiB allowance permits. Preserve
+  requested interface ranges before optional middle gaps. Compacted successful
+  writes carry their applied receipts, not a lone stale pre-action diagnosis.
+  Canonical history is unchanged; newer versions supersede old checkpoint text.
+- Start the existing automatic acceptance reviewer only after a current passing
+  check, not after the first scaffold write. An earlier explicit-reasoning live
+  test started review too early; its child exhausted the wall allowance and
+  the shared provider correctly refused further uncertain inference. Review
+  still cannot replace actual verification or grant capabilities.
+
+No additional model call, model-name branch, reasoning reserve, context limit,
+or hard repetition limit is introduced. Reasoning and generated tool arguments
+continue sharing the negotiated output allowance. The latest complete-file
+repair path has a real-filesystem regression covering failed verification,
+bounded diagnosis, stale-hash rejection, repair, passing verification and final
+completion. Its real-model completion remains unverified.
+
+The freeze investigation found the previous 2026-10-22 diagnosis in the sibling
+Werk repository (`docs/benchmarks/2026-10-22-system-crash/diagnosis.json`). It
+records NVIDIA TDR events followed by a native server abort, without proving
+the hang trigger. Worker commit `b16fc65` prevents further inference and token
+counting on a connection after uncertain cancellation/transport failure; its
+regressions still pass. Backend commit `11d4ac4` bounds overlapping telemetry
+and memory probes and preserves similarity routing with multiple slots. Those
+source protections remain present. The running Werk binary is dated October 24,
+matches the installed binary, contains the memory-probe marker and uses the
+corrected multi-slot cache flags. This is not proof that the current freeze has
+the same cause or that driver/backend faults are eliminated.
+
+After stopping only the isolated test processes, guest RAM remained about
+75 GiB available, swap unused and memory PSI zero. The 24-GiB GPU had only a few
+hundred MiB free. No matching Windows System event was found in the queried last
+eight hours. These post-event samples neither prove a leak nor exclude an earlier
+peak, host pressure or driver stall. The user's model server remains running;
+no model/runtime configuration or installed user binary was replaced.
+
+`scripts/tests/live_resource_guard.py` is an opt-in Linux/WSL test wrapper. It
+serializes guarded runs, checks available RAM/GPU memory before launch, records
+process-group RSS and memory samples, and terminates only its owned test group
+on pressure or deadline. For local GPU tests, use `--require-gpu-metrics`;
+missing/partial metrics then fail closed. Defaults require 8 GiB available RAM
+and 2 GiB free GPU memory. These are conservative test-admission limits, not a
+claim that a particular model is safe. The current GPU fails preflight, so no
+further inference is launched. A disconnected client does not prove backend
+cancellation; this wrapper does not alter that existing limitation.
+
+CPU-only CI uses two build jobs, two test threads, low scheduling priority and
+the same sampling wrapper with GPU admission disabled. GPU memory is observed
+but no model inference is requested. End-to-end completion must still be tested
+serially on a backend with adequate measured headroom, using the original goal,
+independent behavioral acceptance, and explicit reasoning as well as defaults.
+
+Local validation of this candidate passed: 310 regular Rust tests (10 opt-in
+tests ignored), 14 Python tests, formatting, Clippy with warnings denied, seven
+TUI/setup smokes, three examples, packaging, installation in a fresh directory,
+and four installed-command checks. This executes the GitHub workflow locally;
+it is not a claim of a remote pipeline run. The user subsequently authorized a
+temporary single-slot server restart for serial, monitored live validation.
+
+That monitored replay used binary SHA-256
+`82e058b31dd1055f2c3360bcad6d01cbe44333cf21e8026054c7291d60b62e4c`
+and the original 10,589-byte file/hash and goal/image, with 16,384 context tokens
+and 4,096 output tokens. After the single-slot restart, 2,409 MiB GPU memory was
+free; the separate image warmup completed. The first resumed decision received
+the repair catalog, four current source pages and hash-bound replacement support.
+Before that answer completed, `nvidia-smi` timed out. The guard stopped the test
+with exit 78 instead of launching more requests. Last successful measurements
+showed at least 2,370 MiB free GPU memory, approximately 84 GiB available guest RAM,
+zero swap and at most 102 MiB test-group RSS. Missing GPU measurements do not
+establish whether an unobserved peak or driver stall occurred.
+
+Werk logged cancellation at 2026-10-26 09:59:26 UTC; a subsequent native slot
+query confirmed no inference was processing. No matching Windows System driver
+reset event was returned for the queried hour. This reproduces a GPU-monitoring
+timeout, not a proven memory leak or a verified reproduction of the user's full
+system freeze. The explicit-reasoning case was consequently not started. No new
+implementation/check completion was observed in this attempt. The original
+two-slot server command is restored after this temporary experiment; the worker
+installation remains unchanged. More load tests are deferred until the GPU/
+backend stability issue is understood.
+
+## Original saved-loop investigation
+
 The saved Tetris run inspected on 2026-10-24 executed 207 tools. Its last file
 change was invocation 6; 201 further calls produced no implementation change.
 Most shell calls succeeded because they read code or checked syntax. Exact-call,
@@ -149,9 +259,10 @@ Each restored page carries its original source, offset and hash as historical,
 lower-authority evidence. Later edits, observed shell changes and missing-file
 observations invalidate older versions. Nothing is silently reread or counted
 as new progress. If all restored copies prevent context admission, the builder
-retains the highest-priority prefix that fits the provider's token count. After
-counting the mandatory context, bounded binary selection takes at most three
-additional counts for the eight optional pages. The model can still request a
+tries the pages in priority order and skips individual pages that do not fit the
+provider's token count. A large head cannot exclude a smaller usable tail. After
+counting mandatory context, this takes at most eight additional token counts for
+the eight optional pages, with no additional generation calls. The model can still request a
 specific missing range. Repeated reads and identical calls retain their existing
 last-resort stop limits. No tool permission or completion requirement is relaxed.
 
@@ -325,3 +436,105 @@ workflow steps passed again (10 opt-in tests ignored). The saved initial-read
 replay passed separately. The constrained-context regression first failed on
 the old all-or-none fallback and passed with partial retention. No installed
 user binary was replaced; the tested builds and databases are isolated artifacts.
+
+
+## Follow-up: keep recovery active until action, with usable anchors
+
+The subsequent `run_3aac73e0-4a89-40d4-af7c-e745152a131e` was a new run using
+the updated executable. It made 27 calls and stopped at `read_no_progress` on
+`index.html`. Its last real change was call 11. Two later edit proposals failed
+because their anchors contained literal escaped quotes absent from the file.
+One proposal also copied a rejected-proposal placeholder into its replacement.
+The recovered current file was 10,589 bytes; its prepared successful edit and
+SHA-256 were used to reconstruct an isolated replay, without restoring old
+content into the user's workspace.
+
+Three corrections address mechanisms reproduced from this run:
+
+- Restored source is a verbatim fenced body with separate provenance/hash/offset
+  metadata. JSON escaping is no longer embedded in the displayed anchor. The
+  fence exceeds any backtick run in the body; source remains lower-authority
+  evidence. Regression coverage applies the rendered quoted/Unicode/backslash
+  anchor to a real file and checks the resulting content and version.
+- Optional context selection skips oversized pages while retaining smaller
+  pages that fit the actual provider count. The previous priority-prefix search
+  could discard a usable tail when its higher-priority head did not fit. The
+  constrained-budget regression fails on that implementation and passes with
+  the same output reserve after the correction.
+- Read recovery is an episode that survives newly inspected ranges, another
+  file, failed edits and no-op edits. A real observed version change or distinct
+  verification result advances it. A recovery edit transitions directly into
+  the existing mandatory behavioral-check phase, rather than immediately
+  reopening exploration. A distinct check (including a failure) releases that
+  phase for review or repair; a successful syntax-only check does not. A failed
+  check keeps recovery context active throughout the next repair, whose edit
+  requires another check. Only passing verification ends the episode. Previously
+  a read returning a few new bytes
+  immediately removed the refreshed goal/checkpoint context, even though no
+  implementation progress had occurred. The regression checks the immediate
+  steering across these decisions and its removal after a real repair. Analysis
+  requests still finish with findings and without forced file changes.
+
+These changes do not alter model selection, reasoning effort, output reserves,
+permissions or the hard repetition limits. Reasoning and tool-call output still
+share the negotiated output budget. Additional context counts are bounded;
+there is no new reasoning or model-generated summarization call.
+
+The project's persisted explicit tool list also predates `files.insert` and
+`browser.check`, so those tools are unavailable in its runs despite being present
+in the newer bundled coding profile. The replay keeps that original tool list.
+The fix does not silently override explicit project configuration or grant new
+capabilities.
+
+The full suite exposed a separate timing-sensitive approval test under load.
+Its active-work allowance is now two seconds; approval still deliberately takes
+longer than that allowance, and a stalled post-approval model still hits the
+unchanged production deadline. Exact pause-credit and no-double-credit assertions
+remain. The generic completion wait guard now also uses the existing 30-second
+approval wait allowance, after a separate approval/file-write test exceeded its
+old five-second test guard under full-suite load. No production timeout was increased.
+
+Validation of the complete action/review change: all 306 regular Rust tests
+passed (10 opt-in tests ignored), including all seven work-cycle tests and the
+read-recovery fixtures. The latter now explicitly review the first recovery
+increment, observe a real failed assertion, repair it and verify the final state.
+Formatting, Clippy with warnings denied, all nine Python tests, all seven
+TUI/setup smokes, three examples, packaging, installation from the extracted
+package and four installed-command smokes passed. These were local executions
+of the GitHub workflow; no remote pipeline was published or run.
+
+The isolated live comparison used the original task/image and saved file content,
+16,384 context tokens, a 4,096-token total output reserve and default/native
+reasoning. The test kept the project's old explicit tool list. Reference-image
+warmup was a separate diagnostic request on the same provider connection so
+its existing image-overhead estimator could learn from native usage; it is not
+an additional call introduced by recovery in production.
+
+The action/review candidate with SHA-256
+`44cb57da525615be0ced831fbfdcba20a4c3c9881302a0aadab51ca00448bb95`
+made two real edits (calls 25 and 36) and immediately checked the first one.
+That check failed because the script block was unfinished. The following repair
+returned to inspection; 40 tools had executed when the test's 48-step allowance
+ended. Continuous renewal was disabled to bound the experiment. This established
+an action/check transition, not completion of the game. The captured context
+showed that failed review still released focused recovery, which the final
+repair-retention regression reproduces and fixes. The original database,
+workspace and installed user binary were not replaced.
+
+The final production-code continuation used executable SHA-256
+`35f0b2e970226b9124ac009dcf83974ca271d815aa846b8a69c4a16c1e5abcba`.
+Its actual request retained the failed-review repair instruction after the next
+check. It nevertheless made two more process calls, two reads and one search,
+with no file change, and exhausted the remaining shared request budget. The
+five-minute/eight-step test caps did not remove that shared budget. This is not
+a completed live benchmark: the implementation corrects reproducible state and
+context defects, but reliable end-to-end convergence remains unresolved.
+
+A separate diagnostic tried a complete current file, compact host guidance,
+current failure/last receipt and a smaller edit/check tool catalog. Native input
+counting still had to preserve the 4,096-token output reserve and 512-token safety
+margin inside the 16,384-token window. Some candidates did not fit; admitted
+candidates still chose source inspection, and a longer error result exceeded the
+remaining context allowance. This experimental context builder is not part of
+the repository change. The live results do not justify shipping that additional
+restriction or claiming that supplying a complete file alone solves the loop.

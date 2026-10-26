@@ -1115,16 +1115,18 @@ impl DefaultContextBuilder {
                 .filter_map(|(n, m)| {
                     if !omitted.contains(&n) {
                         Some(rejected.get(&n).unwrap_or(m).clone())
-                    } else if n == latest
-                        && latest_write
-                        && (!m.content.is_empty() || !m.images.is_empty())
-                    {
-                        // Only saved tool arguments/results are compacted.
-                        // Keep the current explanation/plan verbatim, even
-                        // when optional history excerpts are later pruned.
-                        let mut retained = m.clone();
-                        retained.tool_calls.clear();
-                        Some(retained)
+                    } else if n == latest && latest_write {
+                        // The operation has already succeeded. A retained
+                        // pre-action diagnosis without its result encouraged
+                        // repeating the repair after compaction. Keep bounded
+                        // applied receipts instead; rationale remains canonical.
+                        let receipts: Vec<_> = session.messages[n + 1..n + 1 + m.tool_calls.len()]
+                            .iter().filter_map(|result| serde_json::from_str::<ToolResult>(&result.content).ok())
+                            .map(|result| result.data).collect();
+                        Some(crate::harness::feedback("applied_file_change", serde_json::json!({
+                            "source_message":n,"results":receipts,
+                            "trust":"Successful file operations, not a pending proposal. Current observations supersede pre-action diagnoses. Resulting source is restored from saved prepared content when it fits."
+                        })))
                     } else {
                         None
                     }
@@ -1162,9 +1164,9 @@ impl DefaultContextBuilder {
         }
         let (mut messages, summary, omitted, mut estimated) = best;
         // Working pages are a retention preference, never a new context limit.
-        // Retain the highest-priority prefix that fits instead of dropping all
-        // code when only some copies exceed the budget. There are at most eight
-        // pages: binary selection needs at most three extra provider counts.
+        // Try pages in priority order, skipping any that do not fit. A large
+        // head must not evict a smaller tail/anchor that would fit. There are at
+        // most eight pages, so this needs at most eight extra provider counts.
         // Canonical tool pairs, constraints and the output reserve stay intact.
         if estimated > available
             && messages
@@ -1180,27 +1182,18 @@ impl DefaultContextBuilder {
             messages.retain(|m| !working_pages.iter().any(|(_, page)| m == page));
             estimated = estimate(&messages, output_budget).await?;
             if estimated <= available {
-                let mut fits = 0;
-                let mut exceeds = present.len();
-                while fits + 1 < exceeds {
-                    let keep = fits + (exceeds - fits) / 2;
+                let mut retained = Vec::new();
+                for page in &present {
                     let candidate: Vec<_> = with_pages
                         .iter()
-                        .filter(|m| {
-                            present
-                                .iter()
-                                .position(|page| *page == *m)
-                                .is_none_or(|index| index < keep)
-                        })
+                        .filter(|m| !present.contains(m) || *m == *page || retained.contains(m))
                         .cloned()
                         .collect();
                     let counted = estimate(&candidate, output_budget).await?;
                     if counted <= available {
-                        fits = keep;
+                        retained.push(*page);
                         messages = candidate;
                         estimated = counted;
-                    } else {
-                        exceeds = keep;
                     }
                 }
             }

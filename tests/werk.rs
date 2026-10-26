@@ -2235,12 +2235,37 @@ async fn image_coding_compaction_fixture(prior_turn: bool) {
     for (n, r) in generations.iter().enumerate() {
         let messages = r.body["messages"].as_array().unwrap();
         if n > 0 {
-            assert!(messages.iter().any(|m| m["role"] == "assistant"
-                && m["content"]
-                    == format!(
-                        "Step {}: preserve existing functions while implementing the next section.",
-                        n - 1
-                    )));
+            let previous = &state.invocations[n - 1];
+            let compacted_write =
+                matches!(previous.call.name.as_str(), "files.write" | "files.edit")
+                    && previous.result.as_ref().unwrap().status == Outcome::Succeeded
+                    && state.contexts[n]
+                        .omitted_messages
+                        .contains(&previous.message_index);
+            let narrative = format!(
+                "Step {}: preserve existing functions while implementing the next section.",
+                n - 1
+            );
+            if compacted_write {
+                let applied = messages
+                    .iter()
+                    .filter_map(|m| serde_json::from_str::<Value>(m["content"].as_str()?).ok())
+                    .find(|v| v["event"] == "applied_file_change")
+                    .expect("compacted changes retain their applied result");
+                assert_eq!(applied["data"]["source_message"], previous.message_index);
+                assert_eq!(
+                    applied["data"]["results"][0],
+                    previous.result.as_ref().unwrap().data
+                );
+                assert!(!messages.iter().any(|m| m["content"] == narrative));
+            } else {
+                assert!(
+                    messages
+                        .iter()
+                        .any(|m| m["role"] == "assistant" && m["content"] == narrative)
+                );
+            }
+            assert!(saved.messages.iter().any(|m| m.content == narrative));
         }
         let user = messages
             .iter()

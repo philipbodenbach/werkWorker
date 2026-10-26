@@ -1159,7 +1159,7 @@ async fn legacy_minimal_hints_and_boundary_echoes_are_rejected_after_resume() {
 }
 
 #[tokio::test]
-async fn compacted_successful_write_narrative_starts_a_fresh_response() {
+async fn compacted_successful_write_result_starts_a_fresh_response() {
     let workspace = tempfile::tempdir().unwrap();
     let content = "const gameState = {};\n".repeat(800);
     let narrative = "The initial code is saved; I still need to finish the task.";
@@ -1225,11 +1225,20 @@ async fn compacted_successful_write_narrative_starts_a_fresh_response() {
     );
     let request = &provider.requests()[1];
     assert!(
-        request
+        !request
             .messages
             .iter()
-            .any(|message| message.content == narrative && message.tool_calls.is_empty())
+            .any(|message| message.content == narrative)
     );
+    let applied = request
+        .messages
+        .iter()
+        .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+        .find(|v| v["event"] == "applied_file_change")
+        .unwrap();
+    assert_eq!(applied["data"]["results"][0]["path"], "game.js");
+    assert_eq!(applied["data"]["results"][0]["sha256"], hash(&content));
+    assert!(data.messages.iter().any(|m| m.content == narrative));
     assert_eq!(request.messages.last().unwrap().role, Role::User);
     validate_messages(&request.messages).unwrap();
     engine.close().await.unwrap();

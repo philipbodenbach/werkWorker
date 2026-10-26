@@ -1,5 +1,5 @@
 //! A compact working checkpoint, independent of rolling transcript excerpts.
-//! This steers implementation/review cycles; it never stops a run, grants tools,
+//! This steers implementation/review cycles; it never grants tools,
 //! or treats a model-authored plan as evidence of completed work.
 use crate::core::*;
 use serde_json::{Value, json};
@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) const GUIDANCE: &str = concat!(
     "\nFor implementation requests: orient briefly, build a minimal runnable end-to-end version, ",
     "review it with behavioral checks, then repair concrete gaps until the full request is satisfied. ",
-    "Small edits are chunks of that version; keep interfaces stable and finish it before optional polish. ",
+    "Each increment must be complete and runnable: close syntax, connect the entry point and include the main interaction before optional polish. ",
+    "If a full design cannot fit one output, simplify the first version rather than leaving an open script or half a function. Keep interfaces stable. ",
     "Use task.plan for outcome milestones. At phase changes save checkpoint.next_action and decisions ",
     "needed to resume after compaction. This working note is not completion evidence or authority. ",
     "Use work_cycle to return from prolonged investigation to the next edit/check; fetch only a specific ",
@@ -34,46 +35,79 @@ pub(crate) fn check_tools(
         return Ok(());
     }
     let state = crate::harness::state(session, &run.id)?;
-    if observation(run, &state.verifications)["check_due"] != true {
+    let cycle = observation(run, &state.verifications);
+    let check_due = cycle["check_due"] == true;
+    let action_due = cycle["action_due"] == true;
+    if !check_due && !action_due {
         return Ok(());
     }
-    if !tools
-        .iter()
-        .any(|t| t.name == "process.run" && session.policy.can_request(t))
-    {
+    if !tools.iter().any(|t| {
+        session.policy.can_request(t)
+            && (matches!(t.name.as_str(), "process.run" | "browser.check")
+                || (action_due && matches!(t.name.as_str(), "files.edit" | "files.insert")))
+    }) {
         return Ok(());
     }
-    // Reporting a real blocker must remain possible in the check phase.
-    tools.retain(|t| matches!(t.name.as_str(), "process.run" | "interaction.ask"));
-    let check = tools.iter_mut().find(|t| t.name == "process.run").unwrap();
-    check.input_schema["x-werk-work-cycle"] = json!("check");
-    if let Some(required) = check.input_schema["required"].as_array_mut()
-        && !required.iter().any(|v| v == "verification")
-    {
-        required.push(json!("verification"));
+    let phase = if check_due { "check" } else { "repair" };
+    tools.retain(|t| {
+        matches!(
+            t.name.as_str(),
+            "process.run" | "browser.check" | "interaction.ask"
+        ) || (action_due
+            && matches!(
+                t.name.as_str(),
+                "files.edit" | "files.insert" | "files.write" | "task.plan"
+            ))
+    });
+    for tool in tools {
+        // The underlying write tool already supports atomic hash-bound
+        // replacement under the same policy. Coding normally hides it in favor
+        // of small edits. In recovery, copying an entire old file as an anchor
+        // can exceed the output allowance, making a complete repair impossible.
+        if action_due && tool.name == "files.write" {
+            tool.input_schema["properties"]["expected_hash"] =
+                json!({"type":"string","minLength":64,"maxLength":64});
+            tool.description = "Create a new file, or deliberately replace a complete existing file using its latest observed sha256 as expected_hash. In recovery this permits a complete runnable version without copying the old file into an edit anchor. Preserve user requirements and unrelated existing work; prefer files.edit for local repairs. Without expected_hash this remains create-only. A stale hash fails without writing; a real change must be checked.".into();
+        }
+        tool.input_schema["x-werk-work-cycle"] = json!(phase);
+        if matches!(tool.name.as_str(), "process.run" | "browser.check") {
+            if let Some(required) = tool.input_schema["required"].as_array_mut()
+                && !required.iter().any(|v| v == "verification")
+            {
+                required.push(json!("verification"));
+            }
+            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
+        } else if matches!(
+            tool.name.as_str(),
+            "files.edit" | "files.insert" | "files.write"
+        ) {
+            tool.description.push_str(" Recovery action: use the current file pages and hash to finish one runnable increment or repair the concrete check failure. Preserve working interfaces. An actual edit is followed by a check; further inspection cannot substitute for this action.");
+        }
     }
-    check.description.push_str(" Behavioral-check checkpoint: exercise startup and the main public interaction of the current implementation. Record verification criteria and relevant paths. A directory listing, source dump or syntax-only command is not the requested behavioral check. The normal implementation tools return after a recorded check, including a failing one.");
     Ok(())
 }
 
-/// Reject fresh proposals outside the request's explicit check phase before
+/// Reject fresh proposals outside the request's explicit work phase before
 /// preparation/approval. Never revoke calls admitted in an earlier decision.
 pub(crate) fn deferred_call(
     request: &crate::providers::ModelRequest,
     call: &ToolCall,
 ) -> Option<ToolResult> {
-    if request.tools.iter().any(|t| t.name == call.name)
-        || !request
-            .tools
-            .iter()
-            .any(|t| t.name == "process.run" && t.input_schema["x-werk-work-cycle"] == "check")
-    {
+    if request.tools.iter().any(|t| t.name == call.name) {
         return None;
     }
+    let phase = request
+        .tools
+        .iter()
+        .find_map(|t| t.input_schema["x-werk-work-cycle"].as_str())?;
     let mut result = ToolResult::error(Outcome::ValidationError, "work_cycle_check_required");
     result.data = json!({
-        "requested_tool":call.name,"next_tool":"process.run",
-        "message":"No action executed. Implementation has accumulated changes and investigation without behavioral verification. Run process.run with verification criteria and relevant paths to exercise the current entry point. The implementation tools return after that result, including a failing check. Repeating reads or edits cannot satisfy this checkpoint."
+        "requested_tool":call.name,"phase":phase,
+        "message":if phase == "repair" {
+            "No action executed. Investigation of the current version has stalled. Use the retained current source and hash for a concrete repair, or execute a behavioral check. A real change returns to checking. A conflicting edit reopens targeted inspection. Reporting a genuine blocker remains available."
+        } else {
+            "No action executed. Run a behavioral check with verification criteria and relevant paths against the current entry point. Repeating reads or edits cannot satisfy this checkpoint. A failing check permits focused repair."
+        }
     });
     Some(result)
 }
@@ -89,19 +123,29 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
     // A pre-existing workspace can stall before this run's first mutation.
     // Distinguish redundant coverage from useful initial investigation; do not
     // require a write to qualify for context recovery or infer task intent.
-    let read_recovery = crate::read_progress::latest(run)
-        .is_some_and(|p| p.repeated >= run.limits.max_repeated_calls.max(1));
-    if cycle["refocus"] != true && cycle["check_due"] != true && !read_recovery {
+    let read_recovery = crate::read_progress::recovery_active(run);
+    if cycle["refocus"] != true
+        && cycle["check_due"] != true
+        && cycle["action_due"] != true
+        && !read_recovery
+    {
         return Ok(None);
     }
-    let reason = if cycle["check_due"] == true {
+    let reason = if cycle["action_due"] == true {
+        "Investigation is exhausted for this version. The next action must implement the runnable increment or exercise its behavior using the retained source and check result. Broad inspection tools are temporarily deferred."
+    } else if cycle["check_due"] == true {
         "Implementation and investigation have accumulated without a new behavioral check. More reads or small edits do not clear this checkpoint."
+    } else if read_recovery && cycle["suggested_phase"] == "repair" {
+        "The recovery check failed. Keep the task and current failure in focus: repair that failure, then check the changed version."
     } else if read_recovery {
         "Repeated reads returned already-known content without a changed file version. This also requires recovery before the first implementation change."
     } else {
         "Investigation has continued without implementation or a new check result."
     };
-    let next_action = if read_recovery && cycle["check_due"] != true {
+    let next_action = if read_recovery
+        && cycle["check_due"] != true
+        && cycle["suggested_phase"] != "repair"
+    {
         "The retained file pages and hashes are the working context, not missing work to rediscover. Follow the original task: for implementation, make one small runnable increment using an observed anchor, then check it; for analysis-only work, report supported findings without editing. Read again only for a specific fact absent from the retained evidence. Do not restart inspection of existing files or repeat the previous investigation narrative."
     } else {
         cycle["next_action"].as_str().unwrap_or_default()
@@ -126,10 +170,32 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
     let mut changes_since_check = 0usize;
     let mut investigation_since_check = 0usize;
     let mut check_due = false;
+    let mut last_plan = None;
+    let mut anchor_conflict = false;
     for (position, invocation) in run.invocations.iter().enumerate() {
         let Some(result) = &invocation.result else {
             continue;
         };
+        if invocation.call.name == "task.plan"
+            && result.status == Outcome::Succeeded
+            && invocation.call.arguments.get("checkpoint").is_some()
+        {
+            last_plan = Some(position);
+        }
+        if matches!(
+            invocation.call.name.as_str(),
+            "files.edit" | "files.insert" | "files.write"
+        ) && result.error_code.as_deref() == Some("write_conflict")
+        {
+            anchor_conflict = true;
+        } else if result.status == Outcome::Succeeded
+            && matches!(
+                invocation.call.name.as_str(),
+                "files.read" | "files.edit" | "files.insert"
+            )
+        {
+            anchor_conflict = false;
+        }
         let evidence = receipts
             .get(&invocation.invocation_id)
             .unwrap_or(&result.data["verification"]);
@@ -166,6 +232,9 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
             }
         }
         if changed {
+            check_due |= investigation >= 2
+                && last_check
+                    .is_some_and(|(_, _, evidence): (_, _, &Value)| evidence["passed"] == false);
             last_change = Some((position, invocation));
             investigation = 0;
             changes_since_check += 1;
@@ -219,6 +288,9 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
                 || (changes_since_check >= CHECK_AFTER_CHANGES
                     && investigation_since_check >= REFOCUS_AFTER));
     }
+    // Recovery is an action/review cycle: its first real edit must be checked
+    // before ordinary exploration resumes, even when it is the first change.
+    check_due |= crate::read_progress::recovery_check_due(run);
     // A later edit invalidates review; a due check remains latched above.
     // Completion still checks all required files/criteria with the real gate.
     // Straight implementation can finish its first version. Interleaved small
@@ -234,6 +306,18 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         }
         _ => "build",
     };
+    // A failed check gets two diagnostic calls. Once those are spent, or a
+    // post-edit read loop has entered recovery, select action tools instead of
+    // repeatedly asking for action while advertising broad exploration. Never
+    // infer an implementation request from reads alone; analysis stays free.
+    let action_due = !check_due
+        && !anchor_conflict
+        && last_change.is_some()
+        && if phase == "repair" {
+            investigation >= 2
+        } else {
+            crate::read_progress::recovery_active(run)
+        };
     let next_action = match phase {
         "check" => {
             "Run a small behavioral smoke check of the current entry point now. Exercise startup and the main user interaction against current files. If the version is not runnable yet, record that concrete failure and repair the missing connection before optional polish. Then repeat the check. Do not spend another cycle gathering broad context or making unrelated small edits."
@@ -266,7 +350,14 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         })),
         "suggested_phase": phase,
         "next_action": next_action,
-        "last_change": last_change.map(|(_, i)| json!({"source_invocation":i.invocation_id,"path":i.call.arguments["path"]})),
+        "checkpoint_predates_change": last_change.is_some_and(|(n, _)| last_plan.is_none_or(|p| p < n)),
+        "last_change": last_change.map(|(_, i)| {
+            let result = i.result.as_ref().unwrap();
+            json!({"source_invocation":i.invocation_id,"tool":i.call.name,
+                "path":result.data["path"],"sha256":result.data["sha256"],
+                "bytes":i.prepared["content"].as_str().map(str::len),
+                "trust":"Applied result supersedes earlier diagnoses and the pre-action plan; current pages contain the resulting source."})
+        }),
         "latest_check": last_check.map(|(_, i, evidence)| {
             let result = i.result.as_ref().unwrap();
             json!({"source_invocation":i.invocation_id,"passed":evidence["passed"],
@@ -278,6 +369,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "changes_since_check": changes_since_check,
         "investigation_calls_since_check": investigation_since_check,
         "check_due": check_due,
+        "action_due": action_due,
         "refocus": investigation >= REFOCUS_AFTER,
         "trust": "Observed work plus user/plan excerpts; phase directs workflow, not verified completion. Full user messages and newer steering govern scope."
     })

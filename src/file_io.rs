@@ -124,7 +124,7 @@ impl<'a> FileIoBudget<'a> {
             ) {
                 tool.description.push_str(&format!(" Request context: {} tokens; file result pages are capped at {read_bytes} serialized bytes. Follow next_start_line, next_start_byte or next_offset as returned, and reuse the file hash. Read the needed section, not the whole file repeatedly.", self.context));
             } else {
-                tool.description.push_str(&format!(" Current total output allowance: {output} tokens, including reasoning and tool JSON; reasoning allowance: {}. Aim for roughly {target} characters per complete section (estimate, not a hard character limit). Submit one complete section per call, then continue using the returned sha256 and next_insert_after_line when present. {continuation} Never restart an existing file or truncate incomplete JSON/code to fit.", reasoning.map_or_else(|| "unknown; conservative estimate used".into(), |n| format!("{n} tokens"))));
+                tool.description.push_str(&format!(" Current total output allowance: {output} tokens, including reasoning and tool JSON; reasoning allowance: {}. Aim for roughly {target} characters per complete section (estimate, not a hard character limit). Submit one complete section per call, then continue using the returned sha256 and next_insert_after_line when present. {continuation} Preserve existing work and use its current hash for changes. Never truncate incomplete JSON/code to fit.", reasoning.map_or_else(|| "unknown; conservative estimate used".into(), |n| format!("{n} tokens"))));
             }
         }
         tools

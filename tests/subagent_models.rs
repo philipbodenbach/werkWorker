@@ -175,6 +175,10 @@ async fn nested_children_keep_the_configured_model() {
 
 #[tokio::test]
 async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissions() {
+    if let Err(error) = werk_worker::runtime::Sandbox::default().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
     let server = Server::start(|request| {
         if request.path=="/v1/chat/completions" && request.body["model"]=="main" {
             let messages=request.body["messages"].as_array().unwrap();
@@ -186,6 +190,9 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
                     {"id":"finish","description":"Finish","status":"pending"}]})))
             } else if !called("files.write") {
                 Some(("files.write",json!({"path":"game.txt","content":"implementation"})))
+            } else if !called("process.run") {
+                Some(("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = implementation"],
+                    "verification":{"criteria":["Initial fixture state is persisted"],"paths":["game.txt"]}})))
             } else {None};
             return if let Some((name,args))=next {
                 reply(json!({"role":"assistant","content":"","tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":args.to_string()}}]}))
@@ -207,15 +214,25 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
                 schema_version: 1,
                 name: "coding-basic".into(),
                 prompt: "Implement and verify".into(),
-                tools: ["task.plan", "files.read", "files.write", "delegate_task"]
-                    .map(str::to_owned)
-                    .to_vec(),
+                tools: [
+                    "task.plan",
+                    "files.read",
+                    "files.write",
+                    "delegate_task",
+                    "process.run",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
                 skills: vec![],
             },
             root.path(),
             HostPolicy {
                 workspace_writable: true,
                 tool_permissions: [
+                    (
+                        "process.run".into(),
+                        werk_worker::policy::ToolPermission::Allow,
+                    ),
                     (
                         "files.read".into(),
                         werk_worker::policy::ToolPermission::Allow,

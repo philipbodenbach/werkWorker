@@ -359,6 +359,7 @@ async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit
             "# Public counter\nincrement() { printf '%s\\n' \"$1\"; }\n# End of implementation\n";
         let after = before.replace("\"$1\"", "\"$(($1 + 1))\"");
         std::fs::write(dir.path().join("counter.sh"), before).unwrap();
+        std::fs::write(dir.path().join("details.txt"), "One newly inspected fact").unwrap();
         std::fs::write(
             dir.path().join("notes.txt"),
             "Public contract: increment 0 must produce 1",
@@ -373,10 +374,14 @@ async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit
             ),
             call("files.read", json!({"path":"notes.txt"})),
             call("files.read", json!({"path":"counter.sh","start_line":3})),
+            call("files.read", json!({"path":"details.txt"})),
         ];
         if implement {
             turns.extend([
+                call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":before})),
                 call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":after})),
+                call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],
+                    "verification":{"criteria":["Syntax is valid"],"paths":["counter.sh"]}})),
                 verify(),
             ]);
         }
@@ -398,6 +403,44 @@ async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit
         let result = run.wait().await.unwrap();
         assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
         let requests = provider.requests();
+        for index in if implement { 5..=7 } else { 5..=6 } {
+            assert!(
+                requests[index]
+                    .messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("Runtime work-cycle recovery"),
+                "new information and no-op edits must not end recovery at decision {index}"
+            );
+        }
+        if implement {
+            assert!(
+                requests[8]
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "process.run"
+                        && tool.input_schema["x-werk-work-cycle"] == "check"),
+                "the first actual recovery edit must transition to behavioral review"
+            );
+            assert!(
+                requests[9]
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "process.run"
+                        && tool.input_schema["x-werk-work-cycle"] == "check"),
+                "a passing syntax check must not end recovery review"
+            );
+            assert!(
+                !requests[10]
+                    .messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("Runtime work-cycle recovery"),
+                "a distinct check ends recovery and restores the normal work cycle"
+            );
+        }
         let recovery = &requests[5];
         let steering = recovery.messages.last().unwrap();
         assert_eq!(steering.role, Role::User);
@@ -673,4 +716,222 @@ async fn unknown_context_limit_recovers_once_from_checkpoint_with_smaller_input(
 
 fn read_counter() -> ScriptedTurn {
     call("files.read", json!({"path":"counter.sh"}))
+}
+
+#[tokio::test]
+async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
+    if let Err(error) = sandbox().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let initial = "increment() { printf '%s\\n' \"$1\"; }\n";
+    let repaired = "increment() { printf '%s\\n' \"$(($1 + 1))\"; }\n";
+    let (engine, session, provider) = fixture(vec![
+        call("files.write", json!({"path":"counter.sh","content":initial})),
+        verify(),
+        call("files.read", json!({"path":"counter.sh"})),
+        call("files.search", json!({"path":"counter.sh","query":"increment"})),
+        // A proposed third investigation is deferred, never executed.
+        call("files.read", json!({"path":"counter.sh","start_line":1,"end_line":1})),
+        // A stale anchor must reopen diagnosis, not trap the model in edits.
+        call("files.edit", json!({"path":"counter.sh","expected_hash":hash("stale"),"old":initial,"new":repaired})),
+        call("files.read", json!({"path":"counter.sh"})),
+        call("files.edit", json!({"path":"counter.sh","expected_hash":hash(initial),"old":initial,"new":repaired})),
+        verify(),
+        ScriptedTurn::text("Public increment repaired and checked"),
+    ], dir.path()).await;
+    let run = session
+        .submit(
+            "Build and check a public increment function",
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    let requests = provider.requests();
+    assert_eq!(cycle(&requests[4]).unwrap()["action_due"], true);
+    assert!(requests[4].tools.iter().any(|t| t.name == "files.edit"));
+    assert!(
+        !requests[4]
+            .tools
+            .iter()
+            .any(|t| matches!(t.name.as_str(), "files.read" | "files.search"))
+    );
+    assert!(requests[6].tools.iter().any(|t| t.name == "files.read"));
+    assert_eq!(cycle(&requests[8]).unwrap()["check_due"], true);
+    assert_eq!(cycle(&requests[9]).unwrap()["suggested_phase"], "review");
+    let saved = session.snapshot().await.unwrap();
+    let rejected = saved.run(&run.id).unwrap().invocations[4]
+        .result
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        rejected.error_code.as_deref(),
+        Some("work_cycle_check_required")
+    );
+    assert!(rejected.data["content"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("counter.sh")).unwrap(),
+        repaired
+    );
+
+    // Browser verification must remain available during the check phase,
+    // including when process execution is not requestable.
+    let mut checkpoint = saved;
+    checkpoint.run_mut(&run.id).unwrap().invocations.truncate(8);
+    checkpoint
+        .policy
+        .tool_permissions
+        .insert("browser.check".into(), ToolPermission::Allow);
+    checkpoint
+        .policy
+        .hard_denied_tools
+        .push("process.run".into());
+    let (request, _) = DefaultContextBuilder
+        .build(
+            &checkpoint,
+            checkpoint.run(&run.id).unwrap(),
+            engine
+                .tools()
+                .into_iter()
+                .filter(|t| {
+                    matches!(
+                        t.name.as_str(),
+                        "browser.check" | "files.read" | "interaction.ask"
+                    )
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    assert!(request.tools.iter().any(|t| t.name == "browser.check"));
+    assert!(!request.tools.iter().any(|t| t.name == "files.read"));
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn passing_receipt_without_recovery_action_does_not_reopen_exploration() {
+    if let Err(error) = sandbox().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let initial = "increment() { printf '%s\\n' \"$1\"; }\n";
+    let repaired = "increment() { printf '%s\\n' \"$(($1 + 1))\"; }\n";
+    let mut turns = vec![call(
+        "files.write",
+        json!({"path":"counter.sh","content":initial}),
+    )];
+    turns.extend((0..4).map(|_| call("files.read", json!({"path":"counter.sh"}))));
+    turns.extend([
+        // A generic process can exit zero without establishing the task's behavior.
+        call("process.run", json!({"argv":["/bin/sh","-c","printf 'looked at the source\\n'"],"verification":{"criteria":["Claimed check"],"paths":["counter.sh"]}})),
+        call("files.edit", json!({"path":"counter.sh","expected_hash":hash(initial),"old":initial,"new":repaired})),
+        verify(), ScriptedTurn::text("Increment verified"),
+    ]);
+    let (engine, session, provider) = fixture(turns, dir.path()).await;
+    let run = session
+        .submit(
+            "Implement public increment",
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    let requests = provider.requests();
+    assert_eq!(cycle(&requests[6]).unwrap()["action_due"], true);
+    assert!(!requests[6].tools.iter().any(|t| t.name == "files.search"));
+    assert_eq!(cycle(&requests[7]).unwrap()["check_due"], true);
+    assert_eq!(cycle(&requests[8]).unwrap()["action_due"], false);
+    assert!(requests[8].tools.iter().any(|t| t.name == "files.read"));
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovery_can_replace_a_complete_version_without_copying_the_old_anchor() {
+    if let Err(error) = sandbox().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let initial = "increment() { printf '%s\\n' \"$1\"; }\n";
+    let repaired = "increment() { printf '%s\\n' \"$(($1 + 1))\"; }\n";
+    let mut turns = vec![call(
+        "files.write",
+        json!({"path":"counter.sh","content":initial}),
+    )];
+    turns.push(verify());
+    turns.extend((0..2).map(|_| call("files.read", json!({"path":"counter.sh"}))));
+    turns.extend([
+        call(
+            "files.write",
+            json!({"path":"counter.sh","expected_hash":hash("stale"),"content":repaired}),
+        ),
+        call("files.read", json!({"path":"counter.sh"})),
+        call(
+            "files.write",
+            json!({"path":"counter.sh","expected_hash":hash(initial),"content":repaired}),
+        ),
+        verify(),
+        ScriptedTurn::text("Completed and checked the replacement"),
+    ]);
+    let (engine, session, provider) = fixture(turns, dir.path()).await;
+    let run = session
+        .submit(
+            "Implement public increment",
+            "start",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    let trace = run
+        .status()
+        .await
+        .unwrap()
+        .invocations
+        .iter()
+        .map(|i| (i.call.name.clone(), i.result.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        result.status,
+        RunStatus::Completed,
+        "{:?}; {trace:?}",
+        result.error
+    );
+    let requests = provider.requests();
+    let replacement = requests[4]
+        .tools
+        .iter()
+        .find(|t| t.name == "files.write")
+        .unwrap();
+    assert_eq!(
+        replacement.input_schema["properties"]["expected_hash"]["type"],
+        "string"
+    );
+    assert!(requests[5].tools.iter().any(|t| t.name == "files.read"));
+    assert_eq!(cycle(&requests[7]).unwrap()["check_due"], true);
+    let snapshot = session.snapshot().await.unwrap();
+    let calls = &snapshot.run(&run.id).unwrap().invocations;
+    assert_eq!(
+        calls[4].result.as_ref().unwrap().error_code.as_deref(),
+        Some("write_conflict")
+    );
+    assert_eq!(
+        calls[5].result.as_ref().unwrap().data["content"],
+        initial.trim_end()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("counter.sh")).unwrap(),
+        repaired
+    );
+    engine.close().await.unwrap();
 }

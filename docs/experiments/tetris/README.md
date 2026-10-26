@@ -1,9 +1,9 @@
 # Tetris experiment
 
-The `index.html` file is the original, unmodified result of a werkWorker / Werk1112
+The `index.html` file is the original, unmodified result of a WerkWorker / Werk1112
 experiment, copied from `werkWorkerTest/index.html` on 2026-10-26. It runs in a
 desktop browser with keyboard input, HTML Canvas and Web Audio. It has no runtime
-dependency on werkWorker, external assets or a backend.
+dependency on WerkWorker, external assets or a backend.
 
 - [Play](https://philipbodenbach.github.io/werkWorker/experiments/tetris/)
 - [Report, German](https://philipbodenbach.de/lab/werkworker-tetris/)
@@ -22,7 +22,7 @@ SHA-256 of the original and published copy:
 
 Session screenshots supplied by the author identify:
 
-- Agent: werkWorker, `coding-basic` profile.
+- Agent: WerkWorker, `coding-basic` profile.
 - Inference: Werk1112, llama.cpp / CUDA.
 - Model identifier: `qwen3.8-27b-ud-q4_k_xl`.
 

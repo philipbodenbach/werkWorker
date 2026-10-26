@@ -29,7 +29,8 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         turn('interaction.ask',{'question':'Which audience?','choices':['team','public']}),
         turn('interaction.ask',{'question':'Choose visibility','choices':['private','public']}),
         turn(text='\n'.join(f'History row {i:03}' for i in range(80))
-             + '\n```rust\nfn main() {\n    let message = "hello"; // checked code\n}\n```\nFinished for the team'),
+             + '\n```rust\nfn main() {\n    let message = "hello"; // checked code\n}\n```\n```python\n' + '\n'.join(f'fold_value_{i:02} = {i}' for i in range(12))
+             + '\n```\nFinished for the team'),
         {'deltas': [], 'error': {'code': 'fixture_failure', 'message': 'Fixture model request failed.',
                                 'retryable': False, 'retry_after_ms': None}},
         turn(text='Follow-up recovered in the same session'),
@@ -68,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
             if select.select([master],[],[],0.1)[0]:
                 data=os.read(master,65536); capture.extend(data); screen.feed(data)
             if proc.poll() is not None: break
-        raise AssertionError((token,screen.text()[-2000:]))
+        raise AssertionError((token,screen.text().decode()))
     try:
         wait_for(b'Approval')
         wait_for(b'Compact')
@@ -131,6 +132,36 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x1b[B\r')  # Choose public with arrows and Enter.
         wait_for(b'Finished for the team')
         wait_for(b'Completed')
+        # Long code is compact by default. Folding is local UI state and must
+        # preserve an unsent draft without consuming any scripted model turn.
+        wait_for(b'python')
+        wait_for(b'12 lines')
+        assert b'fold_value_06' not in screen.text()
+        os.write(master, b'draft survives\x0f')  # Ctrl-O expands all.
+        wait_for(b'12 lines')
+        os.write(master, b'\x1b[1;5F')  # Ctrl-End keeps the complete tail visible.
+        wait_for(b'fold_value_06')
+        wait_for('› draft survives'.encode())
+        os.write(master, b'\x0f')  # Ctrl-O collapses all again.
+        wait_for(b'fold_value_06', present=False)
+        wait_for('› draft survives'.encode())
+        os.write(master, b'\x15')
+        os.write(master, b'/expand\r')
+        wait_for(b'fold_value_06')
+        os.write(master, b'/collapse\r')
+        wait_for(b'fold_value_06', present=False)
+        # Click only Python's header; Rust's explicit collapsed choice stays put.
+        y=next(i for i,row in enumerate(screen.rows) if '▶ python' in ''.join(row))
+        x=''.join(screen.rows[y]).index('▶ python')
+        os.write(master, f'\x1b[<0;{x+1};{y+1}M\x1b[<0;{x+1};{y+1}m'.encode())
+        wait_for('▼ python'.encode())
+        wait_for('▶ rust'.encode())
+        y=next(i for i,row in enumerate(screen.rows) if '▼ python' in ''.join(row))
+        x=''.join(screen.rows[y]).index('▼ python')
+        os.write(master, f'\x1b[<0;{x+1};{y+1}M\x1b[<0;{x+1};{y+1}m'.encode())
+        wait_for('▶ python'.encode())
+        os.write(master, b'\x1b[F')
+        wait_for(b'Finished for the team')
         # Edit an unsent prompt in the middle, including Delete and a newline.
         os.write(master, b'helo\x1b[D' + b'l')
         wait_for('› hello'.encode())
@@ -224,6 +255,11 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x03')
         wait_for(b'Press Ctrl-C again to quit')
         assert proc.poll() is None
+        os.write(master,b'\x0f')  # Folding is another key: disarm double-Ctrl-C quit.
+        wait_for(b'Press Ctrl-C again to quit',present=False)
+        os.write(master,b'\x03')
+        wait_for(b'Press Ctrl-C again to quit')
+        assert proc.poll() is None
         colors_seen = b'38;2;0;220;255' in capture
         # Typing resets the first Ctrl-C; the next Ctrl-C must only cancel.
         capture.clear(); os.write(master,b'next task\r'); wait_for(b'Running')
@@ -312,7 +348,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b'\x11')
         assert proc.wait(timeout=10)==0
         assert termios.tcgetattr(slave)==before
-        print('PTY: clipboard shortcuts, single right-click copy/paste, bracketed paste, settings and project defaults across new sessions/restart, approvals, answers, layouts, scrolling, cancellation and terminal restoration passed.')
+        print('PTY: code folding via keyboard/commands/mouse, clipboard shortcuts, single right-click copy/paste, bracketed paste, settings and project defaults across new sessions/restart, approvals, answers, layouts, scrolling, cancellation and terminal restoration passed.')
     finally:
         if proc.poll() is None: proc.kill(); proc.wait()
         os.close(master); os.close(slave)

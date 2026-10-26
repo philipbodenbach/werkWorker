@@ -31,6 +31,13 @@ these directly. See NOTICE for attribution.
 Fenced source code has a separate charcoal/olive background, a language label,
 and muted sage strings, ochre numbers, mauve keywords and gray-green comments.
 Indentation is retained; an unfinished code fence is styled while streaming.
+Blocks longer than eight display rows start collapsed, showing up to three
+preview lines. Long preview lines are shortened to the pane width. Click the
+**▶ / ▼ header** to expand or collapse that block; **Ctrl-O** toggles all blocks.
+`/expand` and `/collapse` explicitly open or close all blocks, including subsequent
+output in the current chat. Individual choices survive streaming and layout
+changes. Folding only changes the display: the full available transcript remains
+intact, and expanding restores the content. Questions and approvals stay visible.
 
 | Key | Behavior |
 |---|---|
@@ -44,6 +51,8 @@ Indentation is retained; an unfinished code fence is styled while streaming.
 | Ctrl-Y / Ctrl-N | Allow the displayed prepared action once / deny it |
 | Up / Down, Enter (empty input, pending request) | Select and send a suggested answer or approval decision |
 | Ctrl-U | Clear a draft answer to use the selection again |
+| Ctrl-O / `/expand` / `/collapse` | Toggle, expand or collapse all code blocks |
+| Click a code block header | Expand or collapse that block |
 | F4 / `/view` | Choose and remember Compact or Cockpit |
 | F5 / `/settings` | Edit the current profile, permissions, enabled tools and skills |
 | `/sessions` | Choose a new chat or a previous conversation in this workspace |

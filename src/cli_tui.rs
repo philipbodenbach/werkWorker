@@ -209,7 +209,7 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r" \____/"];
-const COMMANDS: [(&str, &str); 12] = [
+const COMMANDS: [(&str, &str); 14] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
@@ -225,6 +225,8 @@ const COMMANDS: [(&str, &str); 12] = [
     ("/settings", "Edit profile, permissions, tools and skills"),
     ("/effort", "Choose model reasoning effort; /effort <tier>"),
     ("/reasoning", "Choose reasoning tier or server default"),
+    ("/expand", "Expand all code blocks"),
+    ("/collapse", "Collapse all code blocks"),
 ];
 const RESUME_REQUIRED: &str =
     "Resume the interrupted run via /sessions before sending another message.";
@@ -390,6 +392,11 @@ impl ScrollPane {
 struct View {
     effort: crate::cli_effort::Picker,
     transcript: String,
+    transcript_base: usize,
+    folds: crate::cli_transcript::Folds,
+    fold_headers: Vec<crate::cli_transcript::FoldHeader>,
+    fold_hits: Vec<(Rect, usize)>,
+    fold_anchor: Option<(usize, usize)>,
     input: String,
     input_cursor: Option<usize>,
     input_scroll_manual: bool,
@@ -810,6 +817,52 @@ impl View {
         };
         self.scroll = (next < self.chat_max_scroll).then_some(next);
     }
+    fn anchor_fold(&mut self, header: crate::cli_transcript::FoldHeader) {
+        let position = self.scroll.unwrap_or(self.chat_max_scroll);
+        self.fold_anchor = Some((header.id, header.row.saturating_sub(position)));
+        self.selection = None;
+    }
+    fn toggle_fold_at(&mut self, x: u16, y: u16) -> bool {
+        // A popup or frozen selection can cover the freshly rendered headers.
+        // Let the normal mouse handler dismiss/select it before using hit boxes.
+        if !self.commands().is_empty() || self.selection.as_ref().is_some_and(|s| s.start != s.end)
+        {
+            return false;
+        }
+        let header = self
+            .fold_hits
+            .iter()
+            .find(|(area, _)| area.contains((x, y).into()))
+            .and_then(|(_, id)| self.fold_headers.iter().find(|header| header.id == *id))
+            .copied();
+        let Some(header) = header else {
+            return false;
+        };
+        self.anchor_fold(header);
+        self.folds.set(header.id, !header.expanded);
+        true
+    }
+    fn set_folds(&mut self, expanded: Option<bool>) {
+        if let Some(header) = self
+            .fold_hits
+            .first()
+            .and_then(|(_, id)| self.fold_headers.iter().find(|h| h.id == *id).copied())
+        {
+            self.anchor_fold(header);
+        }
+        self.selection = None;
+        let expanded = expanded.unwrap_or_else(|| self.fold_headers.iter().any(|h| !h.expanded));
+        self.folds.set_all(expanded);
+    }
+    fn clear_transcript(&mut self) {
+        self.transcript.clear();
+        self.transcript_base = 0;
+        self.folds.clear();
+        self.fold_headers.clear();
+        self.fold_hits.clear();
+        self.fold_anchor = None;
+        self.scroll = None;
+    }
     fn show_run_error(&mut self, error: &WorkerError) {
         let advice = match error.code.as_str() {
             "context_overflow" => {
@@ -894,6 +947,11 @@ impl View {
         self.commands_dismissed = false;
     }
     fn append(&mut self, text: &str) {
+        self.folds
+            .boundary(self.transcript_base + self.transcript.len());
+        self.append_stream(text);
+    }
+    fn append_stream(&mut self, text: &str) {
         self.transcript.push_str(&clean(text));
         if self.transcript.len() > 131_072 {
             let mut boundary = self.transcript.len() - 98_304;
@@ -901,6 +959,8 @@ impl View {
                 boundary += 1;
             }
             self.transcript.drain(..boundary);
+            self.transcript_base += boundary;
+            self.folds.prune(self.transcript_base);
         }
     }
     fn event(&mut self, event: WorkerEvent) {
@@ -923,7 +983,7 @@ impl View {
             _ => {}
         }
         match event.event {
-            EventKind::TextDelta { text, .. } => self.append(&text),
+            EventKind::TextDelta { text, .. } => self.append_stream(&text),
             EventKind::Subagent { goal, status, .. } => {
                 self.append(&format!("\n  agent · {status:?} · {goal}\n"))
             }
@@ -1304,11 +1364,14 @@ fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
         (area, None)
     };
     let height = usize::from(chat.height.saturating_sub(2));
-    let paragraph = Paragraph::new(crate::cli_transcript::render(
+    let rendered = crate::cli_transcript::render(
         &view.transcript,
         chat.width.saturating_sub(2),
-    ))
-    .wrap(Wrap { trim: false });
+        view.transcript_base,
+        &view.folds,
+    );
+    view.fold_headers = rendered.headers;
+    let paragraph = Paragraph::new(rendered.text).wrap(Wrap { trim: false });
     let offset = paragraph
         .line_count(chat.width.saturating_sub(2))
         .saturating_sub(height)
@@ -1317,10 +1380,31 @@ fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
     view.chat_page = height.max(1);
     view.chat_area = chat;
     view.selectable.push(panel("", MUTED).inner(chat));
+    if let Some((id, row)) = view.fold_anchor.take()
+        && let Some(header) = view.fold_headers.iter().find(|header| header.id == id)
+    {
+        view.scroll = Some(header.row.saturating_sub(row).min(offset));
+    }
     if let Some(position) = &mut view.scroll {
         *position = (*position).min(offset);
     }
     let position = view.scroll.unwrap_or(offset);
+    let inner = panel("", MUTED).inner(chat);
+    for header in &view.fold_headers {
+        let start = header.row.max(position);
+        let end = (header.row + header.height).min(position + height);
+        if start < end {
+            view.fold_hits.push((
+                Rect::new(
+                    inner.x,
+                    inner.y + (start - position) as u16,
+                    inner.width,
+                    (end - start) as u16,
+                ),
+                header.id,
+            ));
+        }
+    }
     let title = if view.scroll.is_some() {
         format!(
             " Conversation · {}/{} · End: latest ",
@@ -1328,7 +1412,7 @@ fn draw_chat(frame: &mut Frame, view: &mut View, area: Rect) {
             offset + 1
         )
     } else {
-        " Conversation ".into()
+        " Conversation · Ctrl-O expand/collapse ".into()
     };
     frame.render_widget(
         paragraph.scroll((position as u16, 0)).block(panel(
@@ -1536,6 +1620,7 @@ fn draw(frame: &mut Frame, view: &mut View) {
         view.selection = None;
     }
     view.selectable.clear();
+    view.fold_hits.clear();
     for pane in &mut view.panes {
         pane.area = Rect::default();
     }
@@ -2316,6 +2401,8 @@ pub async fn show(
                             view.scroll_at(mouse.column, mouse.row, mouse.kind == MouseEventKind::ScrollUp);
                         }
                         MouseEventKind::Down(MouseButton::Left) => {
+                            if matches!(view.screen, Screen::Conversation)
+                                && view.toggle_fold_at(mouse.column, mouse.row) { continue; }
                             if matches!(view.screen, Screen::Settings) {
                                 view.selection = None;
                                 let point = (mouse.column, mouse.row).into();
@@ -2380,6 +2467,13 @@ pub async fn show(
                 if key.kind == KeyEventKind::Release { continue; }
                 if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter { continue; }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if ctrl && matches!(key.code, KeyCode::Char('o' | 'O'))
+                    && matches!(view.screen, Screen::Conversation)
+                {
+                    view.quit_armed = false;
+                    if key.kind != KeyEventKind::Repeat { view.set_folds(None); }
+                    continue;
+                }
                 if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) && view.copy_selection().await {
                     continue;
                 }
@@ -2648,9 +2742,11 @@ pub async fn show(
                                         view.append("\n\nCommands:\n");
                                         for (name, description) in COMMANDS { view.append(&format!("{name}: {description}\n")); }
                                         view.append(&format!("{}\n", crate::cli_config::COMMAND_HELP));
-                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Alt-V / Shift-Insert: paste text or images · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nDraft: arrows move · Ctrl-Left/Right move by word · Home/End move within line · Delete/Backspace edit\nAlt-Enter or Ctrl-J: newline · Enter: send\nPgUp/PgDn scroll chat · Ctrl-Home/End: oldest/latest (also Home/End with an empty draft)\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
+                                        view.append("↑/↓ select · Tab complete · Enter run · Esc close\nF2 permissions · F3 subagents · F4 Compact/Cockpit · F5 settings\nSettings: Tab sections · Space/Enter toggle · Ctrl-S save session/project defaults\nQuestion: ↑/↓ + Enter, or type an answer\nDrag: select text · Ctrl-C: copy selection · Esc: clear selection\nCtrl-V / Alt-V / Shift-Insert: paste text or images · Right-click: copy selection or paste\nF6: toggle native terminal selection · Ctrl-Shift-V: terminal paste\nCode: click a block header to expand/collapse · Ctrl-O toggles all blocks\nWithout selection: Ctrl-C cancels; twice quits · Ctrl-Q quits\nCtrl-Y allows once · Ctrl-N denies · Wheel scrolls the pane under the pointer\nDraft: arrows move · Ctrl-Left/Right move by word · Home/End move within line · Delete/Backspace edit\nAlt-Enter or Ctrl-J: newline · Enter: send\nPgUp/PgDn scroll chat · Ctrl-Home/End: oldest/latest (also Home/End with an empty draft)\nAlt-Up/Down scroll request details or session sidebar · Ctrl-U clears input\n");
                                     },
-                                    "/clear" => view.transcript.clear(),
+                                    "/clear" => view.clear_transcript(),
+                                    "/expand" => view.set_folds(Some(true)),
+                                    "/collapse" => view.set_folds(Some(false)),
                                     "/agents" => { view.screen = Screen::Agents; view.pane(Pane::AgentDetails).offset = 0; },
                                     "/permissions" => { view.screen = Screen::Permissions; view.pane(Pane::Permissions).offset = 0; },
                                     "/view" => view.open_appearance(),
@@ -3108,6 +3204,136 @@ mod tests {
         assert!(cells.iter().any(|c| c.fg == Color::Rgb(183, 157, 174)));
         assert!(cells.iter().any(|c| c.fg == Color::Rgb(169, 185, 141)));
         assert!(cells.iter().any(|c| c.fg == Color::Rgb(139, 148, 129)));
+    }
+
+    #[test]
+    fn code_header_click_anchors_the_block_and_preserves_draft_and_question() {
+        let source = "earlier\n".repeat(20)
+            + "```rust\n"
+            + &"    let value = 1;\n".repeat(15)
+            + "```\nAfter code\n```js\n"
+            + &"const x = 2;\n".repeat(10)
+            + "```";
+        let mut view = View {
+            transcript: source.clone(),
+            input: "my unsent answer".into(),
+            interaction: Some(InteractionRequest {
+                request_id: "pending".into(),
+                question: "Continue?".into(),
+                choices: vec!["yes".into()],
+                answer: None,
+            }),
+            ..Default::default()
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 48)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let (hit, id) = view.fold_hits[0];
+        assert!(!view.fold_headers[0].expanded);
+        view.selection = Some(text_input::Selection {
+            area: view.selectable[0],
+            start: (hit.x, hit.y),
+            end: (hit.x + 3, hit.y),
+        });
+        assert!(!view.toggle_fold_at(hit.x + 1, hit.y));
+        view.selection = None;
+        view.input = "/".into();
+        assert!(!view.toggle_fold_at(hit.x + 1, hit.y));
+        view.input = "my unsent answer".into();
+        assert!(view.toggle_fold_at(hit.x + 1, hit.y));
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(view.fold_headers[0].expanded);
+        assert!(!view.fold_headers[1].expanded);
+        let (opened, _) = *view
+            .fold_hits
+            .iter()
+            .find(|(_, block)| *block == id)
+            .unwrap();
+        assert_eq!(
+            opened.y, hit.y,
+            "expansion must keep the clicked header in place"
+        );
+        assert!(
+            !view.toggle_fold_at(opened.x, opened.bottom()),
+            "code text remains selectable"
+        );
+        assert_eq!(view.input, "my unsent answer");
+        assert_eq!(view.transcript, source);
+        assert!(view.interaction.as_ref().unwrap().answer.is_none());
+        assert!(!view.pane(Pane::Request).area.is_empty());
+        assert!(view.toggle_fold_at(opened.x, opened.y));
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(!view.fold_headers[0].expanded);
+        view.set_folds(None);
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(view.fold_headers.iter().all(|h| h.expanded));
+        view.set_folds(None);
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert!(view.fold_headers.iter().all(|h| !h.expanded));
+        assert_eq!(view.input, "my unsent answer");
+        assert_eq!(view.interaction.as_ref().unwrap().request_id, "pending");
+    }
+
+    #[test]
+    fn unfinished_code_cannot_hide_errors_or_followup_messages() {
+        let mut view = View::default();
+        view.append("werk › ");
+        view.append_stream("```rust\n");
+        for _ in 0..15 {
+            view.append_stream("let value = 1;\n");
+        }
+        view.show_run_error(&WorkerError::new("test_error", "Visible failure"));
+        view.append("\nyou › followup\n");
+        view.append("\nwerk › ");
+        view.append_stream("Recovered answer");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 36)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        assert_eq!(view.fold_headers.len(), 1);
+        assert!(!view.fold_headers[0].expanded);
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("15 lines · expand · unfinished"));
+        assert!(text.contains("Error · test_error: Visible failure"));
+        assert!(text.contains("you › followup"));
+        assert!(text.contains("Recovered answer"));
+    }
+
+    #[test]
+    fn folded_header_hit_boxes_follow_wrapping_and_resize() {
+        let mut view = View {
+            transcript: "wide 世界 prose that wraps\n```rust\n".to_owned()
+                + &"value\n".repeat(12)
+                + "```\nafter",
+            scroll: Some(0),
+            ..Default::default()
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 36)).unwrap();
+        for width in [24, 80, 12] {
+            terminal.backend_mut().resize(width, 36);
+            view.scroll = Some(0);
+            terminal.draw(|f| draw(f, &mut view)).unwrap();
+            let (hit, _) = view.fold_hits[0];
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(hit.x, hit.y)].symbol(), "▶");
+            if width < 30 {
+                assert!(hit.height > 1);
+            }
+            assert!(view.toggle_fold_at(hit.x, hit.bottom() - 1));
+            terminal.draw(|f| draw(f, &mut view)).unwrap();
+            assert!(view.fold_headers[0].expanded);
+            view.set_folds(Some(false));
+        }
+        view.clear_transcript();
+        assert!(view.fold_hits.is_empty());
+        assert!(view.fold_headers.is_empty());
+        assert_eq!(view.transcript_base, 0);
     }
 
     #[test]

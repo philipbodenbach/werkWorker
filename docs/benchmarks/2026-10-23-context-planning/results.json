@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-23",
+  "kind": "offline_planning_comparison",
+  "live_inference": false,
+  "credentials_used": false,
+  "counter": "Serialized ModelRequest with image data removed, bytes divided by four plus 256 and 443 per image; no count cache; not a native tokenizer",
+  "tools_in_saved_session_replay": [],
+  "synthetic_history": {
+    "completed_read_groups": 120,
+    "before_cold_estimates": 235,
+    "after_cold_estimates": 4,
+    "after_resumed_estimates": 1,
+    "before_omitted_messages": 234,
+    "after_omitted_messages": 234
+  },
+  "frozen_saved_history": {
+    "canonical_messages": 265,
+    "before_cold_estimates": 120,
+    "before_repeated_estimates": 120,
+    "after_cold_estimates": 6,
+    "after_repeated_estimates": 1,
+    "before_omitted_messages": 253,
+    "after_omitted_messages": 255,
+    "before_final_input_estimate": 9101,
+    "after_final_input_estimate": 7062
+  },
+  "observed_server_log_separate_measurement": {
+    "count_http_requests": 630,
+    "count_http_total_seconds": 911.71,
+    "generation_http_requests": 6,
+    "generation_http_total_seconds": 75.56,
+    "count_requests_per_complete_planning_interval": [115, 115, 115, 115, 117]
+  }
+}

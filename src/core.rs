@@ -93,6 +93,8 @@ pub struct Message {
     pub role: Role,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachments::ImageAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -102,14 +104,18 @@ impl Message {
         Self {
             role,
             content: content.into(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         }
     }
     pub fn tool(call_id: &str, result: &ToolResult) -> Self {
+        let mut text_result = result.clone();
+        text_result.images.clear();
         Self {
             role: Role::Tool,
-            content: serde_json::to_string(result).expect("tool result"),
+            content: serde_json::to_string(&text_result).expect("tool result"),
+            images: result.images.clone(),
             tool_calls: vec![],
             tool_call_id: Some(call_id.into()),
         }
@@ -141,6 +147,9 @@ impl RunStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
+    /// Ignore aggregate run cutoffs; keep per-request/process limits and all
+    /// cancellation/recovery checks. Old snapshots default to finite budgets.
+    pub continuous: bool,
     pub max_steps: u32,
     pub max_model_requests: u32,
     pub max_tool_invocations: u32,
@@ -148,6 +157,9 @@ pub struct Limits {
     pub max_output_bytes: usize,
     pub context_tokens: usize,
     pub reserve_output_tokens: usize,
+    /// Initial reserve may grow up to this ceiling during recovery. None uses
+    /// the provider's verified ceiling; unknown providers keep the initial cap.
+    pub max_output_tokens: Option<usize>,
     pub max_retries: u32,
     pub max_repeated_calls: usize,
     /// One optional budgeted model summary of old assistant/tool groups.
@@ -156,13 +168,15 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_steps: 24,
-            max_model_requests: 30,
+            continuous: false,
+            max_steps: 48,
+            max_model_requests: 60,
             max_tool_invocations: 64,
-            max_wall_ms: 300_000,
+            max_wall_ms: 900_000,
             max_output_bytes: 65_536,
             context_tokens: 32_768,
             reserve_output_tokens: 2048,
+            max_output_tokens: None,
             max_retries: 2,
             max_repeated_calls: 3,
             model_compaction: false,
@@ -170,6 +184,25 @@ impl Default for Limits {
     }
 }
 impl Limits {
+    /// No automatic aggregate run cutoff. Per-request, sandbox, retry and
+    /// cancellation limits still apply; explicit legacy budgets keep their meaning.
+    pub fn continuous() -> Self {
+        let mut limits = Self::default();
+        limits.remove_run_cutoffs();
+        limits
+    }
+    pub fn remove_run_cutoffs(&mut self) {
+        self.continuous = true;
+    }
+    pub(crate) fn steps_exhausted(&self, used: u32) -> bool {
+        !self.continuous && used >= self.max_steps
+    }
+    pub(crate) fn requests_exhausted(&self, used: u32) -> bool {
+        !self.continuous && used >= self.max_model_requests
+    }
+    pub(crate) fn tools_exceeded(&self, used: u32) -> bool {
+        !self.continuous && used > self.max_tool_invocations
+    }
     pub fn validate(&self) -> Result<()> {
         if self.max_steps == 0
             || self.max_steps > 1000
@@ -179,7 +212,11 @@ impl Limits {
             || self.max_wall_ms == 0
             || self.max_wall_ms > 86_400_000
             || !(256..=1_048_576).contains(&self.max_output_bytes)
-            || self.context_tokens <= self.reserve_output_tokens + 512
+            || self.reserve_output_tokens == 0
+            || self
+                .max_output_tokens
+                .is_some_and(|cap| cap < self.reserve_output_tokens || cap > 2_000_000)
+            || self.context_tokens <= self.reserve_output_tokens.saturating_add(512)
             || self.context_tokens > 2_000_000
             || self.max_retries > 8
         {
@@ -239,6 +276,8 @@ pub struct ToolResult {
     pub error_code: Option<String>,
     pub artifacts: Vec<ArtifactRef>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachments::ImageAttachment>,
 }
 impl ToolResult {
     pub fn ok(data: Value) -> Self {
@@ -248,6 +287,7 @@ impl ToolResult {
             error_code: None,
             artifacts: vec![],
             truncated: false,
+            images: vec![],
         }
     }
     pub fn error(status: Outcome, code: &str) -> Self {
@@ -257,6 +297,7 @@ impl ToolResult {
             error_code: Some(code.into()),
             artifacts: vec![],
             truncated: false,
+            images: vec![],
         }
     }
 }
@@ -270,6 +311,10 @@ pub enum InvocationStatus {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolInvocation {
+    /// Additional request-local constraints; the registered definition remains
+    /// the authority for tool identity, effects and host permission checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_input_schema: Option<Value>,
     pub invocation_id: String,
     pub step_id: String,
     pub message_index: usize,
@@ -298,6 +343,9 @@ pub enum ApprovalDecision {
     AllowOnce,
     Deny,
     AllowSameArguments,
+    /// Remember workspace file access for this tool, or exact prepared
+    /// arguments for other effects, in the owning root session.
+    AllowForSession,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InteractionRequest {
@@ -333,6 +381,29 @@ pub struct ContextSnapshot {
     pub message_count: usize,
     pub omitted_messages: Vec<usize>,
     pub summary: Option<String>,
+    /// Selection checkpoint only; token counts are always revalidated against
+    /// the current provider, tools, reasoning and output/context limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ContextSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning: Option<ContextPlanning>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPlanning {
+    pub reused_selection: bool,
+    pub provider_estimates: usize,
+    pub input_tokens_before: usize,
+    pub compaction_candidates: usize,
+    pub ineffective_compaction: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextSource {
+    pub message_count: usize,
+    pub hash: String,
+    /// Only this projection's bounded extractive text. Model summaries are
+    /// reconstructed separately from canonical compaction records.
+    #[serde(default)]
+    pub excerpt: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionRecord {
@@ -352,15 +423,34 @@ pub struct ModelAttempt {
     pub error: Option<WorkerError>,
     pub partial_text: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GenerationRecovery {
+    pub target_output_tokens: Option<usize>,
+    pub initial_output_tokens: Option<usize>,
+    pub last_failed_output_tokens: Option<usize>,
+    pub split_required: bool,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
+    #[serde(default)]
+    pub tree_model_requests: u32,
+    #[serde(default)]
+    pub children: Vec<crate::agents::ChildRecord>,
     pub id: String,
     pub status: RunStatus,
     pub input: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_images: Vec<crate::attachments::ImageAttachment>,
     pub limits: Limits,
     pub output_schema: Option<Value>,
     pub started_at_ms: u64,
     pub deadline_ms: u64,
+    #[serde(default)]
+    pub approval_wait_started_at_ms: Option<u64>,
+    #[serde(default)]
+    pub generation_recovery: GenerationRecovery,
     pub history_start: usize,
     pub final_text: Option<String>,
     pub error: Option<WorkerError>,
@@ -369,10 +459,55 @@ pub struct Run {
     pub contexts: Vec<ContextSnapshot>,
     pub invocations: Vec<ToolInvocation>,
     pub steering: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering_messages: Vec<Message>,
+    /// Accepted steering is in canonical history but has not reached a model request yet.
+    #[serde(default)]
+    pub steering_context_pending: bool,
     pub plan: Value,
     pub similar_grants: Vec<String>,
     pub repaired_output: bool,
 }
+impl Run {
+    pub(crate) fn wall_budget_expired(&self, now: u64) -> bool {
+        self.approval_wait_started_at_ms.is_none()
+            && self.deadline_ms > 0
+            && now >= self.deadline_ms
+    }
+    pub(crate) fn resume_approval_clock(&mut self, now: u64) {
+        if let Some(started) = self.approval_wait_started_at_ms.take() {
+            let elapsed = now.saturating_sub(started);
+            self.metrics.approval_wait_ms = self.metrics.approval_wait_ms.saturating_add(elapsed);
+            if self.deadline_ms != 0 {
+                self.deadline_ms = self.deadline_ms.saturating_add(elapsed);
+            }
+        }
+    }
+    /// Count repetitions in the current workspace revision. A different successful
+    /// write/process can change the next result (e.g. edit, then rerun a test).
+    /// Process effects are deliberately conservative: even shell commands can write.
+    /// Identical commands never reset themselves; overall run budgets still apply.
+    pub fn repeated_calls_without_progress(&self, call: &ToolCall) -> usize {
+        let mut count = 0;
+        for invocation in self.invocations.iter().rev() {
+            if invocation.call.name == call.name && invocation.call.arguments == call.arguments {
+                count += 1;
+            } else if invocation
+                .result
+                .as_ref()
+                .is_some_and(|r| r.status == Outcome::Succeeded)
+                && invocation
+                    .definition
+                    .as_ref()
+                    .is_some_and(|d| matches!(d.effect, Effect::Write | Effect::Process))
+            {
+                break;
+            }
+        }
+        count
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
     pub session_id: String,
@@ -406,6 +541,11 @@ pub struct StoredCommand {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventKind {
     SessionCreated,
+    Subagent {
+        session_id: String,
+        goal: String,
+        status: RunStatus,
+    },
     SessionResumed,
     SessionForked {
         parent: String,
@@ -496,6 +636,10 @@ pub struct WorkerEvent {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub parent: Option<crate::agents::ParentLink>,
     pub schema_version: u32,
     pub id: String,
     pub revision: u64,

@@ -32,15 +32,21 @@ fn grant(tool: &str, preapproved: bool) -> CapabilityGrant {
         preapproved,
     }
 }
+// Guard against hung tests, not production deadlines. Match approval()'s
+// allowance for filesystem/SQLite writeback under parallel CI load.
 async fn finish(run: &RunHandle) -> RunResult {
-    tokio::time::timeout(std::time::Duration::from_secs(5), run.wait())
+    tokio::time::timeout(std::time::Duration::from_secs(30), run.wait())
         .await
         .expect("run stalled")
         .unwrap()
 }
 async fn approval(run: &RunHandle) -> ApprovalRequest {
     let mut events = run.events(0);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // This is a test-hang guard, not the worker's approval/work deadline.
+    // Cold CI builds can leave enough filesystem writeback to delay SQLite's
+    // durable approval event beyond five seconds. Deadline behavior is tested
+    // separately with explicit run limits below.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(event) = events.next().await {
             if let EventKind::ApprovalRequested { request } = event.unwrap().event {
                 return request;
@@ -51,6 +57,184 @@ async fn approval(run: &RunHandle) -> ApprovalRequest {
     .await
     .unwrap()
 }
+
+#[tokio::test]
+async fn approval_time_is_paused_but_work_after_approval_still_has_a_deadline() {
+    // Real filesystem work competes with the other all-targets tests. Keep
+    // enough active headroom for it, while waiting beyond that budget for
+    // approval and deliberately stalling much longer afterwards.
+    const WORK_MS: u64 = 2_000;
+    const APPROVAL_MS: u64 = WORK_MS + 100;
+    for stall_after_approval in [false, true] {
+        let workspace = TempDir::new().unwrap();
+        let mut next = ScriptedTurn::text("Done");
+        if stall_after_approval {
+            next.delay_ms = 30_000;
+        }
+        let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![
+            ScriptedTurn::calls(
+                "",
+                vec![call(
+                    "files.write",
+                    json!({"path":"saved.txt","content":"saved"}),
+                )],
+            ),
+            next,
+        ])))
+        .build()
+        .await
+        .unwrap();
+        let session = engine
+            .create_session(
+                profile(&["files.write"]),
+                workspace.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    grants: vec![grant("files.write", false)],
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Write",
+                "start",
+                Limits {
+                    max_wall_ms: WORK_MS,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let request = approval(&run).await;
+        let old_deadline = run.status().await.unwrap().deadline_ms;
+        tokio::time::sleep(std::time::Duration::from_millis(APPROVAL_MS)).await;
+        assert_eq!(
+            run.status().await.unwrap().status,
+            RunStatus::WaitingApproval
+        );
+        run.respond_to_approval(&request.request_id, ApprovalDecision::AllowOnce, "allow")
+            .await
+            .unwrap();
+        let result = finish(&run).await;
+        if stall_after_approval {
+            assert_eq!(result.status, RunStatus::Failed);
+            assert_eq!(result.error.unwrap().code, "wall_budget");
+        } else {
+            assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        }
+        let state = run.status().await.unwrap();
+        assert!(state.metrics.approval_wait_ms >= APPROVAL_MS);
+        assert_eq!(
+            state.deadline_ms - old_deadline,
+            state.metrics.approval_wait_ms
+        );
+        assert!(state.approval_wait_started_at_ms.is_none());
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("saved.txt")).unwrap(),
+            "saved"
+        );
+        let deadline = state.deadline_ms;
+        run.respond_to_approval(&request.request_id, ApprovalDecision::AllowOnce, "allow")
+            .await
+            .unwrap();
+        assert_eq!(
+            run.status().await.unwrap().deadline_ms,
+            deadline,
+            "duplicate decisions must not credit wait time twice"
+        );
+        engine.close().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn invalid_file_paths_explain_the_path_error_without_claiming_missing_permissions() {
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::calls(
+            "",
+            vec![call("files.read", json!({"path":"/workspace/../secret"}))],
+        ),
+        ScriptedTurn::text("Correct the path"),
+    ]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let session = engine
+        .create_session(
+            profile(&["files.read"]),
+            dir.path(),
+            HostPolicy {
+                grants: vec![grant("files.read", true)],
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("read", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(finish(&run).await.status, RunStatus::Completed);
+    let data = session.snapshot().await.unwrap();
+    let result = data.runs[0].invocations[0].result.as_ref().unwrap();
+    assert_eq!(result.status, Outcome::ValidationError);
+    assert_eq!(result.error_code.as_deref(), Some("path_denied"));
+    assert!(
+        result.data["message"]
+            .as_str()
+            .unwrap()
+            .contains("relative workspace path")
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sandbox_file_alias_requests_approval_for_the_prepared_relative_path() {
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::calls(
+            "",
+            vec![call(
+                "files.write",
+                json!({"path":"/workspace/result.txt", "content":"approved"}),
+            )],
+        ),
+        ScriptedTurn::text("done"),
+    ]));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let session = engine
+        .create_session(
+            profile(&["files.write"]),
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                grants: vec![grant("files.write", false)],
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("write", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let request = approval(&run).await;
+    assert_eq!(request.description["arguments"]["path"], "result.txt");
+    assert!(!dir.path().join("result.txt").exists());
+    run.respond_to_approval(&request.request_id, ApprovalDecision::AllowOnce, "approve")
+        .await
+        .unwrap();
+    assert_eq!(finish(&run).await.status, RunStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("result.txt")).unwrap(),
+        "approved"
+    );
+    engine.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn text_submit_dedupe_and_command_conflict() {
     let dir = TempDir::new().unwrap();
@@ -287,69 +471,75 @@ async fn patch_approval_binds_base_and_conflict_preserves_user_change() {
 }
 #[tokio::test]
 async fn interaction_steering_followup_and_busy() {
-    let dir = TempDir::new().unwrap();
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        ScriptedTurn::calls(
-            "",
-            vec![call(
-                "interaction.ask",
-                json!({"question":"Which format?","choices":["JSON","text"]}),
-            )],
-        ),
-        ScriptedTurn::text("first"),
-        ScriptedTurn::text("second"),
-    ]));
-    let engine = WorkerEngine::builder(provider.clone())
-        .build()
-        .await
-        .unwrap();
-    let session = engine
-        .create_session(
-            profile(&["interaction.ask"]),
-            dir.path(),
-            HostPolicy::default(),
-            Value::Null,
-        )
-        .await
-        .unwrap();
-    let run = session
-        .submit("work", "first", Limits::default(), None)
-        .await
-        .unwrap();
-    let mut events = run.events(0);
-    let request = loop {
-        if let EventKind::InteractionRequested { request } =
-            events.next().await.unwrap().unwrap().event
-        {
-            break request;
-        }
-    };
-    assert_eq!(
-        session
-            .submit("collision", "bad", Limits::default(), None)
+    for mode in [harness::HarnessMode::Classic, harness::HarnessMode::Minimal] {
+        let dir = TempDir::new().unwrap();
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ScriptedTurn::calls(
+                "",
+                vec![call(
+                    "interaction.ask",
+                    json!({"question":"Which format?","choices":["JSON","text"]}),
+                )],
+            ),
+            ScriptedTurn::text("first"),
+            ScriptedTurn::text("second"),
+        ]));
+        let engine = WorkerEngine::builder(provider.clone())
+            .harness(harness::HarnessConfig {
+                mode,
+                ..Default::default()
+            })
+            .build()
             .await
-            .err()
-            .unwrap()
-            .code,
-        "busy"
-    );
-    run.steer("Keep citations", "steer").await.unwrap();
-    let next = session
-        .follow_up("then summarize", "follow", Limits::default())
-        .await
-        .unwrap();
-    run.respond_to_interaction(&request.request_id, "JSON", "answer")
-        .await
-        .unwrap();
-    assert_eq!(finish(&run).await.status, RunStatus::Completed);
-    assert_eq!(finish(&next).await.status, RunStatus::Completed);
-    assert!(
-        provider.requests()[1]
-            .messages
-            .iter()
-            .any(|m| m.content == "Keep citations")
-    );
-    engine.close().await.unwrap();
+            .unwrap();
+        let session = engine
+            .create_session(
+                profile(&["interaction.ask"]),
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit("work", "first", Limits::default(), None)
+            .await
+            .unwrap();
+        let mut events = run.events(0);
+        let request = loop {
+            if let EventKind::InteractionRequested { request } =
+                events.next().await.unwrap().unwrap().event
+            {
+                break request;
+            }
+        };
+        assert_eq!(
+            session
+                .submit("collision", "bad", Limits::default(), None)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "busy"
+        );
+        run.steer("Keep citations", "steer").await.unwrap();
+        let next = session
+            .follow_up("then summarize", "follow", Limits::default())
+            .await
+            .unwrap();
+        run.respond_to_interaction(&request.request_id, "JSON", "answer")
+            .await
+            .unwrap();
+        assert_eq!(finish(&run).await.status, RunStatus::Completed);
+        assert_eq!(finish(&next).await.status, RunStatus::Completed);
+        assert!(
+            provider.requests()[1]
+                .messages
+                .iter()
+                .any(|m| m.content == "Keep citations")
+        );
+        engine.close().await.unwrap();
+    }
 }
 #[tokio::test]
 async fn cancellation_while_streaming_and_approval_does_not_continue() {
@@ -461,6 +651,151 @@ async fn budgets_include_retries_and_output_correction() {
     assert_eq!(run.status().await.unwrap().metrics.model_requests, 2);
     engine.close().await.unwrap();
 }
+#[tokio::test]
+async fn resumed_requests_can_be_answered_after_resume_with_the_original_ids() {
+    async fn waiting(run: &RunHandle, expected: RunStatus) -> Run {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let state = run.status().await.unwrap();
+                if state.status == expected {
+                    return state;
+                }
+                assert!(!state.status.terminal(), "{:?}", state.error);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("recovered request never became answerable")
+    }
+    for (name, arguments, status) in [
+        (
+            "files.write",
+            json!({"path":"new.txt","content":"saved"}),
+            RunStatus::WaitingApproval,
+        ),
+        (
+            "interaction.ask",
+            json!({"question":"Which team?","choices":["Operations"]}),
+            RunStatus::WaitingInput,
+        ),
+    ] {
+        let workspace = TempDir::new().unwrap();
+        let engine =
+            WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![ScriptedTurn::calls(
+                "",
+                vec![call(name, arguments)],
+            )])))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                profile(&[name]),
+                workspace.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    grants: vec![grant("files.write", false)],
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit("prepare request", "submit", Limits::default(), None)
+            .await
+            .unwrap();
+        let before = waiting(&run, status).await;
+        let mut captured = session.snapshot().await.unwrap();
+        if status == RunStatus::WaitingApproval {
+            // Simulate a durable approval surviving a minute of host downtime,
+            // well beyond the original active deadline. No real sleep needed.
+            let saved = captured.runs.iter_mut().find(|r| r.id == run.id).unwrap();
+            saved.deadline_ms = now_ms() - 30_000;
+            saved.approval_wait_started_at_ms = Some(now_ms() - 60_000);
+        }
+        let store = Arc::new(InMemoryStore::default());
+        store.save(&captured, None).await.unwrap();
+        engine.close().await.unwrap();
+        let provider = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("recovered")]));
+        let fresh = WorkerEngine::builder(provider.clone())
+            .store(store)
+            .build()
+            .await
+            .unwrap();
+        let resumed = fresh.resume_run(&captured.id, &run.id).await.unwrap();
+        let after = waiting(&resumed, status).await;
+        assert_eq!(after.invocations.len(), 1);
+        assert_eq!(
+            after.invocations[0].invocation_id,
+            before.invocations[0].invocation_id
+        );
+        assert!(
+            provider.requests().is_empty(),
+            "Recovery must not regenerate the tool call"
+        );
+        if status == RunStatus::WaitingApproval {
+            let original = before.invocations[0].approval.as_ref().unwrap();
+            assert_eq!(
+                after.invocations[0].approval.as_ref().unwrap().request_id,
+                original.request_id
+            );
+            assert!(!workspace.path().join("new.txt").exists());
+            resumed
+                .respond_to_approval(&original.request_id, ApprovalDecision::AllowOnce, "allow")
+                .await
+                .unwrap();
+        } else {
+            let original = before.invocations[0].interaction.as_ref().unwrap();
+            assert_eq!(
+                after.invocations[0]
+                    .interaction
+                    .as_ref()
+                    .unwrap()
+                    .request_id,
+                original.request_id
+            );
+            resumed
+                .respond_to_interaction(&original.request_id, "Operations", "answer")
+                .await
+                .unwrap();
+        }
+        assert_eq!(finish(&resumed).await.status, RunStatus::Completed);
+        if status == RunStatus::WaitingApproval {
+            let state = resumed.status().await.unwrap();
+            assert!(state.metrics.approval_wait_ms >= 60_000);
+            assert!(state.approval_wait_started_at_ms.is_none());
+            assert!(state.deadline_ms > now_ms());
+        }
+        assert_eq!(provider.requests().len(), 1);
+        let data = fresh
+            .open_session(&captured.id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        assert_eq!(
+            data.events
+                .iter()
+                .filter(|e| matches!(
+                    e.event,
+                    EventKind::ApprovalRequested { .. } | EventKind::InteractionRequested { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            data.events
+                .iter()
+                .filter(|e| matches!(e.event, EventKind::ToolCompleted { .. }))
+                .count(),
+            1
+        );
+        fresh.close().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn sqlite_ownership_future_version_corruption_and_resume_approval() {
     let dir = TempDir::new().unwrap();

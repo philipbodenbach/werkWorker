@@ -2,6 +2,33 @@ use serde_json::json;
 use werk_worker::providers::*;
 
 #[test]
+fn backend_errors_survive_arbitrary_sse_boundaries() {
+    let message = "llama-server returned incomplete tool-call arguments: Grüße";
+    for payload in [
+        json!({"error":{"message":message,"type":"server_error","code":null}}),
+        json!({"error":message}),
+        json!({"error":{"message":message},"choices":[]}),
+    ] {
+        let wire = format!("event: error\ndata: {payload}\n\ndata: [DONE]\n\n");
+        for size in 1..31 {
+            let mut parser = SseDecoder::new(65536);
+            let error = wire
+                .as_bytes()
+                .chunks(size)
+                .find_map(|bytes| parser.push(bytes).err())
+                .expect("backend error must terminate decoding");
+            assert_eq!(error.code, "provider_error");
+            assert_eq!(error.message, message);
+            assert!(!error.retryable);
+        }
+        assert_eq!(decode_completion(&payload).unwrap_err().message, message);
+    }
+    let error = decode_completion(&json!({"error":{}})).unwrap_err();
+    assert_eq!(error.code, "provider_error");
+    assert!(!error.message.is_empty());
+}
+
+#[test]
 fn sse_arbitrary_byte_boundaries_utf8_tools_usage_and_nonstream_equivalence() {
     let chunks = [
         json!({"choices":[{"index":0,"delta":{"content":"Grüße ","tool_calls":[{"index":0,"id":"ca","function":{"name":"files.","arguments":"{\"pa"}},{"index":1,"id":"sec","function":{"name":"task.","arguments":"{"}}]},"finish_reason":null}]}),
@@ -104,4 +131,32 @@ fn credentials_are_redacted_even_across_text_and_tool_fragments() {
     assert_eq!(message.content, "prefix [redacted] suffix");
     assert_eq!(message.tool_calls[0].arguments["value"], "[redacted]");
     assert!(!visible.contains("SECRET-123"));
+}
+
+#[test]
+fn server_output_limit_rejects_fragments_without_blind_transport_retry() {
+    let mut assembler = ResponseAssembler::default();
+    assembler
+        .push(
+            &ModelDelta::Tool {
+                index: 0,
+                id: "call".into(),
+                name: "files.write".into(),
+                arguments: "{\"path\":".into(),
+            },
+            65536,
+        )
+        .unwrap();
+    assembler
+        .push(
+            &ModelDelta::Finish {
+                reason: "length".into(),
+            },
+            65536,
+        )
+        .unwrap();
+    assembler.push(&ModelDelta::Done, 65536).unwrap();
+    let error = assembler.finish().unwrap_err();
+    assert_eq!(error.code, "model_output_limit");
+    assert!(!error.retryable);
 }

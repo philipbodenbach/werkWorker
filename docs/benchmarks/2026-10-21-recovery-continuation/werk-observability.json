@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "observed_at_ms": 1792610045504,
+  "totals": {
+    "started": 10,
+    "completed": 10,
+    "errors": 0,
+    "cancelled": 0,
+    "active": 0,
+    "prompt_tokens": 44205,
+    "output_tokens": 4881,
+    "cached_tokens": 33415,
+    "duration_seconds": 185.623896488
+  },
+  "source": "werk top --once --json; retained read-only records from the already running local backend",
+  "requests": [
+    {
+      "id": 10,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "done",
+      "started_ms": 1792609603219,
+      "elapsed_seconds": 6.409624323,
+      "prompt_tokens": 5663,
+      "cached_tokens": 5338,
+      "output_tokens": 1,
+      "first_output_seconds": 3.72181916,
+      "decode_tokens_per_second": 1000000.0,
+      "prefill_tokens_per_second": 323.5189303369176
+    },
+    {
+      "id": 9,
+      "model": "qwen3.8-27b-ud-q4_k_xl",
+      "state": "length",
+      "started_ms": 1792609481972,
+      "elapsed_seconds": 118.073931268,
+      "prompt_tokens": 5549,
+      "cached_tokens": 4859,
+      "output_tokens": 4096,
+      "first_output_seconds": 4.724767322,
+      "decode_tokens_per_second": 36.42062798570124,
+      "prefill_tokens_per_second": 604.0656242886909
+    }
+  ]
+}

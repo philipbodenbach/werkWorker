@@ -112,3 +112,17 @@ Linux ARM64 and macOS Apple Silicon native builds are configured in platform CI;
 this WSL environment has neither native MSVC nor a macOS SDK, so those builds
 have not been locally demonstrated. The process/filesystem sandbox remains
 Linux-only. Native packaging does not remove that boundary.
+
+## Parallel subagents and context limits — 2026-10-19
+
+The [experiment record](benchmarks/2026-10-19-subagents/README.md) contains the
+implementation decisions, test matrix, development failures/corrections,
+reproduction commands, environment, raw scheduler measurements and final check
+logs. It supersedes the earlier whole-workspace reservation and optional-only
+compaction descriptions. Tool calls within an individual session remain serial;
+sessions/children overlap under evidence-based provider admission.
+
+Automatic rolling compaction now applies inside long runs; every attempt checks
+provider context and output reservation. Unknown Werk context requires an explicit
+host limit. Real Werk/GPU inference and native Windows/macOS validation remain
+unperformed in this local experiment; no model quality improvement is asserted.

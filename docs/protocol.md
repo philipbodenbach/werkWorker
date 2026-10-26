@@ -32,19 +32,40 @@ does not mean completion. Events are notifications:
 | session.create | optional profile and metadata |
 | session.open, session.export | session_id |
 | session.list | none |
+| session.rename | session_id, title (1–80 characters) |
+| session.delete | session_id, confirm=true; removes root conversation and descendants, rejects active work |
 | session.fork | session_id; uses explicit startup host policy for new scope |
-| run.submit | session_id, input, command_id; optional limits/output_schema |
+| run.submit | session_id, input, command_id; optional limits/output_schema/images |
 | run.status | session_id, run_id |
 | run.cancel | session_id, run_id, command_id; optional reason |
-| run.steer | session_id, run_id, input, command_id |
+| run.steer | session_id, run_id, input, command_id; optional images |
 | run.resume | session_id, run_id |
-| session.followup | session_id, input, command_id; optional limits |
+| session.followup | session_id, input, command_id; optional limits/images |
 | approval.respond | session_id, run_id, request_id, decision, command_id |
 | interaction.respond | session_id, run_id, request_id, answer, command_id |
 | events.subscribe | session_id, optional after_cursor (exclusive) |
+| execution.status | none; configured/effective limits, discovery source and free slots |
+| agents.delegate | parent session_id, run_id, tasks, command_id |
+| agents.list | parent session_id, run_id |
+| agents.cancel | parent session_id, run_id, child_session_id, command_id |
+| agents.message | parent session_id, run_id, child_session_id, input, command_id |
 | shutdown | none |
 
 Approval decisions serialize as `allow_once`, `deny`, `allow_same_arguments`.
+
+Session deletion is a host operation, never a model tool. It returns deleted
+session IDs and removes their cached handles. Project files, independent forks
+and shared artifact blobs remain. Repeating deletion of an absent session
+returns `not_found`; renaming to the same title has the same visible result.
+
+`images` is an optional array of up to four attachments with `mime_type`
+(`image/jpeg`), `data_base64`, `width` and `height`. Use the SDK's
+`ImageAttachment::from_bytes` to normalize PNG/JPEG data to at most 1024 pixels
+per side and 128 KiB per image before encoding. Image-only submissions use
+`input: ""`. Attachments persist with their message; they are sent as standard
+OpenAI `image_url` content parts and require a vision-capable model/backend.
+Omitting `images` preserves existing text requests and their idempotency keys.
+
 Inspect `run.status` for pending request IDs after reconnect. Reuse command IDs
 with the same payload if delivery is uncertain; changed payloads conflict.
 The dedupe scope is the session, including method and run. Native Werk HTTP
@@ -57,3 +78,28 @@ and revocation are intentionally not exposed to model-generated data.
 
 See `src/transport.rs::METHODS` and the CLI/RPC integration tests for executable
 contract consistency. `examples/jsonl_client.py` is a complete local client.
+
+`agents.delegate.tasks` uses `{goal, context?, tools?, read_only?}` entries from
+[the delegation contract](subagents.md). List/delegate return direct children
+with session IDs, goals and optional Run snapshots. Model tools use
+`session_id` for a target child; host RPC uses `child_session_id` to distinguish
+it from the parent session. Only directly owned children are accepted.
+
+To approve a child, the trusted host opens its session, subscribes to its events
+and sends `approval.respond` with that child's session/run/request IDs. The same
+rule applies to `interaction.respond`; no parent approval substitutes for it.
+`run.cancel` on the parent cancels descendants. The new methods are additive to
+protocol 1. Discovery uses WerkProtocol on the server; Worker JSONL remains its
+own local protocol.
+
+## Harness startup options
+
+Start `ww --werk-config examples/werk-config.json rpc`; new runs are adaptive.
+Use `--harness-config harness.json` for an
+explicit completion check. RPC methods/schema stay unchanged; these are trusted
+host startup choices. Resume reads run-bound state, including completion results,
+from reserved exported `metadata._werkworker_harness`. `Diagnostic.code` may now
+include `harness_*` activation/delivery/removal/migration decisions,
+`input_tokens_*` and `completion_*`; `ModelCompleted.metadata.werk.timings`
+contains documented numeric backend measurements when supplied. See
+[the harness contract](harness.md) before importing/editing metadata.

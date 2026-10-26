@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct ToolContext {
+    pub workspace_lease: Option<Arc<crate::parallel::WorkspaceLease>>,
     pub session_id: String,
     pub run_id: String,
     pub invocation_id: String,
@@ -64,12 +65,18 @@ impl ToolRegistry {
             "files.read",
             "files.list",
             "files.search",
+            "files.find",
+            "files.read_image",
             "files.write",
             "files.edit",
+            "files.insert",
             "process.run",
             "process.start",
             "process.status",
             "process.cancel",
+            "process.wait",
+            "process.log",
+            "browser.check",
             "http.fetch",
             "skills.list",
             "skills.load",
@@ -78,6 +85,9 @@ impl ToolRegistry {
             "artifacts.read",
         ] {
             registry.register(Arc::new(Builtin { name: name.into() }))?;
+        }
+        for name in crate::agents::AGENT_TOOLS {
+            registry.register(Arc::new(crate::agents::AgentTool((*name).into())))?;
         }
         Ok(registry)
     }
@@ -135,9 +145,9 @@ impl Tool for Builtin {
         let (effect, description, schema) = match self.name.as_str() {
             "files.read" => (
                 Effect::Read,
-                "Read a UTF-8 workspace file with hash and line numbers",
+                "Read UTF-8 file text with its hash and line range. Continue with next_start_line, or next_start_byte for a long-line byte page. start_byte cannot be combined with line bounds; byte positions must be UTF-8 boundaries. Do not reread the same truncated range",
                 object(
-                    json!({"path":string(),"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}),
+                    json!({"path":string(),"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_byte":{"type":"integer","minimum":0}}),
                     &["path"],
                 ),
             ),
@@ -148,15 +158,29 @@ impl Tool for Builtin {
             ),
             "files.search" => (
                 Effect::Read,
-                "Search literal text in regular files directly within a directory",
+                "Search a workspace file or directory recursively. Literal by default; regex optional. Returns matched line numbers and bounded context. Follow next_offset with identical arguments; narrow path/include if scan_limited. Example: path=src, query=rotate, include=**/*.js. Read the matched range, not the whole file.",
                 object(
-                    json!({"path":string(),"query":string()}),
+                    json!({"path":string(),"query":{"type":"string","minLength":1,"maxLength":1024},"recursive":{"type":"boolean"},"regex":{"type":"boolean"},"case_sensitive":{"type":"boolean"},"hidden":{"type":"boolean"},"include":{"type":"string","maxLength":1024},"context_lines":{"type":"integer","minimum":0,"maximum":3},"offset":{"type":"integer","minimum":0,"maximum":10000},"limit":{"type":"integer","minimum":1,"maximum":100}}),
                     &["path", "query"],
                 ),
             ),
+            "files.find" => (
+                Effect::Read,
+                "Find workspace files recursively using *, ** and ? globs. Example: path=., pattern=**/*.html. Heavy dependency/build directories and symlinks are excluded. Follow next_offset; narrow path when scan_limited. No shell required.",
+                object(
+                    json!({"path":string(),"pattern":{"type":"string","maxLength":1024},"hidden":{"type":"boolean"},"offset":{"type":"integer","minimum":0,"maximum":10000},"limit":{"type":"integer","minimum":1,"maximum":100}}),
+                    &["path", "pattern"],
+                ),
+            ),
+            "files.read_image" => (
+                Effect::Read,
+                "View a bounded local PNG/JPEG image or screenshot. Returns normalized image input, dimensions and file hash; do not read binary images as text.",
+                object(json!({"path":string()}), &["path"]),
+            ),
+            "browser.check" => return crate::browser::definition(),
             "files.write" => (
                 Effect::Write,
-                "Create a file or replace an expected SHA-256 base atomically",
+                "Write a workspace path (relative or /workspace/...); parent directory must already exist (use process.run to create directories). Create-only without expected_hash. Replacing an existing file requires its latest observed SHA-256 as expected_hash",
                 object(
                     json!({"path":string(),"content":string(),"expected_hash":string()}),
                     &["path", "content"],
@@ -170,11 +194,27 @@ impl Tool for Builtin {
                     &["path", "old", "new", "expected_hash"],
                 ),
             ),
-            "process.run" | "process.start" => (
-                Effect::Process,
-                "Execute program and argv in the assigned Linux sandbox with no network; shell commands require explicit argv approval",
+            "files.insert" => (
+                Effect::Write,
+                "Insert one complete section after a numbered line of an existing file, guarded by its latest sha256. after_line=0 prepends; after_line=total_lines appends. Include required newline separators in content; none are added implicitly. Reuse the returned sha256 and next_insert_after_line to append the next section. Never recreate an existing file.",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":string()}),
+                    json!({"path":string(),"expected_hash":string(),"after_line":{"type":"integer","minimum":0},"content":string()}),
+                    &["path", "expected_hash", "after_line", "content"],
+                ),
+            ),
+            "process.run" => (
+                Effect::Process,
+                "Sandboxed argv, no network. To verify code, supply verification with behavioral criteria and all relevant source/test paths. Run real assertions through public entry points; syntax-only checks are insufficient for interactive behavior. A successful check records file hashes; later changes require another check. /workspace persists; /tmp is fresh each call.",
+                object(
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
+                    &["argv"],
+                ),
+            ),
+            "process.start" => (
+                Effect::Process,
+                "Sandboxed argv, no network. /workspace persists; /tmp is fresh each call. Keep cross-call files in /workspace. Shell argv needs explicit approval",
+                object(
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"},"read_only":{"type":"boolean","description":"Mount workspace read-only; other readers may proceed. Prefer for inspection/watchers. Writers still wait for this job; use process.wait or cancel."}}),
                     &["argv"],
                 ),
             ),
@@ -182,6 +222,22 @@ impl Tool for Builtin {
                 Effect::Internal,
                 "Inspect or cancel a managed job owned by the current run",
                 object(json!({"job_id":string()}), &["job_id"]),
+            ),
+            "process.wait" => (
+                Effect::Internal,
+                "Wait for a run-owned background job to exit without spending inference requests on repeated status calls. Returns on exit/cancellation or timeout. Read live output with process.log. Finished output does not itself establish verification.",
+                object(
+                    json!({"job_id":string(),"timeout_ms":{"type":"integer","minimum":1,"maximum":30000}}),
+                    &["job_id"],
+                ),
+            ),
+            "process.log" => (
+                Effect::Internal,
+                "Read a bounded live stdout/stderr byte page for a run-owned job. Follow next_offset; dropped_before indicates evicted older output. Use process.wait instead of polling unchanged logs.",
+                object(
+                    json!({"job_id":string(),"stream":{"enum":["stdout","stderr"]},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":4096}}),
+                    &["job_id"],
+                ),
             ),
             "http.fetch" => (
                 Effect::NetworkRead,
@@ -211,9 +267,13 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Replace the current run's short visible task plan",
+                "Track outcome milestones for multi-step work. Keep the current milestone in_progress; mark completed only from evidence. For coding, build a runnable version, review it, then repair concrete gaps. Save checkpoint at phase changes so the next action and interface decisions survive compaction. Replace the current plan, including its checkpoint; do not replan after every read.",
                 object(
-                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}}}),
+                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}},
+                        "checkpoint":{"type":"object","properties":{
+                            "next_action":{"type":"string","maxLength":512},
+                            "decisions":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":256}}
+                        },"required":["next_action"],"additionalProperties":false}}),
                     &["steps"],
                 ),
             ),
@@ -242,7 +302,54 @@ impl Tool for Builtin {
         }
     }
     async fn prepare(&self, mut args: Value, ctx: &ToolContext) -> Result<Value> {
+        if matches!(
+            self.name.as_str(),
+            "files.read"
+                | "files.list"
+                | "files.search"
+                | "files.write"
+                | "files.edit"
+                | "files.insert"
+                | "files.find"
+                | "files.read_image"
+        ) {
+            args["path"] = json!(crate::policy::workspace_path(field(&args, "path")?)?);
+        }
         match self.name.as_str() {
+            "browser.check" => return crate::browser::prepare(args, ctx).await,
+            "files.insert" => {
+                let bytes = ctx.workspace.read(field(&args, "path")?, 1_048_576).await?;
+                if hash(&bytes) != field(&args, "expected_hash")? {
+                    return Err(WorkerError::new(
+                        "write_conflict",
+                        "File hash changed before insertion; read the affected section again",
+                    ));
+                }
+                let original = String::from_utf8(bytes)
+                    .map_err(|_| WorkerError::new("binary_file", "Insert requires UTF-8 text"))?;
+                let line = args["after_line"].as_u64().ok_or_else(|| {
+                    WorkerError::new("validation_error", "Missing insertion line")
+                })?;
+                if line > original.lines().count() as u64 {
+                    return Err(WorkerError::new(
+                        "write_conflict",
+                        "Insertion line is past the end of the observed file",
+                    ));
+                }
+                let offset: usize = original
+                    .split_inclusive('\n')
+                    .take(line as usize)
+                    .map(str::len)
+                    .sum();
+                let mut content = original.clone();
+                let section = field(&args, "content")?;
+                content.insert_str(offset, section);
+                let next_line = (section.ends_with('\n') || offset == original.len())
+                    .then(|| content[..offset + section.len()].lines().count());
+                args["next_insert_after_line"] = json!(next_line);
+                args["diff"] = json!({"path":args["path"],"before":original,"after":content});
+                args["content"] = json!(content);
+            }
             "files.edit" => {
                 let bytes = ctx.workspace.read(field(&args, "path")?, 1_048_576).await?;
                 if hash(&bytes) != field(&args, "expected_hash")? {
@@ -283,8 +390,7 @@ impl Tool for Builtin {
                     json!({"path":args["path"],"before":original,"after":args["content"]});
             }
             "process.run" | "process.start" => {
-                let cwd = args["cwd"].as_str().unwrap_or(".").to_owned();
-                crate::policy::relative_path(&cwd)?;
+                let cwd = process_cwd(args["cwd"].as_str().unwrap_or("."))?;
                 args["cwd"] = json!(cwd);
                 args["sandbox"] = json!({"backend":"bubblewrap","workspace_writable":ctx.writable,"network":false,"host_home":false,"limits":ctx.sandbox.limits});
             }
@@ -298,34 +404,60 @@ impl Tool for Builtin {
                 let path=field(&args,"path")?;let bytes=ctx.workspace.read(path,1_048_576).await?;
                 if bytes.contains(&0){return Err(WorkerError::new("binary_file","Binary file is not text"));}
                 let text=String::from_utf8(bytes.clone()).map_err(|_|WorkerError::new("encoding_error","File is not UTF-8"))?;
+                if let Some(start) = args["start_byte"].as_u64() {
+                    if args.get("start_line").is_some() || args.get("end_line").is_some() || start > text.len() as u64 || !text.is_char_boundary(start as usize) {
+                        return Err(WorkerError::new("validation_error", "Use a UTF-8 byte boundary within the file, without line bounds"));
+                    }
+                    return Ok(ToolResult::ok(json!({"path":path,"sha256":hash(bytes),"content":&text[start as usize..],"start_byte":start,"end_byte":text.len(),"total_bytes":text.len(),"mode":"bytes"})));
+                }
                 let start=args["start_line"].as_u64().unwrap_or(1) as usize;let end=args["end_line"].as_u64().unwrap_or(u64::MAX) as usize;
                 if end<start{return Err(WorkerError::new("validation_error","Reversed line range"));}
-                let lines:Vec<_>=text.lines().enumerate().filter(|(i,_)|*i+1>=start&&*i<end).map(|(i,t)|json!({"line":i+1,"text":t})).collect();
-                json!({"path":path,"sha256":hash(bytes),"lines":lines})
+                let total_lines=text.lines().count();
+                let lines:Vec<_>=text.lines().skip(start-1).take(end.saturating_sub(start).saturating_add(1)).collect();
+                let start_byte:usize=text.split_inclusive('\n').take(start-1).map(str::len).sum();
+                json!({"path":path,"sha256":hash(bytes),"start_line":start,"start_byte":start_byte,"total_bytes":text.len(),
+                    "end_line":start-1+lines.len(),"total_lines":total_lines,"content":lines.join("\n")})
             },
             "files.list"=>json!({"entries":ctx.workspace.list(field(&args,"path")?,1000).await?,"hidden":false,"recursive":false}),
-            "files.search"=>{
-                let path=field(&args,"path")?;let query=field(&args,"query")?;let mut matches=Vec::new();
-                for name in ctx.workspace.list(path,1000).await?{
-                    let file=format!("{path}/{name}");let Ok(bytes)=ctx.workspace.read(&file,262_144).await else{continue;};
-                    if bytes.contains(&0){continue;}
-                    if let Ok(text)=String::from_utf8(bytes){for (i,line) in text.lines().enumerate(){if line.contains(query){matches.push(json!({"path":file,"line":i+1,"text":line}));if matches.len()>=500{break;}}}}
-                    if matches.len()>=500{break;}
-                }json!({"matches":matches,"limit":500,"recursive":false})
+            "files.search" | "files.find" => crate::discovery::execute(&self.name, &args, ctx).await?,
+            "files.read_image" => {
+                let bytes = ctx.workspace.read(field(&args,"path")?,crate::attachments::CLIPBOARD_IMAGE_LIMIT).await?;
+                let image = crate::attachments::ImageAttachment::from_bytes(&bytes)?;
+                let mut result = ToolResult::ok(json!({"path":args["path"],"sha256":hash(bytes),"width":image.width,"height":image.height}));
+                result.images.push(image); return Ok(result);
             },
-            "files.write"|"files.edit"=>{
+            "browser.check" => return crate::browser::execute(args, ctx).await,
+            "files.write"|"files.edit"|"files.insert"=>{
                 let content=field(&args,"content")?;ctx.workspace.write(field(&args,"path")?,content.as_bytes().to_vec(),args["expected_hash"].as_str().map(str::to_owned)).await?;
-                json!({"path":args["path"],"sha256":hash(content),"diff":args["diff"]})
+                // The full diff remains in the prepared action/approval record.
+                // Echoing growing files here exhausts context and can truncate
+                // away the hash needed for the next incremental edit.
+                json!({"path":args["path"],"sha256":hash(content),"bytes_written":content.len(),"total_lines":content.lines().count(),"next_insert_after_line":if self.name=="files.insert"{args["next_insert_after_line"].clone()}else{json!(content.lines().count())}})
             },
             "process.run"|"process.start"=>{
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
-                if self.name=="process.start"{json!({"job_id":ctx.jobs.start(&ctx.run_id,ctx.sandbox.clone(),ctx.workspace.clone(),ctx.writable,argv,cwd.into()).await?})}
-                else{serde_json::to_value(ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?)?}
+                if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
+                else{
+                    let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
+                    let output = ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?;
+                    let mut result = serde_json::to_value(&output)?;
+                    if !before.is_empty() {
+                        let after = crate::completion::verification_files(&args, &ctx.workspace).await?;
+                        if let Some(reason) = crate::completion::verification_rejection(&args, &result) {
+                            result["verification_rejected"] = json!(reason);
+                        } else {
+                            result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                        }
+                    }
+                    result
+                }
             },
             "process.status"|"process.cancel"=>ctx.jobs.status(&ctx.run_id,field(&args,"job_id")?,self.name=="process.cancel").await?,
+            "process.wait" => ctx.jobs.wait(&ctx.run_id,field(&args,"job_id")?,args["timeout_ms"].as_u64().unwrap_or(30000),ctx.cancel.clone()).await?,
+            "process.log" => ctx.jobs.log(&ctx.run_id,field(&args,"job_id")?,args["stream"].as_str().unwrap_or("stdout"),args["offset"].as_u64().map(|n|n as usize),args["length"].as_u64().unwrap_or(2048) as usize).await?,
             "http.fetch"=>fetch(field(&args,"url")?,args["method"].as_str().unwrap_or("GET"),None).await?,
             "skills.list"=>json!(ctx.skills.values().map(|s|json!({"name":s.name,"description":s.description,"hash":s.hash,"source":s.source})).collect::<Vec<_>>()),
-            "skills.load"=>serde_json::to_value(ctx.skills.get(field(&args,"name")?).ok_or_else(||WorkerError::new("unknown_skill","Skill not available in this session"))?)?,
+            "skills.load"=>match ctx.skills.get(field(&args,"name")?) { Some(skill) => serde_json::to_value(skill)?, None => json!({"available":false,"name":field(&args,"name")?}) },
             "task.plan"=>args,
             "interaction.ask"=>return Err(WorkerError::new("interaction_required","Interaction must be handled by the engine")),
             "artifacts.read"=>{
@@ -337,6 +469,12 @@ impl Tool for Builtin {
         };
         Ok(ToolResult::ok(value))
     }
+}
+
+/// The fixed sandbox mount is a logical workspace path, never a host path.
+/// Normalize before approvals so equivalent cwd spellings have one receipt.
+fn process_cwd(path: &str) -> Result<&str> {
+    crate::policy::workspace_path(path)
 }
 
 /// Small example connector. The fixed endpoint and token are host-owned, never
@@ -565,5 +703,34 @@ impl Tool for WerkNativeTool {
             ));
         }
         Ok(ToolResult::ok(result))
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_workspace_cwd_is_normalized_without_widening_access() {
+        for (input, expected) in [
+            (".", "."),
+            ("src", "src"),
+            ("/workspace", "."),
+            ("/workspace/", "."),
+            ("/workspace/src", "src"),
+        ] {
+            assert_eq!(process_cwd(input).unwrap(), expected);
+        }
+        for input in [
+            "/etc",
+            "/workspace-other",
+            "/workspace//etc",
+            "/workspace/../etc",
+            "../escape",
+            "",
+            "/workspace/a\\b",
+        ] {
+            assert_eq!(process_cwd(input).unwrap_err().code, "path_denied");
+        }
     }
 }

@@ -1,0 +1,185 @@
+{
+  "kind": "simulated_scheduler_benchmark",
+  "rows": [
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 825.320569,
+      "peak_inflight": 1,
+      "repetition": 1,
+      "reported_slots": null,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 825.13078,
+      "peak_inflight": 1,
+      "repetition": 2,
+      "reported_slots": null,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 819.772521,
+      "peak_inflight": 1,
+      "repetition": 3,
+      "reported_slots": null,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 821.6771349999999,
+      "peak_inflight": 1,
+      "repetition": 4,
+      "reported_slots": null,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 821.969356,
+      "peak_inflight": 1,
+      "repetition": 5,
+      "reported_slots": null,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 820.5782820000001,
+      "peak_inflight": 1,
+      "repetition": 1,
+      "reported_slots": 1,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 823.868019,
+      "peak_inflight": 1,
+      "repetition": 2,
+      "reported_slots": 1,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 825.625075,
+      "peak_inflight": 1,
+      "repetition": 3,
+      "reported_slots": 1,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 822.943273,
+      "peak_inflight": 1,
+      "repetition": 4,
+      "reported_slots": 1,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 1,
+      "elapsed_ms": 823.738164,
+      "peak_inflight": 1,
+      "repetition": 5,
+      "reported_slots": 1,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 2,
+      "elapsed_ms": 414.020982,
+      "peak_inflight": 2,
+      "repetition": 1,
+      "reported_slots": 2,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 2,
+      "elapsed_ms": 413.07778499999995,
+      "peak_inflight": 2,
+      "repetition": 2,
+      "reported_slots": 2,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 2,
+      "elapsed_ms": 413.365256,
+      "peak_inflight": 2,
+      "repetition": 3,
+      "reported_slots": 2,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 2,
+      "elapsed_ms": 416.70763,
+      "peak_inflight": 2,
+      "repetition": 4,
+      "reported_slots": 2,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 2,
+      "elapsed_ms": 414.685023,
+      "peak_inflight": 2,
+      "repetition": 5,
+      "reported_slots": 2,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 4,
+      "elapsed_ms": 210.956483,
+      "peak_inflight": 4,
+      "repetition": 1,
+      "reported_slots": 4,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 4,
+      "elapsed_ms": 213.25397500000003,
+      "peak_inflight": 4,
+      "repetition": 2,
+      "reported_slots": 4,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 4,
+      "elapsed_ms": 209.195291,
+      "peak_inflight": 4,
+      "repetition": 3,
+      "reported_slots": 4,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 4,
+      "elapsed_ms": 211.476077,
+      "peak_inflight": 4,
+      "repetition": 4,
+      "reported_slots": 4,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    },
+    {
+      "effective_slots": 4,
+      "elapsed_ms": 210.149065,
+      "peak_inflight": 4,
+      "repetition": 5,
+      "reported_slots": 4,
+      "simulated_response_ms": 100,
+      "tasks": 8
+    }
+  ]
+}

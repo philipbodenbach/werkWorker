@@ -7,7 +7,7 @@
     "streaming": "unknown",
     "parallel_tools": "unknown",
     "structured_output": "unknown",
-    "images": "unsupported",
+    "images": "unknown",
     "reasoning": "unknown",
     "context_tokens": null
   },

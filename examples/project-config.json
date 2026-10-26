@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "model": "qwen3.8-27b-ud-q4_k_xl",
+  "profile": "coding-basic",
+  "context_tokens": 32768,
+  "output_tokens": 4096,
+  "skills": ["task-execution", "coding-basic"],
+  "test_commands": {
+    "check": ["cargo", "check", "--all-targets"],
+    "test": ["cargo", "test", "--all-targets"]
+  },
+  "instruction_directories": ["src"],
+  "requested_access": "process"
+}

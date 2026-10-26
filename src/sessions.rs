@@ -20,6 +20,13 @@ pub trait SessionStore: Send + Sync {
     async fn list(&self) -> Result<Vec<String>>;
     /// expected=None means insert; updates use compare-and-swap on revision.
     async fn save(&self, data: &SessionData, expected: Option<u64>) -> Result<()>;
+    /// Atomically remove exactly these revisions, or leave every row unchanged.
+    async fn delete(&self, _revisions: &[(String, u64)]) -> Result<()> {
+        Err(WorkerError::new(
+            "unsupported",
+            "This session store does not support deletion",
+        ))
+    }
     async fn close(&self) -> Result<()>;
 }
 #[derive(Default)]
@@ -28,6 +35,21 @@ pub struct InMemoryStore {
 }
 #[async_trait]
 impl SessionStore for InMemoryStore {
+    async fn delete(&self, revisions: &[(String, u64)]) -> Result<()> {
+        let mut all = self.data.lock().unwrap();
+        for (id, revision) in revisions {
+            if all.get(id).map(|s| s.revision) != Some(*revision) {
+                return Err(WorkerError::new(
+                    "store_conflict",
+                    "Session changed; refresh before deleting",
+                ));
+            }
+        }
+        for (id, _) in revisions {
+            all.remove(id);
+        }
+        Ok(())
+    }
     async fn load(&self, id: &str) -> Result<SessionData> {
         self.data
             .lock()
@@ -133,6 +155,29 @@ impl SqliteStore {
 }
 #[async_trait]
 impl SessionStore for SqliteStore {
+    async fn delete(&self, revisions: &[(String, u64)]) -> Result<()> {
+        let revisions = revisions.to_vec();
+        self.with(move |c| {
+            let tx = c.transaction().map_err(db_error)?;
+            for (id, revision) in revisions {
+                if tx
+                    .execute(
+                        "DELETE FROM sessions WHERE id=? AND revision=?",
+                        params![id, revision],
+                    )
+                    .map_err(db_error)?
+                    != 1
+                {
+                    return Err(WorkerError::new(
+                        "store_conflict",
+                        "Session changed; refresh before deleting",
+                    ));
+                }
+            }
+            tx.commit().map_err(db_error)
+        })
+        .await
+    }
     fn protected_paths(&self) -> Vec<std::path::PathBuf> {
         vec![self.path.clone()]
     }

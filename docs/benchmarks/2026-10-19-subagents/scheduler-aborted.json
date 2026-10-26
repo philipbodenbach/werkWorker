@@ -1,0 +1,8 @@
+{
+  "kind": "aborted_scheduler_repeat",
+  "status": "terminated",
+  "exit_code": 143,
+  "observed_elapsed_seconds_at_inspection": 387,
+  "rows": null,
+  "reason": "No output; futex wait observed; terminated for diagnosis; no timing results inferred"
+}

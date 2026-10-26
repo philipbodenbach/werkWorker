@@ -1,0 +1,6 @@
+{
+  "max_model_requests": 4,
+  "max_subagents": 4,
+  "max_children_per_run": 8,
+  "max_depth": 1
+}

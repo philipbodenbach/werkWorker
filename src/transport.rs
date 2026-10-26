@@ -14,9 +14,16 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const METHODS: &[&str] = &[
     "initialize",
+    "execution.status",
+    "agents.delegate",
+    "agents.list",
+    "agents.cancel",
+    "agents.message",
     "session.create",
     "session.open",
     "session.list",
+    "session.rename",
+    "session.delete",
     "session.fork",
     "run.submit",
     "run.status",
@@ -82,6 +89,7 @@ impl RpcHost {
             return Err(WorkerError::new("not_initialized", "Send initialize first"));
         }
         match request.method.as_str() {
+            "execution.status" => Ok(self.engine.execution_status()),
             "session.create" => {
                 let profile =
                     AgentProfile::bundled(p["profile"].as_str().unwrap_or("general-readonly"))?;
@@ -99,6 +107,23 @@ impl RpcHost {
                 Ok(json!({"session_id":id}))
             }
             "session.list" => Ok(json!(self.engine.list_sessions().await?)),
+            "session.rename" => {
+                self.engine
+                    .rename_session(text(p, "session_id")?, text(p, "title")?)
+                    .await?;
+                Ok(json!({"renamed":true}))
+            }
+            "session.delete" => {
+                if p["confirm"] != true {
+                    return Err(WorkerError::new(
+                        "confirmation_required",
+                        "session.delete requires confirm: true",
+                    ));
+                }
+                let deleted = self.engine.delete_session(text(p, "session_id")?).await?;
+                self.sessions.retain(|id, _| !deleted.contains(id));
+                Ok(json!({"deleted":deleted}))
+            }
             "shutdown" => {
                 self.engine.close().await?;
                 Ok(json!({"closed":true}))
@@ -122,8 +147,11 @@ impl RpcHost {
                         };
                         let run = if method == "run.submit" {
                             session
-                                .submit(
+                                .submit_with_images(
                                     text(p, "input")?,
+                                    serde_json::from_value(
+                                        p.get("images").cloned().unwrap_or_else(|| json!([])),
+                                    )?,
                                     text(p, "command_id")?,
                                     limits,
                                     p.get("output_schema").cloned(),
@@ -131,7 +159,14 @@ impl RpcHost {
                                 .await?
                         } else {
                             session
-                                .follow_up(text(p, "input")?, text(p, "command_id")?, limits)
+                                .follow_up_with_images(
+                                    text(p, "input")?,
+                                    serde_json::from_value(
+                                        p.get("images").cloned().unwrap_or_else(|| json!([])),
+                                    )?,
+                                    text(p, "command_id")?,
+                                    limits,
+                                )
                                 .await?
                         };
                         Ok(json!({"run_id":run.id,"receipt":run.receipt}))
@@ -149,6 +184,26 @@ impl RpcHost {
                     _ => {
                         let run = session.run(text(p, "run_id")?).await?;
                         match method {
+                            "agents.delegate" => Ok(json!(
+                                run.delegate(
+                                    serde_json::from_value(p["tasks"].clone())?,
+                                    text(p, "command_id")?
+                                )
+                                .await?
+                            )),
+                            "agents.list" => Ok(json!(run.subagents().await?)),
+                            "agents.cancel" => Ok(json!(
+                                run.subagent(text(p, "child_session_id")?)
+                                    .await?
+                                    .cancel("Host cancelled child", text(p, "command_id")?)
+                                    .await?
+                            )),
+                            "agents.message" => Ok(json!(
+                                run.subagent(text(p, "child_session_id")?)
+                                    .await?
+                                    .steer(text(p, "input")?, text(p, "command_id")?)
+                                    .await?
+                            )),
                             "run.status" => Ok(json!(run.status().await?)),
                             "run.cancel" => Ok(json!(
                                 run.cancel(
@@ -158,7 +213,14 @@ impl RpcHost {
                                 .await?
                             )),
                             "run.steer" => Ok(json!(
-                                run.steer(text(p, "input")?, text(p, "command_id")?).await?
+                                run.steer_with_images(
+                                    text(p, "input")?,
+                                    serde_json::from_value(
+                                        p.get("images").cloned().unwrap_or_else(|| json!([]))
+                                    )?,
+                                    text(p, "command_id")?
+                                )
+                                .await?
                             )),
                             "approval.respond" => Ok(json!(
                                 run.respond_to_approval(

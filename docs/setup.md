@@ -1,0 +1,211 @@
+# Interactive connection setup
+
+Start `ww`, or `cargo run --bin ww --` from this checkout. The setup uses the
+same colors and banner as the chat. On first use, no API request is made until
+you choose **Discover models**. On subsequent starts, **Continue previous**
+checks and reconnects to the saved service, while **Connect new** opens the wizard.
+No inference is made until you submit a chat message or explicitly resume an
+interrupted run.
+
+Connecting checks WerkProtocol identity, runtime capabilities and `/v1/models`.
+Runtime capabilities and the model list are fetched concurrently. The worker
+does not request the general `/v1/capabilities` catalogue or `/v1/parameters`
+during chat setup: the catalogue probes installed models/backends and can be
+slow on a cold server. Explicit media tools discover their own task support.
+Bounded deployment/observability checks still establish context and concurrency.
+
+Image input defaults to **Auto** (`capabilities.images: "unknown"`), including
+the shipped Werk/Qwen presets. Images are sent as structured image parts and
+the server validates whether the selected model/backend can process them.
+`"unsupported"` is an explicit local disable: it prevents any image request,
+even when the server has a working vision model. Older copies of the presets
+may still contain this value in `.werkworker/werk-config.json` or a saved
+connection. Set **Image input** to **Auto** in `/setup` and reconnect; server
+flags cannot override a client-side disable.
+
+1. Choose a local Werk server, a remote Werk server, or the explicit offline demo.
+2. Enter the server origin (local default `http://127.0.0.1:11434`). Remote
+   servers require HTTPS. URL credentials, queries and non-root paths are rejected.
+3. Choose authentication: masked API-key input for this session, the **name** of
+   an environment variable, or explicitly no authentication. Paste is supported.
+   Use a key already accepted by Werk; this does not create a server-side key.
+4. Discover models. The client checks WerkProtocol 1.0 and lists `/v1/models`.
+   Authentication/network failures stay in the dialog so you can correct them.
+5. Select the model, context limit, output budget, agent profile and workspace
+   access. Keep context empty for discovery, or supply the actual **per-request**
+   server limit. Changing models clears a manually entered context limit.
+   Output defaults to 4,096 tokens **including reasoning** and must fit within
+   one quarter of the effective context. The server's smaller discovered limit
+   always wins. Unknown context requires an explicit value before continuing.
+6. Select streaming, tool support and **Reasoning effort** for your model.
+   Profiles exposing tools require tool calling. These capability choices are host assertions, not a
+   benchmark proving that a model can use tools correctly.
+   Reasoning defaults to **Server default**. WerkProtocol supplies the selected
+   model's tiers (for example `low`, `medium`, `high`, `max`, `ultra`), effective
+   default and limits. The wizard refreshes this read-only profile when the model
+   or output reserve changes, and cycles only through available tiers. It shows
+   a reported token budget where one exists; unknown defaults remain unknown.
+   An unavailable saved tier must be changed before connecting. Discovery never
+   starts a model or generates a response.
+7. Choose where to save, then **Connect and start**. The dialog checks the selected
+   model's capacity again. Save errors remain visible; choosing **Do not save**
+   allows a session without changing configuration files.
+
+CUDA, CPU, Metal and other inference backends are controlled by the running
+Werk server. The dialog reports Werk's active backend; it does not install,
+launch or reconfigure an inference server and is not a generic OpenAI adapter.
+
+## Controls and reconnecting
+
+Tab/Shift-Tab or Up/Down selects a field; Left/Right changes a choice. Enter moves
+to the next field or performs the selected action. Ctrl-U clears a text field,
+Backspace removes its last character. Esc goes back or cancels a connection
+check. Ctrl-Q exits; two consecutive Ctrl-C presses also exit. The first Ctrl-C
+cancels an outstanding check. Each check has a 20-second overall timeout, and
+exiting aborts its task and restores the terminal.
+
+`/setup` reopens configuration from the chat after the current run has finished
+or been cancelled. It closes the old engine and starts a **new session**; it does
+not silently change the provider of an existing run. The earlier session remains
+in SQLite. An initial CLI prompt is not resubmitted when reconnecting.
+`ww --setup` explicitly opens the wizard even when configuration flags are given.
+With a saved connection, ordinary startup instead offers **Continue previous**
+and **Connect new**. Continue checks the live server and its current context
+capacity with a cancellable 20-second timeout. Failure leaves the choices visible
+for retry or new setup; it does not erase previous chats or silently use a demo.
+It reuses the effective model and capability choices from the successful setup,
+even when the original project transport file contains incomplete defaults.
+After connecting, choose a new or previous session. `/sessions` returns to that
+selection without reconnecting.
+
+## Global configuration and credentials
+
+| Platform | Global connection file |
+|---|---|
+| Linux/macOS | `$XDG_CONFIG_HOME/werkworker/config.json`, or `~/.config/werkworker/config.json` |
+| Windows | `%APPDATA%\werkworker\config.json` |
+
+The global file is versioned JSON containing `version`, `werk` (the existing
+WerkConfig object), `secret_env`, `no_auth`, `profile` and `limits`. The wizard
+reloads it on the next launch. **Global connection** saves URL, model,
+capabilities, streaming, reasoning effort, profile, token budgets and authentication method.
+A named environment reference is saved; the variable's value is not.
+The file is written using a temporary file and replacement; Unix mode is 0600.
+Windows replacement removes the old file first and is not atomic.
+
+`limits.reserve_output_tokens` is the initial output allowance, including
+reasoning. Optional `limits.max_output_tokens` is the hard recovery ceiling:
+for example, `{"reserve_output_tokens":4096,"max_output_tokens":8192}`.
+With `max_output_tokens:null` (the default), the advertised model/server ceiling
+applies; without server evidence, the initial allowance remains the ceiling.
+Actual requests must also fit the input/context budget. The wizard labels its
+output field **Initial output tokens**; advanced ceilings can be set in the
+connection JSON or per-run RPC limits. See [budget recovery](context.md).
+
+Successful saved setups also remember the effective connection, budgets, profile
+and explicitly selected access in `connections/<workspace-hash>.json` beside the
+global config. These files are scoped to the canonical workspace path and written
+with mode 0600 on Unix. They contain credential references, never API-key values.
+This also remembers connections when the wizard saves project preferences only.
+**Do not save** leaves the remembered connection unchanged.
+
+Reasoning is stored as `werk.options.reasoning_tier` in a global/remembered
+connection. In a standalone WerkConfig, add it to the existing `options` object:
+
+```json
+{ "options": { "reasoning_tier": "low" } }
+```
+
+This also works for headless runs using `--werk-config`. Missing, `null`, or
+`"default"` sends `werk.reasoning: {"tier":"default"}` to servers advertising
+`api.chat.reasoning`. Werk resolves the current default within each request's
+output limits. Explicit tier IDs are opaque to Worker: their native meaning and
+budgets are owned by Werk. Count and generation carry the same tier payload.
+Older servers inherit their native default without an override and expose no
+invented choices; an explicit tier requires the new protocol capability.
+
+The advanced `options.reasoning_effort` field still accepts native strings or
+numbers unchanged. It is displayed as **Native** and preserved until explicitly
+changed. It cannot be combined with `reasoning_tier`; native overrides bypass
+managed tier mapping. `capabilities.reasoning` is a capability declaration only.
+
+Use `/effort` or `/reasoning` in chat to open the model's protocol-backed tier
+slider above the input. Left/Right (or Up/Down) selects a valid value, Enter
+applies it, and Escape discards the preview. The conversation stays visible.
+Direct commands such as `/effort high`, `/reasoning low`, and
+`/effort default` also work. Only available tiers appear on the slider;
+unavailable direct selections are rejected. `default` follows Werk's reported default and current limits, and clears
+an inherited native override for this session. No inference is used for discovery.
+
+Chat selections are saved with the current session and apply to newly planned
+requests in the parent and its existing subagents. A request already planned or
+streaming retains its captured selection across counting, dispatch and retries.
+Token-count caches and request fingerprints include the selection. Reopening the
+same session restores its choice for the same provider/model; new sessions use
+connection/project defaults. `/setup` continues to configure connection/project
+defaults and reconnect. If Werk rejects a tier under changed limits, Worker
+reports the error without silently choosing another tier.
+
+Directly entered keys exist only in the process for the connection/session.
+They are masked on screen and are absent from settings, prompts, tool arguments
+and session exports. You must enter them again after reconnect/restart unless
+you configure a reusable credential. There is no OS keychain integration.
+Environment authentication supports reusable credential references.
+
+For a local project connection, place a WerkConfig in
+`.werkworker/werk-config.json`. Bare `ww` automatically reads it from the current
+directory (or from `--workspace`). Optionally add `.werkworker/secrets.json` with
+`{"api_key":"your-token"}` to preload the masked API-key field. Keep this secret
+file gitignored and mode `0600` on Unix; it is stored as plaintext. The wizard
+never writes or copies this token to global/project settings. Local credentials
+are used only with the automatically discovered local connection; `--werk-config`
+bypasses both files, and `--secret-env` overrides the local token. A different
+local server URL clears inherited global authentication. The connection is still
+shown in the connection selection before any reconnect request. Do not put keys in rule files, profiles or
+chat prompts.
+
+**Project model/profile/budgets** writes `.werkworker/config.json` in the selected
+workspace, retaining its other project preferences. It does not save the server
+URL or authentication. **Do not save** changes neither file. An existing project
+config selects project saving by default; otherwise global saving is selected.
+Concurrent project-config edits cause a conflict instead of an overwrite.
+See [project configuration and profiles](project-configuration.md).
+
+The default interactive access is **All tools; explicit approval for each action**.
+Every registered tool and skill is available, independent of the selected profile's
+original catalogue. File, process and network actions pause for approval of their
+prepared arguments; the profile still supplies instructions. You can instead
+choose restricted no-access, read-only, write or process scopes.
+Saved setups remember this explicit selection for the current
+workspace and show it next to **Continue previous**. Choosing Continue reuses it
+for new chats; **Connect new** defaults to all tools with explicit approvals. Each operation still needs
+approval; native sandbox support is still required. An explicit `--grants` file
+takes precedence for new sessions. Existing sessions retain their stored policy.
+Project access requests are displayed but never select a broader policy for you.
+
+For an existing restricted session, open **F2 / `/permissions`**, press Enter,
+and select **Enable all tools; ask before actions**. This updates and saves the
+same session, including its registered skills, without reconnecting or discarding
+the conversation. Finish/cancel active subagents before this change; new children
+inherit it. Enabling requests executes nothing. On the actual approval card,
+choose **Allow once**, press Ctrl-Y or type **ja/yes**; **Deny**, Ctrl-N and
+**nein/no** reject the action. Ordinary agent questions do not change permissions.
+Hard-denied tools, path boundaries and the process sandbox remain enforced.
+
+Process execution requires Bubblewrap. The CLI finds `/usr/bin/bwrap`, then a
+per-user installation at
+`$XDG_DATA_HOME/werk-worker/tools/bubblewrap/usr/bin/bwrap`
+(`~/.local/share` when unset). `--bubblewrap PATH` overrides detection.
+The worker never substitutes an unrestricted host shell when the backend is absent.
+
+## Existing CLI paths
+
+`ww --werk-config config.json` seeds the dialog with that WerkConfig. Supplying
+both `--werk-config` and `--secret-env` retains the direct connection path; add
+`--setup` to review/change it interactively. Explicit scripted/demo paths remain
+offline. `run`, `diagnose` and `rpc` do not read global connection settings or ask
+for credentials: provide their existing explicit transport and environment flags.
+Headless runs retain their default 2,048-token output reserve; the wizard's budget
+applies to runs started in its connected TUI session.
+
+For the currently discussed Qwen server, use the [local example](local-werk-example.md).

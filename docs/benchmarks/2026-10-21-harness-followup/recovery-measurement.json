@@ -1,0 +1,12 @@
+{
+  "executed_tools": 3,
+  "model_requests": 5,
+  "request_estimates": [1755, 2269, 11559, 11526, 11775],
+  "serialized_request_bytes": [1652, 2125, 11378, 11345, 11553],
+  "status": "completed",
+  "tool_proposals": 3,
+  "tool_schema_bytes": [1123, 1123, 1123, 1123, 1123],
+  "total_estimate": 38884,
+  "total_serialized_request_bytes": 38053,
+  "verification": "prior write preserved; discarded call absent; both hints reference actual receipts; context snapshots match complete request estimates"
+}

@@ -251,3 +251,100 @@ async fn pending_interaction_survives_actual_process_kill_and_reconnect() {
     rpc_read(&mut output).await;
     assert!(child.wait().await.unwrap().success());
 }
+
+#[tokio::test]
+async fn rpc_subagents_are_scoped_and_can_be_listed_steered_and_cancelled() {
+    let workspace = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(
+        (0..6)
+            .map(|_| ScriptedTurn {
+                delay_ms: 3000,
+                ..ScriptedTurn::text("done")
+            })
+            .collect(),
+    ));
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let mut host = RpcHost::new(
+        engine.clone(),
+        workspace.path().into(),
+        HostPolicy::default(),
+    );
+    let req = |method: &str, params| transport::RpcRequest {
+        id: json!(1),
+        method: method.into(),
+        params,
+    };
+    host.dispatch(&req("initialize", json!({"protocol_version":1})))
+        .await
+        .unwrap();
+    assert_eq!(
+        host.dispatch(&req("execution.status", json!({})))
+            .await
+            .unwrap()["effective_model_requests"],
+        4
+    );
+    let sid = host
+        .dispatch(&req(
+            "session.create",
+            json!({"profile":"general-readonly"}),
+        ))
+        .await
+        .unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run_id = host
+        .dispatch(&req(
+            "run.submit",
+            json!({"session_id":sid,"input":"go","command_id":"root"}),
+        ))
+        .await
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let tasks = json!({"session_id":sid,"run_id":run_id,"command_id":"children","tasks":[{"goal":"alpha"},{"goal":"beta"}]});
+    let children = host
+        .dispatch(&req("agents.delegate", tasks.clone()))
+        .await
+        .unwrap();
+    let duplicate = host.dispatch(&req("agents.delegate", tasks)).await.unwrap();
+    assert_eq!(children[0]["session_id"], duplicate[0]["session_id"]);
+    assert_eq!(
+        host.dispatch(&req(
+            "agents.list",
+            json!({"session_id":sid,"run_id":run_id})
+        ))
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .len(),
+        2
+    );
+    host.dispatch(&req("agents.message",json!({"session_id":sid,"run_id":run_id,"child_session_id":children[0]["session_id"],"input":"focus","command_id":"steer"}))).await.unwrap();
+    assert_eq!(host.dispatch(&req("agents.cancel",json!({"session_id":sid,"run_id":run_id,"child_session_id":"foreign","command_id":"deny"}))).await.unwrap_err().code,"agent_denied");
+    host.dispatch(&req("agents.cancel",json!({"session_id":sid,"run_id":run_id,"child_session_id":children[0]["session_id"],"command_id":"cancel-child"}))).await.unwrap();
+    host.dispatch(&req(
+        "run.cancel",
+        json!({"session_id":sid,"run_id":run_id,"command_id":"cancel-root"}),
+    ))
+    .await
+    .unwrap();
+    let run = engine
+        .open_session(&sid)
+        .await
+        .unwrap()
+        .run(&run_id)
+        .await
+        .unwrap();
+    assert_eq!(run.wait().await.unwrap().status, RunStatus::Cancelled);
+    assert!(
+        run.subagents()
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.run.as_ref().unwrap().status.terminal())
+    );
+    engine.close().await.unwrap();
+}

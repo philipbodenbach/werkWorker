@@ -11,27 +11,46 @@ Usage: werk-worker [OPTIONS] [COMMAND]
 
 Commands:
   tui       Interactive agent UI (the default when no command is supplied)
-  run       
-  resume    
-  sessions  
-  tools     
-  skills    
-  profiles  
-  sandbox   
-  diagnose  
-  rpc       
+  run
+  resume
+  sessions
+  tools
+  skills
+  profiles
+  sandbox
+  diagnose
+  rpc
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-      --store <STORE>              
-      --workspace <WORKSPACE>      [default: .]
-      --grants <GRANTS>            
-      --bubblewrap <BUBBLEWRAP>    [default: /usr/bin/bwrap]
-      --werk-config <WERK_CONFIG>  Explicit Werk transport/model configuration JSON; no credentials inside
-      --secret-env <SECRET_ENV>    
-      --script <SCRIPT>            Explicit deterministic offline responses, never a provider fallback
-  -h, --help                       Print help
-  -V, --version                    Print version
+      --setup
+          Open the interactive connection setup, even with an explicit configuration
+      --store <STORE>
+
+      --workspace <WORKSPACE>
+          [default: .]
+      --grants <GRANTS>
+
+      --execution-config <EXECUTION_CONFIG>
+          Host-owned inference and subagent limits JSON
+      --continuous
+          Run without aggregate step/request/time cutoffs (default in interactive mode)
+      --limits <LIMITS>
+          Explicit run budgets JSON; overrides the interactive continuous default
+      --harness-config <HARNESS_CONFIG>
+          Optional completion criteria and explicit host guidance JSON
+      --bubblewrap <BUBBLEWRAP>
+          Bubblewrap executable; defaults to the system or per-user installation
+      --werk-config <WERK_CONFIG>
+          Explicit Werk transport/model configuration JSON; no credentials inside
+      --secret-env <SECRET_ENV>
+
+      --script <SCRIPT>
+          Explicit deterministic offline responses, never a provider fallback
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ## run
@@ -40,11 +59,11 @@ Options:
 Usage: werk-worker run [OPTIONS] <INPUT>
 
 Arguments:
-  <INPUT>  
+  <INPUT>
 
 Options:
       --profile <PROFILE>  [default: general-readonly]
-      --demo               
+      --demo
   -h, --help               Print help
 ```
 
@@ -56,13 +75,13 @@ Interactive agent UI (the default when no command is supplied)
 Usage: werk-worker tui [OPTIONS] [INPUT]
 
 Arguments:
-  [INPUT]  
+  [INPUT]
 
 Options:
       --profile <PROFILE>  [default: general-readonly]
-      --demo               
-      --session <SESSION>  
-      --run-id <RUN_ID>    
+      --demo
+      --session <SESSION>  Open a saved conversation; optionally resume a specific interrupted run
+      --run-id <RUN_ID>
   -h, --help               Print help
 ```
 
@@ -72,8 +91,8 @@ Options:
 Usage: werk-worker resume <SESSION_ID> <RUN_ID>
 
 Arguments:
-  <SESSION_ID>  
-  <RUN_ID>      
+  <SESSION_ID>
+  <RUN_ID>
 
 Options:
   -h, --help  Print help
@@ -85,9 +104,11 @@ Options:
 Usage: werk-worker sessions <COMMAND>
 
 Commands:
-  list     
-  inspect  
-  export   
+  list
+  inspect
+  export
+  rename   Rename a saved conversation (1..80 characters)
+  delete   Delete a conversation and its subagent sessions; keep workspace files
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -100,8 +121,8 @@ Options:
 Usage: werk-worker skills <COMMAND>
 
 Commands:
-  list     
-  inspect  
+  list
+  inspect
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -114,8 +135,8 @@ Options:
 Usage: werk-worker profiles <COMMAND>
 
 Commands:
-  list     
-  inspect  
+  list
+  inspect
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -128,7 +149,7 @@ Options:
 Usage: werk-worker sandbox <COMMAND>
 
 Commands:
-  doctor  
+  doctor
   help    Print this message or the help of the given subcommand(s)
 
 Options:

@@ -110,7 +110,12 @@ fn scan(run: &Run) -> Scan {
             latest = None;
             recovery = false;
         }
-        if crate::harness::verification_observation(result).is_some_and(|key| checks.insert(key)) {
+        if !(invocation.call.name == "process.run"
+            && crate::completion::verification_rejection(&invocation.call.arguments, &result.data)
+                .is_some())
+            && crate::harness::verification_observation(result)
+                .is_some_and(|key| checks.insert(key))
+        {
             repeated = 0;
             latest = None;
             // A failed review supplies the next repair, not an exit back into

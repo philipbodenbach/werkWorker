@@ -13,7 +13,8 @@ fn inspection_only(arguments: &Value) -> bool {
     let Some(program) = argv.first().and_then(Value::as_str) else {
         return false;
     };
-    let program = program.rsplit('/').next().unwrap_or(program);
+    let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let program = program.strip_suffix(".exe").unwrap_or(program);
     let reader = |name: &str| {
         matches!(
             name,
@@ -22,6 +23,15 @@ fn inspection_only(arguments: &Value) -> bool {
     };
     if reader(program) {
         return true;
+    }
+    if matches!(program, "node" | "nodejs")
+        && matches!(
+            argv.get(1).and_then(Value::as_str),
+            Some("-e" | "--eval" | "-p" | "--print")
+        )
+        && let Some(script) = argv.get(2).and_then(Value::as_str)
+    {
+        return inline_source_inventory(script);
     }
     if matches!(program, "sh" | "bash" | "dash" | "zsh")
         && argv.get(1).and_then(Value::as_str) == Some("-c")
@@ -35,6 +45,62 @@ fn inspection_only(arguments: &Value) -> bool {
                 .all(|part| part.split_whitespace().next().is_some_and(reader));
     }
     false
+}
+
+/// Recognize a narrow inline equivalent of cat/grep: fs reads, string queries
+/// and console output only. This is not a JavaScript validator or a proof of
+/// test semantics. Unknown calls/imports, indirect invocation and interpolation
+/// retain the ordinary execution contract, including real VM/application tests.
+fn inline_source_inventory(script: &str) -> bool {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
+    let (fs_import, calls, indirect) = PATTERNS.get_or_init(|| {
+        (
+            Regex::new(r#"\brequire\s*\(\s*(?:'(?:node:)?fs'|"(?:node:)?fs")\s*\)"#).unwrap(),
+            Regex::new(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*\s*\(")
+                .unwrap(),
+            Regex::new(r"[\]\)]\s*(?:\?\.)?\s*\(").unwrap(),
+        )
+    });
+    if !fs_import.is_match(script) || script.contains('`') || indirect.is_match(script) {
+        return false;
+    }
+    // Removing only the known builtin import leaves every application import
+    // as an unknown call. Do not infer execution from criterion labels/stdout.
+    let script = fs_import.replace_all(script, "__werk_fs");
+    let mut read = false;
+    for call in calls.find_iter(&script) {
+        let name: String = call
+            .as_str()
+            .trim_end_matches('(')
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let member = name.contains('.') || script[..call.start()].trim_end().ends_with('.');
+        let leaf = name.rsplit('.').next().unwrap();
+        if member && leaf == "readFileSync" {
+            read = true;
+        } else if name != "console.log"
+            && name != "console.error"
+            && !(member
+                && matches!(
+                    leaf,
+                    "test"
+                        | "match"
+                        | "includes"
+                        | "indexOf"
+                        | "slice"
+                        | "substring"
+                        | "split"
+                        | "trim"
+                        | "toString"
+                ))
+        {
+            return false;
+        }
+    }
+    read
 }
 
 pub(crate) fn verification_rejection(arguments: &Value, result: &Value) -> Option<&'static str> {
@@ -365,6 +431,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inline_source_inventory_does_not_certify_a_runnable_candidate() {
+        // Reduced from the 2026-10-26 saved run: exit 0 printed that all
+        // important subsystems were missing, yet admitted an automatic review.
+        let script = "const s=require('fs').readFileSync('tetris.html','utf8');console.log('has render:',/function render/.test(s));console.log('has audio:',/AudioContext/.test(s));console.log('has loop:',/requestAnimationFrame/.test(s));const m=s.match(/spawnBurst\\(p\\){/);console.log('tail anchor:',!!m);console.log(s.slice(-400))";
+        for program in [
+            "node",
+            "/usr/bin/node",
+            "C:\\Program Files\\nodejs\\node.exe",
+        ] {
+            let args = json!({"argv":[program,"-e",script],"verification":{"criteria":["Exit code 0 and output printed"],"paths":["tetris.html"]}});
+            assert!(verification_rejection(&args, &json!({"exit_code":0,"stdout":"has render: false\nhas audio: false\nhas loop: false"})).is_some(), "{program}");
+        }
+    }
+
+    #[test]
     fn direct_inspection_is_not_execution_and_unknown_programs_are_not_guessed() {
         for argv in [
             json!(["/bin/cat", "counter.sh"]),
@@ -388,6 +469,26 @@ mod tests {
             json!(["sh", "-c", "test \"$(cat state.txt)\" = 1"]),
             json!(["cargo", "test"]),
             json!(["./custom-smoke-test"]),
+            json!([
+                "node",
+                "-e",
+                "const fs=require('fs');const s=fs.readFileSync('game.js','utf8');require('./app').test(s)"
+            ]),
+            json!([
+                "node",
+                "-e",
+                "const fs=require('fs');eval(fs.readFileSync('game.js','utf8'))"
+            ]),
+            json!([
+                "node",
+                "-e",
+                "const fs=require('fs');(0,eval)(fs.readFileSync('game.js','utf8'))"
+            ]),
+            json!([
+                "node",
+                "-e",
+                "const fs=require('fs');console.log(`${require('./app').start()} ${fs.readFileSync('game.js','utf8')}`)"
+            ]),
         ] {
             assert!(!inspection_only(&json!({"argv":argv})), "{argv}");
         }

@@ -1,8 +1,36 @@
 import unittest
+from unittest import mock
+import importlib.util
+from pathlib import Path
+import sys
 from live_resource_guard import pressure
 
 
 class ResourceAdmissionTests(unittest.TestCase):
+    def test_import_and_admission_do_not_require_posix_locking(self):
+        spec = importlib.util.spec_from_file_location(
+            'guard_without_fcntl', Path(__file__).with_name('live_resource_guard.py'))
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {'fcntl': None}):
+            spec.loader.exec_module(module)
+            self.assertIn('GPU', module.pressure(self.state(), 8192, 2048, 2048, True))
+
+    def test_unsupported_platform_refuses_before_launch_or_linux_imports(self):
+        import live_resource_guard as guard
+        for platform in ['win32', 'darwin']:
+            with self.subTest(platform=platform), \
+                    mock.patch.object(sys, 'platform', platform), \
+                    mock.patch.object(sys, 'argv', ['guard', '--report', 'unused', '--', 'unused']), \
+                    mock.patch.dict(sys.modules, {'fcntl': None}), \
+                    mock.patch.object(guard.subprocess, 'Popen') as launch, \
+                    mock.patch.object(guard, 'sample') as sample, \
+                    mock.patch('sys.stderr'):
+                with self.assertRaises(SystemExit) as stopped:
+                    guard.main()
+                self.assertEqual(stopped.exception.code, 2)
+                launch.assert_not_called()
+                sample.assert_not_called()
+
     def state(self):
         return dict(available_ram_mib=75000, used_swap_mib=0, test_rss_mib=100,
                     gpus=[dict(index=0, free_mib=500)])

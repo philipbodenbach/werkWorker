@@ -6,12 +6,12 @@ process group is terminated on pressure. This cannot diagnose historical peaks
 or guarantee that a disconnected inference has stopped inside a remote server.
 """
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 
 
@@ -93,6 +93,12 @@ def main():
     parser.add_argument('--interval', type=float, default=5)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if sys.platform != 'linux':
+        parser.error('Live resource monitoring requires Linux/WSL and /proc; no command started')
+    # Keep pure resource admission usable by the Windows/macOS test suites.
+    # Only executing this Linux-specific monitor needs the POSIX lock module.
+    import fcntl
+
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command or args.interval < 1 or args.timeout <= 0 or min(
         args.min_free_ram_mib, args.min_free_vram_mib, args.max_test_rss_mib

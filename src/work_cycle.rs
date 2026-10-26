@@ -380,6 +380,96 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_source_inventory_cannot_clear_recovery_or_admit_review() {
+        let mut run: Run = serde_json::from_value(json!({
+            "id":"run","status":"running","input":"Build a runnable game",
+            "limits":Limits::default(),"started_at_ms":0,"deadline_ms":0,
+            "history_start":0,"metrics":Metrics::default(),"attempts":[],
+            "contexts":[],"invocations":[],"steering":[],"plan":null,
+            "similar_grants":[],"repaired_output":false
+        }))
+        .unwrap();
+        let receipt = |name: &str, args: Value, data: Value| -> ToolInvocation {
+            serde_json::from_value(json!({
+                "invocation_id":id("inv"),"step_id":"step","message_index":0,
+                "call":{"id":"call","name":name,"arguments":args},
+                "status":"finished","prepared":{},"result":ToolResult::ok(data)
+            }))
+            .unwrap()
+        };
+        for _ in 0..4 {
+            run.invocations.push(receipt(
+                "files.read",
+                json!({"path":"game.js"}),
+                json!({"path":"game.js","sha256":hash("old"),"start_byte":0,"content":"old"}),
+            ));
+        }
+        assert!(crate::read_progress::recovery_active(&run));
+        run.invocations.push(receipt(
+            "files.edit",
+            json!({"path":"game.js","expected_hash":hash("old")}),
+            json!({"path":"game.js","sha256":hash("new")}),
+        ));
+        assert!(crate::read_progress::recovery_check_due(&run));
+        // A receipt persisted by an older worker can still contain passed:true.
+        // Neither context compaction nor resuming it may restore that false pass.
+        run.invocations.push(receipt("process.run", json!({
+            "argv":["node","-e","const s=require('fs').readFileSync('game.js','utf8');console.log(/render/.test(s))"],
+            "verification":{"criteria":["File inspected"],"paths":["game.js"]}
+        }), json!({"exit_code":0,"stdout":"false\n","verification":{
+            "passed":true,"criteria":["File inspected"],"files":{"game.js":hash("new")}
+        }})));
+        let mut run: Run = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+        let state = observation(&run, &BTreeMap::new());
+        assert_eq!(state["suggested_phase"], "check");
+        assert!(state["latest_check"].is_null());
+        assert!(crate::read_progress::recovery_check_due(&run));
+        // A real execution receipt still advances the same state normally.
+        run.invocations.last_mut().unwrap().call.arguments["argv"] =
+            json!(["node", "game.test.js"]);
+        assert_eq!(
+            observation(&run, &BTreeMap::new())["suggested_phase"],
+            "review"
+        );
+        assert!(!crate::read_progress::recovery_check_due(&run));
+    }
+
+    #[test]
+    #[ignore = "explicit read-only replay; no model or workspace execution"]
+    fn saved_inline_inventory_stays_in_check_phase() {
+        let db = rusqlite::Connection::open_with_flags(
+            std::env::var("WW_REPLAY_DATABASE").unwrap(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let raw: String = db
+            .query_row(
+                "SELECT data FROM sessions WHERE id=?1",
+                [std::env::var("WW_REPLAY_SESSION").unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let session: SessionData = serde_json::from_str(&raw).unwrap();
+        let run = session.runs.last().unwrap();
+        let receipts = crate::harness::state(&session, &run.id)
+            .unwrap()
+            .verifications;
+        assert!(run.invocations.iter().any(|i| {
+            i.call.name == "process.run"
+                && i.result
+                    .as_ref()
+                    .is_some_and(|r| r.data["verification"]["passed"] == true)
+        }));
+        let state = observation(run, &receipts);
+        assert_eq!(state["suggested_phase"], "check", "{state}");
+        assert!(state["latest_check"].is_null(), "{state}");
+        eprintln!(
+            "saved run: {} tools, source inventory rejected, check remains due",
+            run.invocations.len()
+        );
+    }
+
+    #[test]
     #[ignore = "explicit read-only replay; no model or workspace execution"]
     fn saved_loop_is_redirected_while_the_original_goal_is_still_available() {
         let db = rusqlite::Connection::open_with_flags(

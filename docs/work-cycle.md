@@ -321,10 +321,12 @@ request, step and wall budgets still apply.
 The live replay also exposed false progress from labeling source inspection or
 syntax validation as `verification`. Direct source/metadata readers and known
 standalone syntax modes do not produce behavioral receipts when they succeed.
-A syntax failure still allows repair. Arbitrary inline programs are deliberately
-not classified from language-specific code patterns: that would be a brittle
-substitute for actual execution and review. These filters supplement the general
-state/checkpoint mechanism; they cannot prove arbitrary test semantics.
+A syntax failure still allows repair. A narrow inline Node inventory consisting
+of `fs` reads, string/regular-expression queries and console output is likewise
+inspection. Unknown calls, application imports, VM evaluation and assertions
+retain the ordinary verification contract. This conservative recognizer is not
+a JavaScript parser or a proof of arbitrary test semantics. These filters
+supplement the general state/checkpoint mechanism and actual execution/review.
 
 The regressions run real file edits, successful reads, syntax checks, a rejected
 premature final answer and public-function assertions. They verify restoration
@@ -538,3 +540,34 @@ candidates still chose source inspection, and a longer error result exceeded the
 remaining context allowance. This experimental context builder is not part of
 the repository change. The live results do not justify shipping that additional
 restriction or claiming that supplying a complete file alone solves the loop.
+
+## October 26: source inventory incorrectly admitted review
+
+The saved ordinary `ww` run starting at 11:24 CET wrote and extended
+`tetris.html`, then repeatedly inspected it. Its sole purported verification
+read the source with Node and printed `has render: false`, `has audio: false`
+and `has loop: false`. Exit zero incorrectly produced a passing receipt and
+started the automatic reviewer. The parent eventually failed at 11:37 with an
+incomplete HTTP chunked response; the reviewer used its six-request budget.
+That transport failure is separate from the invalid verification receipt.
+
+The narrow inline inventory recognizer now rejects this receipt as behavioral
+evidence. Recovery and repetition replay also reclassify old stored receipts,
+so resuming cannot restore the false pass. The real saved run replays offline
+with the check phase still due and no passing behavioral check. This uses no
+model-specific rules or additional model/reasoning calls. Actual execution,
+VM harnesses and unknown programs retain the existing contract; arbitrary test
+semantics and end-to-end completion are still not guaranteed.
+
+The Windows platform workflow also exposed a Linux-only `fcntl` import in
+the live-test resource guard. Pure admission checks now import on Windows and
+macOS; invoking the Linux monitor there refuses before sampling or launching
+anything. Linux resource monitoring and locking remain unchanged.
+
+Validation: 312 Rust tests passed with the real sandbox required (11 opt-in
+tests ignored), plus formatting, Clippy with warnings denied, 16 Python tests
+and the setup/reasoning PTY smokes. All seven resource-guard tests also passed
+with native Windows Python 3.10; the complete Windows Python suite requires
+3.11 or later for `tomllib` (GitHub uses 3.12). The saved-run replay and tests
+use no real model or GPU. No remote workflow was rerun and no installed command
+was replaced; live convergence and system stability remain unverified.

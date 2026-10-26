@@ -515,7 +515,13 @@ fn repetition_boundary(run: &Run) -> usize {
             prior.insert(key, value);
         } else if changed_file
             || result.data["workspace_changed"] == true
-            || verification_observation(result).is_some_and(|key| checks.insert(key))
+            || (!(invocation.call.name == "process.run"
+                && crate::completion::verification_rejection(
+                    &invocation.call.arguments,
+                    &result.data,
+                )
+                .is_some())
+                && verification_observation(result).is_some_and(|key| checks.insert(key)))
         {
             boundary = index + 1;
         }

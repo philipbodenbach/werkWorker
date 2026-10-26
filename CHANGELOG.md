@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 - Persist validated rolling-context selections across turns and resumes; use
   local sizing to bound remote candidate counts while retaining complete-request
   admission under current Werk Protocol limits and reasoning settings.
@@ -79,3 +81,6 @@
 - Initial async agent SDK, Werk adapter, durable sessions, scoped tools and Linux sandbox.
 - Native platform packaging and installers for Linux, Windows and macOS.
 - Interactive agent terminal with the werk top color palette and the short command `ww`.
+
+
+[Unreleased]: https://github.com/philipbodenbach/werkWorker/compare/v0.2.0...HEAD

@@ -244,14 +244,26 @@ Filesystem search is bounded and nonrecursive. Sandbox resource limits are
 Linux rlimits, not aggregate cgroup quotas. These limitations are explicit in
 the security documentation. No live-model quality or benchmark parity is claimed.
 
-## What’s new in v0.1.0
+## What’s new in v0.2.0
 
-WerkWorker SDK and both CLI commands share release version **0.1.0**.
+WerkWorker SDK and both CLI commands share release version **0.2.0**.
 
-- Initial agent engine, native packaging and interactive terminal.
+- Persist validated rolling-context selections across turns and resumes; use
+  local sizing to bound remote candidate counts while retaining complete-request
+  admission under current Werk Protocol limits and reasoning settings.
+- Detect ineffective compaction, stop unsuccessful repeated pruning, record
+  planning cost/progress, and suppress duplicate TUI compaction notices when the
+  working selection is merely reused.
+- Add `/effort` and `/reasoning` chat controls with protocol-owned model tiers,
+  effective defaults and availability. Session choices persist and apply to new
+  parent/subagent requests while in-flight request settings remain stable. A small
+  arrow-key slider offers only valid values above the input.
+- Replan when steering arrives during context construction or before a model
+  retry. Show separate queued/delivered notices and retain user corrections
+  through compaction; task planning and verification must reflect updates.
+- Preserve current coding file receipts after compaction, stop retaining stale
+  directory listings as setup evidence, and explain existing-file edits without
+  recommending unavailable write parameters. Repeated reads get bounded,
+  persisted recovery decisions before a run-wide repetition failure.
 
-See [build, install and release](docs/releases.md).
-
-New runs use the [adaptive harness](docs/harness.md): a lean default with bounded
-help triggered by observed runtime problems. Resume preserves existing execution
-contracts. Optional completion checks use existing rights and recovery boundaries.
+See the [v0.2.0 changelog](CHANGELOG.md#020---2026-10-26) for all changes and compatibility notes.

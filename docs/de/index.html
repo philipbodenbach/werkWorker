@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="../assets/site.js"></script>
+  <link rel="stylesheet" href="../assets/site.css">
+  <title>werkWorker – Eine lokale Agent Engine in Rust</title>
+  <meta name="description" content="Eine lokale Agent Engine in Rust mit interaktivem Terminal, Werkzeugen, expliziten Freigaben und persistenten Sitzungen. Mit SDK und spielbarem Tetris-Experiment.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://philipbodenbach.github.io/werkWorker/de/">
+  <link rel="alternate" hreflang="en" href="https://philipbodenbach.github.io/werkWorker/">
+  <link rel="alternate" hreflang="de" href="https://philipbodenbach.github.io/werkWorker/de/">
+  <link rel="alternate" hreflang="x-default" href="https://philipbodenbach.github.io/werkWorker/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="werkWorker">
+  <meta property="og:locale" content="de_DE">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="werkWorker – Eine lokale Agent Engine in Rust">
+  <meta property="og:description" content="Eine lokale Agent Engine in Rust mit interaktivem Terminal, Werkzeugen, expliziten Freigaben und persistenten Sitzungen. Mit SDK und spielbarem Tetris-Experiment.">
+  <meta property="og:url" content="https://philipbodenbach.github.io/werkWorker/de/">
+  <meta property="og:image" content="https://philipbodenbach.github.io/werkWorker/assets/werkworker-social.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="werkWorker · Local agent engine · Rust">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="werkWorker – Eine lokale Agent Engine in Rust">
+  <meta name="twitter:description" content="Eine lokale Agent Engine in Rust mit interaktivem Terminal, Werkzeugen, expliziten Freigaben und persistenten Sitzungen. Mit SDK und spielbarem Tetris-Experiment.">
+  <meta name="twitter:image" content="https://philipbodenbach.github.io/werkWorker/assets/werkworker-social.png">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "werkWorker", "description": "Eine lokale Agent Engine in Rust mit interaktivem Terminal, Werkzeugen, expliziten Freigaben und persistenten Sitzungen. Mit SDK und spielbarem Tetris-Experiment.", "url": "https://philipbodenbach.github.io/werkWorker/de/", "codeRepository": "https://github.com/philipbodenbach/werkWorker", "programmingLanguage": "Rust", "license": "https://github.com/philipbodenbach/werkWorker/blob/main/LICENSE", "author": {"@type": "Person", "name": "Philip Bodenbach", "url": "https://philipbodenbach.de/"}}</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Zum Inhalt</a>
+<header class="site-header">
+  <div class="container">
+    <div class="header-row">
+      <a class="brand" href="./"><span class="brand-mark" aria-hidden="true">WW</span>werkWorker</a>
+      <div class="preferences">
+        <button class="control" type="button" data-theme-toggle data-light-label="Hellmodus aktivieren" data-dark-label="Dunkelmodus aktivieren" aria-label="Dunkelmodus aktivieren" aria-pressed="false"><span class="sun" aria-hidden="true">☀</span><span class="moon" aria-hidden="true">☾</span></button>
+        <a class="control" href="../" hreflang="en" lang="en" aria-label="English">EN</a>
+      </div>
+    </div>
+    <nav class="nav" aria-label="Hauptnavigation"><a href="#engine">Engine</a><a href="#quick-start">Schnellstart</a><a href="#experiments">Experimente</a><a href="#documentation">Dokumentation</a><a href="https://philipbodenbach.de/">philipbodenbach.de ↗</a></nav>
+  </div>
+</header>
+<main id="main">
+  <section class="hero container">
+    <div><p class="eyebrow">Lokale Agent Engine · Rust</p><h1>Modelle mit Werkzeugen verbinden.</h1><p class="lead">werkWorker übersetzt Modellantworten in Aktionen im Arbeitsverzeichnis. Ein interaktives Terminal und ein einbettbares Rust-SDK nutzen dieselbe Agent Engine – mit expliziten Berechtigungen und persistenten Sitzungen.</p><div class="actions"><a class="button primary" href="#quick-start">Loslegen <span aria-hidden="true">→</span></a><a class="button" href="https://github.com/philipbodenbach/werkWorker">Quellcode auf GitHub</a></div></div>
+    <div class="terminal"><img src="../assets/werkworker-banner.svg" width="880" height="124" alt="werkWorker"><pre><code><span style="color:#5eead4">$</span> ww tui --demo "Hello"</code></pre><p class="terminal-label">Offline-Demo · ein erster Blick ins Terminal</p></div>
+  </section>
+  <section class="section panel" id="engine"><div class="container"><p class="eyebrow">werkWorker + Werk1112</p><h2>Eine Engine. Terminal und SDK.</h2><p class="section-intro">Werk1112 übernimmt Inferenz und Modell-Runtimes. werkWorker steuert die Unterhaltung, Werkzeuge und den Ablauf einer Aufgabe.</p><div class="features"><article><h3>Interaktives Terminal</h3><p>Antworten live verfolgen, laufende Aufgaben steuern und Werkzeugaktionen freigeben. Der kurze Aufruf lautet ww.</p></article><article><h3>Werkzeuge mit klaren Freigaben</h3><p>Ressourcenrechte und Freigaben für vorbereitete Aktionen steuern den Zugriff. Die Isolation von Datei- und Prozesszugriffen benötigt derzeit Linux.</p></article><article><h3>Persistente Sitzungen</h3><p>SQLite-basierte Sitzungen speichern Ereignisse und unterstützen Folgeaufgaben, Abbruch und Wiederaufnahme. Die Engine ist über Rust und ein JSONL-Protokoll nutzbar.</p></article></div></div></section>
+  <section class="section" id="quick-start"><div class="container split"><div><p class="eyebrow">Schnellstart</p><h2>Das Terminal lokal ausprobieren.</h2><p class="section-intro">Mit Rust ab Version 1.88 aus dem Repository bauen. Die Demo läuft offline; für echte Modellanfragen wird ein Werk-Server verbunden.</p><div class="actions"><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/releases.md">Installation und Releases ↗</a><a href="https://github.com/philipbodenbach/werkWorker#install-and-try">Werk-Server verbinden ↗</a></div></div><div><pre class="code"><code>git clone https://github.com/philipbodenbach/werkWorker.git
+cd werkWorker
+cargo install --path . --locked
+ww tui --demo "Hello"
+ww --help</code></pre><p class="note">Installiert werden ww und werk-worker. Die Offline-Demo verwendet vorgegebene Antworten und kein Live-Modell.</p></div></div></section>
+  <section class="section panel" id="experiments"><div class="container"><p class="eyebrow">Lab</p><h2>Von der Engine zum Browser-Spiel.</h2><p class="section-intro">Ein kleines Experiment mit einem spielbaren Ergebnis. Den vollständigen Bericht und die Aufnahme gibt es im Lab von Philip Bodenbach.</p><article class="experiment"><a class="experiment-image" href="../experiments/tetris/" tabindex="-1" aria-hidden="true"><img src="../assets/tetris-poster.webp" width="870" height="1108" alt="Tetris mit schraffierten Spielsteinen auf kariertem Papier" loading="lazy"></a><div class="experiment-copy"><p class="eyebrow">Experiment · Oktober 2026</p><h3>Tetris auf kariertem Papier.</h3><p>Schraffierte Spielsteine, animiertes Filmkorn und Web Audio. Entstanden mit werkWorker und Werk1112; das ursprüngliche Ergebnis ist eine einzige, eigenständige HTML-Datei.</p><div class="actions"><a class="button primary" href="../experiments/tetris/">Tetris spielen ↗</a><a class="button" href="https://philipbodenbach.de/lab/werkworker-tetris/">Zum Versuchsbericht</a></div><p class="note">Originalergebnis · Desktop mit Tastatur · kein Backend nötig</p></div></article></div></section>
+  <section class="section" id="documentation"><div class="container"><p class="eyebrow">Dokumentation</p><h2>Mehr über das Projekt.</h2><p class="section-intro">Architektur, Schnittstellen und Plattformgrenzen sind gemeinsam mit dem Quellcode dokumentiert.</p><nav class="docs" aria-label="Dokumentation"><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/architecture.md">Architektur <span aria-hidden="true">↗</span></a><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/sdk.md">Rust-SDK <span aria-hidden="true">↗</span></a><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/tui.md">Terminal-Bedienung <span aria-hidden="true">↗</span></a><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/cli.md">CLI-Referenz <span aria-hidden="true">↗</span></a><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/security.md">Sicherheit und Plattformen <span aria-hidden="true">↗</span></a><a href="https://github.com/philipbodenbach/werkWorker/blob/main/docs/protocol.md">JSONL-Protokoll <span aria-hidden="true">↗</span></a></nav></div></section>
+</main>
+<footer class="site-footer"><div class="container"><nav class="footer-links" aria-label="Footer"><a href="https://philipbodenbach.de/">Philip Bodenbach</a><a href="https://github.com/philipbodenbach/werkWorker">GitHub</a><a href="https://philipbodenbach.github.io/werk1112/">Werk1112</a><a href="https://philipbodenbach.de/lab/">Lab</a><a href="https://philipbodenbach.de/impressum/">Impressum</a><a href="https://philipbodenbach.de/datenschutz/">Datenschutz</a></nav><p>© 2026 Philip Bodenbach. <a href="https://github.com/philipbodenbach/werkWorker/blob/main/LICENSE">Quellcode verfügbar unter der Elastic License 2.0.</a></p></div></footer>
+</body>
+</html>

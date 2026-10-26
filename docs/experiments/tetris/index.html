@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Retro Tetris — Pencil Sketch</title>
+<style>
+  :root{
+    --paper:#e9e2cf;
+    --paper2:#ddd4bb;
+    --ink:#4a463c;
+    --ink-soft:#7a7466;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(ellipse at 30% 20%, rgba(255,255,255,.5), transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0 23px, rgba(120,140,170,.18) 23px 24px),
+      repeating-linear-gradient(90deg, transparent 0 23px, rgba(120,140,170,.18) 23px 24px),
+      radial-gradient(ellipse at 70% 80%, rgba(160,140,90,.25), transparent 55%),
+      linear-gradient(135deg, var(--paper), var(--paper2));
+    color:var(--ink);
+    font-family:"Segoe Print","Bradley Hand","Comic Sans MS",cursive;
+    display:flex;align-items:center;justify-content:center;min-height:100vh;
+    overflow:hidden;
+  }
+  /* aged paper specks */
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;opacity:.5;
+    background-image:
+      radial-gradient(circle at 12% 30%, rgba(90,70,40,.18) 0 2px, transparent 3px),
+      radial-gradient(circle at 80% 15%, rgba(90,70,40,.15) 0 1.5px, transparent 3px),
+      radial-gradient(circle at 60% 70%, rgba(90,70,40,.16) 0 2px, transparent 4px),
+      radial-gradient(circle at 30% 85%, rgba(90,70,40,.14) 0 1.5px, transparent 3px),
+      radial-gradient(circle at 92% 60%, rgba(90,70,40,.15) 0 2px, transparent 3px);
+  }
+  .stage{position:relative;display:flex;gap:26px;align-items:flex-start;padding:28px}
+  .panel{
+    position:relative;
+    border:2px solid var(--ink);
+    background:rgba(240,235,220,.35);
+    box-shadow:1px 2px 0 rgba(74,70,60,.25), inset 0 0 18px rgba(120,110,80,.15);
+  }
+  .board-wrap{padding:10px}
+  .board-wrap .corner{position:absolute;width:26px;height:26px;border:2px solid var(--ink);opacity:.7}
+  .corner.tl{top:-4px;left:-4px;border-right:none;border-bottom:none}
+  .corner.tr{top:-4px;right:-4px;border-left:none;border-bottom:none}
+  .corner.bl{bottom:-4px;left:-4px;border-right:none;border-top:none}
+  .corner.br{bottom:-4px;right:-4px;border-left:none;border-top:none}
+  canvas#board{display:block}
+  .side{display:flex;flex-direction:column;gap:22px;width:190px}
+  .side .label{
+    font-size:26px;letter-spacing:3px;color:var(--ink);
+    text-align:center;transform:rotate(-1.2deg);
+  }
+  .side .label .small{font-size:15px;letter-spacing:2px;color:var(--ink-soft)}
+  .next-box{padding:10px;display:flex;justify-content:center}
+  .value{
+    font-size:34px;text-align:center;letter-spacing:2px;transform:rotate(.6deg);
+    text-shadow:1px 1px 0 rgba(255,255,255,.6);
+  }
+  .controls{
+    margin-top:20px;display:flex;gap:14px;justify-content:center;align-items:center;flex-wrap:wrap;
+    font-size:15px;letter-spacing:1px;color:var(--ink);
+  }
+  .btn{
+    font-family:inherit;font-size:16px;letter-spacing:2px;cursor:pointer;
+    background:rgba(240,235,220,.55);color:var(--ink);
+    border:2px solid var(--ink);padding:6px 16px;
+    box-shadow:2px 2px 0 rgba(74,70,60,.35);
+    transition:transform .08s ease, box-shadow .08s ease;
+  }
+  .btn:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 rgba(74,70,60,.35)}
+  .btn:active{transform:translate(1px,1px);box-shadow:1px 1px 0 rgba(74,70,60,.35)}
+  .btn.off{opacity:.55;text-decoration:line-through}
+  .help{
+    margin-top:10px;text-align:center;font-size:13px;color:var(--ink-soft);letter-spacing:1px;line-height:1.6;
+  }
+  #grain{
+    position:fixed;inset:0;pointer-events:none;z-index:50;
+    mix-blend-mode:multiply;opacity:.16;
+  }
+  #vignette{
+    position:fixed;inset:0;pointer-events:none;z-index:49;
+    background:radial-gradient(ellipse at center, transparent 55%, rgba(40,30,10,.38) 100%);
+  }
+  .overlay{
+    position:absolute;inset:0;z-index:60;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:10px;
+    background:rgba(233,226,207,.82);backdrop-filter:blur(1px);
+    text-align:center;padding:20px;
+  }
+  .overlay h1{font-size:42px;letter-spacing:4px;transform:rotate(-2deg);text-shadow:2px 2px 0 rgba(74,70,60,.2)}
+  .overlay h2{font-size:28px;letter-spacing:3px;transform:rotate(-1deg)}
+  .overlay p{font-size:16px;color:var(--ink-soft);letter-spacing:1px}
+  .overlay .big{font-size:20px;color:var(--ink)}
+  .hidden{display:none !important}
+  .pulse{animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="panel board-wrap">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <canvas id="board" width="360" height="720"></canvas>
+    <div class="overlay" id="overlay">
+      <h1>TETRIS</h1>
+      <p class="big pulse" id="ovMsg">Press ENTER or click START</p>
+      <div class="help">← → move &nbsp; ↑ rotate &nbsp; ↓ soft<br>SPACE hard drop &nbsp; P pause &nbsp; M music</div>
+    </div>
+  </div>
+  <div class="side">
+    <div>
+      <div class="label">NEXT</div>
+      <div class="panel next-box"><canvas id="next" width="160" height="100"></canvas></div>
+    </div>
+    <div>
+      <div class="label small">SCORE</div>
+      <div class="value" id="score">0000</div>
+    </div>
+    <div>
+      <div class="label small">LEVEL</div>
+      <div class="value" id="level">01</div>
+    </div>
+    <div>
+      <div class="label small">LINES</div>
+      <div class="value" id="lines">000</div>
+    </div>
+    <div class="controls">
+      <button class="btn" id="startBtn">START</button>
+      <button class="btn" id="sfxBtn">SFX</button>
+      <button class="btn" id="musicBtn">MUSIC</button>
+    </div>
+    <div class="help">hand-drawn on graph paper</div>
+  </div>
+</div>
+<canvas id="grain"></canvas>
+<div id="vignette"></div>
+<script>
+"use strict";
+/* ================= core constants ================= */
+const COLS=10, ROWS=20, CELL=36;
+const COLORS={
+  I:{fill:"#3f7f96",dark:"#2c5f75"},
+  O:{fill:"#d3a520",dark:"#a37d12"},
+  T:{fill:"#7d5fa8",dark:"#5c4584"},
+  S:{fill:"#4f8a43",dark:"#3a6a30"},
+  Z:{fill:"#b8452e",dark:"#8a3220"},
+  J:{fill:"#3a5f9e",dark:"#284573"},
+  L:{fill:"#d07b1f",dark:"#a05c12"}
+};
+const SHAPES={
+  I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+  O:[[1,1],[1,1]],
+  T:[[0,1,0],[1,1,1],[0,0,0]],
+  S:[[0,1,1],[1,1,0],[0,0,0]],
+  Z:[[1,1,0],[0,1,1],[0,0,0]],
+  J:[[1,0,0],[1,1,1],[0,0,0]],
+  L:[[0,0,1],[1,1,1],[0,0,0]]
+};
+const POINTS=[0,100,300,500,800];
+
+/* ================= state ================= */
+let board, piece, nextPiece, score=0, level=1, lines=0;
+let dropInterval, dropTimer=0, lastTime=0;
+let running=false, paused=false, gameOver=false;
+let particles=[], clearFx=[], shake=0;
+let sfxOn=true, musicOn=false;
+
+function emptyBoard(){ return Array.from({length:ROWS},()=>Array(COLS).fill(null)); }
+function rotateCW(m){
+  const N=m.length, r=Array.from({length:N},()=>Array(N).fill(0));
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++) r[x][N-1-y]=m[y][x];
+  return r;
+}
+function rotateCCW(m){
+  const N=m.length, r=Array.from({length:N},()=>Array(N).fill(0));
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++) r[N-1-x][y]=m[y][x];
+  return r;
+}
+function collide(board,mat,px,py){
+  for(let y=0;y<mat.length;y++)for(let x=0;x<mat[y].length;x++){
+    if(!mat[y][x])continue;
+    const bx=px+x, by=py+y;
+    if(bx<0||bx>=COLS||by>=ROWS)return true;
+    if(by>=0&&board[by][bx])return true;
+  }
+  return false;
+}
+function merge(board,mat,px,py,type){
+  for(let y=0;y<mat.length;y++)for(let x=0;x<mat[y].length;x++){
+    if(mat[y][x]){const by=py+y,bx=px+x; if(by>=0)board[by][bx]=type;}
+  }
+}
+function fullLines(b){
+  const out=[];
+  for(let y=0;y<ROWS;y++) if(b[y].every(c=>c)) out.push(y);
+  return out;
+}
+function clearLines(b,idxs){
+  idxs.slice().sort((a,c)=>c-a).forEach(y=>{ b.splice(y,1); b.unshift(Array(COLS).fill(null)); });
+}
+function randPiece(){
+  const keys=Object.keys(SHAPES);
+  const type=keys[(Math.random()*keys.length)|0];
+  const mat=SHAPES[type].map(r=>r.slice());
+  return {type,mat,x:(COLS-mat[0].length>>1),y:-1};
+}
+function dropSpeed(lv){ return Math.max(80, 650 - (lv-1)*55); }
+
+/* ================= audio ================= */
+let AC=null, musicNodes=null;
+function audio(){ if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(AC&&AC.state==="suspended")AC.resume(); return AC; }
+function tone(freq,dur,type,vol,slide){
+  const ac=audio(); if(!ac||!sfxOn)return;
+  const o=ac.createOscillator(),g=ac.createGain();
+  o.type=type||"square"; o.frequency.setValueAtTime(freq,ac.currentTime);
+  if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(20,slide),ac.currentTime+dur);
+  g.gain.setValueAtTime(vol||.18,ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+dur);
+  o.connect(g).connect(ac.destination);
+  o.start(); o.stop(ac.currentTime+dur+.02);
+}
+function noise(dur,vol,hp){
+  const ac=audio(); if(!ac||!sfxOn)return;
+  const n=Math.floor(ac.sampleRate*dur), buf=ac.createBuffer(1,n,ac.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);
+  const s=ac.createBufferSource(); s.buffer=buf;
+  const f=ac.createBiquadFilter(); f.type="highpass"; f.frequency.value=hp||1200;
+  const g=ac.createGain(); g.gain.value=vol||.12;
+  s.connect(f).connect(g).connect(ac.destination); s.start();
+}
+const SFX={
+  move(){ tone(320,.04,"square",.06); },
+  rotate(){ tone(440,.06,"square",.08,600); },
+  lock(){ tone(180,.08,"triangle",.2,90); },
+  clear(n){ for(let i=0;i<3+n;i++)setTimeout(()=>tone(300+i*120,.1,"square",.14,500+i*80),i*55); noise(.25,.1,800); },
+  tetris(){ for(let i=0;i<6;i++)setTimeout(()=>tone(300+i*150,.14,"square",.16,520+i*100),i*70); noise(.4,.14,600); },
+  levelup(){ for(let i=0;i<4;i++)setTimeout(()=>tone(400+i*130,.16,"triangle",.16),i*90); },
+  over(){ for(let i=0;i<5;i++)setTimeout(()=>tone(300-i*45,.25,"sawtooth",.14,200-i*25),i*160); },
+  hard(){ noise(.12,.16,2000); tone(220,.07,"square",.12,80); }
+};
+/* simple looping chiptune via scheduler */
+const MELODY=[392,0,523,0,392,494,0,330, 294,0,392,0,494,0,440,392,
+              330,0,440,0,523,0,494,440, 392,0,494,523,0,587,0,523];
+const BASS=[98,0,98,0,110,0,110,0, 73,0,73,0,82,0,82,73,
+            82,0,82,0,98,0,98,82, 73,0,82,98,0,87,0,78];
+let musicStep=0, musicTimer=null;
+function musicTick(){
+  const ac=audio(); if(!ac||!musicOn)return;
+  const t=ac.currentTime, m=MELODY[musicStep%MELODY.length], b=BASS[musicStep%BASS.length];
+  if(m){ const o=ac.createOscillator(),g=ac.createGain();
+    o.type="square"; o.frequency.value=m;
+    g.gain.setValueAtTime(.06,t); g.gain.exponentialRampToValueAtTime(.001,t+.18);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t+.2); }
+  if(b){ const o=ac.createOscillator(),g=ac.createGain();
+    o.type="triangle"; o.frequency.value=b;
+    g.gain.setValueAtTime(.1,t); g.gain.exponentialRampToValueAtTime(.001,t+.22);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t+.24); }
+  musicStep++;
+}
+function startMusic(){ if(musicTimer)return; musicOn=true; audio(); musicStep=0; musicTimer=setInterval(musicTick,170); }
+function stopMusic(){ musicOn=false; if(musicTimer){clearInterval(musicTimer);musicTimer=null;} }
+
+/* ================= sketchy drawing ================= */
+function sketchStroke(ctx,x1,y1,x2,y2,jit){
+  jit=jit||1.4;
+  const j=()=>(Math.random()*2-1)*jit;
+  ctx.beginPath();
+  ctx.moveTo(x1+j(),y1+j());
+  const mx=(x1+x2)/2+j()*1.6, my=(y1+y2)/2+j()*1.6;
+  ctx.quadraticCurveTo(mx,my,x2+j(),y2+j());
+  ctx.stroke();
+}
+function sketchRect(ctx,x,y,w,h,jit){
+  jit=jit||1.4;
+  sketchStroke(ctx,x,y,x+w,y,jit);
+  sketchStroke(ctx,x+w,y,x+w,y+h,jit);
+  sketchStroke(ctx,x+w,y+h,x,y+h,jit);
+  sketchStroke(ctx,x,y+h,x,y,jit);
+}
+function sketchFill(ctx,x,y,w,h,fill,dark){
+  ctx.save();
+  // wobbly filled quad
+  const j=()=>(Math.random()*2-1)*1.6;
+  ctx.beginPath();
+  ctx.moveTo(x+j(),y+j());
+  ctx.lineTo(x+w+j(),y+j());
+  ctx.lineTo(x+w+j(),y+h+j());
+  ctx.lineTo(x+j(),y+h+j());
+  ctx.closePath();
+  ctx.fillStyle=fill; ctx.fill();
+  // hatched crayon strokes inside
+  ctx.clip();
+  ctx.strokeStyle=dark; ctx.lineWidth=1; ctx.globalAlpha=.5;
+  for(let d=-h;d<w;d+=4.5){
+    ctx.beginPath();
+    ctx.moveTo(x+d+j(),y+j());
+    ctx.lineTo(x+d+h+j(),y+h+j());
+    ctx.stroke();
+  }
+  ctx.globalAlpha=.8; ctx.lineWidth=2; ctx.strokeStyle=dark;
+  sketchRect(ctx,x+1,y+1,w-2,h-2,1.6);
+  ctx.restore();
+}
+function drawCell(ctx,px,py,type,alpha){
+  const c=COLORS[type]; if(!c)return;
+  ctx.save(); ctx.globalAlpha=alpha==null?1:alpha;
+  sketchFill(ctx,px+2,py+2,CELL-4,CELL-4,c.fill,c.dark);
+  ctx.restore();
+}
+
+const bcv=document.getElementById("board").getContext("2d");
+const ncv=document.getElementById("next").getContext("2d");
+const gcv=document.getElementById("grain").getContext("2d");
+function resizeGrain(){ const g=document.getElementById("grain"); g.width=innerWidth; g.height=innerHeight; }
+addEventListener("resize",resizeGrain); resizeGrain();
+
+/* grain: rolling noise while playing, still-ish otherwise */
+function drawGrain(t){
+  const g=document.getElementById("grain");
+  const w=g.width,h=g.height;
+  const img=gcv.createImageData(w,h);
+  const d=img.data;
+  const roll=running&&!paused&&!gameOver;
+  const phase=roll?Math.floor(t/34):0; // rolling when playing
+  for(let i=0;i<d.length;i+=4){
+    let v=Math.random()*255;
+    if(!roll)v=128+Math.sin(i*0.00031+phase*0.7)*40+Math.random()*30;
+    d[i]=d[i+1]=d[i+2]=v; d[i+3]=255;
+  }
+  gcv.putImageData(img,0,0);
+}
+
+/* ================= HUD ================= */
+const scoreEl=document.getElementById("score"), levelEl=document.getElementById("level"), linesEl=document.getElementById("lines");
+function pad(n,l){ let s=String(Math.max(0,n|0)); while(s.length<l)s="0"+s; return s; }
+function hud(){ scoreEl.textContent=pad(score,4); levelEl.textContent=pad(level,2); linesEl.textContent=pad(lines,3); }
+
+/* ================= game flow ================= */
+function reset(){
+  board=emptyBoard(); score=0; level=1; lines=0; dropTimer=0;
+  gameOver=false; paused=false; shake=0; particles=[]; clearFx=[];
+  nextPiece=randPiece(); spawn();
+  hud();
+  document.getElementById("overlay").classList.add("hidden");
+}
+function spawn(){
+  piece=nextPiece; nextPiece=randPiece(); drawNext();
+  if(collide(board,piece.mat,piece.x,piece.y)){
+    gameOver=true; running=false;
+    SFX.over();
+    const ov=document.getElementById("overlay");
+    ov.querySelector("h1").textContent="GAME OVER";
+    document.getElementById("ovMsg").textContent="Press ENTER to restart";
+    ov.classList.remove("hidden");
+  }
+}
+function drawNext(){
+  ncv.clearRect(0,0,160,100);
+  const m=nextPiece.mat, t=nextPiece.type;
+  let minx=9,maxx=0,miny=9,maxy=0;
+  for(let y=0;y<m.length;y++)for(let x=0;x<m[y].length;x++)if(m[y][x]){minx=Math.min(minx,x);maxx=Math.max(maxx,x);miny=Math.min(miny,y);maxy=Math.max(maxy,y);}
+  const cw=26, ox=(160-(maxx-minx+1)*cw)/2, oy=(100-(maxy-miny+1)*cw)/2;
+  for(let y=miny;y<=maxy;y++)for(let x=minx;x<=maxx;x++)
+    if(m[y][x]) sketchFill(ncv,ox+(x-minx)*cw+1,oy+(y-miny)*cw+1,cw-2,cw-2,COLORS[t].fill,COLORS[t].dark);
+}
+function move(dx){
+  if(!running||paused||gameOver)return;
+  if(!collide(board,piece.mat,piece.x+dx,piece.y)){ piece.x+=dx; SFX.move(); }
+}
+function rotate(){
+  if(!running||paused||gameOver)return;
+  const m=rotateCW(piece.mat);
+  for(const off of [0,-1,1,-2,2]){
+    if(!collide(board,m,piece.x+off,piece.y)){ piece.mat=m; piece.x+=off; SFX.rotate(); return; }
+  }
+}
+function softDrop(){
+  if(!running||paused||gameOver)return;
+  if(!collide(board,piece.mat,piece.x,piece.y+1)){ piece.y++; score+=1; hud(); }
+  else lock();
+}
+function hardDrop(){
+  if(!running||paused||gameOver)return;
+  let d=0;
+  while(!collide(board,piece.mat,piece.x,piece.y+1)){ piece.y++; d++; }
+  score+=d*2; hud(); SFX.hard(); shake=4; lock();
+}
+function lock(){
+  merge(board,piece.mat,piece.x,piece.y,piece.type);
+  SFX.lock();
+  burst(piece.x,piece.y,piece.type);
+  const full=fullLines(board);
+  if(full.length){
+    full.forEach(y=>clearFx.push({y,t0:performance.now()}));
+    clearLines(board,full);
+    lines+=full.length;
+    const pts=POINTS[full.length]*level;
+    score+=pts;
+    if(full.length===4){ SFX.tetris(); shake=8; } else SFX.clear(full.length);
+    level=1+Math.floor(lines/10);
+    if(dropSpeed(level)<dropInterval||true) dropInterval=dropSpeed(level);
+    if(level>1)SFX.levelup();
+  }
+  hud();
+  spawn();
+}
+function burst(px,py,type){
+  const c=COLORS[type].fill;
+  for(let i=0;i<10;i++){
+    const a=Math.random()*Math.PI*2, s=1+Math.random()*3;
+    particles.push({x:(px+2)*CELL,y:(py+2)*CELL,vx:Math.cos(a)*s,vy:Math.sin(a)*s-2,life:1,color:c});
+  }
+}
+function ghostY(){
+  let gy=piece.y;
+  while(!collide(board,piece.mat,piece.x,gy+1))gy++;
+  return gy;
+}
+
+/* ================= render ================= */
+function render(t){
+  bcv.clearRect(0,0,360,720);
+  bcv.save();
+  if(shake>0){ bcv.translate((Math.random()*2-1)*shake,(Math.random()*2-1)*shake); shake*=.85; if(shake<.3)shake=0; }
+  // pencil grid
+  bcv.strokeStyle="rgba(74,70,60,.55)"; bcv.lineWidth=1;
+  for(let x=0;x<=COLS;x++){ bcv.beginPath(); bcv.moveTo(x*CELL+Math.sin(x*3.7)*.8,0); bcv.lineTo(x*CELL+Math.sin(x*2.1)*.8,ROWS*CELL); bcv.stroke(); }
+  for(let y=0;y<=ROWS;y++){ bcv.beginPath(); bcv.moveTo(0,y*CELL+Math.cos(y*2.9)*.8); bcv.lineTo(COLS*CELL,y*CELL+Math.cos(y*4.3)*.8); bcv.stroke(); }
+  // settled blocks
+  for(let y=0;y<ROWS;y++)for(let x=0;x<COLS;x++) if(board[y][x]) drawCell(bcv,x*CELL,y*CELL,board[y][x],1);
+  // line-clear flash
+  clearFx=clearFx.filter(f=>{
+    const p=(t-f.t0)/260; if(p>=1)return false;
+    bcv.fillStyle="rgba(255,255,255,"+(1-p)+")";
+    bcv.fillRect(0,f.y*CELL,COLS*CELL,CELL);
+    return true;
+  });
+  // ghost
+  if(piece&&!gameOver){
+    const gy=ghostY();
+    if(gy>piece.y){
+      bcv.save(); bcv.globalAlpha=.28;
+      for(let y=0;y<piece.mat.length;y++)for(let x=0;x<piece.mat[y].length;x++)
+        if(piece.mat[y][x]&&(gy+y)>=0) drawCell(bcv,(piece.x+x)*CELL,(gy+y)*CELL,piece.type,1);
+      bcv.restore();
+    }
+    // active piece
+    for(let y=0;y<piece.mat.length;y++)for(let x=0;x<piece.mat[y].length;x++)
+      if(piece.mat[y][x]&&(piece.y+y)>=0) drawCell(bcv,(piece.x+x)*CELL,(piece.y+y)*CELL,piece.type,1);
+  }
+  // particles
+  particles=particles.filter(p=>p.life>0);
+  particles.forEach(p=>{
+    p.x+=p.vx; p.y+=p.vy; p.vy+=.15; p.life-=.025;
+    bcv.globalAlpha=Math.max(0,p.life);
+    bcv.fillStyle=p.color;
+    bcv.fillRect(p.x-3,p.y-3,6,6);
+    bcv.globalAlpha=1;
+  });
+  bcv.restore();
+  drawGrain(t);
+}
+
+/* ================= loop ================= */
+function loop(t){
+  if(!lastTime)lastTime=t;
+  const dt=t-lastTime; lastTime=t;
+  if(running&&!paused&&!gameOver){
+    dropTimer+=dt;
+    if(dropTimer>dropInterval){ dropTimer=0; softDrop(); }
+  }
+  render(t);
+  requestAnimationFrame(loop);
+}
+dropInterval=dropSpeed(1);
+board=emptyBoard(); nextPiece=randPiece(); drawNext(); hud();
+requestAnimationFrame(loop);
+
+/* ================= input ================= */
+function startGame(){ reset(); running=true; lastTime=0; audio(); if(musicOn)startMusic(); }
+function togglePause(){
+  if(!running||gameOver)return;
+  paused=!paused;
+  const ov=document.getElementById("overlay");
+  if(paused){ ov.querySelector("h1").textContent="PAUSED"; document.getElementById("ovMsg").textContent="Press P to resume"; ov.classList.remove("hidden"); }
+  else ov.classList.add("hidden");
+}
+addEventListener("keydown",e=>{
+  if(e.key==="Enter"){ if(!running||gameOver)startGame(); }
+  if(e.key==="p"||e.key==="P")togglePause();
+  if(e.key==="m"||e.key==="M"){ musicOn?stopMusic():startMusic(); document.getElementById("musicBtn").classList.toggle("off",!musicOn); }
+  if(e.code==="Space"){ e.preventDefault(); hardDrop(); }
+  if(e.key==="ArrowLeft")move(-1);
+  if(e.key==="ArrowRight")move(1);
+  if(e.key==="ArrowDown")softDrop();
+  if(e.key==="ArrowUp")rotate();
+});
+document.getElementById("startBtn").onclick=startGame;
+document.getElementById("sfxBtn").onclick=function(){ sfxOn=!sfxOn; this.classList.toggle("off",!sfxOn); audio(); };
+document.getElementById("musicBtn").onclick=function(){ musicOn?stopMusic():startMusic(); this.classList.toggle("off",!musicOn); };
+</script>
+</body>
+</html>

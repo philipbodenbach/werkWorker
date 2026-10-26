@@ -1,5 +1,9 @@
 ![werkWorker](docs/assets/werkworker-banner.svg)
 
+[Project website](https://philipbodenbach.github.io/werkWorker/) ·
+[Projektseite auf Deutsch](https://philipbodenbach.github.io/werkWorker/de/) ·
+[Tetris experiment](https://philipbodenbach.github.io/werkWorker/experiments/tetris/)
+
 werkWorker is a local, general-purpose Rust agent engine with its own harness.
 The default `ww` command opens an interactive terminal in the werk top palette.
 The package is `werk-worker`, the Rust import is `werk_worker`, and the binary is

@@ -20,16 +20,36 @@ Cargo lockfiles, README and this page are updated together. The CLI reference
 is regenerated from the versioned binary before the preparation PR.
 
 Actions' repository setting allows creation of pull requests. The workflow
-requires contents/pull-requests/actions write permissions and honors branch
-protection; it does not use `--admin`. Because GITHUB_TOKEN-created pushes and
-PRs do not automatically run ordinary CI, Release explicitly dispatches `worker` and
-`Platform build checks` on its preparation branch and waits for both to succeed
-before merging. The generated commit does not skip CI. No separate PAT is needed.
-GitHub can additionally request maintainer approval for PR-triggered workflow
-runs; approve those in the PR if requested. See
+requires contents/pull-requests write and actions read permissions and honors
+branch protection; it does not use `--admin`. Release waits up to 60 minutes for
+the actual `pull_request` runs of `worker` and `Platform build checks` on the
+exact preparation commit, then for GitHub to report the PR ready to merge.
+It does not dispatch duplicate test runs: `workflow_dispatch` checks do not
+satisfy required PR checks. See
+[GitHub's required-check rules](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
+
+With the built-in `GITHUB_TOKEN`, GitHub requires approval before running CI
+on the generated PR. Open the PR linked in the action log and select
+**Approve workflows to run**. The running release action waits and continues
+after the checks pass; a second Release dispatch is unnecessary. Failed tests
+stop the release with a link to the failing run. A retry reuses successful PR
+runs for the same commit. If an existing PR still awaits approval, approve it
+there; changing a token alone does not retrigger that PR.
+
+For one-click releases without that approval step, an owner can configure the
+optional repository Actions secret **`RELEASE_PR_TOKEN`**: a fine-grained token
+from a trusted bot/user, scoped only to this repository with **Pull requests:
+read and write** and **Contents: read**. It is used only in the preparation-PR
+step. Checkout/push, merge, tags and releases still use `GITHUB_TOKEN`. CI uses
+its own read-only token. Do not place personal CLI credentials in the workflow
+or disable required checks. GitHub also supports a dedicated GitHub App identity
+for this purpose; see
 [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
-Keep merge commits enabled for the release PR's two-parent verification.
-Base/head/tree checks
+Without this optional secret the approval-based flow remains available.
+
+Unlike Werk1112's release setup, this repository requires five CI checks on
+the preparation PR, so its `[skip ci]` shortcut cannot be reused here.
+Keep merge commits enabled for the release PR's two-parent verification. Base/head/tree checks
 reject races. Retries preserve existing releases/assets and never move a tag.
 The first release needs no previous tag. No local script commits, tags or pushes.
 Only the explicitly started GitHub release workflow performs those operations.

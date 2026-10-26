@@ -23,7 +23,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  actions: write
+  actions: read
 
 concurrency:
   group: werk-worker-product-release
@@ -90,6 +90,9 @@ jobs:
         id: release-pr
         env:
           RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+          # A repository-scoped bot token lets PR checks start without approval.
+          # Keep the built-in token for checkout, merge, tags and publication.
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -122,6 +125,8 @@ jobs:
           after the tag is available. Release preparation tests passed.
           The preparation branch must pass the same required checks as feature
           branches before this PR can merge into protected main.
+          If GitHub requests workflow approval, select "Approve workflows to run"
+          here. Release waits for these PR checks and then continues automatically.
           BODY
               pr=$(gh pr create --head "$branch" --base "$DEFAULT_BRANCH" \
                 --title "release(): $RELEASE_TAG" --body-file "$RUNNER_TEMP/release-pr.md")
@@ -135,34 +140,19 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run required checks on the release preparation branch
+      - name: Wait for required PR checks and merge readiness
         if: steps.release-pr.outputs.number != ''
         env:
+          RELEASE_PR: ${{ steps.release-pr.outputs.number }}
           RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
           RELEASE_SHA: ${{ steps.release-pr.outputs.head }}
+          BASE_SHA: ${{ steps.release-pr.outputs.base }}
         run: |
-          # GITHUB_TOKEN-created pushes/PRs do not automatically run ordinary CI.
-          # Explicit workflow_dispatch does, without a bypass or a separate PAT.
-          started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          for workflow in ci.yml platform-checks.yml; do
-            gh workflow run "$workflow" --ref "$RELEASE_BRANCH"
-          done
-          for workflow in ci.yml platform-checks.yml; do
-            run_id=""
-            for attempt in {1..30}; do
-              run_id=$(gh api --method GET "repos/$GH_REPO/actions/workflows/$workflow/runs" \
-                -f branch="$RELEASE_BRANCH" -f event=workflow_dispatch \
-                -f head_sha="$RELEASE_SHA" -f per_page=100 \
-                --jq "[.workflow_runs[] | select(.created_at >= \"$started_at\") | .id] | max // empty")
-              if [[ -n "$run_id" ]]; then break; fi
-              sleep 2
-            done
-            if [[ -z "$run_id" ]]; then
-              echo "::error::No dispatched $workflow run appeared for $RELEASE_SHA"
-              exit 1
-            fi
-            gh run watch "$run_id" --exit-status
-          done
+          # workflow_dispatch jobs do not satisfy required PR checks.
+          # Observe the real PR runs, including approval and status propagation.
+          python scripts/wait-release-checks.py \
+            --repo "$GH_REPO" --pr "$RELEASE_PR" --branch "$RELEASE_BRANCH" \
+            --head "$RELEASE_SHA" --base "$BASE_SHA" --default-branch "$DEFAULT_BRANCH"
 
       - name: Merge the release preparation PR
         if: steps.release-pr.outputs.number != ''

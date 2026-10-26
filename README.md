@@ -1,6 +1,10 @@
-![werkWorker](docs/assets/werkworker-banner.svg)
+![WerkWorker](docs/assets/werkworker-banner.svg)
 
-werkWorker is a local, general-purpose Rust agent engine with its own harness.
+[Project website](https://philipbodenbach.github.io/werkWorker/) ·
+[Projektseite auf Deutsch](https://philipbodenbach.github.io/werkWorker/de/) ·
+[Tetris experiment](https://philipbodenbach.github.io/werkWorker/experiments/tetris/)
+
+WerkWorker is a local, general-purpose Rust agent engine with its own harness.
 The default `ww` command opens an interactive terminal in the werk top palette.
 The package is `werk-worker`, the Rust import is `werk_worker`, and the binary is
 `werk-worker`, with `ww` as its short command. Both commands are installed by
@@ -12,7 +16,7 @@ follow-ups, crash recovery and parallel subagents with separate conversations. C
 same engine. Four bundled Agent Skills and three profiles are embedded in the
 package; they do not require a repository checkout at runtime.
 
-Werk1112 supplies inference and model/runtime management. werkWorker supplies
+Werk1112 supplies inference and model/runtime management. WerkWorker supplies
 agent orchestration. Future werkCoder and werkStation clients consume this SDK
 or the JSONL protocol. There is no GPU runtime, Jira implementation or
 autonomous package installer here. Scripted tests measure the harness, not model
@@ -242,7 +246,7 @@ the security documentation. No live-model quality or benchmark parity is claimed
 
 ## What’s new in v0.1.0
 
-werkWorker SDK and both CLI commands share release version **0.1.0**.
+WerkWorker SDK and both CLI commands share release version **0.1.0**.
 
 - Initial agent engine, native packaging and interactive terminal.
 

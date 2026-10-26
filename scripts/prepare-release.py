@@ -57,16 +57,18 @@ def update_readme(text, current, next_version, date, notes):
         if not summary:
             raise ValueError("Release notes must contain at least one bullet for the README")
     section = readme_section(text, current)
+    following = text[section.end():]
     anchor = next_version.replace(".", "") + "---" + str(date)
     new_section = (
         f"## What’s new in v{next_version}\n\n"
-        f"werkWorker SDK and both CLI commands share release version **{next_version}**.\n"
+        f"WerkWorker SDK and both CLI commands share release version **{next_version}**.\n"
         "\n"
         f"{summary}\n\n"
         f"See the [v{next_version} changelog](CHANGELOG.md#{anchor}) "
-        "for all changes and compatibility notes.\n\n"
+        "for all changes and compatibility notes.\n"
     )
-    return text[:section.start()] + new_section + text[section.end():]
+    # Separate a following section, but never add a blank line at EOF.
+    return text[:section.start()] + new_section + ("\n" if following else "") + following
 
 
 def git(*args):

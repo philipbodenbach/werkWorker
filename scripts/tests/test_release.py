@@ -1,6 +1,7 @@
 import datetime
 import importlib.util
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -47,6 +48,26 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn('name = "werk-worker"\nversion = "0.2.0"', (self.root / name).read_text())
         self.assertIn('## [0.1.0]', (self.root / 'CHANGELOG.md').read_text())
         self.assertIn('Current release: `v0.2.0`', (self.root / 'docs/releases.md').read_text())
+    def test_prepared_readme_at_eof_passes_git_whitespace_check(self):
+        before = self.root / 'README.before.md'
+        before.write_bytes((self.root / 'README.md').read_bytes())
+        with patch.object(release, 'git', return_value=''):
+            release.prepare(self.root, 'minor', self.date)
+        result = subprocess.run(
+            ['git', '-c', 'core.whitespace=blank-at-eof', 'diff', '--no-index',
+             '--check', '--', str(before), str(self.root / 'README.md')],
+            capture_output=True, text=True,
+        )
+        # --no-index may report a content difference (1) even with no whitespace errors.
+        self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
+        self.assertEqual(result.stdout + result.stderr, '')
+    def test_readme_update_preserves_following_section_and_separator(self):
+        following = '## Installation\n\nRun `ww` after installing.\n'
+        readme = (self.root / 'README.md').read_text() + '\n' + following
+        updated = release.update_readme(
+            readme, '0.1.0', '0.2.0', self.date, '- Added a feature.\n',
+        )
+        self.assertTrue(updated.endswith('for all changes and compatibility notes.\n\n' + following))
     def test_bad_lock_does_not_modify_any_metadata(self):
         p = self.root / 'Cargo.lock'; p.write_text(p.read_text().replace('name = "werk-worker"\nversion = "0.1.0"','name = "werk-worker"\nversion = "0.9.0"'))
         before = (self.root / 'Cargo.toml').read_bytes()

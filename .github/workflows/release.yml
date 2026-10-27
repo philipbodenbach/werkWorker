@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: Version increment (auto uses commit messages or a prepared version)
+        description: Version increment (all choices resume an already prepared release)
         type: choice
         required: true
         default: auto

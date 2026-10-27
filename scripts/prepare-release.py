@@ -126,19 +126,24 @@ def prepare(root, bump, date, allow_existing=False):
     latest = max(tags, key=key) if tags else None
     if latest:
         subprocess.run(['git', 'merge-base', '--is-ancestor', latest, 'HEAD'], check=True)
-    if bump == 'auto':
+    # Resume an already prepared release before applying any new increment.
+    # A workflow retry keeps its original input (e.g. minor) after the PR merged.
+    if bump != 'check':
         if not latest:
             if re.search(r'^## \[' + re.escape(current) + r'\] - ', files['CHANGELOG.md'], re.M):
                 return prepare(root, 'check', date)
-            bump = 'initial'
+            if bump == 'auto':
+                bump = 'initial'
         elif key(current) > key(latest):
             return prepare(root, 'check', date)
         elif latest != 'v' + current:
             raise ValueError('Latest stable tag differs from package version')
-        elif not commits_since(latest):
-            return prepare(root, 'check', date, allow_existing=True)
         else:
-            bump = inferred_bump(commits_since(latest))
+            commits = commits_since(latest)
+            if not commits:
+                return prepare(root, 'check', date, allow_existing=True)
+            if bump == 'auto':
+                bump = inferred_bump(commits)
     major, minor, patch = key(current)
     version = {'initial': current, 'check': current, 'patch': f'{major}.{minor}.{patch+1}',
                'minor': f'{major}.{minor+1}.0', 'major': f'{major+1}.0.0'}[bump]

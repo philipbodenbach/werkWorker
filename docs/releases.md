@@ -13,8 +13,14 @@ platform assets to be attached before publication. No package-registry upload.
 
 Run **Release** on the default branch. Inputs are `bump` (`auto`, `patch`, `minor`,
 `major`) and `draft` (default true). `auto` uses Conventional Commit subjects and
-BREAKING CHANGE trailers, or accepts an already prepared version. The initial
-release uses the current Cargo version. Unreleased changelog bullets take
+BREAKING CHANGE trailers. Every bump choice first resumes an already prepared,
+untagged version instead of incrementing it again. For example, if the v0.2.0
+preparation PR merged but the workflow stopped before tagging, another `minor`
+run finishes v0.2.0 with its existing date and notes. Retrying at the existing
+release tag also reuses that version when there are no new commits; existing
+tags are never moved. A new increment applies after the previous version is
+tagged and new commits are present. The initial `auto` release uses the current
+Cargo version. Unreleased changelog bullets take
 precedence over generated commit-subject notes. Versions in Cargo.toml, both
 Cargo lockfiles, README and this page are updated together. The CLI reference
 is regenerated from the versioned binary before the preparation PR.

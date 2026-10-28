@@ -3056,7 +3056,7 @@ impl SessionHandle {
                         progress.occurrences,
                         progress.exit_code,
                         crate::completion::excerpt(&progress.command.to_string(), 300),
-                        crate::completion::excerpt(&progress.detail, 1000)
+                        crate::completion::diagnostic_excerpt(&progress.detail, 1000)
                     ),
                 ));
             }

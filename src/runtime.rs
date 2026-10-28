@@ -772,13 +772,13 @@ impl Sandbox {
                 if let Some(mut pipe) = input {
                     let result = pipe.write_all(stdin.unwrap_or_default().as_bytes()).await;
                     drop(pipe);
-                    if let Err(error) = result {
-                        if error.kind() != std::io::ErrorKind::BrokenPipe {
-                            return Err(WorkerError::new(
-                                "process_io",
-                                "Failed to deliver standard input",
-                            ));
-                        }
+                    if let Err(error) = result
+                        && error.kind() != std::io::ErrorKind::BrokenPipe
+                    {
+                        return Err(WorkerError::new(
+                            "process_io",
+                            "Failed to deliver standard input",
+                        ));
                     }
                 }
                 Ok::<(), WorkerError>(())

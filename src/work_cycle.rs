@@ -53,11 +53,12 @@ pub(crate) fn check_tools(
         matches!(
             t.name.as_str(),
             "process.run" | "browser.check" | "interaction.ask"
-        ) || (action_due
-            && matches!(
-                t.name.as_str(),
-                "files.edit" | "files.insert" | "files.write" | "task.plan"
-            ))
+        ) || crate::agents::is_agent_tool(&t.name)
+            || (action_due
+                && matches!(
+                    t.name.as_str(),
+                    "files.edit" | "files.insert" | "files.write" | "task.plan"
+                ))
     });
     for tool in tools {
         // The underlying write tool already supports atomic hash-bound
@@ -124,14 +125,19 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
     // Distinguish redundant coverage from useful initial investigation; do not
     // require a write to qualify for context recovery or infer task intent.
     let read_recovery = crate::read_progress::recovery_active(run);
+    let repair = crate::repair_cycle::latest(run, &state.verifications);
+    let repair_focus = repair.as_ref().is_some_and(|c| c.focus_due(run));
     if cycle["refocus"] != true
         && cycle["check_due"] != true
         && cycle["action_due"] != true
         && !read_recovery
+        && !repair_focus
     {
         return Ok(None);
     }
-    let reason = if cycle["action_due"] == true {
+    let reason = if repair_focus {
+        "A previous failing check is still unresolved. Activity and different diagnostics are not proof of a fix. Finish the runnable correction and recheck it; preserve the working parts."
+    } else if cycle["action_due"] == true {
         "Investigation is exhausted for this version. The next action must implement the runnable increment or exercise its behavior using the retained source and check result. Broad inspection tools are temporarily deferred."
     } else if cycle["check_due"] == true {
         "Implementation and investigation have accumulated without a new behavioral check. More reads or small edits do not clear this checkpoint."
@@ -162,6 +168,7 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
 /// Replayed from receipts on every request, including after resume/compaction.
 /// Plans and successful shell reads cannot manufacture implementation progress.
 pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Value {
+    let repair = crate::repair_cycle::latest(run, receipts);
     let mut files = BTreeMap::<String, String>::new();
     let mut checks = BTreeSet::new();
     let mut last_change = None;
@@ -297,6 +304,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
     // edits must not erase accumulated investigation and postpone execution.
     let phase = match last_check {
         _ if check_due => "check",
+        _ if repair.is_some() => "repair",
         Some((position, _, evidence)) if last_change.is_none_or(|(n, _)| n <= position) => {
             if evidence["passed"] == true {
                 "review"
@@ -323,7 +331,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
             "Run a small behavioral smoke check of the current entry point now. Exercise startup and the main user interaction against current files. If the version is not runnable yet, record that concrete failure and repair the missing connection before optional polish. Then repeat the check. Do not spend another cycle gathering broad context or making unrelated small edits."
         }
         "repair" => {
-            "Fix the concrete failure in latest_check, then rerun the behavioral check. Keep the working version and its interfaces."
+            "Finish the correction for unresolved_check (or latest_check if no unresolved check is retained), then rerun that check. A broken check can be replaced explicitly by a successful behavioral check covering its paths. Keep the working version and its interfaces; independent diagnosis can continue in parallel."
         }
         "review" => {
             "Compare the checked version with the full request and remaining milestones. Implement only concrete missing behavior; otherwise complete the plan and report verified results."
@@ -349,6 +357,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
                 .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
         })),
         "suggested_phase": phase,
+        "unresolved_check": repair.as_ref().map(|c| c.observation(run)),
         "next_action": next_action,
         "checkpoint_predates_change": last_change.is_some_and(|(n, _)| last_plan.is_none_or(|p| p < n)),
         "last_change": last_change.map(|(_, i)| {

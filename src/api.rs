@@ -1518,7 +1518,9 @@ impl SessionHandle {
             .await?;
             // Reviews must see the latest accepted user constraints, including
             // steering that arrived while the previous tool was running.
-            self.maybe_start_review(run_id).await?;
+            let checkpoint = self.snapshot().await?;
+            crate::repair_cycle::check(&checkpoint, checkpoint.run(run_id)?)?;
+            self.maybe_start_review(run_id, &checkpoint).await?;
             // Project every completed tool result before inserting assistant
             // feedback, preserving contiguous call/result groups.
             self.deliver_ready_children(run_id).await?;
@@ -2072,13 +2074,26 @@ impl SessionHandle {
             }
             child_work.extend(reviewed.invocations);
             reviewed.invocations = child_work;
-            if let Some(detail) = crate::completion::findings(
+            let unresolved = if state.config.completion.is_none()
+                && crate::failure_progress::enabled(&data, run)?
+            {
+                crate::repair_cycle::latest(run, &state.verifications).map(|cycle| {
+                    format!(
+                        "A previous failing check is unresolved: {}. Rerun it after correcting the implementation, or explicitly replace a broken check with a successful behavioral check using verification.replaces and covering its paths. Current obligation: {}",
+                        cycle.source_invocation,
+                        cycle.observation(run)
+                    )
+                })
+            } else {
+                None
+            };
+            if let Some(detail) = unresolved.or(crate::completion::findings(
                 &reviewed,
                 &state.verifications,
                 &self.runtime.workspace,
                 state.config.completion.is_none(),
             )
-            .await?
+            .await?)
             {
                 let progress = crate::completion::progress(&reviewed);
                 state.final_rejections = if state.final_progress == progress {

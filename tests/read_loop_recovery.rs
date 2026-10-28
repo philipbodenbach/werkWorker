@@ -1318,7 +1318,51 @@ async fn fixture(
     denied: bool,
 ) -> (WorkerEngine, SessionHandle, Arc<ScriptedProvider>) {
     let provider = Arc::new(ScriptedProvider::new(turns));
-    let engine = WorkerEngine::builder(provider.clone())
+    // Opt-in scripted replacements use the actual obligation ID advertised in
+    // model context, just as a model correcting a broken check would do.
+    struct ReplacementChecks(Arc<ScriptedProvider>);
+    #[async_trait::async_trait]
+    impl ModelProvider for ReplacementChecks {
+        fn identity(&self) -> String {
+            self.0.identity()
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            self.0.capabilities()
+        }
+        fn concurrency(&self) -> InferenceConcurrency {
+            self.0.concurrency()
+        }
+        async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+            use futures_util::StreamExt;
+            let source = request
+                .messages
+                .iter()
+                .filter_map(|message| serde_json::from_str::<Value>(&message.content).ok())
+                .find(|value| value["event"] == "coding_task_state")
+                .map(|value| {
+                    value["data"]["work_cycle"]["unresolved_check"]["source_invocation"].clone()
+                })
+                .unwrap_or(Value::Null);
+            let stream = self.0.stream(request).await?;
+            Ok(Box::pin(stream.map(move |delta| {
+                delta.map(|mut delta| {
+                    if let ModelDelta::Tool { arguments, .. } = &mut delta {
+                        let mut args: Value = serde_json::from_str(arguments).unwrap();
+                        if args["verification"]["replaces"] == "$unresolved-check" {
+                            assert!(
+                                source.is_string(),
+                                "Replacement requires a retained failed check"
+                            );
+                            args["verification"]["replaces"] = source.clone();
+                            *arguments = args.to_string();
+                        }
+                    }
+                    delta
+                })
+            })))
+        }
+    }
+    let engine = WorkerEngine::builder(Arc::new(ReplacementChecks(provider.clone())))
         .build()
         .await
         .unwrap();
@@ -1491,7 +1535,7 @@ async fn actual_file_change_rearms_failure_recovery() {
     std::fs::write(dir.path().join("game.txt"), "one").unwrap();
     let (engine,session,provider)=fixture(vec![
         failing_check(1),failing_check(2),edit("one","two"),failing_check(3),failing_check(4),
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],"verification":{"criteria":["Corrected state"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],"verification":{"kind":"behavior","replaces":"$unresolved-check","criteria":["Corrected state"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified the correction"),
     ],dir.path(),false).await;
     let run = session
@@ -1545,7 +1589,7 @@ async fn new_diagnostic_results_restore_reads_without_requiring_file_changes() {
         ]);
     }
     turns.extend([
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"criteria":["Existing state is valid"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"kind":"behavior","replaces":"$unresolved-check","criteria":["Existing state is valid"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified existing state"),
     ]);
     let (engine, session, _) = fixture(turns, dir.path(), false).await;

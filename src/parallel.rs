@@ -38,7 +38,7 @@ impl DelegationLevel {
                 "Delegate a focused independent task when useful. One automatic read-only review after an implementation change and a passing behavioral check."
             }
             Self::Active => {
-                "Prefer delegating independent investigations and reviews while implementing. One automatic read-only review after the first implementation change, before verification. This is the default."
+                "Prefer delegating independent implementation tasks, investigations and checks while building a runnable core version. One automatic read-only helper after the first implementation change, before verification. This is the default."
             }
             Self::Max => {
                 "Proactively split substantial work into independent, bounded tasks early. One automatic read-only requirements/check-planning helper can start once a substantial plan exists. Use available helper capacity when useful, without duplicating work or inventing tasks."
@@ -160,7 +160,7 @@ pub(crate) fn describe_delegation(
     ));
     if helpers > 0 {
         tool.description.push_str(
-            " For substantial work, delegate a focused independent investigation or review when it removes work from your own path. Give exact relevant paths, requirements, and a concise expected result; prefer read_only for reviews. Continue your separate implementation while the helper works. Avoid duplicating its investigation, overlapping writes, immediate agents.wait, or repeated status polling; completed results arrive automatically. For small or sequential work, work directly."
+            " For substantial work, split independent implementation tasks with explicit file ownership where possible. For a single-file deliverable, keep its writes with one owner and delegate acceptance/test planning or focused diagnosis in parallel. Give exact paths, requirements and a concise expected result; prefer read_only for reviews. Finish your runnable core flow while the helper works; do not wait for optional polish or review before building it. Avoid duplicating work, overlapping writes, immediate agents.wait or repeated status polling; completed results arrive automatically. For small or sequential work, work directly."
         );
     } else {
         tool.description.push_str(

@@ -34,7 +34,7 @@ pub(crate) fn definition() -> ToolDefinition {
                 action("expect_visible",json!({"selector":text}), &["selector"]), action("expect_text",json!({"selector":text,"text":text}), &["selector","text"]),
                 action("expect",json!({"expression":text}), &["expression"])
             ]}},
-            "verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":16,"items":text},"paths":{"type":"array","minItems":1,"maxItems":64,"items":text}},"required":["criteria","paths"],"additionalProperties":false}
+            "verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":16,"items":text},"paths":{"type":"array","minItems":1,"maxItems":64,"items":text}},"required":["criteria","paths"],"additionalProperties":false}
         },"required":["path","actions"],"additionalProperties":false}), timeout_ms:60000, output_limit:8192, concurrency_safe:true }
 }
 pub(crate) async fn prepare(mut args: Value, ctx: &ToolContext) -> Result<Value> {

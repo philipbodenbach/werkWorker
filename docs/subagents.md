@@ -9,21 +9,25 @@ Delegation defaults to **Active**. F5 → **Agents** offers four levels:
 |---|---|
 | Off | No new children, including explicit SDK/RPC delegation and automatic helpers. Existing children continue; controls remain available. |
 | Conservative | Delegate selectively; start one read-only review after a file change and a current passing behavioral check. |
-| Active (default) | Prefer independent investigations and reviews alongside implementation; start one read-only review after the first actual file change. |
+| Active (default) | Prefer independent implementation, investigation and checks; start one read-only review after the first actual file change. |
 | Max | Split substantial independent work early; a read-only acceptance-check planning helper may start as soon as a substantial plan exists. |
 
 Automatic helpers require at least three plan steps with remaining work, two
-verified configured model slots, no previously delegated child, available read
+verified configured model slots, no active or successful helper, available read
 tools and permission/capacity for delegation. No level creates busywork or
 guarantees that the model will delegate on every request.
 The reviewer receives the requirements, recent user corrections, current plan and
 bounded file observations (historical paths/hashes) and can inspect files. Automatic
 reviews have a small finite budget even when their parent runs continuously;
 explicitly delegated tasks retain their inherited limits. A review that exhausts
-its budget is reported as incomplete and is not automatically started again.
-Automatic review ceilings are six model requests, eight tool calls, eight steps
-and three minutes, further reduced by tighter inherited limits and the parent
-deadline. They share the existing tree request budget; admission leaves room for
+its budget is reported as incomplete. It can be replaced **once**, after new
+parent file changes since it started. Explicit delegations, completed reviews,
+interrupted or user-cancelled children do not trigger automatic replacements.
+Automatic review ceilings are six model requests, eight tool calls and eight
+steps, with the configured parent wall allowance (default 15 minutes), further
+reduced by tighter inherited limits and the parent deadline. There is no separate
+three-minute cutoff tied to assumed model speed. They share the existing tree
+request budget; admission leaves room for
 parent work but does not reserve requests against concurrent consumption.
 Completed child results arrive at the parent's next model decision while work
 continues, without waiting for running siblings. Automatic delivery occurs once
@@ -38,13 +42,19 @@ with two slots. With more slots, Conservative recommends at most two helpers,
 Active at most four, and Max the remaining configured capacity after allowing
 one slot for the parent. Host child and depth limits always apply. This includes
 existing automatic reviews. The advice is to assign
-an independent, bounded investigation/review and continue separate work rather than
+an independent, bounded implementation/investigation/review and continue separate work rather than
 immediately waiting or polling. Small and sequential tasks should remain local.
 This is a recommendation, not a reserved inference slot or an increase in permissions;
 explicit delegation still follows the existing scheduler and policy. `agents.status`
 also reports execution capacity. Busy counters stay out of the tool description so
 they do not change the prompt prefix on every admission. More slots do not guarantee
 more GPU throughput or shorter task completion time.
+
+Parallel work supports the same build/check/repair cycle on every model:
+delegate independent implementations with disjoint file ownership, or let a
+helper derive acceptance checks while the parent finishes the runnable core.
+For one self-contained file, keep its mutations with one owner. A helper's early
+observations do not require the parent to stop building or certify a scaffold.
 
 This design uses the goal/context and isolated-conversation pattern described
 in [Hermes delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation/).

@@ -133,16 +133,14 @@ impl SessionHandle {
     /// One focused, read-only acceptance review for nontrivial coding work.
     /// It shares admission/policy with explicit delegation and never substitutes
     /// a child's prose for executable verification by the parent.
-    pub(crate) async fn maybe_start_review(&self, run_id: &str) -> Result<()> {
-        let data = self.snapshot().await?;
+    pub(crate) async fn maybe_start_review(&self, run_id: &str, data: &SessionData) -> Result<()> {
         let run = data.run(run_id)?;
         use crate::parallel::DelegationLevel;
         let level = DelegationLevel::from_metadata(&data.metadata)?;
         if data.parent.is_some()
             || level == DelegationLevel::Off
             || run.final_text.is_some()
-            || !crate::completion::enabled(&data, run)?
-            || !run.children.is_empty()
+            || !crate::completion::enabled(data, run)?
             || run.plan["steps"].as_array().is_none_or(|steps| {
                 steps.len() < 3
                     || !steps.iter().any(|step| {
@@ -160,6 +158,42 @@ impl SessionHandle {
         {
             return Ok(());
         }
+        // One live automatic helper at a time. A failed helper must not occupy
+        // that role forever, but retries require new parent work and are bounded.
+        let review_prefix = format!("review_{run_id}");
+        if run.children.len() >= 2 {
+            return Ok(());
+        }
+        for link in &run.children {
+            if link.delegation_id != review_prefix
+                && !link.delegation_id.starts_with(&format!("{review_prefix}_"))
+            {
+                return Ok(()); // Explicit delegation already owns the split.
+            }
+            let child = self
+                .engine
+                .open_session(&link.session_id)
+                .await?
+                .snapshot()
+                .await?;
+            let Some(previous) = child.runs.last().filter(|r| r.status == RunStatus::Failed) else {
+                return Ok(()); // Includes completed, interrupted and user-cancelled work.
+            };
+            let new_work = data.events.iter().any(|event| {
+                event.timestamp_ms > previous.started_at_ms
+                    && event.run_id.as_deref() == Some(run_id)
+                    && matches!(&event.event, EventKind::ToolCompleted { invocation_id, result }
+                        if result.status == Outcome::Succeeded
+                        && (result.data["workspace_changed"] == true
+                            || run.invocations.iter().any(|i| &i.invocation_id == invocation_id
+                                && matches!(i.call.name.as_str(), "files.write" | "files.edit" | "files.insert")
+                                && result.data["sha256"].as_str().is_some_and(|hash|
+                                    i.call.arguments["expected_hash"].as_str() != Some(hash)))))
+            });
+            if !new_work {
+                return Ok(());
+            }
+        }
         let changed = run.invocations.iter().any(|i| {
             matches!(
                 i.call.name.as_str(),
@@ -176,7 +210,7 @@ impl SessionHandle {
         }
         // Conservative preserves the existing late handoff. Higher levels opt
         // into the extra inference cost of reviewing an unfinished candidate.
-        let state = crate::harness::state(&data, run_id)?;
+        let state = crate::harness::state(data, run_id)?;
         if level == DelegationLevel::Conservative
             && crate::work_cycle::observation(run, &state.verifications)["suggested_phase"]
                 != "review"
@@ -201,7 +235,9 @@ impl SessionHandle {
         }
         limits.max_tool_invocations = limits.max_tool_invocations.min(8);
         limits.max_steps = limits.max_steps.min(8);
-        limits.max_wall_ms = limits.max_wall_ms.min(180_000);
+        // Use the configured host wall allowance. A fixed three-minute cap can
+        // expire during one normal request on a slow/offloaded backend. Request
+        // and tool budgets still bound work; the parent deadline still applies.
         let mut updates: Vec<_> = data
             .messages
             .iter()
@@ -214,7 +250,7 @@ impl SessionHandle {
         updates.reverse();
         let mut receipts = Vec::new();
         let mut receipt_bytes = 2;
-        for receipt in crate::working_state::bounded_files(&data, run) {
+        for receipt in crate::working_state::bounded_files(data, run) {
             let metadata = json!({"path":receipt["path"],"status":receipt["status"],"sha256":receipt["sha256"],"total_lines":receipt["total_lines"],"total_bytes":receipt["total_bytes"]});
             receipt_bytes += metadata.to_string().len() + 1;
             if receipt_bytes > 4096 {
@@ -267,7 +303,7 @@ impl SessionHandle {
             .delegate_with_limits(
                 run_id,
                 vec![task],
-                &format!("review_{run_id}"),
+                &format!("{review_prefix}_{}", run.children.len()),
                 Some(limits),
             )
             .await

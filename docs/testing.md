@@ -98,6 +98,16 @@ two subagents without preconfigured grants or a coding profile.
 
 ## Adaptive harness
 
+Repair-cycle regressions in `tests/work_cycle.rs`, `tests/completion.rs` and
+`src/repair_cycle.rs` cover changing diagnostics, edits, unrelated passing checks,
+successful fixes, explicit replacement checks and durable receipt replay.
+Check phases preserve admitted delegation tools; hard capability exclusions
+still apply. Automatic-helper tests cover the configured wall allowance and one
+bounded replacement after failure and new parent work.
+An optional offline replay of a private session snapshot uses
+`WW_REPLAY_SNAPSHOT=/path/to/snapshot.json cargo test --lib saved_session_cannot_reset_repair -- --ignored --nocapture`.
+It executes no tools or model requests and proves bounded recovery, not task completion.
+
 `tests/harness.rs` covers explicit legacy migration, quiet operation without Markdown,
 scoped activation/removal, duplicate suppression, adaptive resume, stable authority, truncation,
 completion/approval/restart boundaries, polling and reproducible whole-request

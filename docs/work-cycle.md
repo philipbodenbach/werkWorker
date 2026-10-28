@@ -1,6 +1,43 @@
 # Keep implementation moving toward the requested result
 
-## Current status: action admission and resource-safe validation
+## General execution contract
+
+The target is a complete runnable core first, followed by behavioral checks and
+focused fix iterations. Simplify optional polish to fit an output allowance;
+do not substitute an unconnected scaffold for the first working version.
+Independent implementations with disjoint file ownership, acceptance planning
+and focused diagnostics can run concurrently within verified host capacity.
+Check and repair phases retain admitted delegation and child-control tools;
+the phase filter must not serialize independent helper work.
+No model name, architecture or tokens-per-second threshold selects this workflow.
+
+`process.run.verification.kind` distinguishes `behavior`, `syntax` and
+`inspection`. Successful syntax/inspection does not establish behavior; a parser
+failure remains useful repair evidence. Existing calls without the optional kind
+retain their legacy contract. An arbitrary executable's semantics cannot be
+proved from its exit code; checks still need real assertions through entry points.
+
+A failed check starts a durable repair cycle. Edits, changed error strings,
+replanning and unrelated successful commands do not erase that obligation.
+Rerun the original check after finishing a correction. If the check itself was
+broken, a corrected check can supply `verification.kind: "behavior"` and
+`verification.replaces: "<source_invocation>"` from `work_cycle.unresolved_check`.
+It must pass against unchanged files and cover the original paths before it
+resolves the cycle. Declaring a replacement alone has no effect.
+
+The cycle is reconstructed from receipts across resume/compaction. A tool batch
+counts as one model decision. After `4 * max(3, max_repeated_calls)` decisions
+without resolution (12 by default), the runtime stops with
+`repair_cycle_exhausted`, preserving work and reporting the unresolved failure.
+This guard also applies in continuous mode. It bounds wasted work; it is not a
+claim of completed implementation or universal model quality.
+
+Automatic helpers use the configured wall allowance, not a separate fixed
+three-minute cutoff. One replacement is allowed after failure and new parent
+file changes; no retry loop, additional permissions or extra inference slots are
+created. See [subagent limits](subagents.md).
+
+## Previous investigation: action admission and resource-safe validation
 
 The follow-up still does **not** establish reliable real-model completion. The
 latest candidate fixes further concrete recovery dead ends, while live inference

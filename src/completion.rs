@@ -104,6 +104,16 @@ fn inline_source_inventory(script: &str) -> bool {
 }
 
 pub(crate) fn verification_rejection(arguments: &Value, result: &Value) -> Option<&'static str> {
+    if arguments["verification"]["kind"] == "inspection" {
+        return Some(
+            "Inspection is diagnostic evidence, not a behavioral verification. Execute the entry point and assert the required behavior before claiming completion.",
+        );
+    }
+    if arguments["verification"]["kind"] == "syntax" && result["exit_code"] == 0 {
+        return Some(
+            "Syntax validation passed, but no application behavior was exercised. Run a behavioral check of the complete runnable version.",
+        );
+    }
     if inspection_only(arguments) {
         return Some(
             "This command only inspected source or file metadata. Its output is available, but it is not a behavioral check and does not clear a pending check phase. Exercise the implementation entry point and assert its behavior.",
@@ -264,7 +274,7 @@ pub(crate) fn bound_tools(tools: &mut [ToolDefinition], bound_sizes: bool) {
                     .as_object_mut()
                     .unwrap()
                     .remove("expected_hash");
-                tool.description = "Create a NEW workspace file in a small working increment. Existing files must use files.edit with an observed unique anchor. Do not rewrite an existing implementation or embed it in a shell command.".into();
+                tool.description = "Create a NEW workspace file with a complete, runnable first version of the core user flow. Keep it small by simplifying optional polish, not by leaving an unfinished script or disconnected entry point. Then verify behavior and make focused corrections. Existing files must use files.edit with an observed unique anchor. Do not rewrite an existing implementation or embed it in a shell command.".into();
                 &[("content", 4096)]
             }
             "files.edit" => &[("old", 2048), ("new", 4096)],

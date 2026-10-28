@@ -17,6 +17,7 @@ pub mod project;
 pub mod providers;
 mod read_progress;
 mod reasoning;
+mod repair_cycle;
 #[cfg(test)]
 mod repetition_tests;
 pub mod runtime;

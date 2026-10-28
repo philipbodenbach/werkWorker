@@ -637,9 +637,145 @@ async fn delegation_levels_start_helpers_at_distinct_stages_and_respect_capacity
             let limits = &child.run.as_ref().unwrap().limits;
             assert!(!limits.continuous);
             assert_eq!(limits.max_model_requests, 6);
+            assert_eq!(
+                limits.max_wall_ms,
+                run.status().await.unwrap().limits.max_wall_ms
+            );
         }
         engine.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn failed_automatic_helper_can_be_replaced_once_after_new_parent_work() {
+    use werk_worker::policy::ToolPermission;
+    let provider = Arc::new(CodingReviewProbe {
+        capacity: 2,
+        root: ScriptedProvider::new(vec![
+            tool_turn(
+                "plan",
+                "task.plan",
+                json!({"steps":[
+                    {"id":"build","description":"Build a runnable version","status":"in_progress"},
+                    {"id":"test","description":"Test the core flow","status":"pending"},
+                    {"id":"repair","description":"Fix concrete failures","status":"pending"}
+                ]}),
+            ),
+            tool_turn(
+                "before",
+                "interaction.ask",
+                json!({"question":"before?","choices":["continue"]}),
+            ),
+            tool_turn(
+                "unchanged",
+                "interaction.ask",
+                json!({"question":"unchanged?","choices":["continue"]}),
+            ),
+            tool_turn(
+                "write",
+                "files.write",
+                json!({"path":"candidate.txt","content":"runnable candidate"}),
+            ),
+            tool_turn(
+                "after",
+                "interaction.ask",
+                json!({"question":"after?","choices":["continue"]}),
+            ),
+            tool_turn(
+                "edit",
+                "files.edit",
+                json!({"path":"candidate.txt","expected_hash":hash("runnable candidate"),"old":"candidate","new":"candidate with corrections"}),
+            ),
+            tool_turn(
+                "final",
+                "interaction.ask",
+                json!({"question":"final?","choices":["continue"]}),
+            ),
+        ]),
+        child: ScriptedProvider::new(vec![
+            ScriptedTurn {
+                delay_ms: 0,
+                deltas: vec![],
+                error: Some(WorkerError::new(
+                    "fixture_failed",
+                    "First helper could not finish",
+                )),
+            },
+            ScriptedTurn {
+                delay_ms: 0,
+                deltas: vec![],
+                error: Some(WorkerError::new(
+                    "fixture_failed",
+                    "Replacement could not finish",
+                )),
+            },
+        ]),
+        seen: Mutex::new(vec![]),
+    });
+    let engine = WorkerEngine::builder(provider).build().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                name: "coding-basic".into(),
+                schema_version: 1,
+                prompt: "Implement and verify".into(),
+                skills: vec![],
+                tools: [
+                    "task.plan",
+                    "files.read",
+                    "files.write",
+                    "files.edit",
+                    "interaction.ask",
+                    "delegate_task",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            },
+            dir.path(),
+            HostPolicy {
+                workspace_writable: true,
+                tool_permissions: ["files.read", "files.write", "files.edit", "delegate_task"]
+                    .map(|name| (name.into(), ToolPermission::Allow))
+                    .into(),
+                ..Default::default()
+            },
+            json!({"project_config":{"delegation_level":"max"}}),
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("Build the core flow", "start", Limits::continuous(), None)
+        .await
+        .unwrap();
+    for (question, expected_children) in [
+        ("before?", 1),
+        ("unchanged?", 1),
+        ("after?", 2),
+        ("final?", 2),
+    ] {
+        let pending = wait_for_question(&run, question).await;
+        let children = run.subagents().await.unwrap();
+        assert_eq!(children.len(), expected_children, "{question}");
+        for child in children {
+            let child_run = run.subagent(&child.session_id).await.unwrap();
+            assert_eq!(child_run.wait().await.unwrap().status, RunStatus::Failed);
+            assert_eq!(
+                child_run.status().await.unwrap().limits.max_wall_ms,
+                900_000
+            );
+        }
+        if question != "final?" {
+            run.respond_to_interaction(
+                &pending.request_id,
+                "continue",
+                question.trim_end_matches('?'),
+            )
+            .await
+            .unwrap();
+        }
+    }
+    engine.close().await.unwrap();
 }
 #[tokio::test]
 async fn delegation_is_idempotent_and_global_capacity_is_bounded() {

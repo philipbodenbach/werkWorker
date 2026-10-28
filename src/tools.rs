@@ -204,9 +204,9 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed argv, no network. To verify code, supply verification with behavioral criteria and all relevant source/test paths. Run real assertions through public entry points; syntax-only checks are insufficient for interactive behavior. A successful check records file hashes; later changes require another check. /workspace persists; /tmp is fresh each call.",
+                "Sandboxed argv, no network. Finish a runnable core flow, then verify and repair concrete failures. Classify verification.kind as behavior, syntax or inspection. Behavior requires real assertions through public entry points; parsing, source inventory and extraction are not behavior. Include criteria and all relevant source/test paths. Rerun the failed check after a complete correction. If that check itself was broken, verification.replaces identifies its source_invocation; a successful behavioral replacement must cover its paths. /workspace persists; /tmp is fresh each call.",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
                 ),
             ),

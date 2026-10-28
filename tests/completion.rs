@@ -107,6 +107,48 @@ async fn incomplete_implementation_and_failed_checks_are_repaired_before_complet
 }
 
 #[tokio::test]
+async fn unrelated_success_cannot_hide_an_unresolved_check_at_completion() {
+    if !sandbox().await {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = engine(
+        vec![
+            call("files.write", json!({"path":"game.txt","content":"stub"})),
+            verify("playable"),
+            verify("stub"),
+            ScriptedTurn::text("The unrelated check passed; done"),
+            call("files.edit", json!({"path":"game.txt","expected_hash":hash("stub"),"old":"stub","new":"playable"})),
+            verify("playable"),
+            ScriptedTurn::text("The original failure is fixed and verified"),
+        ],
+        dir.path(),
+    ).await;
+    let result = session
+        .submit(
+            "Make the game playable",
+            "start",
+            Limits::continuous(),
+            None,
+        )
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(
+        result.text.as_deref(),
+        Some("The original failure is fixed and verified")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "playable"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn edits_invalidate_previous_successful_verification() {
     if !sandbox().await {
         return;

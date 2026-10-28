@@ -1,0 +1,299 @@
+//! A failed check remains an obligation across edits, changed diagnostics and
+//! compaction. File activity alone is not evidence that the failure was fixed.
+use crate::core::*;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub(crate) struct RepairCycle {
+    pub source_invocation: String,
+    command: String,
+    argv: Value,
+    paths: BTreeSet<String>,
+    rounds: BTreeSet<usize>,
+    last_failure: String,
+}
+
+fn command(invocation: &ToolInvocation) -> String {
+    fingerprint(&(
+        &invocation.call.name,
+        &invocation.call.arguments["argv"],
+        crate::working_state::path(invocation.call.arguments["cwd"].as_str().unwrap_or(".")),
+        &invocation.call.arguments["path"],
+        &invocation.call.arguments["actions"],
+    ))
+}
+
+pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<RepairCycle> {
+    let mut cycle: Option<RepairCycle> = None;
+    for invocation in &run.invocations {
+        let Some(result) = &invocation.result else {
+            continue;
+        };
+        if let Some(cycle) = &mut cycle {
+            cycle.rounds.insert(invocation.message_index);
+        }
+        if !matches!(
+            invocation.call.name.as_str(),
+            "process.run" | "browser.check"
+        ) {
+            continue;
+        }
+        let evidence = receipts
+            .get(&invocation.invocation_id)
+            .unwrap_or(&result.data["verification"]);
+        let Some(files) = evidence["files"].as_object().filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let paths: BTreeSet<_> = files
+            .keys()
+            .filter_map(|p| crate::working_state::path(p).ok())
+            .collect();
+        let check_command = command(invocation);
+        let passed = result.status == Outcome::Succeeded
+            && evidence["passed"] == true
+            && !(invocation.call.name == "process.run"
+                && crate::completion::verification_rejection(
+                    &invocation.call.arguments,
+                    &result.data,
+                )
+                .is_some());
+        if passed
+            && cycle.as_ref().is_some_and(|old| {
+                old.paths.is_subset(&paths)
+                    && (old.command == check_command
+                        || (invocation.call.arguments["verification"]["kind"] == "behavior"
+                            && invocation.call.arguments["verification"]["replaces"]
+                                == old.source_invocation))
+            })
+        {
+            cycle = None;
+            continue;
+        }
+        // A command that changed the source is an implementation step, not a
+        // failed test. Rejected/denied actions retain their existing guards.
+        if result.status != Outcome::Succeeded
+            || evidence["passed"] != false
+            || result.data["workspace_changed"] == true
+            || !(result.data["exit_code"]
+                .as_i64()
+                .is_some_and(|code| code != 0)
+                || invocation.call.name == "browser.check")
+        {
+            continue;
+        }
+        let failure = result.data["stderr"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| result.data["stdout"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| result.data["errors"].to_string());
+        let current = cycle.get_or_insert_with(|| RepairCycle {
+            source_invocation: invocation.invocation_id.clone(),
+            command: check_command,
+            argv: invocation.call.arguments["argv"].clone(),
+            paths,
+            rounds: BTreeSet::new(),
+            last_failure: String::new(),
+        });
+        current.rounds.insert(invocation.message_index);
+        current.last_failure = failure;
+    }
+    cycle
+}
+
+impl RepairCycle {
+    pub fn focus_due(&self, run: &Run) -> bool {
+        self.rounds.len() >= run.limits.max_repeated_calls.max(1)
+    }
+
+    pub fn observation(&self, run: &Run) -> Value {
+        json!({"source_invocation":self.source_invocation,
+            "failed_command_excerpt":crate::completion::excerpt(&self.argv.to_string(), 1400),
+            "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
+            "decisions_without_resolution":self.rounds.len(),
+            "decision_limit":stop_limit(run),
+            "last_failure_excerpt":crate::completion::excerpt(&self.last_failure, 800),
+            "next_action":"Finish one complete correction, then rerun the retained failing check. Edits, different error text, replanning and unrelated passing commands do not resolve it. If the check itself was wrong, run a corrected behavioral check covering these paths with verification.kind=behavior and verification.replaces=source_invocation. A declared replacement still has to execute successfully against unchanged files. Delegate independent diagnosis while continuing separate work when capacity and permissions allow."})
+    }
+}
+
+fn stop_limit(run: &Run) -> usize {
+    // A low exact-call limit must still leave enough decisions for diagnosis,
+    // a complete multi-edit correction and its recheck.
+    run.limits.max_repeated_calls.max(3).saturating_mul(4)
+}
+
+pub(crate) fn check(session: &SessionData, run: &Run) -> Result<()> {
+    if crate::failure_progress::enabled(session, run)? {
+        let state = crate::harness::state(session, &run.id)?;
+        if let Some(cycle) =
+            latest(run, &state.verifications).filter(|c| c.rounds.len() >= stop_limit(run))
+        {
+            return Err(WorkerError::new(
+                "repair_cycle_exhausted",
+                format!(
+                    "A failed check remains unresolved after {} model decisions, including edits and changed diagnostics. Work and receipts are retained; the task is incomplete. Failed check: {}. Latest failure: {}",
+                    cycle.rounds.len(),
+                    crate::completion::excerpt(&cycle.argv.to_string(), 400),
+                    crate::completion::excerpt(&cycle.last_failure, 800)
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run() -> Run {
+        serde_json::from_value(json!({
+            "id":"run","status":"running","input":"Implement the requested behavior",
+            "limits":Limits::continuous(),"started_at_ms":0,"deadline_ms":0,
+            "history_start":0,"metrics":Metrics::default(),"attempts":[],"contexts":[],
+            "invocations":[],"steering":[],"plan":null,"similar_grants":[],"repaired_output":false
+        }))
+        .unwrap()
+    }
+
+    fn receipt(index: usize, name: &str, args: Value, data: Value) -> ToolInvocation {
+        serde_json::from_value(json!({
+            "invocation_id":format!("inv_{index}"),"step_id":format!("step_{index}"),"message_index":index,
+            "call":{"id":format!("call_{index}"),"name":name,"arguments":args},
+            "status":"finished","prepared":{},"result":ToolResult::ok(data)
+        })).unwrap()
+    }
+
+    fn check_receipt(index: usize, program: &str, passed: bool, revision: &str) -> ToolInvocation {
+        receipt(
+            index,
+            "process.run",
+            json!({"argv":[program],"verification":{"criteria":["Required behavior"],"paths":["app.txt"]}}),
+            json!({"exit_code":if passed {0} else {1},"stderr":format!("diagnostic {index}"),"workspace_changed":false,
+                "verification":{"passed":passed,"files":{"app.txt":hash(revision)}}}),
+        )
+    }
+
+    #[test]
+    fn edits_changed_errors_and_unrelated_success_cannot_erase_a_failed_check() {
+        let mut run = run();
+        run.invocations
+            .push(check_receipt(0, "./acceptance", false, "old"));
+        for n in 1..12 {
+            let invocation = match n % 3 {
+                0 => receipt(
+                    n,
+                    "files.edit",
+                    json!({"path":"app.txt","expected_hash":hash(format!("v{n}"))}),
+                    json!({"path":"app.txt","sha256":hash(format!("v{}",n+1))}),
+                ),
+                1 => check_receipt(
+                    n,
+                    &format!("./different-failure-{n}"),
+                    false,
+                    "different revision",
+                ),
+                _ => check_receipt(n, "./unrelated-success", true, "different revision"),
+            };
+            run.invocations.push(invocation);
+        }
+        let restored: Run = serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+        let cycle = latest(&restored, &BTreeMap::new()).unwrap();
+        assert_eq!(cycle.source_invocation, "inv_0");
+        assert_eq!(cycle.rounds.len(), stop_limit(&restored));
+        assert!(cycle.focus_due(&restored));
+        assert_eq!(
+            crate::work_cycle::observation(&restored, &BTreeMap::new())["suggested_phase"],
+            "repair"
+        );
+        run.invocations
+            .push(check_receipt(12, "./acceptance", true, "repaired"));
+        assert!(latest(&run, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn corrected_check_requires_explicit_replacement_success_and_path_coverage() {
+        for (passed, kind, replaces, covered, resolved) in [
+            (true, "behavior", "inv_0", true, true),
+            (false, "behavior", "inv_0", true, false),
+            (true, "syntax", "inv_0", true, false),
+            (true, "inspection", "inv_0", true, false),
+            (true, "behavior", "unknown", true, false),
+            (true, "behavior", "inv_0", false, false),
+        ] {
+            let mut run = run();
+            run.invocations
+                .push(check_receipt(0, "./broken-test", false, "v1"));
+            let mut replacement = check_receipt(1, "./correct-test", passed, "v1");
+            replacement.call.arguments["verification"]["kind"] = json!(kind);
+            replacement.call.arguments["verification"]["replaces"] = json!(replaces);
+            if !covered {
+                replacement.result.as_mut().unwrap().data["verification"]["files"] =
+                    json!({"unrelated.txt":hash("v1")});
+            }
+            run.invocations.push(replacement);
+            assert_eq!(
+                latest(&run, &BTreeMap::new()).is_none(),
+                resolved,
+                "{kind} / {passed} / {replaces} / {covered}"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_tool_batches_count_as_one_decision_and_receipts_survive_truncation() {
+        let mut run = run();
+        let mut first = check_receipt(0, "./acceptance", false, "v1");
+        let evidence = first
+            .result
+            .as_mut()
+            .unwrap()
+            .data
+            .as_object_mut()
+            .unwrap()
+            .remove("verification")
+            .unwrap();
+        first.result.as_mut().unwrap().truncated = true;
+        run.invocations.push(first);
+        let receipts = BTreeMap::from([("inv_0".into(), evidence)]);
+        for n in 1..20 {
+            let mut invocation = receipt(
+                n,
+                "files.read",
+                json!({"path":"app.txt"}),
+                json!({"path":"app.txt","sha256":hash("v1")}),
+            );
+            invocation.message_index = 1;
+            run.invocations.push(invocation);
+        }
+        assert_eq!(latest(&run, &receipts).unwrap().rounds.len(), 2);
+    }
+
+    #[test]
+    #[ignore = "explicit offline replay of a supplied session snapshot; no model or workspace execution"]
+    fn saved_session_cannot_reset_repair_by_alternating_edits_and_diagnostics() {
+        let session: SessionData = serde_json::from_slice(
+            &std::fs::read(std::env::var("WW_REPLAY_SNAPSHOT").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let original = session.runs.last().unwrap();
+        let receipts = crate::harness::state(&session, &original.id)
+            .unwrap()
+            .verifications;
+        let mut run = original.clone();
+        let mut stopped = None;
+        for n in 1..=original.invocations.len() {
+            run.invocations = original.invocations[..n].to_vec();
+            if latest(&run, &receipts).is_some_and(|c| c.rounds.len() >= stop_limit(&run)) {
+                stopped = Some(n);
+                break;
+            }
+        }
+        eprintln!(
+            "offline repair-cycle replay: stop at tool {stopped:?} of {}",
+            original.invocations.len()
+        );
+        assert!(stopped.is_some());
+    }
+}

@@ -222,7 +222,10 @@ const COMMANDS: [(&str, &str); 14] = [
     ("/setup", "Configure server, model and credentials"),
     ("/view", "Choose Compact or Cockpit layout"),
     ("/sessions", "Start a new chat or open a previous session"),
-    ("/settings", "Edit profile, permissions, tools and skills"),
+    (
+        "/settings",
+        "Edit profile, permissions, tools, skills and delegation",
+    ),
     ("/effort", "Choose model reasoning effort; /effort <tier>"),
     ("/reasoning", "Choose reasoning tier or server default"),
     ("/expand", "Expand all code blocks"),
@@ -421,7 +424,7 @@ struct View {
     chat_area: Rect,
     panes: [ScrollPane; 8],
     settings: Option<crate::cli_config::Editor>,
-    settings_tabs: [Rect; 4],
+    settings_tabs: [Rect; crate::cli_config::TABS.len()],
     settings_apply: Rect,
     settings_scope: Rect,
     settings_discard: Rect,
@@ -796,6 +799,10 @@ impl View {
     }
     fn refresh_permissions(&mut self, data: &SessionData) {
         (self.access_summary, self.permissions) = permission_details(data);
+        if let Ok(level) = werk_worker::parallel::DelegationLevel::from_metadata(&data.metadata) {
+            self.permissions
+                .push_str(&format!("\nDelegation: {}", level.label()));
+        }
         self.access_hint = if !data.policy.tool_permissions.is_empty()
             || !data.policy.remembered_grants.is_empty()
         {
@@ -2538,8 +2545,8 @@ pub async fn show(
                     } else if let Some(editor) = &mut view.settings {
                         view.discard_armed = false;
                         match key.code {
-                            KeyCode::Tab | KeyCode::Right => editor.tab = (editor.tab + 1) % 4,
-                            KeyCode::BackTab | KeyCode::Left => editor.tab = (editor.tab + 3) % 4,
+                            KeyCode::Tab | KeyCode::Right => editor.tab = (editor.tab + 1) % crate::cli_config::TABS.len(),
+                            KeyCode::BackTab | KeyCode::Left => editor.tab = (editor.tab + crate::cli_config::TABS.len() - 1) % crate::cli_config::TABS.len(),
                             KeyCode::Up | KeyCode::Down => editor.move_selection(key.code == KeyCode::Up),
                             KeyCode::Char(' ') | KeyCode::Enter => editor.activate(),
                             KeyCode::Char('p') => editor.save_project = !editor.save_project,

@@ -55,6 +55,7 @@ cargo build --bins
 python3 scripts/tests/tui_smoke.py target/debug/ww
 python3 scripts/tests/selection_tui_smoke.py target/debug/ww
 python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
+python3 scripts/tests/delegation_tui_smoke.py target/debug/ww
 python3 scripts/tests/setup_smoke.py target/debug/ww
 python3 scripts/generate-cli-reference.py target/debug/werk-worker --check
 ```

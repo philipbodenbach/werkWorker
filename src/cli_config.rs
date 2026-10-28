@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use werk_worker::{
+    parallel::DelegationLevel,
     policy::{HostPolicy, PolicyDecision, ToolPermission},
     profiles::AgentProfile,
     project::{Access, Project},
@@ -12,6 +13,8 @@ use werk_worker::{
 struct SavedPolicy {
     workspace_identity: String,
     policy: HostPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delegation_level: Option<DelegationLevel>,
 }
 
 async fn policy_path(workspace: &Path) -> Result<PathBuf> {
@@ -23,7 +26,7 @@ async fn policy_path(workspace: &Path) -> Result<PathBuf> {
         .join(format!("{}.json", fingerprint(&root))))
 }
 
-pub async fn load_policy(workspace: &Path) -> Result<Option<HostPolicy>> {
+async fn load_saved(workspace: &Path) -> Result<Option<SavedPolicy>> {
     let bytes = match crate::cli_setup::read_settings(&policy_path(workspace).await?).await {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -31,16 +34,43 @@ pub async fn load_policy(workspace: &Path) -> Result<Option<HostPolicy>> {
     };
     let saved: SavedPolicy = serde_json::from_slice(&bytes)?;
     let current = runtime::Workspace::open(workspace).await?;
-    Ok((saved.workspace_identity == current.identity).then_some(saved.policy))
+    Ok((saved.workspace_identity == current.identity).then_some(saved))
+}
+
+pub async fn load_policy(workspace: &Path) -> Result<Option<HostPolicy>> {
+    Ok(load_saved(workspace).await?.map(|saved| saved.policy))
+}
+
+pub async fn session_metadata(project: &Project, workspace: &Path) -> Result<serde_json::Value> {
+    let mut metadata = project.scoped_metadata();
+    if let Some(level) = load_saved(workspace)
+        .await?
+        .and_then(|s| s.delegation_level)
+    {
+        metadata[parallel::PREFERENCE_KEY] = serde_json::json!(level);
+    }
+    Ok(metadata)
 }
 
 pub async fn save_policy(workspace: &Path, policy: HostPolicy) -> Result<()> {
+    let preference = load_saved(workspace)
+        .await?
+        .and_then(|s| s.delegation_level);
+    save_preferences(workspace, policy, preference).await
+}
+
+async fn save_preferences(
+    workspace: &Path,
+    policy: HostPolicy,
+    delegation_level: Option<DelegationLevel>,
+) -> Result<()> {
     let current = runtime::Workspace::open(workspace).await?;
     crate::cli_setup::save(
         &policy_path(workspace).await?,
         &SavedPolicy {
             workspace_identity: current.identity,
             policy,
+            delegation_level,
         },
     )
     .await
@@ -127,13 +157,15 @@ pub fn policy_label(policy: &HostPolicy) -> String {
     }
 }
 
-pub const TABS: [&str; 4] = ["Profiles", "Permissions", "Tools", "Skills"];
+pub const TABS: [&str; 5] = ["Profiles", "Permissions", "Tools", "Skills", "Agents"];
 
 pub struct Editor {
     pub profile: AgentProfile,
     pub policy: HostPolicy,
+    pub delegation_level: DelegationLevel,
+    project_delegation_level: Option<DelegationLevel>,
     pub tab: usize,
-    pub selected: [usize; 4],
+    pub selected: [usize; TABS.len()],
     pub save_project: bool,
     pub status: String,
     profiles: Vec<AgentProfile>,
@@ -142,6 +174,7 @@ pub struct Editor {
     project: Project,
     workspace: PathBuf,
     saved_draft: String,
+    saved_access: String,
 }
 
 impl Editor {
@@ -183,12 +216,26 @@ impl Editor {
             .iter()
             .position(|p| p.name == data.profile.name)
             .unwrap_or(0);
-        let saved_draft = fingerprint(&(&data.profile, &data.policy));
+        let delegation_level = DelegationLevel::preference(&data.metadata)?;
+        let project_delegation_level = DelegationLevel::project_override(&data.metadata)?;
+        let saved_access = fingerprint(&(&data.profile, &data.policy));
+        let saved_draft = fingerprint(&(&data.profile, &data.policy, delegation_level));
         Ok(Self {
             profile: data.profile,
             policy: data.policy,
+            delegation_level,
+            project_delegation_level,
             tab: 1,
-            selected: [selected, 0, 0, 0],
+            selected: [
+                selected,
+                0,
+                0,
+                0,
+                DelegationLevel::ALL
+                    .iter()
+                    .position(|l| *l == delegation_level)
+                    .unwrap(),
+            ],
             save_project: true,
             status: String::new(),
             profiles,
@@ -197,6 +244,7 @@ impl Editor {
             project,
             workspace: data.workspace,
             saved_draft,
+            saved_access,
         })
     }
 
@@ -251,7 +299,7 @@ impl Editor {
                     )
                 })
                 .collect(),
-            _ => self
+            3 => self
                 .skills
                 .iter()
                 .map(|s| {
@@ -263,6 +311,20 @@ impl Editor {
                             " "
                         },
                         s.name
+                    )
+                })
+                .collect(),
+            _ => DelegationLevel::ALL
+                .iter()
+                .map(|level| {
+                    format!(
+                        "[{}] {}",
+                        if *level == self.delegation_level {
+                            "x"
+                        } else {
+                            " "
+                        },
+                        level.label()
                     )
                 })
                 .collect(),
@@ -329,7 +391,7 @@ impl Editor {
                     toggle(&mut self.profile.tools, &tool.name);
                 }
             }
-            _ => {
+            3 => {
                 if let Some(skill) = self.skills.get(selected) {
                     toggle(&mut self.profile.skills, &skill.name);
                     if !self.profile.skills.is_empty() {
@@ -343,6 +405,11 @@ impl Editor {
                     }
                 }
             }
+            _ => {
+                if let Some(level) = DelegationLevel::ALL.get(selected) {
+                    self.delegation_level = *level;
+                }
+            }
         }
         self.status =
             "Draft changed. Ctrl-S applies settings; Esc discards unsaved changes.".into();
@@ -354,14 +421,19 @@ impl Editor {
             0 => self.profiles.get(selected).map(|p| format!("{}\n\nProfiles choose tools and skills. Change workspace writes and sandbox processes in the Permissions tab. Explicitly enabled tool permissions are retained when selecting a profile.\n\nTools: {}\nSkills: {}\n\n{}", p.name, p.tools.join(", "), p.skills.join(", "), p.prompt)),
             1 => Some("Workspace reads / writes / processes: Enter cycles deny → ask → allow. Enabling access also enables the matching tools in this profile.\n\nManual: reads run directly; writes and commands ask.\nAccept edits: workspace reads/writes run directly; commands ask.\nRead only: reads run directly; writes and commands are blocked.\n\nCtrl-S applies the draft. P switches session-only / project defaults. Saved approvals can be cleared here. Hard denies remain authoritative.".into()),
             2 => self.tools.get(selected).map(|t| format!("{}\nEffect: {:?}\nPermission: {}\n\nEnter: enable/disable tool\nA: cycle deny / ask / allow (whole tool)\n\n{}", t.name, t.effect, self.tool_label(t), t.description)),
-            _ => self.skills.get(selected).map(|s| format!("{}\n{}\n\n{}", s.name, s.description, s.body)),
+            3 => self.skills.get(selected).map(|s| format!("{}\n{}\n\n{}", s.name, s.description, s.body)),
+            _ => DelegationLevel::ALL.get(selected).map(|l| format!("Delegation preference: {}\n\n{}\n\nEnter selects a preference; Ctrl-S applies it. An explicit delegation_level in .werkworker/config.json always wins; settings never overwrite that value. Delegation-only changes also apply during a run. Existing children finish normally.\n\nAutomatic helpers require substantial coding work and at least two verified inference slots. Every level respects tool permissions, tree budgets and host capacity. More agents share the same model resources.\n\nP switches session-only / saved workspace preference.", l.label(), l.description())),
         }.unwrap_or_default();
         format!(
-            "Draft profile: {}\n{}\nEnabled: {} tools, {} skills\nSave: {}\n\n{}\n\n{}",
+            "Draft profile: {}\n{}\nEnabled: {} tools, {} skills\nDelegation preference: {}\nEffective: {}\nSave: {}\n\n{}\n\n{}",
             self.profile.name,
             policy_label(&self.policy),
             self.profile.tools.len(),
             self.profile.skills.len(),
+            self.delegation_level.label(),
+            self.project_delegation_level
+                .map(|level| format!("{} (fixed by project config)", level.label()))
+                .unwrap_or_else(|| self.delegation_level.label().into()),
             if self.save_project {
                 "current session + project defaults"
             } else {
@@ -373,7 +445,7 @@ impl Editor {
     }
 
     pub fn is_dirty(&self) -> bool {
-        fingerprint(&(&self.profile, &self.policy)) != self.saved_draft
+        fingerprint(&(&self.profile, &self.policy, self.delegation_level)) != self.saved_draft
     }
 
     fn tool_label(&self, tool: &ToolDefinition) -> String {
@@ -487,9 +559,20 @@ impl Editor {
     }
 
     pub async fn apply(&mut self, session: &SessionHandle) -> Result<()> {
-        session
-            .configure(self.profile.clone(), self.policy.clone(), &id("configure"))
-            .await?;
+        // Strategy changes do not reconfigure permissions or require stopping
+        // the current run. Profile/access edits keep their existing guards.
+        if fingerprint(&(&self.profile, &self.policy)) != self.saved_access {
+            session
+                .configure(self.profile.clone(), self.policy.clone(), &id("configure"))
+                .await?;
+        }
+        if DelegationLevel::preference(&session.snapshot().await?.metadata)?
+            != self.delegation_level
+        {
+            session
+                .set_delegation_level(self.delegation_level, &id("delegation"))
+                .await?;
+        }
         if self.save_project {
             let outcome: Result<()> = async {
                 let mut config = self.project.config.clone();
@@ -498,7 +581,12 @@ impl Editor {
                 config.skills = Some(self.profile.skills.clone());
                 self.project.save(&self.workspace, &config).await?;
                 self.project = Project::load(&self.workspace).await?;
-                save_policy(&self.workspace, session.snapshot().await?.policy).await
+                save_preferences(
+                    &self.workspace,
+                    session.snapshot().await?.policy,
+                    Some(self.delegation_level),
+                )
+                .await
             }
             .await;
             if let Err(error) = outcome {
@@ -516,7 +604,14 @@ impl Editor {
             "Saved: current session. Esc returns to chat."
         }
         .into();
-        self.saved_draft = fingerprint(&(&self.profile, &self.policy));
+        if let Some(level) = self.project_delegation_level {
+            self.status.push_str(&format!(
+                " Effective delegation: {} (fixed by project config).",
+                level.label()
+            ));
+        }
+        self.saved_access = fingerprint(&(&self.profile, &self.policy));
+        self.saved_draft = fingerprint(&(&self.profile, &self.policy, self.delegation_level));
         Ok(())
     }
 }

@@ -6,6 +6,89 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Delegation strategy, independent of host capacity and tool permissions.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationLevel {
+    Off,
+    Conservative,
+    #[default]
+    Active,
+    Max,
+}
+
+impl DelegationLevel {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Conservative, Self::Active, Self::Max];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Conservative => "Conservative",
+            Self::Active => "Active",
+            Self::Max => "Max",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Off => {
+                "No new subagents, including automatic reviews. Existing children continue; status, messages and cancellation remain available."
+            }
+            Self::Conservative => {
+                "Delegate a focused independent task when useful. One automatic read-only review after an implementation change and a passing behavioral check."
+            }
+            Self::Active => {
+                "Prefer delegating independent investigations and reviews while implementing. One automatic read-only review after the first implementation change, before verification. This is the default."
+            }
+            Self::Max => {
+                "Proactively split substantial work into independent, bounded tasks early. One automatic read-only requirements/check-planning helper can start once a substantial plan exists. Use available helper capacity when useful, without duplicating work or inventing tasks."
+            }
+        }
+    }
+
+    pub fn from_metadata(metadata: &serde_json::Value) -> Result<Self> {
+        Ok(Self::project_override(metadata)?.unwrap_or(Self::preference(metadata)?))
+    }
+
+    /// Explicit project configuration always takes precedence over UI preferences.
+    pub fn project_override(metadata: &serde_json::Value) -> Result<Option<Self>> {
+        Self::parse(
+            metadata
+                .get("project_config")
+                .and_then(|c| c.get("delegation_level")),
+        )
+    }
+
+    pub fn preference(metadata: &serde_json::Value) -> Result<Self> {
+        Ok(Self::parse(metadata.get(PREFERENCE_KEY))?.unwrap_or_default())
+    }
+
+    fn parse(value: Option<&serde_json::Value>) -> Result<Option<Self>> {
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => serde_json::from_value(value.clone())
+                .map(Some)
+                .map_err(|_| {
+                    WorkerError::new(
+                        "delegation_level",
+                        "Delegation level must be off, conservative, active or max",
+                    )
+                }),
+        }
+    }
+
+    fn helper_ceiling(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Conservative => 2,
+            Self::Active => 4,
+            Self::Max => usize::MAX,
+        }
+    }
+}
+
+pub const PREFERENCE_KEY: &str = "_werkworker_delegation_preference";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExecutionConfig {
@@ -49,11 +132,16 @@ impl ExecutionConfig {
 /// the shared prompt prefix on every admission. Actual admission stays enforced
 /// by the scheduler; this is guidance, not a reservation or additional grant.
 pub(crate) fn describe_delegation(
-    tools: &mut [ToolDefinition],
+    tools: &mut Vec<ToolDefinition>,
     config: &ExecutionConfig,
     info: &InferenceConcurrency,
     depth: usize,
+    level: DelegationLevel,
 ) {
+    if level == DelegationLevel::Off {
+        tools.retain(|tool| tool.name != "delegate_task");
+        return;
+    }
     let Some(tool) = tools.iter_mut().find(|tool| tool.name == "delegate_task") else {
         return;
     };
@@ -63,12 +151,12 @@ pub(crate) fn describe_delegation(
             .saturating_sub(1)
             .min(config.max_subagents)
             .min(config.max_children_per_run)
-            .min(2)
+            .min(level.helper_ceiling())
     } else {
         0
     };
     tool.description.push_str(&format!(
-        " Effective configured inference slots: {slots}. Recommended total active helpers for this parent: at most {helpers}, including already running automatic reviews. Configured slots are shared capacity, not reserved throughput."
+        " Delegation level: {}. {} Effective configured inference slots: {slots}. Recommended total active helpers for this parent: at most {helpers}, including already running automatic reviews. Configured slots are shared capacity, not reserved throughput.", level.label(), level.description()
     ));
     if helpers > 0 {
         tool.description.push_str(
@@ -213,6 +301,7 @@ mod admission_tests {
                     detail: "test".into(),
                 },
                 depth,
+                DelegationLevel::Conservative,
             );
             assert!(tools[0].description.contains(&format!(
                 "Recommended total active helpers for this parent: at most {expected}"
@@ -220,6 +309,41 @@ mod admission_tests {
             assert_eq!(tools[0].input_schema, original.input_schema);
             assert_eq!(tools[0].effect, original.effect);
         }
+    }
+
+    #[test]
+    fn levels_change_guidance_within_host_capacity_and_off_keeps_controls() {
+        let config = ExecutionConfig {
+            max_model_requests: 8,
+            max_subagents: 6,
+            ..Default::default()
+        };
+        let info = InferenceConcurrency {
+            max_requests: Some(8),
+            source: "fixture".into(),
+            detail: "test".into(),
+        };
+        for (level, expected) in [
+            (DelegationLevel::Conservative, 2),
+            (DelegationLevel::Active, 4),
+            (DelegationLevel::Max, 6),
+        ] {
+            let mut tools = vec![crate::agents::AgentTool("delegate_task".into()).definition()];
+            describe_delegation(&mut tools, &config, &info, 0, level);
+            assert!(
+                tools[0]
+                    .description
+                    .contains(&format!("at most {expected},"))
+            );
+            assert!(tools[0].description.contains(level.description()));
+        }
+        let mut tools = vec![
+            crate::agents::AgentTool("delegate_task".into()).definition(),
+            crate::agents::AgentTool("agents.cancel".into()).definition(),
+        ];
+        describe_delegation(&mut tools, &config, &info, 0, DelegationLevel::Off);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "agents.cancel");
     }
 
     #[tokio::test]

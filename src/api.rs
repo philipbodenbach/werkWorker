@@ -306,6 +306,7 @@ impl WorkerEngine {
         metadata: Value,
     ) -> Result<SessionHandle> {
         self.ensure_open()?;
+        crate::parallel::DelegationLevel::from_metadata(&metadata)?;
         for name in &profile.tools {
             self.inner.tools.get(name)?;
         }
@@ -721,6 +722,49 @@ impl SessionHandle {
     }
     pub fn available_skills(&self) -> Vec<crate::skills::Skill> {
         self.engine.skills()
+    }
+    /// Trusted host preference, below explicit project configuration. Safe to
+    /// change during a run. In-flight model
+    /// requests retain their prompt; fresh delegation admission uses this value.
+    /// Existing children are not cancelled or given different permissions.
+    pub async fn set_delegation_level(
+        &self,
+        level: crate::parallel::DelegationLevel,
+        command_id: &str,
+    ) -> Result<CommandReceipt> {
+        self.engine.ensure_open()?;
+        let _delegation = self.engine.inner.delegation.lock().await;
+        let payload = json!({"method":"set_delegation_level","level":level});
+        self.update(|d| {
+            if d.parent.is_some() {
+                return Err(WorkerError::new(
+                    "root_required",
+                    "Set delegation in the root session",
+                ));
+            }
+            if d.metadata.is_null() {
+                d.metadata = json!({});
+            }
+            if !d.metadata.is_object() {
+                return Err(WorkerError::new(
+                    "delegation_level",
+                    "Session metadata must be an object",
+                ));
+            }
+            let receipt = d.command(command_id, &payload, None)?;
+            if matches!(receipt.status, ReceiptStatus::Duplicate) {
+                return Ok(receipt);
+            }
+            d.metadata[crate::parallel::PREFERENCE_KEY] = json!(level);
+            d.emit(
+                None,
+                EventKind::Diagnostic {
+                    code: "delegation_level_updated".into(),
+                },
+            );
+            Ok(receipt)
+        })
+        .await
     }
     /// Trusted host configuration for an idle or waiting root session. This is not a model
     /// tool. Historical messages/skill versions and hard denies are retained.
@@ -1572,6 +1616,7 @@ impl SessionHandle {
                 &self.engine.inner.execution,
                 &self.provider().concurrency(),
                 data.parent.as_ref().map_or(0, |parent| parent.depth),
+                crate::parallel::DelegationLevel::from_metadata(&data.metadata)?,
             );
             crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
             if crate::completion::enabled(&data, run)? {

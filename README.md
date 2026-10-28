@@ -104,6 +104,11 @@ visible **Apply & close** button or F10 saves and returns to the conversation.
 Unsaved edits are marked explicitly, and Esc warns before discarding them.
 Explicitly enabled tools remain enabled when a different profile is selected.
 
+F5 → **Agents** selects delegation: **Off / Conservative / Active / Max**.
+**Active** is the default. An explicit `delegation_level` in
+`.werkworker/config.json` overrides the UI preference. Host capacity, budgets
+and permissions remain authoritative. See [subagents](docs/subagents.md).
+
 Host chat commands work during questions without consuming the pending answer:
 
 ```text

@@ -32,7 +32,10 @@ The latest changes are provider-independent:
   writes carry their applied receipts, not a lone stale pre-action diagnosis.
   Canonical history is unchanged; newer versions supersede old checkpoint text.
 - Start the existing automatic acceptance reviewer only after a current passing
-  check, not after the first scaffold write. An earlier explicit-reasoning live
+  check in **Conservative** delegation mode. **Active** (now the default) starts
+  after the first actual file change; **Max** can start a check-planning helper
+  once a substantial plan exists. See [delegation levels](subagents.md).
+  An earlier explicit-reasoning live
   test started review too early; its child exhausted the wall allowance and
   the shared provider correctly refused further uncertain inference. Review
   still cannot replace actual verification or grant capabilities.

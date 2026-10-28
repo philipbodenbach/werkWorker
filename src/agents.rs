@@ -136,7 +136,10 @@ impl SessionHandle {
     pub(crate) async fn maybe_start_review(&self, run_id: &str) -> Result<()> {
         let data = self.snapshot().await?;
         let run = data.run(run_id)?;
+        use crate::parallel::DelegationLevel;
+        let level = DelegationLevel::from_metadata(&data.metadata)?;
         if data.parent.is_some()
+            || level == DelegationLevel::Off
             || run.final_text.is_some()
             || !crate::completion::enabled(&data, run)?
             || !run.children.is_empty()
@@ -145,17 +148,6 @@ impl SessionHandle {
                     || !steps.iter().any(|step| {
                         matches!(step["status"].as_str(), Some("pending" | "in_progress"))
                     })
-            })
-            || !run.invocations.iter().any(|i| {
-                matches!(
-                    i.call.name.as_str(),
-                    "files.write" | "files.edit" | "files.insert"
-                ) && i.result.as_ref().is_some_and(|r| {
-                    r.status == Outcome::Succeeded
-                        && r.data["sha256"].as_str().is_some_and(|hash| {
-                            i.call.arguments["expected_hash"].as_str() != Some(hash)
-                        })
-                })
             })
             || self.execution_status()["effective_model_requests"]
                 .as_u64()
@@ -168,12 +160,26 @@ impl SessionHandle {
         {
             return Ok(());
         }
-        // Review a runnable candidate, not the first scaffold. Starting a
-        // second investigator after the first write consumed shared context,
-        // requests and reasoning time while the parent still had no version to
-        // exercise. A current passing check is the handoff to review.
+        let changed = run.invocations.iter().any(|i| {
+            matches!(
+                i.call.name.as_str(),
+                "files.write" | "files.edit" | "files.insert"
+            ) && i.result.as_ref().is_some_and(|r| {
+                r.status == Outcome::Succeeded
+                    && r.data["sha256"].as_str().is_some_and(|hash| {
+                        i.call.arguments["expected_hash"].as_str() != Some(hash)
+                    })
+            })
+        });
+        if level != DelegationLevel::Max && !changed {
+            return Ok(());
+        }
+        // Conservative preserves the existing late handoff. Higher levels opt
+        // into the extra inference cost of reviewing an unfinished candidate.
         let state = crate::harness::state(&data, run_id)?;
-        if crate::work_cycle::observation(run, &state.verifications)["suggested_phase"] != "review"
+        if level == DelegationLevel::Conservative
+            && crate::work_cycle::observation(run, &state.verifications)["suggested_phase"]
+                != "review"
         {
             return Ok(());
         }
@@ -216,10 +222,35 @@ impl SessionHandle {
             }
             receipts.push(metadata);
         }
+        let goal = if !changed {
+            "Independently derive a concise acceptance checklist and behavioral test scenarios from the supplied requirements and plan. Inspect existing relevant files only if needed; the implementation may not exist yet. Identify ambiguities and edge cases for the parent, who is implementing. Do not implement, repeat the parent's broad investigation, or claim the user's task is complete."
+        } else {
+            "Perform one focused acceptance review of the remaining coding work. Inspect only relevant current files; prioritize concrete missing behavior and behavioral assertions through real entry points. The parent continues implementing; its candidate may be incomplete. Do not implement, repeat broad searches, or claim the user's task is complete."
+        };
         let task = DelegateTask {
-            goal: "Perform one focused acceptance review of the remaining coding work. Inspect only relevant current files; prioritize concrete missing behavior and behavioral assertions through real entry points. The parent continues implementing. You have at most 6 model requests and 8 tool calls: finish with concise evidence and test recommendations within that budget, even if inspection is incomplete. Do not implement, repeat broad searches, or claim the user's task is complete.".into(),
-            context: format!("User requirements (bounded):\n{}\nRecent user updates, in chronological order (bounded):\n{}\nCurrent plan (bounded):\n{}\nLatest file receipts (historical observations; recheck before relying on changing files):\n{}", crate::completion::excerpt(&run.input, 4000), crate::completion::excerpt(&serde_json::to_string(&updates)?, 3200), crate::completion::excerpt(&run.plan.to_string(), 2500), serde_json::to_string(&receipts)?),
-            tools: Some(data.profile.tools.iter().filter(|t| matches!(t.as_str(), "files.read" | "files.list" | "files.search" | "files.find")).cloned().collect()),
+            goal: format!(
+                "{goal} You have at most 6 model requests and 8 tool calls: finish with concise evidence and test recommendations within that budget, even if inspection is incomplete."
+            ),
+            context: format!(
+                "User requirements (bounded):\n{}\nRecent user updates, in chronological order (bounded):\n{}\nCurrent plan (bounded):\n{}\nLatest file receipts (historical observations; recheck before relying on changing files):\n{}",
+                crate::completion::excerpt(&run.input, 4000),
+                crate::completion::excerpt(&serde_json::to_string(&updates)?, 3200),
+                crate::completion::excerpt(&run.plan.to_string(), 2500),
+                serde_json::to_string(&receipts)?
+            ),
+            tools: Some(
+                data.profile
+                    .tools
+                    .iter()
+                    .filter(|t| {
+                        matches!(
+                            t.as_str(),
+                            "files.read" | "files.list" | "files.search" | "files.find"
+                        )
+                    })
+                    .cloned()
+                    .collect(),
+            ),
             read_only: true,
         };
         if task.tools.as_ref().is_none_or(Vec::is_empty) {
@@ -242,7 +273,14 @@ impl SessionHandle {
             .await
         {
             Ok(_) => Ok(()),
-            Err(error) if matches!(error.code.as_str(), "agent_capacity" | "agent_limit") => Ok(()),
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "agent_capacity" | "agent_limit" | "delegation_disabled"
+                ) =>
+            {
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }
@@ -392,6 +430,23 @@ impl SessionHandle {
                 ));
             }
             return self.children(run_id).await;
+        }
+        use crate::parallel::DelegationLevel;
+        let mut disabled = DelegationLevel::from_metadata(&data.metadata)? == DelegationLevel::Off;
+        if let Some(parent) = &data.parent {
+            let root = self
+                .engine
+                .open_session(&parent.root_session)
+                .await?
+                .snapshot()
+                .await?;
+            disabled |= DelegationLevel::from_metadata(&root.metadata)? == DelegationLevel::Off;
+        }
+        if disabled {
+            return Err(WorkerError::new(
+                "delegation_disabled",
+                "Delegation is off for this session. Change it in Settings > Agents or project config.",
+            ));
         }
         let config = &self.engine.inner.execution;
         let depth = data.parent.as_ref().map_or(1, |p| p.depth + 1);

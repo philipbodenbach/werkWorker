@@ -3,9 +3,19 @@
 werkWorker can orchestrate background child sessions while the parent continues
 working. All bundled profiles expose `delegate_task`, `agents.status`,
 `agents.wait`, `agents.cancel` and `agents.message`. The model can delegate; SDK/RPC hosts can also delegate explicitly.
-For coding tasks with at least three plan steps, remaining plan work and an actual file change, the
-harness starts one read-only acceptance review if at least two configured model
-slots are verified, no child was already delegated, and host policy permits it.
+Delegation defaults to **Active**. F5 → **Agents** offers four levels:
+
+| Level | Model guidance and automatic helper |
+|---|---|
+| Off | No new children, including explicit SDK/RPC delegation and automatic helpers. Existing children continue; controls remain available. |
+| Conservative | Delegate selectively; start one read-only review after a file change and a current passing behavioral check. |
+| Active (default) | Prefer independent investigations and reviews alongside implementation; start one read-only review after the first actual file change. |
+| Max | Split substantial independent work early; a read-only acceptance-check planning helper may start as soon as a substantial plan exists. |
+
+Automatic helpers require at least three plan steps with remaining work, two
+verified configured model slots, no previously delegated child, available read
+tools and permission/capacity for delegation. No level creates busywork or
+guarantees that the model will delegate on every request.
 The reviewer receives the requirements, recent user corrections, current plan and
 bounded file observations (historical paths/hashes) and can inspect files. Automatic
 reviews have a small finite budget even when their parent runs continuously;
@@ -24,8 +34,10 @@ engine, not by spawning another CLI binary.
 
 The model's `delegate_task` description includes the effective configured inference
 capacity without requiring a separate status call. It recommends at most one helper
-with two slots, and at most two helpers with larger capacity, subject to host child
-and depth limits. This includes existing automatic reviews. The advice is to assign
+with two slots. With more slots, Conservative recommends at most two helpers,
+Active at most four, and Max the remaining configured capacity after allowing
+one slot for the parent. Host child and depth limits always apply. This includes
+existing automatic reviews. The advice is to assign
 an independent, bounded investigation/review and continue separate work rather than
 immediately waiting or polling. Small and sequential tasks should remain local.
 This is a recommendation, not a reserved inference slot or an increase in permissions;
@@ -40,6 +52,21 @@ It is an independent Rust implementation, not a Hermes runtime integration or a
 compatible implementation of every Hermes option. No Hermes source was copied.
 
 ## Start and configure
+
+Set `"delegation_level": "off"`, `"conservative"`, `"active"` or `"max"` in
+`.werkworker/config.json` to fix the strategy for new sessions. An explicit
+project value always overrides the F5 preference. Missing or `null` uses the UI
+preference, or **Active** if none was saved. F5 shows both the preference and
+the effective project override; saving settings preserves that explicit value.
+Saved workspace preferences live separately with host workspace settings.
+Existing sessions retain their project snapshot; start a new session to load
+manual file changes. Children inherit the resolved configuration.
+
+`SessionHandle::set_delegation_level` changes the host preference, including
+during a run. It cannot override a project value or increase execution limits,
+permissions or budgets. Changes affect subsequent model requests/admission;
+an in-flight request keeps its original prompt. Turning delegation Off blocks
+new children, including descendant admissions, without cancelling existing ones.
 
 ```sh
 ww --werk-config examples/werk-config.json \

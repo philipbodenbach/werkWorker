@@ -119,6 +119,9 @@ pub struct ProjectConfig {
     /// Optional model for every delegated child; omission inherits the parent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_model: Option<String>,
+    /// Overrides UI delegation preferences; cannot increase host limits or permissions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegation_level: Option<crate::parallel::DelegationLevel>,
     pub profile: Option<String>,
     pub context_tokens: Option<usize>,
     pub output_tokens: Option<usize>,
@@ -153,6 +156,7 @@ impl Default for ProjectConfig {
             version: 1,
             model: None,
             subagent_model: None,
+            delegation_level: None,
             profile: None,
             context_tokens: None,
             output_tokens: None,
@@ -701,15 +705,13 @@ pub(crate) fn inherited_metadata(session: &SessionData) -> Result<serde_json::Va
     } else {
         serde_json::Value::Null
     };
-    if let Some(model) = session
-        .metadata
-        .get(crate::api::MODEL_BINDING)
-        .filter(|v| !v.is_null())
-    {
-        if !metadata.is_object() {
-            metadata = serde_json::json!({});
+    for key in [crate::api::MODEL_BINDING, crate::parallel::PREFERENCE_KEY] {
+        if let Some(value) = session.metadata.get(key).filter(|v| !v.is_null()) {
+            if !metadata.is_object() {
+                metadata = serde_json::json!({});
+            }
+            metadata[key] = value.clone();
         }
-        metadata[crate::api::MODEL_BINDING] = model.clone();
     }
     Ok(metadata)
 }

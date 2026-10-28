@@ -463,7 +463,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                                 next_profile,
                                 &cli.workspace,
                                 next_policy,
-                                project.scoped_metadata(),
+                                cli_config::session_metadata(&project, &cli.workspace).await?,
                             )
                             .await?
                     }
@@ -574,9 +574,9 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                             cli_setup::settings_path()?.parent().expect("config parent"),
                         )
                         .await?,
-                    cli.workspace,
+                    &cli.workspace,
                     policy,
-                    project.scoped_metadata(),
+                    cli_config::session_metadata(&project, &cli.workspace).await?,
                 )
                 .await?;
             let run = session

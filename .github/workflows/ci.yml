@@ -26,6 +26,7 @@ jobs:
       - run: python3 scripts/tests/selection_tui_smoke.py target/debug/ww
       - run: python3 scripts/tests/permissions_tui_smoke.py target/debug/ww
       - run: python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
+      - run: python3 scripts/tests/delegation_tui_smoke.py target/debug/ww
       - run: python3 scripts/tests/sessions_tui_smoke.py target/debug/ww
       - run: python3 scripts/tests/setup_smoke.py target/debug/ww
       - run: python3 scripts/tests/effort_tui_smoke.py target/debug/ww

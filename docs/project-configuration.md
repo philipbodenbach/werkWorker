@@ -145,6 +145,15 @@ tools and bundled skills; arbitrary scripts/plugins are not loaded automatically
 A test command is an argv array included as a **suggestion** in the prompt. Merely
 opening the project never executes it. There are no startup hooks.
 
+`delegation_level` fixes delegation to `off`, `conservative`, `active` or `max`.
+It takes precedence over the F5 → Agents preference. Omission or `null` uses
+that preference, defaulting to **Active**. F5 never overwrites an explicit
+project value; saved UI preferences are stored separately per workspace.
+Every level remains subject to host agent/depth limits, verified inference
+capacity, budgets and permissions. Existing sessions retain their project
+snapshot; a new session loads manual configuration changes. See
+[delegation levels and automatic helper triggers](subagents.md).
+
 `subagent_model` optionally selects one model for **all** delegated children,
 including automatic reviews and nested helpers. For example, add
 `"subagent_model": "your-helper-model"` alongside the existing `model` field.

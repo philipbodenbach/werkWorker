@@ -20,6 +20,7 @@ fn command(invocation: &ToolInvocation) -> String {
         crate::working_state::path(invocation.call.arguments["cwd"].as_str().unwrap_or(".")),
         &invocation.call.arguments["path"],
         &invocation.call.arguments["actions"],
+        &invocation.call.arguments["stdin"],
     ))
 }
 
@@ -44,26 +45,26 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
         let Some(files) = evidence["files"].as_object().filter(|v| !v.is_empty()) else {
             continue;
         };
+        // Invalid invocation/inspection is not an application failure. Apply
+        // the same rule to historical receipts and newly executed checks.
+        if invocation.call.name == "process.run"
+            && crate::completion::verification_rejection(&invocation.call.arguments, &result.data)
+                .is_some()
+        {
+            continue;
+        }
         let paths: BTreeSet<_> = files
             .keys()
             .filter_map(|p| crate::working_state::path(p).ok())
             .collect();
         let check_command = command(invocation);
-        let passed = result.status == Outcome::Succeeded
-            && evidence["passed"] == true
-            && !(invocation.call.name == "process.run"
-                && crate::completion::verification_rejection(
-                    &invocation.call.arguments,
-                    &result.data,
-                )
-                .is_some());
+        let passed = result.status == Outcome::Succeeded && evidence["passed"] == true;
         if passed
             && cycle.as_ref().is_some_and(|old| {
                 old.paths.is_subset(&paths)
                     && (old.command == check_command
-                        || (invocation.call.arguments["verification"]["kind"] == "behavior"
-                            && invocation.call.arguments["verification"]["replaces"]
-                                == old.source_invocation))
+                        || invocation.call.arguments["verification"]["replaces"]
+                            == old.source_invocation)
             })
         {
             cycle = None;
@@ -112,8 +113,8 @@ impl RepairCycle {
             "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
             "decisions_without_resolution":self.rounds.len(),
             "decision_limit":stop_limit(run),
-            "last_failure_excerpt":crate::completion::excerpt(&self.last_failure, 800),
-            "next_action":"Finish one complete correction, then rerun the retained failing check. Edits, different error text, replanning and unrelated passing commands do not resolve it. If the check itself was wrong, run a corrected behavioral check covering these paths with verification.kind=behavior and verification.replaces=source_invocation. A declared replacement still has to execute successfully against unchanged files. Delegate independent diagnosis while continuing separate work when capacity and permissions allow."})
+            "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
+            "next_action":"Diagnose whether the application or the check failed before editing application code. Finish one correction, then rerun the check; fix a broken check using verification.replaces=source_invocation and the same paths. Prefer verification.kind=behavior with real assertions; syntax and inspection are not behavioral evidence. A successful replacement must cover unchanged files. Edits and unrelated passing commands do not resolve the failure. Delegate independent diagnosis while continuing separate work when useful."})
     }
 }
 
@@ -135,7 +136,7 @@ pub(crate) fn check(session: &SessionData, run: &Run) -> Result<()> {
                     "A failed check remains unresolved after {} model decisions, including edits and changed diagnostics. Work and receipts are retained; the task is incomplete. Failed check: {}. Latest failure: {}",
                     cycle.rounds.len(),
                     crate::completion::excerpt(&cycle.argv.to_string(), 400),
-                    crate::completion::excerpt(&cycle.last_failure, 800)
+                    crate::completion::diagnostic_excerpt(&cycle.last_failure, 1000)
                 ),
             ));
         }
@@ -239,6 +240,80 @@ mod tests {
                 "{kind} / {passed} / {replaces} / {covered}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_replacement_and_stdin_identity_follow_the_execution_contract() {
+        let mut run = run();
+        let mut first = check_receipt(0, "sh", false, "v1");
+        first.call.arguments["stdin"] = json!("test important-behavior");
+        run.invocations.push(first);
+        let mut second = check_receipt(1, "sh", true, "v1");
+        second.call.arguments["stdin"] = json!("true");
+        run.invocations.push(second);
+        assert!(latest(&run, &BTreeMap::new()).is_some());
+        // kind is optional in the public schema. Do not silently ignore an
+        // explicit replacement which the host accepted as verification.
+        run.invocations[1].call.arguments["verification"]["replaces"] = json!("inv_0");
+        assert!(latest(&run, &BTreeMap::new()).is_none());
+        run.invocations[1].call.arguments["verification"]["replaces"] = Value::Null;
+        run.invocations[1].call.arguments["stdin"] = json!("test important-behavior");
+        assert!(latest(&run, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn invalid_invocations_and_inspection_failures_do_not_start_application_repairs() {
+        let mut run = run();
+        let mut invalid = check_receipt(0, "python3", false, "v1");
+        invalid.call.arguments["argv"] = json!(["python3", "- <<'PY'\nprint(1)\nPY"]);
+        run.invocations.push(invalid);
+        let mut diagnostic = check_receipt(1, "./inspect", false, "v1");
+        diagnostic.call.arguments["verification"]["kind"] = json!("inspection");
+        run.invocations.push(diagnostic);
+        assert!(latest(&run, &BTreeMap::new()).is_none());
+        run.invocations
+            .push(check_receipt(2, "./acceptance", false, "v1"));
+        let cycle = latest(&run, &BTreeMap::new()).unwrap();
+        assert_eq!(cycle.source_invocation, "inv_2");
+        assert_eq!(cycle.rounds.len(), 1);
+    }
+
+    #[test]
+    #[ignore = "explicit read-only replay of the malformed-command incident; no model or workspace execution"]
+    fn saved_malformed_check_does_not_exhaust_later_application_repair() {
+        let session: SessionData = serde_json::from_slice(
+            &std::fs::read(std::env::var("WW_REPLAY_SNAPSHOT").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let run = session
+            .runs
+            .iter()
+            .find(|r| {
+                r.error
+                    .as_ref()
+                    .is_some_and(|e| e.code == "repair_cycle_exhausted")
+            })
+            .unwrap();
+        let receipts = crate::harness::state(&session, &run.id)
+            .unwrap()
+            .verifications;
+        let cycle = latest(run, &receipts).unwrap();
+        assert!(cycle.rounds.len() < stop_limit(run));
+        assert_eq!(
+            cycle.source_invocation,
+            run.invocations.last().unwrap().invocation_id
+        );
+        assert!(
+            cycle.observation(run)["last_failure_excerpt"]
+                .as_str()
+                .unwrap()
+                .contains("TypeError:")
+        );
+        eprintln!(
+            "saved failure replay: obsolete invocation excluded; current check has {} decision(s), below {}",
+            cycle.rounds.len(),
+            stop_limit(run)
+        );
     }
 
     #[test]

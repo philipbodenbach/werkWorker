@@ -370,9 +370,9 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "latest_check": last_check.map(|(_, i, evidence)| {
             let result = i.result.as_ref().unwrap();
             json!({"source_invocation":i.invocation_id,"passed":evidence["passed"],
-                "failure_excerpt": if evidence["passed"] == false { Some(crate::completion::excerpt(
+                "failure_excerpt": if evidence["passed"] == false { Some(crate::completion::diagnostic_excerpt(
                     result.data["stderr"].as_str().filter(|s| !s.is_empty())
-                        .or_else(|| result.data["stdout"].as_str()).unwrap_or("See the recorded check result"), 512)) } else { None }})
+                        .or_else(|| result.data["stdout"].as_str()).unwrap_or("See the recorded check result"), 1000)) } else { None }})
         }),
         "investigation_calls_since_progress": investigation,
         "changes_since_check": changes_since_check,

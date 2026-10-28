@@ -3281,7 +3281,10 @@ impl SessionHandle {
                         "files.edit" | "files.write" | "files.insert"
                     ) && e.code == "write_conflict")
                         || (matches!(def.name.as_str(), "process.run" | "process.start")
-                            && e.code == "path_denied")
+                            && matches!(
+                                e.code.as_str(),
+                                "path_denied" | "invalid_process_invocation" | "invalid_stdin"
+                            ))
                     {
                         // Builtin path/file preparation emits static, non-secret
                         // reasons. The model must distinguish a stale base

@@ -24,18 +24,23 @@ fn inspection_only(arguments: &Value) -> bool {
     if reader(program) {
         return true;
     }
-    if matches!(program, "node" | "nodejs")
-        && matches!(
-            argv.get(1).and_then(Value::as_str),
-            Some("-e" | "--eval" | "-p" | "--print")
-        )
-        && let Some(script) = argv.get(2).and_then(Value::as_str)
-    {
-        return inline_source_inventory(script);
+    let option = argv.get(1).and_then(Value::as_str);
+    if matches!(program, "node" | "nodejs") {
+        let script = match option {
+            Some("-e" | "--eval" | "-p" | "--print") => argv.get(2).and_then(Value::as_str),
+            None | Some("-") => arguments["stdin"].as_str(),
+            _ => None,
+        };
+        if let Some(script) = script {
+            return inline_source_inventory(script);
+        }
     }
     if matches!(program, "sh" | "bash" | "dash" | "zsh")
-        && argv.get(1).and_then(Value::as_str) == Some("-c")
-        && let Some(script) = argv.get(2).and_then(Value::as_str)
+        && let Some(script) = match option {
+            Some("-c") => argv.get(2).and_then(Value::as_str),
+            None | Some("-s") => arguments["stdin"].as_str(),
+            _ => None,
+        }
     {
         // Only a simple reader or pipeline. Do not guess about substitutions,
         // conditionals, assertions, redirections or compound shell programs.
@@ -104,6 +109,9 @@ fn inline_source_inventory(script: &str) -> bool {
 }
 
 pub(crate) fn verification_rejection(arguments: &Value, result: &Value) -> Option<&'static str> {
+    if let Some(issue) = crate::process_input::invocation_issue(arguments) {
+        return Some(issue);
+    }
     if arguments["verification"]["kind"] == "inspection" {
         return Some(
             "Inspection is diagnostic evidence, not a behavioral verification. Execute the entry point and assert the required behavior before claiming completion.",
@@ -153,6 +161,25 @@ pub(crate) fn excerpt(text: &str, bytes: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+/// Keep the end of diagnostics as well as their beginning. Interpreters often
+/// echo a long source line before the actionable exception and stack trace.
+pub(crate) fn diagnostic_excerpt(text: &str, bytes: usize) -> String {
+    const GAP: &str = "\n… [diagnostic shortened] …\n";
+    if text.len() <= bytes {
+        return text.into();
+    }
+    if bytes <= GAP.len() {
+        return excerpt(text, bytes).into();
+    }
+    let available = bytes - GAP.len();
+    let head = excerpt(text, available / 3);
+    let mut tail = text.len() - (available - head.len());
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{head}{GAP}{}", &text[tail..])
 }
 
 /// Rebuild from durable task state, never by trusting an assistant's summary.
@@ -439,6 +466,43 @@ pub(crate) fn progress(run: &Run) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_diagnostics_keep_actionable_tail_and_utf8() {
+        let text = format!(
+            "[eval]:1\n{}\nTypeError: missing test result\n    at check (test.js:1:1234)",
+            "长いソース".repeat(1000)
+        );
+        let shortened = diagnostic_excerpt(&text, 1000);
+        assert!(shortened.len() <= 1000);
+        assert!(shortened.starts_with("[eval]:1"));
+        assert!(shortened.contains("TypeError: missing test result"));
+        for limit in 0..100 {
+            assert!(diagnostic_excerpt(&text, limit).len() <= limit);
+        }
+        assert_eq!(diagnostic_excerpt("short", 1000), "short");
+    }
+
+    #[test]
+    fn script_input_keeps_existing_inspection_rules_without_guessing_unknown_programs() {
+        let inventory =
+            "const s=require('fs').readFileSync('app.js','utf8');console.log(s.includes('render'))";
+        for argv in [json!(["node"]), json!(["node", "-"])] {
+            assert!(inspection_only(&json!({"argv":argv,"stdin":inventory})));
+        }
+        for argv in [json!(["sh"]), json!(["bash", "-s"])] {
+            assert!(inspection_only(&json!({"argv":argv,"stdin":"cat app.js"})));
+        }
+        assert!(!inspection_only(
+            &json!({"argv":["sh"],"stdin":". ./counter.sh; test \"$(increment 0)\" = 1"})
+        ));
+        assert!(!inspection_only(
+            &json!({"argv":["custom-test"],"stdin":"cat app.js"})
+        ));
+        assert!(!inspection_only(
+            &json!({"argv":["node", "app.test.js"],"stdin":inventory})
+        ));
+    }
 
     #[test]
     fn inline_source_inventory_does_not_certify_a_runnable_candidate() {

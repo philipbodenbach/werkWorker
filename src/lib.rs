@@ -12,6 +12,7 @@ mod file_io;
 pub mod harness;
 pub mod parallel;
 pub mod policy;
+mod process_input;
 pub mod profiles;
 pub mod project;
 pub mod providers;

@@ -98,6 +98,15 @@ two subagents without preconfigured grants or a coding profile.
 
 ## Adaptive harness
 
+`tests/process_input.rs` runs real sandbox checks for literal bounded stdin, EOF,
+early exits, blocked-input timeout/cancellation, and approval binding. Its engine
+fixture rejects a malformed interpreter invocation before approval and completes
+after one corrected script/check call. This measures orchestration steps, not
+model speed. `src/repair_cycle.rs` also replays legacy replacement receipts and
+excludes invalid command/inspection failures from application repair obligations.
+The opt-in `saved_malformed_check_does_not_exhaust_later_application_repair` replay
+uses a private `WW_REPLAY_SNAPSHOT` and executes neither tools nor model requests.
+
 Repair-cycle regressions in `tests/work_cycle.rs`, `tests/completion.rs` and
 `src/repair_cycle.rs` cover changing diagnostics, edits, unrelated passing checks,
 successful fixes, explicit replacement checks and durable receipt replay.

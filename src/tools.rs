@@ -204,9 +204,9 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed argv, no network. Finish a runnable core flow, then verify and repair concrete failures. Classify verification.kind as behavior, syntax or inspection. Behavior requires real assertions through public entry points; parsing, source inventory and extraction are not behavior. Include criteria and all relevant source/test paths. Rerun the failed check after a complete correction. If that check itself was broken, verification.replaces identifies its source_invocation; a successful behavioral replacement must cover its paths. /workspace persists; /tmp is fresh each call.",
+                "Sandboxed literal argv, no implicit shell or network. For scripts use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind: behavior (real assertions through entry points), syntax, or inspection. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. /workspace persists; /tmp is fresh per call.",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"stdin":{"type":"string","maxLength":32768,"description":"Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files."},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
                 ),
             ),
@@ -390,6 +390,18 @@ impl Tool for Builtin {
                     json!({"path":args["path"],"before":original,"after":args["content"]});
             }
             "process.run" | "process.start" => {
+                if let Some(issue) = crate::process_input::invocation_issue(&args) {
+                    return Err(WorkerError::new("invalid_process_invocation", issue));
+                }
+                if args["stdin"]
+                    .as_str()
+                    .is_some_and(|input| input.len() > crate::process_input::STDIN_LIMIT)
+                {
+                    return Err(WorkerError::new(
+                        "invalid_stdin",
+                        "Standard input exceeds 32768 bytes; use a workspace script for larger programs",
+                    ));
+                }
                 let cwd = process_cwd(args["cwd"].as_str().unwrap_or("."))?;
                 args["cwd"] = json!(cwd);
                 args["sandbox"] = json!({"backend":"bubblewrap","workspace_writable":ctx.writable,"network":false,"host_home":false,"limits":ctx.sandbox.limits});
@@ -439,8 +451,16 @@ impl Tool for Builtin {
                 if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
                 else{
                     let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
-                    let output = ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?;
+                    let output = if let Some(input) = args["stdin"].as_str() {
+                        ctx.sandbox.run_with_stdin(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone(),input).await?
+                    } else {
+                        ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?
+                    };
                     let mut result = serde_json::to_value(&output)?;
+                    if output.exit_code != Some(0) || output.timed_out || output.cancelled {
+                        result["failure_excerpt"] = json!(crate::completion::diagnostic_excerpt(
+                            if output.stderr.is_empty() { &output.stdout } else { &output.stderr }, 1000));
+                    }
                     if !before.is_empty() {
                         let after = crate::completion::verification_files(&args, &ctx.workspace).await?;
                         if let Some(reason) = crate::completion::verification_rejection(&args, &result) {

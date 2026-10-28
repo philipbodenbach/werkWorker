@@ -1589,7 +1589,9 @@ async fn new_diagnostic_results_restore_reads_without_requiring_file_changes() {
         ]);
     }
     turns.extend([
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"kind":"behavior","replaces":"$unresolved-check","criteria":["Existing state is valid"],"paths":["game.txt"]}})),
+        // The public schema permits a legacy check without kind. Its explicit
+        // replacement must be honored once that verification succeeds.
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"replaces":"$unresolved-check","criteria":["Existing state is valid"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified existing state"),
     ]);
     let (engine, session, _) = fixture(turns, dir.path(), false).await;

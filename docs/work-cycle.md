@@ -16,6 +16,19 @@ No model name, architecture or tokens-per-second threshold selects this workflow
 failure remains useful repair evidence. Existing calls without the optional kind
 retain their legacy contract. An arbitrary executable's semantics cannot be
 proved from its exit code; checks still need real assertions through entry points.
+Malformed interpreter invocations (for example a shell here-document placed in
+one literal Python argument) are rejected before execution/approval with a
+correction hint. Historical receipts for those invocations and rejected
+inspections do not start application repair cycles.
+
+`process.run` accepts optional `stdin` (at most 32768 UTF-8 bytes), for example
+`{"argv":["python3","-"],"stdin":"print('ready')"}`. Input is delivered literally,
+then closed; it is part of the exact prepared approval. No shell is inserted,
+and timeout, cancellation, read-only mounts and all sandbox limits remain in
+force. This permits one script/check call without a temporary-file write or
+shell quoting. Inspection scripts retain the same verification rules as inline
+argv scripts. Failure excerpts preserve both the beginning and the end of a
+diagnostic so a long echoed source line cannot hide the final exception.
 
 A failed check starts a durable repair cycle. Edits, changed error strings,
 replanning and unrelated successful commands do not erase that obligation.
@@ -24,6 +37,9 @@ broken, a corrected check can supply `verification.kind: "behavior"` and
 `verification.replaces: "<source_invocation>"` from `work_cycle.unresolved_check`.
 It must pass against unchanged files and cover the original paths before it
 resolves the cycle. Declaring a replacement alone has no effect.
+An accepted legacy verification without `kind` can also explicitly replace a
+check; the optional field must not silently invalidate otherwise valid evidence.
+Declared syntax/inspection still cannot pass as behavioral verification.
 
 The cycle is reconstructed from receipts across resume/compaction. A tool batch
 counts as one model decision. After `4 * max(3, max_repeated_calls)` decisions

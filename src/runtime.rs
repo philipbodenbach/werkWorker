@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
@@ -496,8 +496,38 @@ impl Sandbox {
         cwd: &str,
         cancel: CancellationToken,
     ) -> Result<ProcessOutput> {
-        self.run_observed(workspace, writable, argv, cwd, cancel, None, false)
+        self.run_observed(workspace, writable, argv, cwd, cancel, None, false, None)
             .await
+    }
+    /// Supply literal input to a single sandboxed command. EOF is delivered
+    /// after the bounded input; cancellation and resource limits still apply.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_stdin(
+        &self,
+        workspace: &Workspace,
+        writable: bool,
+        argv: &[String],
+        cwd: &str,
+        cancel: CancellationToken,
+        stdin: &str,
+    ) -> Result<ProcessOutput> {
+        if stdin.len() > crate::process_input::STDIN_LIMIT {
+            return Err(WorkerError::new(
+                "invalid_stdin",
+                "Standard input exceeds 32768 bytes; use a workspace script for larger programs",
+            ));
+        }
+        self.run_observed(
+            workspace,
+            writable,
+            argv,
+            cwd,
+            cancel,
+            None,
+            false,
+            Some(stdin),
+        )
+        .await
     }
     pub(crate) async fn run_browser(
         &self,
@@ -512,7 +542,7 @@ impl Sandbox {
             permit = BROWSER.lock() => permit,
             _ = cancel.cancelled() => return Err(WorkerError::new("cancelled", "Browser wait cancelled")),
         };
-        self.run_observed(workspace, false, argv, ".", cancel, None, true)
+        self.run_observed(workspace, false, argv, ".", cancel, None, true, None)
             .await
     }
     #[allow(clippy::too_many_arguments)]
@@ -525,10 +555,11 @@ impl Sandbox {
         cancel: CancellationToken,
         live: Option<Arc<LiveOutput>>,
         browser: bool,
+        stdin: Option<&str>,
     ) -> Result<ProcessOutput> {
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (workspace, writable, argv, cwd, cancel, live, browser);
+            let _ = (workspace, writable, argv, cwd, cancel, live, browser, stdin);
             return Err(WorkerError::new(
                 "sandbox_unavailable",
                 "Only Linux bubblewrap is supported",
@@ -553,7 +584,11 @@ impl Sandbox {
             let mut command = tokio::process::Command::new(&self.bubblewrap);
             command
                 .env_clear()
-                .stdin(Stdio::null())
+                .stdin(if stdin.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
@@ -729,6 +764,26 @@ impl Sandbox {
             })?;
             let stdout = child.stdout.take().unwrap();
             let stderr = child.stderr.take().unwrap();
+            let input = child.stdin.take();
+            // Poll input concurrently with process completion and output drains.
+            // Dropping this future closes the pipe on exit/timeout/cancellation;
+            // a child that never reads cannot leave a detached writer behind.
+            let input_task = async move {
+                if let Some(mut pipe) = input {
+                    let result = pipe.write_all(stdin.unwrap_or_default().as_bytes()).await;
+                    drop(pipe);
+                    if let Err(error) = result {
+                        if error.kind() != std::io::ErrorKind::BrokenPipe {
+                            return Err(WorkerError::new(
+                                "process_io",
+                                "Failed to deliver standard input",
+                            ));
+                        }
+                    }
+                }
+                Ok::<(), WorkerError>(())
+            };
+            tokio::pin!(input_task);
             let out_task = tokio::spawn(drain_live(
                 stdout,
                 self.limits.output_bytes,
@@ -739,12 +794,26 @@ impl Sandbox {
             let mut cancelled = false;
             let mut timed_out = false;
             let child_pid = child.id().unwrap_or(0);
-            let status = tokio::select! {
-                s = child.wait() => s?,
-                _ = cancel.cancelled() => { cancelled=true; child.kill().await?; child.wait().await? },
-                _ = tokio::time::sleep(Duration::from_millis(self.limits.timeout_ms)) => { timed_out=true; child.kill().await?; child.wait().await? },
-                _ = browser_memory_limit(child_pid, self.limits.memory_bytes), if browser => { timed_out=true; child.kill().await?; child.wait().await? },
-            };
+            let status = {
+                let status_task = async {
+                    Ok::<_, WorkerError>(tokio::select! {
+                        s = child.wait() => s?,
+                        _ = cancel.cancelled() => { cancelled=true; child.kill().await?; child.wait().await? },
+                        _ = tokio::time::sleep(Duration::from_millis(self.limits.timeout_ms)) => { timed_out=true; child.kill().await?; child.wait().await? },
+                        _ = browser_memory_limit(child_pid, self.limits.memory_bytes), if browser => { timed_out=true; child.kill().await?; child.wait().await? },
+                    })
+                };
+                tokio::pin!(status_task);
+                tokio::select! {
+                    status = &mut status_task => status,
+                    input_result = &mut input_task => {
+                        // A failed input transport is not an application assertion.
+                        // Still reap the bounded process and its output tasks.
+                        let status = status_task.await;
+                        input_result.and(status)
+                    }
+                }
+            }?;
             // PID namespace teardown kills all descendants, including detached groups.
             let (out, ot) = out_task
                 .await
@@ -972,6 +1041,7 @@ impl JobManager {
                     child_cancel,
                     Some(log),
                     false,
+                    None,
                 )
                 .await;
             // A finished notification also promises the workspace is released.

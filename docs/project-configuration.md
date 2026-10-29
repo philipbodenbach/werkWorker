@@ -18,8 +18,12 @@ the chat. A text selection in the settings details does not consume the save
 shortcut. Esc warns about unsaved edits; a second Esc discards them. Selecting
 a profile retains tools explicitly enabled through permission rules.
 
-Remembered approvals are scoped: individual file tool within the workspace, or
-exact prepared arguments for non-file actions. A project approval is saved in
+Remembered approvals cover the named file or sandboxed process tool within the
+workspace, bound to its version. For example, remembering `process.run` permits
+later commands without another prompt, but does not permit `process.start`.
+Other actions retain exact prepared-argument scopes. Existing exact-action
+grants stay exact until a new workspace-scoped approval is explicitly chosen.
+A project approval is saved in
 the host's `workspace-access` configuration and reloaded for new project chats.
 Hard denials, invalid paths and read-only workers still take precedence.
 The design takes inspiration from [Hermes context files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files/)

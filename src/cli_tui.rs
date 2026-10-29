@@ -1284,7 +1284,7 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
         (
             " Approval ",
             format!(
-                "Agent: {}\nTool: {}\n{}\n\nApproves only this action. Sandbox and hard denies still apply.",
+                "Agent: {}\nTool: {}\n{}\n\nAllow once approves this action. Session/project choices remember the displayed scope. Sandbox and hard denies still apply.",
                 view.request_owner,
                 request.description["tool"].as_str().unwrap_or("unknown"),
                 serde_json::to_string_pretty(&request.description).unwrap_or_default()
@@ -2115,6 +2115,7 @@ fn approval_scope(request: &ApprovalRequest) -> String {
     let tool = request.description["tool"].as_str().unwrap_or("tool");
     match request.description["effect"].as_str() {
         Some("read" | "write") => format!("{tool} in workspace"),
+        Some("process") => format!("{tool} in sandboxed workspace"),
         _ => "exact prepared action".into(),
     }
 }
@@ -2145,9 +2146,12 @@ async fn approve_choice(
             "\n\n{} · {tool}: {}\n",
             view.request_owner,
             match choice {
-                0 => "Allowed once",
-                1 => "Denied",
-                _ => "Allowed and remembered for this session",
+                0 => "Allowed once".into(),
+                1 => "Denied".into(),
+                _ => format!(
+                    "Allowed and remembered for this session ({})",
+                    approval_scope(&request)
+                ),
             }
         ));
         view.approval = None;

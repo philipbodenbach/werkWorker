@@ -3890,10 +3890,11 @@ impl RunHandle {
             if decision==ApprovalDecision::AllowForSession {
                 let def=i.definition.as_ref().unwrap();
                 let files=matches!(def.effect, Effect::Read|Effect::Write);
+                let workspace_tool=files || def.effect==Effect::Process;
                 let grant=crate::policy::CapabilityGrant {
                     tool:def.name.clone(), version:def.version.clone(),
                     resource:if files {".".into()} else {crate::policy::resource(def,&i.prepared)?},
-                    arguments_hash:if files {None} else {Some(fingerprint(&i.prepared))},
+                    arguments_hash:if workspace_tool {None} else {Some(fingerprint(&i.prepared))},
                     expires_at_ms:None, preapproved:true,
                 };
                 d.policy.remembered_grants.retain(|g| !(g.tool==grant.tool && g.arguments_hash==grant.arguments_hash));

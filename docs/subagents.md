@@ -33,6 +33,13 @@ Completed child results arrive at the parent's next model decision while work
 continues, without waiting for running siblings. Automatic delivery occurs once
 per child and remains recorded across resume. Review observations may describe
 an earlier file revision; the parent must check them against its current work.
+
+When a review exhausts its wall-time budget during a Werk request, it stops
+starting work and drains the current inference under the bounded cleanup policy
+in [recovery](recovery.md). The parent continues in available slots; the review's
+late tool calls never run. A confirmed response avoids poisoning the shared
+provider, while an uncertain backend outcome still blocks new inference.
+Review failures include their original error code in the parent chat.
 It cannot write files, execute processes, or replace the parent’s behavior tests. Children run in the same
 engine, not by spawning another CLI binary.
 

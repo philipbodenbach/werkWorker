@@ -2558,6 +2558,8 @@ impl SessionHandle {
         request: crate::providers::ModelRequest,
         shutdown: &CancellationToken,
     ) -> Result<(Message, Option<Usage>, Value)> {
+        let dispatched = AtomicBool::new(false);
+        let draining = AtomicBool::new(false);
         let operation = async {
             let data = self.snapshot().await?;
             let limits = crate::context::effective_limits(
@@ -2591,6 +2593,7 @@ impl SessionHandle {
             let _slot = self.runtime.inference.slots.acquire().await;
             let _host_slot = self.engine.inner.host_model_slots.acquire().await;
             self.charge_tree_request(run_id).await?;
+            dispatched.store(true, Ordering::Release);
             let mut stream = self.provider().stream(request.clone()).await?;
             let mut assembler = ResponseAssembler::default();
             let limit = self.snapshot().await?.run(run_id)?.limits.max_output_bytes;
@@ -2602,7 +2605,11 @@ impl SessionHandle {
                 let next = tokio::select! {
                     next = stream.next() => next,
                     _ = tokio::time::sleep_until(flush_at), if !pending.is_empty() => {
-                        self.flush_model_events(run_id, &mut pending).await?;
+                        if draining.load(Ordering::Acquire) {
+                            pending.clear();
+                        } else {
+                            self.flush_model_events(run_id, &mut pending).await?;
+                        }
                         pending_bytes = 0;
                         flush_at = tokio::time::Instant::now() + Duration::from_millis(100);
                         continue;
@@ -2612,10 +2619,26 @@ impl SessionHandle {
                 let delta = match next {
                     Ok(delta) => delta,
                     Err(error) => {
-                        self.flush_model_events(run_id, &mut pending).await?;
+                        if !draining.load(Ordering::Acquire) {
+                            self.flush_model_events(run_id, &mut pending).await?;
+                        }
                         return Err(error);
                     }
                 };
+                if draining.load(Ordering::Acquire) {
+                    // Consume only transport completion after the deadline.
+                    // Late text and tool fragments never enter the transcript
+                    // or the tool execution path. Werk settles its receipt
+                    // before yielding a terminal delta.
+                    pending.clear();
+                    if matches!(delta, ModelDelta::Finish { .. } | ModelDelta::Done) {
+                        return Err(WorkerError::new(
+                            "wall_budget",
+                            "Run wall-time budget reached",
+                        ));
+                    }
+                    continue;
+                }
                 if let Err(error) = assembler.push(&delta, limit) {
                     self.flush_model_events(run_id, &mut pending).await?;
                     return Err(error);
@@ -2694,7 +2717,78 @@ impl SessionHandle {
         };
         tokio::pin!(operation);
         loop {
-            tokio::select! {result=&mut operation=>return result,_=tokio::time::sleep(Duration::from_millis(20))=>self.check_running_without_wait(run_id,shutdown)?,_=shutdown.cancelled()=>return Err(WorkerError::new("cancelled","Model request cancelled"))}
+            tokio::select! {
+                _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Model request cancelled")),
+                result = &mut operation => return result,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                    let Err(error) = self.check_running_without_wait(run_id, shutdown) else {
+                        continue;
+                    };
+                    let grace = self.provider().deadline_drain_timeout().min(Duration::from_secs(600));
+                    if error.code != "wall_budget" || !dispatched.load(Ordering::Acquire) || grace.is_zero() {
+                        return Err(error);
+                    }
+                    draining.store(true, Ordering::Release);
+                    // Keep ownership of the request AND both inference permits.
+                    // No detached task, retry, or reset of the provider's safety
+                    // latch. Other sessions can keep using their available slots.
+                    // Poll the notice alongside the operation: awaiting a session
+                    // update alone could deadlock its queued mutex acquisition.
+                    let cleanup = async {
+                        tokio::join!(&mut operation, self.update(|data| {
+                            data.emit(Some(run_id), EventKind::Diagnostic {
+                                code: "model_deadline_draining".into(),
+                            });
+                            Ok(())
+                        }))
+                    };
+                    // RunHandle::cancel persists Cancelling; only engine
+                    // shutdown cancels the actor token. Observe both, without
+                    // polling or dropping/recreating a queued mutex future.
+                    let cancelled = async {
+                        let mut changed = self.runtime.changed.subscribe();
+                        loop {
+                            changed.borrow_and_update();
+                            let status = self.runtime.data.lock().await.run(run_id)?.status;
+                            if matches!(status, RunStatus::Cancelling | RunStatus::Cancelled) {
+                                return Ok::<(), WorkerError>(());
+                            }
+                            changed.changed().await.map_err(|_| WorkerError::new("closed", "Session closed during inference cleanup"))?;
+                        }
+                    };
+                    let outcome = tokio::select! {
+                        _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Model request cancelled")),
+                        result = cancelled => {
+                            result?;
+                            return Err(WorkerError::new("cancelled", "Model request cancelled"));
+                        }
+                        result = tokio::time::timeout(grace, cleanup) => result,
+                    };
+                    let code = match outcome {
+                        Ok((result, notice)) => {
+                            notice?;
+                            match result {
+                                Err(cause) if cause.code != "wall_budget" => format!("model_deadline_drain_failed:{}", cause.code),
+                                _ => "model_deadline_drain_finished".into(),
+                            }
+                        }
+                        // Return before awaiting another session update: the
+                        // still-pending operation may own a queued mutex permit.
+                        // Dropping it preserves the provider's unresolved guard.
+                        Err(_) => return Err(WorkerError::new("wall_budget", format!(
+                            "Run wall-time budget reached; inference cleanup did not finish within {} ms",
+                            grace.as_millis()
+                        ))),
+                    };
+                    self.update(|data| {
+                        data.emit(Some(run_id), EventKind::Diagnostic { code });
+                        Ok(())
+                    }).await?;
+                    // The expired run still fails with its original cause,
+                    // even if its late response was a valid answer or tool call.
+                    return Err(error);
+                }
+            }
         }
     }
     async fn flush_model_events(&self, run_id: &str, pending: &mut Vec<EventKind>) -> Result<()> {

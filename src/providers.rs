@@ -150,6 +150,13 @@ pub trait ModelProvider: Send + Sync {
     }
     /// Optional, throttled refresh of model capacity. No generation or loading.
     async fn refresh_concurrency(&self) {}
+    /// Bounded cleanup allowance after a run deadline interrupts a dispatched
+    /// request. Keep polling the owned future to confirm remote completion;
+    /// never use this allowance to dispatch another request or execute tools.
+    /// Providers without remote work retain immediate deadline cancellation.
+    fn deadline_drain_timeout(&self) -> Duration {
+        Duration::ZERO
+    }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -503,6 +510,9 @@ pub struct WerkConfig {
     pub capabilities: ModelCapabilities,
     pub stream: bool,
     pub timeout_ms: u64,
+    /// Cleanup only, separate from the run budget and transport idle timeout.
+    #[serde(default = "default_deadline_drain_timeout_ms")]
+    pub deadline_drain_timeout_ms: u64,
     pub max_body_bytes: usize,
     pub options: BTreeMap<String, Value>,
 }
@@ -515,10 +525,15 @@ impl WerkConfig {
             capabilities: ModelCapabilities::default(),
             stream: true,
             timeout_ms: 120_000,
+            deadline_drain_timeout_ms: default_deadline_drain_timeout_ms(),
             max_body_bytes: 8 * 1024 * 1024,
             options: BTreeMap::new(),
         }
     }
+}
+
+fn default_deadline_drain_timeout_ms() -> u64 {
+    600_000
 }
 
 pub(crate) fn validate_reasoning_effort(value: &Value) -> Result<()> {
@@ -579,6 +594,7 @@ impl WerkClient {
         }
         if config.timeout_ms == 0
             || config.timeout_ms > 600_000
+            || config.deadline_drain_timeout_ms > 600_000
             || config.max_body_bytes == 0
             || config.max_body_bytes > 16 * 1024 * 1024
         {
@@ -642,7 +658,7 @@ impl WerkClient {
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
         self.send_chat(request.timeout(self.timeout)).await
     }
-    // Streaming inference is bounded by inactivity and the engine's run deadline,
+    // Streaming inference is bounded by inactivity and the engine's run/cleanup deadlines,
     // not an HTTP total-duration timer that discards a healthy long generation.
     async fn send_chat(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
         request.send().await.map_err(|e| {
@@ -1638,6 +1654,9 @@ impl ModelProvider for WerkProvider {
         }
         cache.insert(fingerprint(request), count);
         Ok(Some(count))
+    }
+    fn deadline_drain_timeout(&self) -> Duration {
+        Duration::from_millis(self.config.deadline_drain_timeout_ms)
     }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         self.check_inference_available()?;

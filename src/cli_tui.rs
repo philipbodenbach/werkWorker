@@ -998,8 +998,16 @@ impl View {
         }
         match event.event {
             EventKind::TextDelta { text, .. } => self.append_stream(&text),
-            EventKind::Subagent { goal, status, .. } => {
-                self.append(&format!("\n  agent · {status:?} · {goal}\n"))
+            EventKind::Subagent {
+                goal,
+                status,
+                error,
+                ..
+            } => {
+                self.append(&format!("\n  agent · {status:?} · {goal}\n"));
+                if let Some(error) = error {
+                    self.append(&format!("  reason · {}: {}\n", error.code, error.message));
+                }
             }
             EventKind::ContextPlanned { snapshot } => {
                 self.context_status = format!(
@@ -1034,6 +1042,9 @@ impl View {
             }
             EventKind::Diagnostic { code } if code == "completion_pending" => {
                 self.append("\nVerification incomplete. Continuing implementation and checks; the task is not completed.\n");
+            }
+            EventKind::Diagnostic { code } if code == "model_deadline_draining" => {
+                self.append("\nTime budget reached. Waiting for the current inference to finish safely; no further tool calls will run. Other agents can continue in available slots.\n");
             }
             EventKind::Diagnostic { code } if code.starts_with("compaction_low_progress:") => {
                 self.append("\n  context · Compaction freed little space. Reusing the shortened history; repeated history sweeps are stopped.\n");

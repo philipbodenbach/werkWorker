@@ -545,6 +545,8 @@ pub enum EventKind {
         session_id: String,
         goal: String,
         status: RunStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<WorkerError>,
     },
     SessionResumed,
     SessionForked {

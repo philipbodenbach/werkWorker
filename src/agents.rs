@@ -608,6 +608,7 @@ impl SessionHandle {
                         session_id: child_id.clone(),
                         goal: task.goal.clone(),
                         status: RunStatus::Queued,
+                        error: None,
                     },
                 );
                 Ok(())
@@ -698,6 +699,7 @@ impl SessionHandle {
                             session_id: c.session_id.clone(),
                             goal: c.goal.clone(),
                             status: c.run.as_ref().map_or(RunStatus::Interrupted, |r| r.status),
+                            error: c.run.as_ref().and_then(|r| r.error.clone()),
                         },
                     );
                 }
@@ -787,6 +789,7 @@ impl SessionHandle {
                     d.emit(Some(run_id), EventKind::Subagent {
                         session_id: child.session_id.clone(), goal: child.goal.clone(),
                         status: child.run.as_ref().map_or(RunStatus::Interrupted, |r| r.status),
+                        error: child.run.as_ref().and_then(|r| r.error.clone()),
                     });
                 }
             }

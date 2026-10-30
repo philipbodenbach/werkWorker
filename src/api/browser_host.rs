@@ -230,6 +230,12 @@ impl SessionHandle {
                     }
                 }
                 if enabled {
+                    if !d.profile.tools.iter().any(|t| t == "browser.check") {
+                        d.profile.tools.push("browser.check".into());
+                    }
+                    d.policy
+                        .tool_permissions
+                        .insert("browser.check".into(), ToolPermission::Ask);
                     for tool in TOOLS {
                         if !d.profile.tools.iter().any(|t| t == tool) {
                             d.profile.tools.push((*tool).into());

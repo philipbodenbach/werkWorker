@@ -231,6 +231,12 @@ async fn host_panel_rejects_cross_origin_control_and_pauses_before_inference() {
     assert_eq!(r.status(), 404);
     assert_eq!(state(&client, &panel).await["enabled"], false);
     control(&client, &panel, json!({"op":"mode","enabled":true})).await;
+    let configured = session.snapshot().await.unwrap();
+    assert!(configured.profile.tools.contains(&"browser.check".into()));
+    assert_eq!(
+        configured.policy.tool_permissions.get("browser.check"),
+        Some(&ToolPermission::Ask)
+    );
     assert!(
         session
             .snapshot()

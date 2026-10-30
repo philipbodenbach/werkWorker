@@ -144,6 +144,10 @@ cancels the active run. Enabling this mode adds the browser tools to any profile
 workspace/process grants alone do not authorize them. Hard denies still apply.
 SDK hosts use `SessionHandle::set_browser_mode`, `browser_panel` and
 `set_browser_rule`; these are host APIs, never model tools.
+Enabling browser mode also exposes `browser.check` with Ask permission so coding
+tasks can test a local HTML entry directly. That isolated local check is separate
+from the persistent HTTP(S) browser panel; it supplies behavioral verification
+without requiring a host development server. Hard denies still apply.
 
 The loopback panel provides website rules for browsing, consequential actions,
 unlabelled coordinate clicks/dragging, downloads, session history and page

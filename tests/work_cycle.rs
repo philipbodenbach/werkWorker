@@ -260,7 +260,7 @@ async fn repair_cycle_bounds_changing_failures_but_allows_a_verified_correction(
             verify(),
         ];
         for n in 1..=8 {
-            let replacement = if resolves && n == 4 {
+            let replacement = if resolves && n == 6 {
                 "good".into()
             } else {
                 format!("bad{n}")
@@ -268,7 +268,7 @@ async fn repair_cycle_bounds_changing_failures_but_allows_a_verified_correction(
             turns.push(call("files.edit",json!({"path":"counter.sh","expected_hash":hash(&content),"old":format!("bad{}",n-1),"new":replacement})));
             content = content.replace(&format!("bad{}", n - 1), &replacement);
             turns.push(verify());
-            if resolves && n == 4 {
+            if resolves && n == 6 {
                 break;
             }
         }
@@ -292,7 +292,18 @@ async fn repair_cycle_bounds_changing_failures_but_allows_a_verified_correction(
             );
         } else {
             assert_eq!(result.error.unwrap().code, "repair_cycle_exhausted");
-            assert_eq!(provider.requests().len(), 13); // First build + twelve recovery decisions.
+            assert_eq!(provider.requests().len(), 14); // Build + twelve decisions + boundary recheck.
+            assert_eq!(
+                run.status()
+                    .await
+                    .unwrap()
+                    .invocations
+                    .last()
+                    .unwrap()
+                    .call
+                    .name,
+                "process.run"
+            );
             let saved = session.snapshot().await.unwrap();
             let restored: SessionData =
                 serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();

@@ -45,6 +45,11 @@ The cycle is reconstructed from receipts across resume/compaction. A tool batch
 counts as one model decision. After `4 * max(3, max_repeated_calls)` decisions
 without resolution (12 by default), the runtime stops with
 `repair_cycle_exhausted`, preserving work and reporting the unresolved failure.
+If the boundary decision just applied an edit, one final check is offered before
+stopping. This is a check-only phase: a passing recheck resolves the obligation;
+a failed check or another decision exhausts the allowance. Edits cannot repeatedly
+reset the limit. This prevents reporting an obsolete failure immediately after
+the model has applied its correction.
 This guard also applies in continuous mode. It bounds wasted work; it is not a
 claim of completed implementation or universal model quality.
 

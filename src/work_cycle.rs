@@ -298,6 +298,10 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
     // Recovery is an action/review cycle: its first real edit must be checked
     // before ordinary exploration resumes, even when it is the first change.
     check_due |= crate::read_progress::recovery_check_due(run);
+    // A boundary edit must be checked before reporting its preceding failure.
+    check_due |= repair
+        .as_ref()
+        .is_some_and(|cycle| cycle.final_check_due(run));
     // A later edit invalidates review; a due check remains latched above.
     // Completion still checks all required files/criteria with the real gate.
     // Straight implementation can finish its first version. Interleaved small

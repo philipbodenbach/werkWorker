@@ -107,12 +107,30 @@ impl RepairCycle {
         self.rounds.len() >= run.limits.max_repeated_calls.max(1)
     }
 
+    /// The edit at the repair limit gets one final check. The allowance cannot
+    /// rearm itself: any further decision consumes it, including another edit.
+    pub fn final_check_due(&self, run: &Run) -> bool {
+        self.rounds.len() == stop_limit(run)
+            && run.invocations.last().is_some_and(|i| {
+                i.result.as_ref().is_some_and(|result| {
+                    result.status == Outcome::Succeeded
+                        && (result.data["workspace_changed"] == true
+                            || matches!(
+                                i.call.name.as_str(),
+                                "files.edit" | "files.insert" | "files.write"
+                            ) && result.data["sha256"].is_string()
+                                && result.data["sha256"] != i.call.arguments["expected_hash"])
+                })
+            })
+    }
+
     pub fn observation(&self, run: &Run) -> Value {
         json!({"source_invocation":self.source_invocation,
             "failed_command_excerpt":crate::completion::excerpt(&self.argv.to_string(), 1400),
             "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
             "decisions_without_resolution":self.rounds.len(),
             "decision_limit":stop_limit(run),
+            "final_check_due":self.final_check_due(run),
             "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
             "next_action":"Diagnose whether the application or the check failed before editing application code. Finish one correction, then rerun the check; fix a broken check using verification.replaces=source_invocation and the same paths. Prefer verification.kind=behavior with real assertions; syntax and inspection are not behavioral evidence. A successful replacement must cover unchanged files. Edits and unrelated passing commands do not resolve the failure. Delegate independent diagnosis while continuing separate work when useful."})
     }
@@ -127,8 +145,8 @@ fn stop_limit(run: &Run) -> usize {
 pub(crate) fn check(session: &SessionData, run: &Run) -> Result<()> {
     if crate::failure_progress::enabled(session, run)? {
         let state = crate::harness::state(session, &run.id)?;
-        if let Some(cycle) =
-            latest(run, &state.verifications).filter(|c| c.rounds.len() >= stop_limit(run))
+        if let Some(cycle) = latest(run, &state.verifications)
+            .filter(|c| c.rounds.len() >= stop_limit(run) && !c.final_check_due(run))
         {
             return Err(WorkerError::new(
                 "repair_cycle_exhausted",
@@ -343,6 +361,33 @@ mod tests {
             run.invocations.push(invocation);
         }
         assert_eq!(latest(&run, &receipts).unwrap().rounds.len(), 2);
+    }
+
+    #[test]
+    #[ignore = "read-only replay of the supplied homepage incident; no model or workspace execution"]
+    fn saved_homepage_boundary_edit_gets_one_final_check() {
+        let session: SessionData = serde_json::from_slice(
+            &std::fs::read(std::env::var("WW_REPLAY_SNAPSHOT").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let run = session.runs.last().unwrap();
+        let state = crate::harness::state(&session, &run.id).unwrap();
+        let cycle = latest(run, &state.verifications).unwrap();
+        assert_eq!(cycle.rounds.len(), stop_limit(run));
+        assert!(cycle.final_check_due(run));
+        assert_eq!(
+            crate::work_cycle::observation(run, &state.verifications)["check_due"],
+            true
+        );
+        check(&session, run).unwrap();
+        let mut after = run.clone();
+        let mut another = receipt(999, "files.read", json!({"path":"index.html"}), json!({}));
+        another.message_index = 999;
+        after.invocations.push(another);
+        assert_eq!(
+            check(&session, &after).unwrap_err().code,
+            "repair_cycle_exhausted"
+        );
     }
 
     #[test]

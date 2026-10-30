@@ -406,6 +406,7 @@ struct View {
     pasted_texts: Vec<text_input::PastedText>,
     pasted_images: Vec<(String, attachments::ImageAttachment)>,
     session_images: Vec<String>,
+    browser_preview: Option<String>,
     image_number: usize,
     clipboard: Option<tokio::task::JoinHandle<std::io::Result<text_input::Clipboard>>>,
     submitting: bool,
@@ -1048,11 +1049,25 @@ impl View {
                 self.tools += 1;
                 self.append(&format!("\n  tool · {name}\n"));
             }
-            EventKind::ToolCompleted { result, .. } => self.append(&format!(
-                "  result · {:?} {}\n",
-                result.status,
-                result.error_code.unwrap_or_default()
-            )),
+            EventKind::ToolCompleted { result, .. } => {
+                self.append(&format!(
+                    "  result · {:?} {}\n",
+                    result.status,
+                    result.error_code.unwrap_or_default()
+                ));
+                if let Some(url) = result.data["viewer_url"].as_str()
+                    && self.browser_preview.as_deref() != Some(url)
+                {
+                    self.append(&format!(
+                        "  Browser preview (open in your browser): {url}\n"
+                    ));
+                    self.browser_preview = Some(url.to_owned());
+                }
+                if result.data["closed"] == true && result.data["browser_id"].is_string() {
+                    self.browser_preview = None;
+                    self.append("  Browser session and preview closed.\n");
+                }
+            }
             // Pending requests and their addressed run are refreshed together from
             // snapshots. Root events must not replace a displayed child request.
             EventKind::RunState { status } => {

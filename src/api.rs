@@ -502,6 +502,9 @@ impl WorkerEngine {
                 .lock()
                 .await
                 .retain(|id, _| !ids.contains(id));
+            for id in &ids {
+                engine.inner.tools.browsers.close(Some(id)).await;
+            }
             Ok(ids.into_iter().collect())
         })
         .await
@@ -676,7 +679,9 @@ impl WorkerEngine {
             .collect::<Vec<_>>();
         for session in sessions {
             let guard = session.data.lock().await;
+            let session_id = guard.id.clone();
             drop(guard);
+            self.inner.tools.browsers.close(Some(&session_id)).await;
         }
         self.inner.store.close().await
     }
@@ -1354,6 +1359,22 @@ impl SessionHandle {
                 let children = self.finish_children(&run_id).await;
                 let cleanup = self.engine.inner.jobs.cleanup(&run_id).await.and(children);
                 let result = result.and(cleanup);
+                let browser_cleanup = {
+                    let data = self.runtime.data.lock().await;
+                    result.is_err()
+                        || shutdown.is_cancelled()
+                        || data.run(&run_id).is_ok_and(|run| {
+                            matches!(run.status, RunStatus::Cancelling | RunStatus::Cancelled)
+                        })
+                };
+                if browser_cleanup {
+                    self.engine
+                        .inner
+                        .tools
+                        .browsers
+                        .close(Some(&self.id().await))
+                        .await;
+                }
                 let settled = self
                     .update(|d| {
                         let run = d.run_mut(&run_id)?;
@@ -3274,7 +3295,7 @@ impl SessionHandle {
                 Ok(v) => v,
                 Err(e) => {
                     let mut result = ToolResult::error(Outcome::ValidationError, &e.code);
-                    if def.name == "browser.check" {
+                    if def.name.starts_with("browser.") {
                         result.data = json!({"message":e.message});
                     } else if (matches!(
                         def.name.as_str(),
@@ -3632,6 +3653,7 @@ impl SessionHandle {
                             | "process.wait"
                             | "process.log"
                     )
+                    || crate::browser_control::TOOLS.contains(&def.name.as_str())
                 {
                     result.data = json!({"message": e.message});
                 }

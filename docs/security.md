@@ -87,6 +87,24 @@ No telemetry export or cloud fallback is configured. Arbitrary secrets a user
 puts directly in their own prompt/file are still their data; this is not a
 universal DLP system.
 
+Persistent browser control uses a separate external-write gate for every action,
+including observation, because page scripts may write remotely. Workspace and
+process grants do not cover it. The prepared invocation binds browser kind,
+origin allowlist, explicit private-origin exceptions, session revision and action.
+The browser runs in a fresh Bubblewrap namespace without the workspace, personal
+profiles or direct network. A private HTTP/TLS proxy communicates with a host
+broker over private stdio; each request checks its exact origin and pinned DNS
+addresses, rejects non-public addresses unless that origin was explicitly
+approved for private access, ignores inherited proxies, and validates upstream
+TLS. Browser-side TLS trust covers only the ephemeral proxy certificate inside
+that isolated namespace. Redirects receive fresh checks, never inherited access
+to a new origin. HTTP bodies, request count, tab count, session lifetime, process
+resources and concurrency are bounded. Background HTTP outside active actions,
+WebSockets, service workers, file transfers and arbitrary JavaScript tools are
+unavailable. Cancellation cannot roll back a submitted form; interrupted actions
+report uncertain outcomes and are not replayed automatically. See
+[browser control](authoring.md#persistent-browser-control) for the supported scope.
+
 Stores/artifacts are local private files. Session creation and reopening reject workspaces
 containing configured SQLite/artifact storage, host root and host home. The CLI
 defaults to XDG_STATE_HOME/werk-worker (or ~/.local/state/werk-worker),

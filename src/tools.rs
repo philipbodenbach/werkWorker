@@ -38,6 +38,7 @@ pub trait Tool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    pub(crate) browsers: Arc<crate::browser_control::BrowserSessions>,
 }
 impl ToolRegistry {
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
@@ -89,6 +90,8 @@ impl ToolRegistry {
         for name in crate::agents::AGENT_TOOLS {
             registry.register(Arc::new(crate::agents::AgentTool((*name).into())))?;
         }
+        let browsers = registry.browsers.clone();
+        crate::browser_control::register(&mut registry, browsers)?;
         Ok(registry)
     }
 }

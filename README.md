@@ -104,6 +104,15 @@ visible **Apply & close** button or F10 saves and returns to the conversation.
 Unsaved edits are marked explicitly, and Esc warns before discarding them.
 Explicitly enabled tools remain enabled when a different profile is selected.
 
+Browser control is available through `browser.open/observe/navigate/action/close`
+with separate action approvals: navigation, accessible page text, clicks, forms,
+tabs, screenshots, pixel clicks and canvas drawing. A local read-only preview
+lets you follow the result after each action. Install the isolated runtime with
+`sh scripts/install-browser.sh` for Chromium, Firefox and WebKit. Linux/WSL and
+the browser platform libraries are required; installed Chrome/Edge and common
+Chromium variants can also be selected. These tools work with any supported
+tool-capable model. See [browser setup, permissions and limits](docs/authoring.md#persistent-browser-control).
+
 F5 → **Agents** selects delegation: **Off / Conservative / Active / Max**.
 **Active** is the default. An explicit `delegation_level` in
 `.werkworker/config.json` overrides the UI preference. Host capacity, budgets

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>WerkWorker Browser</title>
+<style>
+:root { color-scheme:dark; font:15px system-ui,sans-serif; background:#090f19; color:#e0e7f5; }
+body { margin:0; } header { padding:16px 24px; border-bottom:1px solid #263449; }
+h1 { font-size:17px; margin:0 0 8px; color:#37d5ef; } #url { overflow-wrap:anywhere; color:#aab9d0; }
+#status { margin:8px 0 0; } main { position:relative; max-width:1024px; margin:20px auto; }
+img { width:100%; display:block; } #cursor { position:absolute; pointer-events:none; color:#00d6f7; text-shadow:0 1px 4px #000; font-size:26px; transform:translate(-4px,-4px); }
+footer { padding:10px 24px; color:#8c9ab0; } [hidden] { display:none!important; }
+</style>
+<header><h1>WERK / Browser</h1><div id="url">Waiting for the first page…</div><p id="status">Connected · read-only preview</p></header>
+<main><img id="frame" alt="Current agent browser page" hidden><span id="cursor" hidden>➤</span></main>
+<footer>Updates after each action. Approve or stop actions in WerkWorker. This preview cannot click, type or submit.</footer>
+<script>
+let revision = -1;
+async function refresh() {
+  try {
+    const response = await fetch('state', {cache:'no-store'});
+    if (!response.ok) throw Error('closed');
+    const state = await response.json();
+    if (state && state.revision !== revision) {
+      revision = state.revision;
+      document.title = (state.title || 'Browser') + ' · WerkWorker';
+      document.querySelector('#url').textContent = state.url || 'Waiting…';
+      document.querySelector('#status').textContent = 'Action ' + revision + ' · ' + state.action;
+      const frame = document.querySelector('#frame'); frame.src = 'frame?v=' + revision; frame.hidden = false;
+      const cursor = document.querySelector('#cursor'); cursor.hidden = !state.pointer;
+      if (state.pointer) { cursor.style.left = (100*state.pointer.x/1024)+'%'; cursor.style.top=(100*state.pointer.y/768)+'%'; }
+    }
+    setTimeout(refresh, 700);
+  } catch (_) { document.querySelector('#status').textContent = 'Browser session closed or disconnected'; }
+}
+refresh();
+</script></html>

@@ -87,8 +87,13 @@ No telemetry export or cloud fallback is configured. Arbitrary secrets a user
 puts directly in their own prompt/file are still their data; this is not a
 universal DLP system.
 
-Persistent browser control uses a separate external-write gate for every action,
-including observation, because page scripts may write remotely. Workspace and
+Persistent browser control classifies every tool as an external write because
+page scripts may write remotely. Explicit browser mode applies host-owned
+per-origin/category rules; observations inside an approved session proceed
+without repeated prompts. Submissions, coordinate actions, downloads and history
+ask by default. Page scripts always require one-time approval, including with
+Full Access, and sensitive fields reject standard model typing. Manual takeover
+pauses the agent between actions; human input is not written to chat or commands. Workspace and
 process grants do not cover it. The prepared invocation binds browser kind,
 origin allowlist, explicit private-origin exceptions, session revision and action.
 The browser runs in a fresh Bubblewrap namespace without the workspace, personal
@@ -100,8 +105,11 @@ TLS. Browser-side TLS trust covers only the ephemeral proxy certificate inside
 that isolated namespace. Redirects receive fresh checks, never inherited access
 to a new origin. HTTP bodies, request count, tab count, session lifetime, process
 resources and concurrency are bounded. Background HTTP outside active actions,
-WebSockets, service workers, file transfers and arbitrary JavaScript tools are
-unavailable. Cancellation cannot roll back a submitted form; interrupted actions
+WebSockets, service workers and uploads are unavailable. Downloads are bounded
+artifacts; reviewed JavaScript executes in the isolated page. The loopback panel
+requires an unguessable path and same-origin JSON/custom-header POST for changes.
+Browser broker requests to every live panel port are denied, even with explicit
+private-origin scope, so page scripts cannot approve their own operations. Cancellation cannot roll back a submitted form; interrupted actions
 report uncertain outcomes and are not replayed automatically. See
 [browser control](authoring.md#persistent-browser-control) for the supported scope.
 

@@ -4,6 +4,7 @@ pub mod api;
 pub mod attachments;
 mod browser;
 mod browser_control;
+pub mod browser_policy;
 mod browser_view;
 mod completion;
 pub mod context;

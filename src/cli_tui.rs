@@ -209,12 +209,16 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r" \____/"];
-const COMMANDS: [(&str, &str); 14] = [
+const COMMANDS: [(&str, &str); 15] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
     ("/quit", "Close werkWorker"),
     ("/agents", "Browse subagent progress and tool results"),
+    (
+        "/browser",
+        "Browser mode on/off, website permissions and manual control",
+    ),
     (
         "/permissions",
         "Show active tools, rights and how to change them",
@@ -904,7 +908,9 @@ impl View {
     fn response_options(&self) -> Vec<String> {
         if let Some(request) = &self.approval {
             let mut options = vec!["Allow once".into(), "Deny".into()];
-            if request.session_id == self.session_id {
+            if request.session_id == self.session_id
+                && request.description["tool"] != "browser.evaluate"
+            {
                 let scope = approval_scope(request);
                 options.push(format!("Allow {scope} · session"));
                 options.push(format!("Allow {scope} · save for project"));
@@ -2128,6 +2134,17 @@ fn approval_answer(input: &str) -> Option<bool> {
 
 fn approval_scope(request: &ApprovalRequest) -> String {
     let tool = request.description["tool"].as_str().unwrap_or("tool");
+    if crate::browser_policy::TOOLS.contains(&tool) {
+        return format!(
+            "{} on {}",
+            request.description["arguments"]["browser_category"]
+                .as_str()
+                .unwrap_or("actions"),
+            request.description["arguments"]["origin"]
+                .as_str()
+                .unwrap_or("this site")
+        );
+    }
     match request.description["effect"].as_str() {
         Some("read" | "write") => format!("{tool} in workspace"),
         Some("process") => format!("{tool} in sandboxed workspace"),
@@ -2746,6 +2763,12 @@ pub async fn show(
                         KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input_len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.insert_input(&c.to_string()); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
+                            if input=="/browser" || input.starts_with("/browser ") {
+                                let session=session.as_ref().ok_or_else(||WorkerError::new("session_required","Connect a session first"))?;
+                                let message=crate::cli_config::browser_command(session,&input).await?;
+                                view.append(&format!("\n\n{message}\n"));view.refresh_permissions(&session.snapshot().await?);
+                                view.input.clear();view.edited_input();return Ok(());
+                            }
                             if input.starts_with("/permissions ") {
                                 let session = session.as_ref().ok_or_else(|| WorkerError::new("session_required", "Connect a session first"))?;
                                 let message = crate::cli_config::permission_command(session, &input).await?;

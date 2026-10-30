@@ -87,6 +87,30 @@ pub async fn save_defaults(session: &SessionHandle) -> Result<()> {
     save_policy(&data.workspace, data.policy).await
 }
 
+pub async fn browser_command(session: &SessionHandle, command: &str) -> Result<String> {
+    match command.trim() {
+        "/browser on" => {
+            session.set_browser_mode(true, &id("browser-on")).await?;
+            Ok(format!(
+                "Browser mode enabled. Open the panel for website permissions, approvals and manual control:\n{}",
+                session.browser_panel().await?
+            ))
+        }
+        "/browser off" => {
+            session.set_browser_mode(false, &id("browser-off")).await?;
+            Ok("Browser mode disabled for subsequent actions. Stop the active run to interrupt an action already in progress.".into())
+        }
+        "/browser" => Ok(format!(
+            "/browser on · /browser off\nBrowser panel: {}",
+            session.browser_panel().await?
+        )),
+        _ => Err(WorkerError::new(
+            "browser_command",
+            "Use /browser on, /browser off, or /browser to open the panel",
+        )),
+    }
+}
+
 pub const COMMAND_HELP: &str = "/permissions reads|writes|process deny|ask|allow [session|project]\n/permissions mode manual|edits|readonly [session|project]\nExamples: /permissions writes allow project · /permissions mode manual session\nDefault scope: session + project. Changes also enable the required tools.";
 
 pub async fn permission_command(session: &SessionHandle, command: &str) -> Result<String> {

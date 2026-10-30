@@ -22,13 +22,7 @@ pub(crate) const BROWSER_INSTALL_DIRS: &[&str] = &[
     "/opt/vivaldi",
     "/usr/lib/opera",
 ];
-pub(crate) const TOOLS: &[&str] = &[
-    "browser.open",
-    "browser.observe",
-    "browser.navigate",
-    "browser.action",
-    "browser.close",
-];
+pub(crate) use crate::browser_policy::TOOLS;
 const MESSAGE_LIMIT: u64 = 6 * 1024 * 1024;
 
 fn text(max: usize) -> Value {
@@ -58,7 +52,7 @@ impl Tool for BrowserTool {
         let id = text(128);
         let (description, schema) = match self.name.as_str() {
             "browser.open" => (
-                "Open a fresh, isolated browser session. Choose chromium, firefox, webkit, or an installed chrome/msedge/brave/opera/vivaldi. Returns browser_id, tabs, page text and a read-only localhost viewer_url to watch snapshots. No personal profile is used. Network is limited to the URL origin plus allowed_origins; list required CDN/login origins explicitly. Private/loopback addresses require private_origins as well. Loading pages can perform external writes. Host approval covers browser, origins and URL. Reuse the returned browser_id with the other browser tools; close before opening another session.",
+                "Open a fresh, isolated browser session. Choose chromium, firefox, webkit, or an installed chrome/msedge/brave/opera/vivaldi. Returns browser_id, tabs, page text and a localhost viewer_url for snapshots and host controls. No personal profile is used. Network is limited to the URL origin plus allowed_origins; list required CDN/login origins explicitly. Private/loopback addresses require private_origins as well. Loading pages can perform external writes. Host approval covers browser, origins and URL. Reuse the returned browser_id with the other browser tools; close before opening another session.",
                 object(
                     json!({"url":text(4096),"browser":{"type":"string","enum":["chromium","firefox","webkit","chrome","msedge","brave","opera","vivaldi"]},"allowed_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)},"private_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)}}),
                     &["url"],
@@ -72,17 +66,35 @@ impl Tool for BrowserTool {
                 ),
             ),
             "browser.navigate" => (
-                "Navigate the current tab to an HTTP(S) URL inside this browser session's approved origins. To expand origins, close and open a newly approved session. Returns page text and tabs.",
+                "Navigate the current tab to an HTTP(S) URL. New origins require the host's browsing permission before this session's scope expands. Returns page text and tabs.",
                 object(
                     json!({"browser_id":id,"url":text(4096)}),
                     &["browser_id", "url"],
                 ),
             ),
             "browser.action" => (
-                "Perform one approved browser action, then return fresh page text and tabs. Click/fill/select/hover need target (exactly one of selector, role with name, or label; optional iframe selector). press needs key and optionally target. select needs value; fill needs text; scroll needs x/y; tab_select/tab_close need tab_id. Visual actions: click_at or move with viewport pixel x/y; drag with path of 2..64 pixel points (1024x768 viewport). If a screenshot was resized, multiply its pixel coordinates by screenshot.scale_x/scale_y to obtain viewport coordinates. Other actions: back, forward, reload, tab_new, wait (ms<=2000). Clicks and keys can submit forms or change remote data. After an error inspect state before repeating actions; remote side effects may already have occurred.",
+                "Perform one approved browser action, then return fresh page text and tabs. Click/fill/select/hover need target (prefer a fresh ref from controls; otherwise exactly one of selector, role with name, or label; optional iframe selector). press needs key and optionally target. select needs value; fill needs text; scroll needs x/y; tab_select/tab_close need tab_id. Visual actions: click_at or move with viewport pixel x/y; drag with path of 2..64 pixel points (1024x768 viewport). If a screenshot was resized, multiply its pixel coordinates by screenshot.scale_x/scale_y to obtain viewport coordinates. Other actions: back, forward, reload, tab_new, wait (ms<=2000). Clicks and keys can submit forms or change remote data. After an error inspect state before repeating actions; remote side effects may already have occurred.",
                 object(
-                    json!({"browser_id":id,"action":{"type":"string","enum":["click","fill","press","select","hover","scroll","back","forward","reload","tab_new","tab_select","tab_close","wait","click_at","move","drag"]},"target":object(json!({"selector":text(1024),"role":text(128),"name":text(512),"label":text(512),"frame":text(1024)}), &[]),"text":{"type":"string","maxLength":16000},"key":text(128),"value":text(1024),"x":{"type":"integer","minimum":-10000,"maximum":10000},"y":{"type":"integer","minimum":-10000,"maximum":10000},"tab_id":{"type":"integer","minimum":1},"ms":{"type":"integer","minimum":0,"maximum":2000},"path":{"type":"array","minItems":2,"maxItems":64,"items":object(json!({"x":{"type":"integer","minimum":0,"maximum":1023},"y":{"type":"integer","minimum":0,"maximum":767}}), &["x","y"])},"button":{"type":"string","enum":["left","right","middle"]},"click_count":{"type":"integer","minimum":1,"maximum":2},"screenshot":{"type":"boolean"}}),
+                    json!({"browser_id":id,"action":{"type":"string","enum":["click","fill","press","select","hover","scroll","back","forward","reload","tab_new","tab_select","tab_close","wait","click_at","move","drag"]},"target":object(json!({"ref":text(128),"selector":text(1024),"role":text(128),"name":text(512),"label":text(512),"frame":text(1024)}), &[]),"text":{"type":"string","maxLength":16000},"key":text(128),"value":text(1024),"x":{"type":"integer","minimum":-10000,"maximum":10000},"y":{"type":"integer","minimum":-10000,"maximum":10000},"tab_id":{"type":"integer","minimum":1},"ms":{"type":"integer","minimum":0,"maximum":2000},"path":{"type":"array","minItems":2,"maxItems":64,"items":object(json!({"x":{"type":"integer","minimum":0,"maximum":1023},"y":{"type":"integer","minimum":0,"maximum":767}}), &["x","y"])},"button":{"type":"string","enum":["left","right","middle"]},"click_count":{"type":"integer","minimum":1,"maximum":2},"screenshot":{"type":"boolean"}}),
                     &["browser_id", "action"],
+                ),
+            ),
+            "browser.evaluate" => (
+                "Run the displayed JavaScript in the current page after explicit approval EVERY time. Scripts can read or mutate that page and submit data. Use standard element tools when possible. This is not host JavaScript; network remains scoped. Return a bounded JSON value.",
+                object(
+                    json!({"browser_id":id,"script":text(12000)}),
+                    &["browser_id", "script"],
+                ),
+            ),
+            "browser.history" => (
+                "Read navigation history of this agent browser session after the host's history permission check. Does not read personal browser history.",
+                object(json!({"browser_id":id}), &["browser_id"]),
+            ),
+            "browser.download" => (
+                "Download an approved HTTP(S) URL using this browser's session into an owned artifact (maximum 4 MiB). Does not run/open files or upload anything. Inspect the artifact receipt and report it to the user.",
+                object(
+                    json!({"browser_id":id,"url":text(4096)}),
+                    &["browser_id", "url"],
                 ),
             ),
             _ => (
@@ -92,12 +104,12 @@ impl Tool for BrowserTool {
         };
         ToolDefinition {
             name: self.name.clone(),
-            version: "1".into(),
+            version: "2".into(),
             effect: Effect::ExternalWrite,
             description: description.into(),
             input_schema: schema,
             timeout_ms: 60000,
-            output_limit: 24000,
+            output_limit: 48000,
             concurrency_safe: false,
         }
     }
@@ -118,6 +130,9 @@ impl Tool for BrowserTool {
                     "private_origins must also be approved in allowed_origins or be the initial URL origin",
                 ));
             }
+            args["new_private_origins"] = json!(private);
+            args["new_origins"] = json!(origins);
+            args["browser_category"] = json!("browsing");
             args["allowed_origins"] = json!(origins);
             args["private_origins"] = json!(private);
             if args.get("browser").is_none() {
@@ -136,21 +151,33 @@ impl Tool for BrowserTool {
         if args["browser_id"] != session.id {
             return Err(missing());
         }
-        if self.name == "browser.navigate" {
+        let mut origins = session.origins.clone();
+        let mut current_origin = web_url(&session.url)
+            .ok()
+            .map(|u| u.origin().ascii_serialization())
+            .unwrap_or(session.origin.clone());
+        args["new_origins"] = json!([]);
+        if matches!(self.name.as_str(), "browser.navigate" | "browser.download") {
             let url = web_url(args["url"].as_str().unwrap_or(""))?;
-            if !session
-                .origins
-                .contains(&url.origin().ascii_serialization())
-            {
-                return Err(error(
-                    "browser_scope",
-                    "URL is outside approved origins; close and open a newly approved browser session",
-                ));
+            current_origin = url.origin().ascii_serialization();
+            if !origins.contains(&current_origin) {
+                if origins.len() >= 32 {
+                    return Err(error(
+                        "browser_scope",
+                        "At most 32 origins per browser; close and reopen with a new scope",
+                    ));
+                }
+                origins.push(current_origin.clone());
+                args["new_origins"] = json!([current_origin]);
             }
             args["url"] = json!(url.as_str());
         }
-        args["origin"] = json!(session.origin);
-        args["allowed_origins"] = json!(session.origins);
+        let (category, protected) = category(&self.name, &args, &session.snapshot);
+        args["browser_category"] = json!(category);
+        args["protected_field"] = json!(protected);
+        args["within_session"] = json!(category == "browsing" && args["new_origins"] == json!([]));
+        args["origin"] = json!(current_origin);
+        args["allowed_origins"] = json!(origins);
         args["private_origins"] = json!(session.private);
         args["browser"] = json!(session.browser);
         args["revision"] = json!(session.revision);
@@ -193,7 +220,8 @@ impl Tool for BrowserTool {
                             "At most four browsers can run at once; close an idle session",
                         )
                     })?;
-                BrowserSession::start(&args, ctx, permit).await?
+                let view = self.sessions.view_for(&ctx.session_id).await?;
+                BrowserSession::start(&args, ctx, permit, view).await?
             } else {
                 let current = sessions.get(&ctx.session_id).ok_or_else(missing)?;
                 if args["browser_id"] != current.id {
@@ -214,6 +242,27 @@ impl Tool for BrowserTool {
                 json!({"closed":true,"browser_id":session.id}),
             ));
         }
+        session.origins = serde_json::from_value(args["allowed_origins"].clone())?;
+        if self.name == "browser.history" {
+            let result = ToolResult::ok(json!({"history":session.history,"browser_id":session.id}));
+            self.sessions
+                .sessions
+                .lock()
+                .await
+                .insert(ctx.session_id.clone(), session);
+            return Ok(result);
+        }
+        if self.name == "browser.download" && ctx.artifacts.is_none() {
+            self.sessions
+                .sessions
+                .lock()
+                .await
+                .insert(ctx.session_id.clone(), session);
+            return Err(error(
+                "artifacts_unavailable",
+                "Downloads require a configured artifact store",
+            ));
+        }
         let screenshot = args["screenshot"].as_bool().unwrap_or(false);
         let action = args["action"].as_str().unwrap_or(&self.name).to_owned();
         let work = session.exchange(&self.name, args);
@@ -222,12 +271,14 @@ impl Tool for BrowserTool {
             _ = ctx.cancel.cancelled() => return Err(error("outcome_unknown", "Browser action cancelled; session closed. Remote effects may have occurred; do not automatically repeat.")),
             _ = tokio::time::sleep(Duration::from_secs(50)) => return Err(error("outcome_unknown", "Browser action timed out; session closed. Inspect remote state before retrying.")),
         };
-        session.revision += 1;
-        session.url = data["url"].as_str().unwrap_or("about:blank").into();
+        session.record(&data);
         data["browser_id"] = json!(session.id);
         data["browser"] = json!(session.browser);
         data["viewer_url"] = json!(session.view.url);
         data["content_trust"] = json!("untrusted webpage data");
+        let download = data
+            .as_object_mut()
+            .and_then(|o| o.remove("download_base64"));
         let encoded = data
             .as_object_mut()
             .and_then(|o| o.remove("screenshot_base64"));
@@ -260,6 +311,19 @@ impl Tool for BrowserTool {
                 result.images.push(image);
             }
         }
+        if let Some(encoded) = download.and_then(|v| v.as_str().map(str::to_owned)) {
+            let bytes = STANDARD
+                .decode(encoded)
+                .map_err(|_| error("browser_download", "Invalid download payload"))?;
+            result.data["download_bytes"] = json!(bytes.len());
+            result.artifacts.push(
+                ctx.artifacts
+                    .as_ref()
+                    .unwrap()
+                    .put(&ctx.session_id, &ctx.run_id, bytes)
+                    .await?,
+            );
+        }
         self.sessions
             .sessions
             .lock()
@@ -277,6 +341,67 @@ fn missing() -> WorkerError {
         "browser_session_missing",
         "No matching live browser for this worker session; open a new browser. Sessions do not survive engine restart or cancelled actions.",
     )
+}
+
+fn category<'a>(tool: &str, args: &Value, snapshot: &Value) -> (&'a str, bool) {
+    match tool {
+        "browser.evaluate" => return ("scripts", false),
+        "browser.history" => return ("history", false),
+        "browser.download" => return ("downloads", false),
+        "browser.action" => {}
+        _ => return ("browsing", false),
+    }
+    let action = args["action"].as_str().unwrap_or("");
+    if matches!(action, "click_at" | "drag") {
+        return ("unlabelled", false);
+    }
+    if matches!(
+        action,
+        "move"
+            | "scroll"
+            | "wait"
+            | "tab_new"
+            | "tab_select"
+            | "tab_close"
+            | "back"
+            | "forward"
+            | "reload"
+            | "hover"
+    ) {
+        return ("browsing", false);
+    }
+    let target = &args["target"];
+    let controls = snapshot["controls"].as_array();
+    let info = controls.and_then(|items| {
+        items.iter().find(|e| {
+            target["ref"].is_string() && target["ref"] == e["ref"]
+                || target["selector"].as_str().is_some_and(|s| {
+                    e["id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty() && s == format!("#{id}"))
+                })
+                || target["label"].is_string() && target["label"] == e["name"]
+                || target["role"].is_string()
+                    && target["role"] == e["role"]
+                    && target["name"] == e["name"]
+        })
+    });
+    if let Some(info) = info {
+        if info["protected"] == true && matches!(action, "fill" | "select") {
+            return ("actions", true);
+        }
+        if action == "fill" {
+            return ("browsing", false);
+        }
+        if action == "click"
+            && info["tag"] == "a"
+            && info["consequential"] == false
+            && info["download"] == false
+        {
+            return ("browsing", false);
+        }
+    }
+    ("actions", false)
 }
 fn web_url(value: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(value)
@@ -322,7 +447,7 @@ fn validate_action(args: &Value) -> Result<()> {
         ));
     }
     if let Some(target) = args.get("target")
-        && (["selector", "role", "label"]
+        && (["ref", "selector", "role", "label"]
             .iter()
             .filter(|key| target.get(key).is_some())
             .count()
@@ -331,7 +456,7 @@ fn validate_action(args: &Value) -> Result<()> {
     {
         return Err(error(
             "invalid_browser_target",
-            "Specify exactly selector, label, or role plus name; optionally frame",
+            "Specify exactly ref, selector, label, or role plus name; optionally frame",
         ));
     }
     if matches!(kind, "click_at" | "move")
@@ -350,16 +475,145 @@ fn validate_action(args: &Value) -> Result<()> {
 pub(crate) struct BrowserSessions {
     sessions: Mutex<BTreeMap<String, BrowserSession>>,
     slots: Arc<tokio::sync::Semaphore>,
+    views: Mutex<BTreeMap<String, Arc<crate::browser_view::BrowserView>>>,
+    paused: Mutex<std::collections::BTreeSet<String>>,
 }
 impl Default for BrowserSessions {
     fn default() -> Self {
         Self {
             sessions: Mutex::default(),
             slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            views: Mutex::default(),
+            paused: Mutex::default(),
         }
     }
 }
 impl BrowserSessions {
+    pub(crate) async fn panel(
+        &self,
+        id: &str,
+        host: Arc<dyn crate::browser_view::BrowserHost>,
+    ) -> Result<String> {
+        let mut views = self.views.lock().await;
+        if let Some(view) = views.get(id) {
+            return Ok(view.url.clone());
+        }
+        let view = Arc::new(crate::browser_view::BrowserView::start_with_host(Some(host)).await?);
+        let url = view.url.clone();
+        views.insert(id.into(), view);
+        Ok(url)
+    }
+    async fn view_for(&self, id: &str) -> Result<Arc<crate::browser_view::BrowserView>> {
+        if let Some(view) = self.views.lock().await.get(id) {
+            return Ok(view.clone());
+        }
+        Ok(Arc::new(crate::browser_view::BrowserView::start().await?))
+    }
+    pub(crate) async fn is_paused(&self, id: &str) -> bool {
+        self.paused.lock().await.contains(id)
+    }
+    pub(crate) async fn pause(&self, id: &str, pause: bool) {
+        let mut paused = self.paused.lock().await;
+        if pause {
+            paused.insert(id.into());
+        } else {
+            paused.remove(id);
+        }
+    }
+    pub(crate) async fn current(&self, id: &str) -> Value {
+        let sessions = self.sessions.lock().await;
+        sessions.get(id).map_or(Value::Null,|s|json!({"browser_id":s.id,"revision":s.revision,"url":s.url,"tabs":s.snapshot["tabs"],"viewer_url":s.view.url,"history":s.history}))
+    }
+    pub(crate) async fn manual(self: &Arc<Self>, id: &str, mut args: Value) -> Result<Value> {
+        if !args.is_object() {
+            return Err(error(
+                "invalid_browser_action",
+                "Manual arguments must be an object",
+            ));
+        }
+        if !self.is_paused(id).await {
+            return Err(error(
+                "browser_takeover",
+                "Take over before controlling the browser yourself",
+            ));
+        }
+        let tool = if args.get("url").is_some() {
+            "browser.navigate"
+        } else if args.get("action").is_some() {
+            "browser.action"
+        } else {
+            "browser.observe"
+        };
+        let mut session = self.sessions.lock().await.remove(id).ok_or_else(|| {
+            error(
+                "browser_busy",
+                "No idle browser; wait for the current action to finish",
+            )
+        })?;
+        args["browser_id"] = json!(session.id);
+        let mut validation = args.clone();
+        if validation["action"] == "type" {
+            validation["action"] = json!("fill");
+            validation["target"] = json!({"selector":":focus"});
+        }
+        let definition = BrowserTool {
+            name: tool.into(),
+            sessions: self.clone(),
+        }
+        .definition();
+        if let Err(e) = crate::tools::validate_arguments(&definition.input_schema, &validation) {
+            self.sessions.lock().await.insert(id.into(), session);
+            return Err(e);
+        }
+        if let Some(url) = args["url"].as_str() {
+            let origin = match web_url(url) {
+                Ok(u) => u.origin().ascii_serialization(),
+                Err(e) => {
+                    self.sessions.lock().await.insert(id.into(), session);
+                    return Err(e);
+                }
+            };
+            if !session.origins.contains(&origin) {
+                if session.origins.len() >= 32 {
+                    self.sessions.lock().await.insert(id.into(), session);
+                    return Err(error(
+                        "browser_scope",
+                        "At most 32 origins per browser; reopen to change scope",
+                    ));
+                }
+                session.origins.push(origin);
+            }
+        }
+        args["human"] = json!(true);
+        args["expected_url"] = json!(session.url);
+        let action = args["action"].as_str().unwrap_or(tool).to_owned();
+        let mut data = tokio::time::timeout(Duration::from_secs(50), session.exchange(tool, args))
+            .await
+            .map_err(|_| error("outcome_unknown", "Manual action timed out; browser closed"))??;
+        session.record(&data);
+        if let Some(encoded) = data
+            .as_object_mut()
+            .and_then(|o| o.remove("screenshot_base64"))
+            .and_then(|v| v.as_str().map(str::to_owned))
+        {
+            let bytes = STANDARD
+                .decode(encoded)
+                .map_err(|_| error("browser_image", "Invalid screenshot"))?;
+            session
+                .view
+                .update(&data, bytes, session.revision, &format!("You · {action}"))
+                .await;
+        }
+        self.sessions.lock().await.insert(id.into(), session);
+        Ok(json!({"ok":data.get("error").is_none(),"error":data["error"]}))
+    }
+    pub(crate) async fn stop_browser(&self, id: &str) {
+        let session = self.sessions.lock().await.remove(id);
+        if let Some(mut session) = session {
+            session.stop().await;
+        }
+        self.pause(id, false).await;
+    }
     pub(crate) async fn close(&self, session_id: Option<&str>) {
         let mut sessions = self.sessions.lock().await;
         let closing = if let Some(id) = session_id {
@@ -373,12 +627,21 @@ impl BrowserSessions {
         for mut session in closing {
             session.stop().await;
         }
+        if let Some(id) = session_id {
+            self.views.lock().await.remove(id);
+            self.paused.lock().await.remove(id);
+        } else {
+            self.views.lock().await.clear();
+            self.paused.lock().await.clear();
+        }
     }
 }
 
 struct BrowserSession {
     _permit: tokio::sync::OwnedSemaphorePermit,
-    view: crate::browser_view::BrowserView,
+    view: Arc<crate::browser_view::BrowserView>,
+    snapshot: Value,
+    history: Vec<Value>,
     id: String,
     origin: String,
     origins: Vec<String>,
@@ -401,11 +664,29 @@ impl Drop for BrowserSession {
     }
 }
 impl BrowserSession {
+    fn record(&mut self, data: &Value) {
+        self.revision += 1;
+        let url = data["url"].as_str().unwrap_or("about:blank");
+        if url != self.url && self.history.last().is_none_or(|h| h["url"] != url) {
+            self.history.push(json!({"url":url,"title":data["title"]}));
+            if self.history.len() > 100 {
+                self.history.remove(0);
+            }
+        }
+        self.url = url.into();
+        self.snapshot = data.clone();
+        if let Some(o) = self.snapshot.as_object_mut() {
+            o.remove("screenshot_base64");
+            o.remove("download_base64");
+        }
+    }
+
     #[cfg(not(target_os = "linux"))]
     async fn start(
         _args: &Value,
         _ctx: &ToolContext,
         _permit: tokio::sync::OwnedSemaphorePermit,
+        _view: Arc<crate::browser_view::BrowserView>,
     ) -> Result<Self> {
         Err(error(
             "sandbox_unavailable",
@@ -417,10 +698,10 @@ impl BrowserSession {
         args: &Value,
         ctx: &ToolContext,
         permit: tokio::sync::OwnedSemaphorePermit,
+        view: Arc<crate::browser_view::BrowserView>,
     ) -> Result<Self> {
         let origins = serde_json::from_value(args["allowed_origins"].clone())?;
         let private = serde_json::from_value(args["private_origins"].clone())?;
-        let view = crate::browser_view::BrowserView::start().await?;
         let mut command = ctx.sandbox.browser_command().await?;
         command.args([
             "/usr/bin/python3",
@@ -468,6 +749,8 @@ impl BrowserSession {
         Ok(Self {
             _permit: permit,
             view,
+            snapshot: Value::Null,
+            history: Vec::new(),
             id: id("browser"),
             origin: args["origin"].as_str().unwrap().into(),
             origins,
@@ -567,6 +850,14 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
     if !origins.contains(&origin) {
         return Err(error("browser_scope", "Origin not approved"));
     }
+    // Reserve live control-panel ports irrespective of hostname/IP spelling:
+    // mapped IPv6, unspecified addresses and DNS aliases must not bypass this.
+    if crate::browser_view::protected_port(url.port_or_known_default().unwrap()) {
+        return Err(error(
+            "browser_control_denied",
+            "Agent traffic cannot reach browser host control panels",
+        ));
+    }
     let host = url.host_str().unwrap().trim_matches(['[', ']']);
     let addresses = tokio::time::timeout(
         Duration::from_secs(5),
@@ -663,4 +954,33 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
         .collect();
     let body = crate::runtime::bounded_body(response, 4 * 1024 * 1024).await?;
     Ok(json!({"status":status,"headers":headers,"body":STANDARD.encode(body)}))
+}
+
+#[cfg(test)]
+mod host_panel_tests {
+    use super::*;
+    #[tokio::test]
+    async fn panel_ports_are_blocked_before_dns_including_address_aliases() {
+        let view = crate::browser_view::BrowserView::start().await.unwrap();
+        let port = reqwest::Url::parse(&view.url).unwrap().port().unwrap();
+        for host in [
+            "127.0.0.1",
+            "0.0.0.0",
+            "[::ffff:127.0.0.1]",
+            "unresolvable.invalid",
+        ] {
+            let origin = reqwest::Url::parse(&format!("http://{host}:{port}"))
+                .unwrap()
+                .origin()
+                .ascii_serialization();
+            let result = broker(
+                &json!({"url":format!("{origin}/state"),"method":"GET"}),
+                std::slice::from_ref(&origin),
+                std::slice::from_ref(&origin),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(result.code, "browser_control_denied");
+        }
+    }
 }

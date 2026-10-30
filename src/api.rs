@@ -25,6 +25,8 @@ use std::{
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
+mod browser_host;
+
 fn configuration_allowed(status: RunStatus) -> bool {
     (status.terminal() && status != RunStatus::Interrupted)
         || matches!(status, RunStatus::WaitingInput | RunStatus::WaitingApproval)
@@ -1505,6 +1507,7 @@ impl SessionHandle {
         }
         'steps: loop {
             self.check_running(run_id, shutdown).await?;
+            self.wait_for_browser_operator(run_id, shutdown).await?;
             let pending = self
                 .snapshot()
                 .await?
@@ -3191,6 +3194,13 @@ impl SessionHandle {
             }
             return self.outcome(run_id, invocation_id, result).await;
         }
+        if crate::browser_policy::TOOLS.contains(&def.name.as_str()) {
+            self.wait_for_browser_operator(run_id, shutdown).await?;
+            let data = self.snapshot().await?;
+            if data.parent.is_none() && data.policy.browser.as_ref().is_some_and(|p| p.enabled) {
+                self.browser_panel().await?;
+            }
+        }
         let tool = self.engine.inner.tools.get(&def.name)?;
         if fingerprint(&tool.definition()) != fingerprint(def) {
             return Err(WorkerError::new(
@@ -3566,6 +3576,9 @@ impl SessionHandle {
                 )
                 .await;
         }
+        if crate::browser_policy::TOOLS.contains(&def.name.as_str()) {
+            self.wait_for_browser_operator(run_id, shutdown).await?;
+        }
         self.update(|d| {
             if !d.profile.tools.contains(&def.name)
                 || d.policy
@@ -3904,13 +3917,20 @@ impl RunHandle {
             let receipt=d.command(command_id,&json!({"method":"approval","run":self.id,"request":request_id,"decision":decision}),Some(&self.id))?;if matches!(receipt.status,ReceiptStatus::Duplicate){return Ok(receipt);}
             if decision==ApprovalDecision::AllowSameArguments&&!d.policy.allow_similar{return Err(WorkerError::new("similar_disabled","Host did not enable exact-scope reusable approvals"));}
             if decision==ApprovalDecision::AllowForSession && d.parent.is_some(){return Err(WorkerError::new("root_required","Reusable access must be configured in the root session; child approvals remain one-time"));}
+            let browser_mode=d.policy.browser.is_some();
             let r=d.run_mut(&self.id)?;if !matches!(r.status,RunStatus::WaitingApproval|RunStatus::Interrupted){return Err(WorkerError::new("stale_request","Run is not awaiting approval"));}
             let i=r.invocations.iter_mut().find(|i|i.approval.as_ref().is_some_and(|a|a.request_id==request_id)).ok_or_else(||WorkerError::new("unknown_request","Approval does not belong to this run"))?;
             let a=i.approval.as_mut().unwrap();if a.decision.is_some()||a.expires_at_ms<=now_ms(){return Err(WorkerError::new("stale_request","Approval is resolved or expired"));}
             if a.arguments_hash!=approval_key(i.definition.as_ref().unwrap(),&i.prepared){return Err(WorkerError::new("scope_conflict","Prepared arguments no longer match approval"));}
+            if i.call.name=="browser.evaluate" && !matches!(decision,ApprovalDecision::AllowOnce|ApprovalDecision::Deny) {return Err(WorkerError::new("browser_script_approval","Page scripts require one-time approval every time"));}
             a.decision=Some(decision.clone());if decision==ApprovalDecision::AllowSameArguments{r.similar_grants.push(a.arguments_hash.clone());}
             if decision==ApprovalDecision::AllowForSession {
                 let def=i.definition.as_ref().unwrap();
+                if crate::browser_policy::TOOLS.contains(&def.name.as_str()) && browser_mode {
+                    let site=i.prepared["origin"].as_str().unwrap_or("").to_owned();
+                    let category=i.prepared["browser_category"].as_str().unwrap_or("actions").to_owned();
+                    d.policy.browser.as_mut().unwrap().set(&site,&category,crate::policy::ToolPermission::Allow)?;
+                } else {
                 let files=matches!(def.effect, Effect::Read|Effect::Write);
                 let workspace_tool=files || def.effect==Effect::Process;
                 let grant=crate::policy::CapabilityGrant {
@@ -3921,6 +3941,7 @@ impl RunHandle {
                 };
                 d.policy.remembered_grants.retain(|g| !(g.tool==grant.tool && g.arguments_hash==grant.arguments_hash));
                 d.policy.remembered_grants.push(grant);
+                }
             }
             d.run_mut(&self.id)?.resume_approval_clock(now_ms());
             d.emit(Some(&self.id),EventKind::ApprovalResolved{request_id:request_id.into(),decision});Ok(receipt)

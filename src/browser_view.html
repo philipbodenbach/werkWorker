@@ -2,34 +2,33 @@
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>WerkWorker Browser</title>
 <style>
-:root { color-scheme:dark; font:15px system-ui,sans-serif; background:#090f19; color:#e0e7f5; }
-body { margin:0; } header { padding:16px 24px; border-bottom:1px solid #263449; }
-h1 { font-size:17px; margin:0 0 8px; color:#37d5ef; } #url { overflow-wrap:anywhere; color:#aab9d0; }
-#status { margin:8px 0 0; } main { position:relative; max-width:1024px; margin:20px auto; }
-img { width:100%; display:block; } #cursor { position:absolute; pointer-events:none; color:#00d6f7; text-shadow:0 1px 4px #000; font-size:26px; transform:translate(-4px,-4px); }
-footer { padding:10px 24px; color:#8c9ab0; } [hidden] { display:none!important; }
+:root{color-scheme:dark;font:15px system-ui,sans-serif;background:#090f19;color:#e0e7f5}body{margin:0}header,section,footer{padding:14px 24px;border-bottom:1px solid #263449}h1{font-size:18px;color:#37d5ef;margin:0 0 10px}h2{font-size:16px}button,input,select{font:inherit;border:1px solid #43516a;border-radius:5px;padding:7px;background:#152033;color:inherit}button{cursor:pointer}button:hover{border-color:#37d5ef}button:disabled{opacity:.45;cursor:default}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:180px}#url,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap;max-height:270px;overflow:auto;background:#101927;padding:12px}#status,footer,.hint{color:#aab9d0}#error{color:#ffacac;min-height:20px}main{position:relative;max-width:1024px;margin:20px auto;outline:none}main:focus{outline:2px solid #37d5ef}img{width:100%;display:block}#cursor{position:absolute;pointer-events:none;color:#00d6f7;text-shadow:0 1px 4px #000;font-size:26px;transform:translate(-4px,-4px)}[hidden]{display:none!important}#approval{border-left:4px solid #e4bc63}.danger{color:#ffa3a3}#manual{background:#132134}label{display:flex;gap:7px;align-items:center}table{border-collapse:collapse;width:100%;margin-top:15px}td,th{text-align:left;padding:8px;border-bottom:1px solid #263449}
 </style>
-<header><h1>WERK / Browser</h1><div id="url">Waiting for the first page…</div><p id="status">Connected · read-only preview</p></header>
-<main><img id="frame" alt="Current agent browser page" hidden><span id="cursor" hidden>➤</span></main>
-<footer>Updates after each action. Approve or stop actions in WerkWorker. This preview cannot click, type or submit.</footer>
+<header><h1>WERK / Browser</h1><div class="row" id="host" hidden><label><input type="checkbox" id="enabled">Browser mode</label><button id="takeover">Take over</button><button id="resume" hidden>Continue agent</button><button id="stop" class="danger">Stop run</button><button id="settings">Website permissions</button></div><p id="url">Waiting for the first page…</p><div id="status">Connecting…</div><div id="error" role="alert"></div></header>
+<section id="approval" hidden><h2>Approve browser action</h2><pre id="request"></pre><div class="row"><button id="allow">Allow once</button><button id="deny">Deny</button><button id="site">Allow this category for this site · session</button></div><p class="hint">Page scripts always need one-time approval. Review the displayed code and destination.</p></section>
+<section id="rules" hidden><h2>Website permissions</h2><p class="hint">Rules apply to this worker session. Use an exact origin including scheme and port, or * for the default. Actions include submitting forms, sending, purchases and deleting. Unlabelled clicks cover coordinates and dragging. Scripts can only be Ask or Deny.</p><div class="row"><input id="site-input" class="grow" placeholder="https://example.com" aria-label="Website origin"><select id="category" aria-label="Category"><option value="browsing">Browsing</option><option value="actions">Actions / form submission</option><option value="unlabelled">Unlabelled clicks / drag</option><option value="downloads">Downloads</option><option value="history">Session history</option><option value="scripts">Page scripts</option></select><select id="permission" aria-label="Permission"><option value="ask">Ask</option><option value="allow">Allow</option><option value="deny">Deny</option></select><button id="save-rule">Apply rule</button></div><div id="rule-list"></div></section>
+<section id="manual" hidden><h2>You control the browser</h2><p class="hint">The agent pauses after its current action. Click the page, then type below; passwords and payment fields are masked. These entries are sent directly to the browser, outside chat history. Resume when ready.</p><div class="row"><button id="back">←</button><button id="reload">↻</button><input id="address" class="grow" placeholder="https://…" aria-label="Navigate to URL"><button id="go">Go</button><select id="tabs" aria-label="Active tab"></select><button id="new-tab">New tab</button><button id="close-tab">Close tab</button></div><p class="row"><input id="typing" type="password" autocomplete="off" class="grow" placeholder="Text for the focused field" aria-label="Text to enter in focused field"><button id="type">Insert text</button><button id="enter">Enter</button><button id="tab">Tab</button><button id="backspace">⌫</button><button id="scroll-up">Scroll ↑</button><button id="scroll-down">Scroll ↓</button><button id="refresh">Refresh page view</button></p></section>
+<main id="viewport" tabindex="0" aria-label="Browser screenshot; click to interact while taking over"><img id="frame" alt="Current agent browser page" hidden draggable="false"><span id="cursor" hidden>➤</span></main>
+<footer>Own isolated browser session, separate from your personal tabs. Snapshots update after actions. Password, payment and one-time-code entry belongs to you. Closing this panel does not stop the agent.</footer>
 <script>
-let revision = -1;
-async function refresh() {
-  try {
-    const response = await fetch('state', {cache:'no-store'});
-    if (!response.ok) throw Error('closed');
-    const state = await response.json();
-    if (state && state.revision !== revision) {
-      revision = state.revision;
-      document.title = (state.title || 'Browser') + ' · WerkWorker';
-      document.querySelector('#url').textContent = state.url || 'Waiting…';
-      document.querySelector('#status').textContent = 'Action ' + revision + ' · ' + state.action;
-      const frame = document.querySelector('#frame'); frame.src = 'frame?v=' + revision; frame.hidden = false;
-      const cursor = document.querySelector('#cursor'); cursor.hidden = !state.pointer;
-      if (state.pointer) { cursor.style.left = (100*state.pointer.x/1024)+'%'; cursor.style.top=(100*state.pointer.y/768)+'%'; }
-    }
-    setTimeout(refresh, 700);
-  } catch (_) { document.querySelector('#status').textContent = 'Browser session closed or disconnected'; }
-}
-refresh();
+const $=id=>document.getElementById(id);let revision=-1,host=null,pending=null,busy=false,approvalKey='',tabsKey='';
+async function control(op,extra={}){if(busy)return;busy=true;$('error').textContent='';try{const r=await fetch('control',{method:'POST',headers:{'Content-Type':'application/json','X-Werk-Browser':'1'},body:JSON.stringify({op,...extra})});const data=await r.json();if(!r.ok||data.error)throw Error(data.error||'Request failed');return data;}catch(e){$('error').textContent=e.message;}finally{busy=false;}}
+async function manual(args){if(!host?.paused)return;await control('manual',{arguments:args});}
+$('enabled').onchange=()=>control('mode',{enabled:$('enabled').checked});$('takeover').onclick=()=>control('pause');$('resume').onclick=()=>control('resume');$('stop').onclick=()=>control('stop');$('settings').onclick=()=>{$('rules').hidden=!$('rules').hidden;};
+$('save-rule').onclick=()=>control('rule',{site:$('site-input').value.trim(),category:$('category').value,permission:$('permission').value});
+for(const [id,decision] of [['allow','allow'],['deny','deny'],['site','site']])$(id).onclick=()=>pending&&control('approval',{run_id:pending.run_id,request_id:pending.request_id,decision});
+$('go').onclick=()=>manual({url:$('address').value.trim()});$('address').onkeydown=e=>{if(e.key==='Enter')$('go').click();};
+for(const [id,action] of [['back','back'],['reload','reload'],['new-tab','tab_new']])$(id).onclick=()=>manual({action});
+$('tabs').onchange=()=>manual({action:'tab_select',tab_id:Number($('tabs').value)});$('close-tab').onclick=()=>manual({action:'tab_close',tab_id:Number($('tabs').value)});
+$('type').onclick=async()=>{const text=$('typing').value;if(!text||busy)return;$('typing').value='';await manual({action:'type',text});};$('typing').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('type').click();}};
+for(const [id,key] of [['enter','Enter'],['tab','Tab'],['backspace','Backspace']])$(id).onclick=()=>manual({action:'press',key});
+$('scroll-up').onclick=()=>manual({action:'scroll',x:0,y:-600});$('scroll-down').onclick=()=>manual({action:'scroll',x:0,y:600});$('refresh').onclick=()=>manual({});
+$('frame').onclick=e=>{if(!host?.paused||busy)return;const r=e.currentTarget.getBoundingClientRect();manual({action:'click_at',x:Math.max(0,Math.min(1023,Math.floor((e.clientX-r.left)*1024/r.width))),y:Math.max(0,Math.min(767,Math.floor((e.clientY-r.top)*768/r.height)))});};
+$('viewport').onkeydown=e=>{if(!host?.paused||busy)return;const keys=['Enter','Tab','Escape','Backspace','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'];if(keys.includes(e.key)){e.preventDefault();manual({action:'press',key:e.key});}};
+async function refresh(){try{const response=await fetch('state',{cache:'no-store'});if(!response.ok)throw Error('closed');const state=await response.json();host=state.host||null;$('host').hidden=!host;$('enabled').checked=!!host?.enabled;$('manual').hidden=!host?.paused;$('resume').hidden=!host?.paused;$('takeover').hidden=!!host?.paused;$('status').textContent=host?(host.paused?'Manual control requested · agent paused between actions':host.enabled?'Agent browser mode on':'Browser mode off'):'Read-only preview';if(host?.error)$('error').textContent=host.error;
+pending=host?.approvals?.[0]||null;const key=pending?.request_id||'';if(key!==approvalKey){approvalKey=key;$('approval').hidden=!pending;$('request').textContent=pending?JSON.stringify(pending.description,null,2):'';$('site').hidden=pending?.description?.tool==='browser.evaluate';}
+if(host){const policy=host.policy||{};const table=document.createElement('table');const categories=['browsing','actions','unlabelled','downloads','history','scripts'];const header=table.insertRow();for(const name of ['Website',...categories]){const cell=document.createElement('th');cell.textContent=name[0].toUpperCase()+name.slice(1);header.append(cell);}for(const [site,rules] of [['Default',policy.defaults||{}],...Object.entries(policy.sites||{})]){const row=table.insertRow();row.insertCell().textContent=site;for(const category of categories){const value=rules[category]||policy.defaults?.[category]||'ask';row.insertCell().textContent=value[0].toUpperCase()+value.slice(1);}}$('rule-list').replaceChildren(table);}
+const tabs=host?.browser?.tabs||state.tabs||[];const tk=JSON.stringify(tabs);if(tk!==tabsKey){tabsKey=tk;$('tabs').replaceChildren();for(const tab of tabs){const option=document.createElement('option');option.value=tab.tab_id;option.textContent=tab.tab_id+' · '+tab.url;option.selected=tab.active;$('tabs').append(option);}}
+if(state.revision!==undefined&&state.revision!==revision){revision=state.revision;document.title=(state.title||'Browser')+' · WerkWorker';$('url').textContent=state.url||'Waiting…';if(document.activeElement!==$('address'))$('address').value=state.url||'';if(!$('site-input').value)try{$('site-input').value=new URL(state.url).origin;}catch(_){}$('frame').src='frame?v='+revision;$('frame').hidden=false;$('cursor').hidden=!state.pointer;if(state.pointer){$('cursor').style.left=(100*state.pointer.x/1024)+'%';$('cursor').style.top=(100*state.pointer.y/768)+'%';}}
+}catch(_){$('status').textContent='Browser session closed or disconnected';}setTimeout(refresh,700);}refresh();
 </script></html>

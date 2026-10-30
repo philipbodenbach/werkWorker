@@ -35,7 +35,7 @@ Builtin inventory:
 |---|---|
 | Files | files.read, files.list, files.find, files.search, files.read_image, files.write, files.edit, files.insert |
 | Process | process.run, process.start, process.status, process.cancel, process.wait, process.log |
-| Browser | browser.check; browser.open, browser.observe, browser.navigate, browser.action, browser.close (optional runtime) |
+| Browser | browser.check; browser.open, browser.observe, browser.navigate, browser.action, browser.close, browser.evaluate, browser.history, browser.download (optional runtime) |
 | Broker | http.fetch; explicitly registered tickets.create / werk.* |
 | Instructions | skills.list, skills.load |
 | Interaction | interaction.ask, task.plan |
@@ -113,9 +113,10 @@ REQUIRE_SANDBOX=1 to require actual Chromium/bubblewrap tests.
 
 ## Persistent browser control
 
-`browser.open`, `browser.observe`, `browser.navigate`, `browser.action` and
-`browser.close` control a separate headless browser, retaining tabs, cookies and
-form state across tool calls. They are ordinary JSON tools shared by all
+`browser.open`, `browser.observe`, `browser.navigate`, `browser.action`,
+`browser.close`, `browser.evaluate`, `browser.history` and `browser.download`
+control a separate headless browser, retaining tabs, cookies and form state
+across tool calls. They are ordinary JSON tools shared by all
 tool-capable model providers, including local Qwen, Llama, DeepSeek and GLM
 models served by Werk. No Qwen-specific SDK or model-name allowlist is involved.
 Text and accessibility snapshots work without vision; `browser.observe` can
@@ -136,10 +137,47 @@ system package changes. It requires `python3-apt`, follows the pinned Playwright
 dependency plan and extracts repository packages without executing maintainer
 scripts. Other systems can use Playwright's documented platform dependency setup.
 
-In **F5 → Tools**, enable the five control tools and set permission to **ask**,
-then apply. New all-tools TUI sessions already expose them with per-action
-approval. The coding and automation profiles include the names but do not
-grant access. Workspace/process permissions never authorize browser control.
+Enter **`/browser on`** in the TUI to enable browser mode for the current
+session. `/browser` prints the panel URL; `/browser off` disables subsequent
+agent actions and rejects unresolved browser approvals. The panel's Stop button
+cancels the active run. Enabling this mode adds the browser tools to any profile;
+workspace/process grants alone do not authorize them. Hard denies still apply.
+SDK hosts use `SessionHandle::set_browser_mode`, `browser_panel` and
+`set_browser_rule`; these are host APIs, never model tools.
+
+The loopback panel provides website rules for browsing, consequential actions,
+unlabelled coordinate clicks/dragging, downloads, session history and page
+scripts. Each category supports Ask/Allow/Deny on an exact HTTP(S) origin or `*`
+for defaults. All categories initially Ask. After the first page approval,
+ordinary observations, scrolling, non-sensitive input and navigation inside the
+approved scope proceed without repeated prompts. Form submission and other
+buttons/keys ask by default. A site's Allow rule does not grant access to another
+site. Session/project approval choices remember the displayed category and site;
+the panel's rule editor changes session policy only. F5/project save can persist
+those settings through the existing trusted configuration store.
+
+Choose **Take over** to pause the agent between actions. Click the page image,
+enter text in the panel, navigate or select tabs, then **Continue agent**. The
+current action may finish before takeover; manual controls report busy until
+then. Manual input goes directly to the isolated browser and is not added to
+model messages or durable commands. Password, payment and OTP fields reject
+normal model typing, have their values redacted from text/element snapshots and
+are masked in screenshots. Detection uses field type, labels and autocomplete;
+this is not a universal secret detector. Use manual entry for credentials, and
+do not paste them into chat. Script approval is broader: an approved page script
+can read page state, including field values.
+
+`browser.evaluate` displays the exact page JavaScript and requires **Allow once**
+every time, even with Full Access or remembered grants. Scripts can be disabled;
+Allow for session is rejected. `browser.history` reads only this isolated
+session's navigation history. `browser.download` saves an explicitly requested
+URL as a bounded artifact (4 MiB maximum; requires an artifact store), using the
+same scoped network broker. It does not execute files. Uploads are unavailable.
+
+This workflow follows the browser-mode, site-permission and manual-handoff
+approach documented in [Unsloth Browser Use](https://unsloth.ai/docs/basics/browser-use).
+WerkWorker implements it in its own tool and host-permission system; it does not
+require a Qwen or browser extension.
 
 Example calls (the first result supplies the real `browser_id`):
 
@@ -151,8 +189,10 @@ Example calls (the first result supplies the real `browser_id`):
 ```
 
 These are arguments for `browser.open`, `browser.action`, `browser.observe`
-and `browser.close`, respectively. `target` accepts a CSS selector, exact
-accessible role/name, or exact label, optionally within an iframe selector.
+and `browser.close`, respectively. Prefer a fresh `target.ref` from the returned
+`controls` list. Other targets accept a CSS selector, exact accessible role/name,
+or exact label, optionally within an iframe selector. References expire after
+the next snapshot; after manual takeover, observe again before acting.
 Actions also include fill, press, select, hover, scroll, back/forward/reload,
 bounded wait, and new/select/close tab. The result includes stable tab IDs.
 
@@ -160,21 +200,26 @@ For visual tasks such as canvas painting, use `click_at`/`move` with pixel `x,y`
 or `drag` with a `path` of 2–64 points. The viewport is 1024×768; resized model
 screenshots report `scale_x/scale_y` to translate image pixels to that viewport.
 For example, `{"browser_id":"browser_…","action":"drag","path":[{"x":40,"y":320},{"x":80,"y":360},{"x":120,"y":320}],"screenshot":true}`
-draws one reviewed mouse stroke. Every action also updates a local read-only
-preview at the returned `viewer_url`, with the last mouse position. Open that
-link in your own browser to watch the result after each action. The preview is
-bound to loopback, protected by an unguessable path, accepts no control commands
-and closes with the agent browser. It does not stream continuous video.
+draws one reviewed mouse stroke. Every action updates the local panel at
+`viewer_url`, including the last mouse position. The panel is bound to loopback
+and protected by an unguessable path. Host commands additionally require a
+same-origin JSON POST and a custom header. The agent's network broker rejects
+all panel ports even if loopback access was approved. Direct tool integrations
+without a host panel retain a read-only preview. Updates are snapshots after
+actions, not continuous video. Engine shutdown/session deletion closes the panel.
 
 Opening approves exact `allowed_origins` (scheme, host and port); the initial
 URL origin is included automatically. CDN, login and redirect origins must be
 listed explicitly. Host/loopback services additionally need `private_origins`,
 which must be a subset of those approved origins. For example, local development
 can use `{"url":"http://127.0.0.1:3000","private_origins":["http://127.0.0.1:3000"]}`.
-Changing the origin set requires closing and newly approving a browser.
+`browser.navigate` and `browser.download` can request another public origin;
+preparation exposes the expanded scope for approval before any I/O. Adding a
+private-origin exception still requires closing and opening a new browser.
 
-All five tools use the external-write permission gate: loading or observing a
-page can run scripts that change remote data. Prepared approvals show the browser,
+All control tools are external writes: loading or observing a page can run
+scripts that change remote data. Browser mode applies the category/site rules;
+without explicit browser mode the existing per-tool approval policy is retained. Prepared approvals show the browser,
 origin scope, current URL, revision and exact action. A changed session revision
 invalidates old approvals. Page contents cannot grant access. Timeout/cancellation
 closes the affected browser and reports uncertain remote effects; never blindly
@@ -183,8 +228,9 @@ repeat a submission. Closing a browser does not undo remote changes.
 The browser has an empty workspace/home and no host network. A private proxy
 forwards only approved HTTP(S) requests through Rust's bounded, DNS-pinned broker,
 checking every redirect and validating upstream HTTPS certificates. Cookies stay
-in the isolated browser. No user profile, inherited proxy, file upload/download,
-arbitrary host command, or model-provided JavaScript executor is exposed.
+in the isolated browser. No personal profile, inherited proxy, file upload or
+arbitrary host command is exposed. Reviewed JavaScript runs only in the page;
+reviewed downloads stay in the owned artifact store.
 WebSockets, service workers and streaming requests are blocked. Background
 networking outside an approved action is disabled; some live websites require
 these unsupported features. A page snapshot is observation, not behavioral

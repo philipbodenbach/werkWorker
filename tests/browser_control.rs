@@ -335,7 +335,7 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
                 .text()
                 .await
                 .unwrap()
-                .contains("read-only preview")
+                .contains("Read-only preview")
         );
         let state: Value = client
             .get(format!("{viewer}state"))
@@ -404,13 +404,17 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
             "browser_session_missing"
         );
         let nav = registry.get("browser.navigate").unwrap();
+        let expansion = nav
+            .prepare(json!({"browser_id":browser_id,"url":other.origin}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(expansion["new_origins"], json!([other.origin]));
+        let browser_policy = werk_worker::browser_policy::BrowserPolicy::default();
         assert_eq!(
-            nav.prepare(json!({"browser_id":browser_id,"url":other.origin}), &ctx)
-                .await
-                .unwrap_err()
-                .code,
-            "browser_scope"
+            browser_policy.evaluate("browser.navigate", &expansion),
+            PolicyDecision::Ask
         );
+        assert!(other.requests.lock().unwrap().is_empty());
         let newtab = call(
             &registry,
             &ctx,
@@ -604,6 +608,109 @@ async fn public_https_through_the_isolated_browser_proxy() {
             &ctx,
             "browser.close",
             json!({"browser_id":opened.data["browser_id"]}),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn downloads_keep_cookie_scope_and_produce_owned_artifacts() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let server = support::Server::start(|r| {
+        let download = r.path == "/download";
+        if download {
+            assert!(r.raw.contains("download=session"));
+        }
+        support::Response {
+            status: 200,
+            headers: vec![
+                (
+                    "content-type".into(),
+                    if download {
+                        "application/octet-stream"
+                    } else {
+                        "text/html"
+                    }
+                    .into(),
+                ),
+                (
+                    "set-cookie".into(),
+                    "download=session; Path=/; HttpOnly".into(),
+                ),
+            ],
+            body: if download {
+                b"owned download bytes".to_vec()
+            } else {
+                b"<title>Download fixture</title><body>Ready</body>".to_vec()
+            },
+        }
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let artifacts = tempfile::tempdir().unwrap();
+    let mut ctx = context(dir.path()).await;
+    ctx.artifacts = Some(ArtifactStore::open(artifacts.path()).await.unwrap());
+    for browser in std::env::var("WW_BROWSER_ENGINES")
+        .unwrap_or("chromium".into())
+        .split(',')
+    {
+        let registry = ToolRegistry::builtins().unwrap();
+        let opened = call(
+            &registry,
+            &ctx,
+            "browser.open",
+            json!({"url":server.origin,"private_origins":[server.origin],"browser":browser}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&opened);
+        let browser_id = opened.data["browser_id"].clone();
+        let result = call(
+            &registry,
+            &ctx,
+            "browser.download",
+            json!({"browser_id":browser_id,"url":format!("{}/download",server.origin)}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&result);
+        assert_eq!(result.artifacts.len(), 1);
+        let artifact = &result.artifacts[0];
+        assert_eq!(artifact.session_id, ctx.session_id);
+        assert_eq!(artifact.run_id, ctx.run_id);
+        assert_eq!(
+            ctx.artifacts
+                .as_ref()
+                .unwrap()
+                .read(artifact, &ctx.session_id, 0, 1024)
+                .await
+                .unwrap(),
+            b"owned download bytes"
+        );
+        let history = call(
+            &registry,
+            &ctx,
+            "browser.history",
+            json!({"browser_id":browser_id}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&history);
+        assert!(
+            history.data["history"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["url"].as_str().unwrap().starts_with(&server.origin))
+        );
+        call(
+            &registry,
+            &ctx,
+            "browser.close",
+            json!({"browser_id":browser_id}),
         )
         .await
         .unwrap();

@@ -19,6 +19,24 @@ use ratatui::{
 use std::{io::IsTerminal, pin::Pin, time::Duration};
 use werk_worker::*;
 
+fn tool_result_label(result: &ToolResult) -> String {
+    let label = if result.status == Outcome::Succeeded
+        && (result.data["passed"] == false || result.data["verification"]["passed"] == false)
+    {
+        "Check failed".into()
+    } else if result.status == Outcome::Succeeded
+        && (result.data["passed"] == true || result.data["verification"]["passed"] == true)
+    {
+        "Check passed".into()
+    } else {
+        format!("{:?}", result.status)
+    };
+    match result.error_code.as_deref() {
+        Some(code) => format!("{label} {code}"),
+        None => label,
+    }
+}
+
 // Exact werk1112 top/terminal palette; attribution in NOTICE.
 pub(crate) const BG: Color = Color::Rgb(9, 13, 23);
 const PANEL: Color = Color::Rgb(15, 21, 35);
@@ -1067,11 +1085,7 @@ impl View {
                 self.append(&format!("\n  tool · {name}\n"));
             }
             EventKind::ToolCompleted { result, .. } => {
-                self.append(&format!(
-                    "  result · {:?} {}\n",
-                    result.status,
-                    result.error_code.unwrap_or_default()
-                ));
+                self.append(&format!("  result · {}\n", tool_result_label(&result)));
                 if let Some(url) = result.data["viewer_url"].as_str()
                     && self.browser_preview.as_deref() != Some(url)
                 {
@@ -1246,9 +1260,8 @@ fn agent_details(run: &Run, goal: &str) -> String {
             }
             if let Some(result) = &invocation.result {
                 view.append(&format!(
-                    "Result: {:?} {}\n{}\n",
-                    result.status,
-                    result.error_code.as_deref().unwrap_or(""),
+                    "Result: {}\n{}\n",
+                    tool_result_label(result),
                     serde_json::to_string_pretty(&result.data).unwrap_or_default()
                 ));
             }
@@ -2261,11 +2274,7 @@ fn restore_history(view: &mut View, data: &SessionData) {
                         view.append(&format!("you › {answer}\n"));
                     }
                 } else if let Some(result) = invocation.and_then(|i| i.result.as_ref()) {
-                    view.append(&format!(
-                        "  result · {:?} {}\n",
-                        result.status,
-                        result.error_code.as_deref().unwrap_or_default()
-                    ));
+                    view.append(&format!("  result · {}\n", tool_result_label(result)));
                 }
             }
             _ => {}
@@ -2893,6 +2902,54 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_events_distinguish_verification_outcomes_from_execution_success() {
+        for (data, expected) in [
+            (
+                serde_json::json!({"passed":false,"exit_code":1}),
+                "Check failed",
+            ),
+            (
+                serde_json::json!({"verification":{"passed":false}}),
+                "Check failed",
+            ),
+            (
+                serde_json::json!({"passed":true,"verification":{"passed":false}}),
+                "Check failed",
+            ),
+            (
+                serde_json::json!({"passed":true,"exit_code":0}),
+                "Check passed",
+            ),
+            (
+                serde_json::json!({"verification":{"passed":true}}),
+                "Check passed",
+            ),
+            (serde_json::json!({"path":"app.html"}), "Succeeded"),
+        ] {
+            let result = ToolResult::ok(data);
+            assert_eq!(result.status, Outcome::Succeeded);
+            let mut view = View::default();
+            view.event(WorkerEvent {
+                schema_version: 1,
+                event_id: "event".into(),
+                session_id: "session".into(),
+                run_id: Some("run".into()),
+                cursor: 1,
+                timestamp_ms: 0,
+                event: EventKind::ToolCompleted {
+                    invocation_id: "invocation".into(),
+                    result,
+                },
+            });
+            assert_eq!(view.transcript, format!("  result · {expected}\n"));
+        }
+        let mut failed = ToolResult::ok(serde_json::json!({"passed":true}));
+        failed.status = Outcome::Failed;
+        failed.error_code = Some("browser_failed".into());
+        assert_eq!(tool_result_label(&failed), "Failed browser_failed");
+    }
 
     fn test_image() -> attachments::ImageAttachment {
         let mut bytes = std::io::Cursor::new(Vec::new());

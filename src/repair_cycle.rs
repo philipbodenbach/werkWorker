@@ -11,6 +11,10 @@ pub(crate) struct RepairCycle {
     paths: BTreeSet<String>,
     rounds: BTreeSet<usize>,
     last_failure: String,
+    browser_failure: Option<Value>,
+    // Only explicit, path-covering descendants of the active obligation.
+    // Keep each parent's paths so a replacement cannot drop intermediate scope.
+    replacements: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn command(invocation: &ToolInvocation) -> String {
@@ -59,14 +63,15 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
             .collect();
         let check_command = command(invocation);
         let passed = result.status == Outcome::Succeeded && evidence["passed"] == true;
-        if passed
-            && cycle.as_ref().is_some_and(|old| {
-                old.paths.is_subset(&paths)
-                    && (old.command == check_command
-                        || invocation.call.arguments["verification"]["replaces"]
-                            == old.source_invocation)
-            })
-        {
+        let related = cycle.as_ref().is_some_and(|old| {
+            old.paths.is_subset(&paths)
+                && (old.command == check_command
+                    || invocation.call.arguments["verification"]["replaces"]
+                        .as_str()
+                        .and_then(|id| old.replacements.get(id))
+                        .is_some_and(|parent_paths| parent_paths.is_subset(&paths)))
+        });
+        if passed && related {
             cycle = None;
             continue;
         }
@@ -91,13 +96,25 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
         let current = cycle.get_or_insert_with(|| RepairCycle {
             source_invocation: invocation.invocation_id.clone(),
             command: check_command,
-            argv: invocation.call.arguments["argv"].clone(),
-            paths,
+            argv: if invocation.call.name == "browser.check" {
+                json!({"tool":"browser.check","path":invocation.call.arguments["path"],"actions":invocation.call.arguments["actions"]})
+            } else {
+                invocation.call.arguments["argv"].clone()
+            },
+            paths: paths.clone(),
             rounds: BTreeSet::new(),
             last_failure: String::new(),
+            browser_failure: None,
+            replacements: [(invocation.invocation_id.clone(), paths.clone())].into(),
         });
+        if related {
+            current
+                .replacements
+                .insert(invocation.invocation_id.clone(), paths);
+        }
         current.rounds.insert(invocation.message_index);
         current.last_failure = failure;
+        current.browser_failure = result.data.get("failed_action").cloned();
     }
     cycle
 }
@@ -132,6 +149,7 @@ impl RepairCycle {
             "decision_limit":stop_limit(run),
             "final_check_due":self.final_check_due(run),
             "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
+            "browser_failure":self.browser_failure,
             "next_action":"Diagnose whether the application or the check failed before editing application code. Finish one correction, then rerun the check; fix a broken check using verification.replaces=source_invocation and the same paths. Prefer verification.kind=behavior with real assertions; syntax and inspection are not behavioral evidence. A successful replacement must cover unchanged files. Edits and unrelated passing commands do not resolve the failure. Delegate independent diagnosis while continuing separate work when useful."})
     }
 }
@@ -229,6 +247,111 @@ mod tests {
         run.invocations
             .push(check_receipt(12, "./acceptance", true, "repaired"));
         assert!(latest(&run, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn browser_repair_preserves_failed_action_and_target_after_reload() {
+        let mut run = run();
+        let failure = json!({"index":3,"type":"expect_visible","selector":"#explanation",
+            "last_interaction":{"index":1,"type":"click","selector":"#example"},
+            "target":{"count":1,"visible":false,"hidden":true}});
+        run.invocations.push(receipt(
+            0,
+            "browser.check",
+            json!({"path":"tabs.html","actions":[
+                {"type":"click","selector":"#example"},
+                {"type":"expect_visible","selector":"#sample"},
+                {"type":"expect_visible","selector":"#explanation"}],
+                "verification":{"criteria":["Switch tabs"],"paths":["tabs.html"]}}),
+            json!({"exit_code":1,"errors":["Timeout"],"failed_action":failure,
+                "verification":{"passed":false,"files":{"tabs.html":"v1"}}}),
+        ));
+        let restored: Run = serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+        let cycle = latest(&restored, &BTreeMap::new()).unwrap();
+        let observation = cycle.observation(&restored);
+        assert_eq!(observation["browser_failure"], failure);
+        assert_eq!(observation["source_invocation"], "inv_0");
+        let command: Value =
+            serde_json::from_str(observation["failed_command_excerpt"].as_str().unwrap()).unwrap();
+        assert_eq!(command["tool"], "browser.check");
+        assert_eq!(command["path"], "tabs.html");
+        // A correction must still succeed with the original path coverage.
+        let mut corrected = run.invocations[0].clone();
+        corrected.invocation_id = "inv_1".into();
+        corrected.message_index = 1;
+        corrected.call.arguments["actions"][2] = json!({"type":"click","selector":"#explain"});
+        corrected.call.arguments["verification"]["replaces"] = json!("inv_0");
+        run.invocations.push(corrected);
+        assert!(latest(&run, &BTreeMap::new()).is_some());
+        let result = run.invocations[1].result.as_mut().unwrap();
+        result.data["verification"]["passed"] = json!(true);
+        result.data["exit_code"] = json!(0);
+        assert!(latest(&run, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn successful_replacement_resolves_a_chain_of_failed_replacements() {
+        let mut run = run();
+        run.invocations
+            .push(check_receipt(0, "./original", false, "v1"));
+        for index in 1..4 {
+            let mut next = check_receipt(index, &format!("./correction-{index}"), index == 3, "v1");
+            next.call.arguments["verification"]["replaces"] = json!(format!("inv_{}", index - 1));
+            run.invocations.push(next);
+            let restored: Run = serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+            assert_eq!(latest(&restored, &BTreeMap::new()).is_none(), index == 3);
+        }
+    }
+
+    #[test]
+    fn replacement_chains_require_valid_ancestry_and_cover_every_parent_path() {
+        for (kind, parent, paths) in [
+            ("behavior", "unrelated", json!({"app.txt":"v1"})),
+            ("inspection", "inv_0", json!({"app.txt":"v1"})),
+            ("behavior", "inv_0", json!({"other.txt":"v1"})),
+            (
+                "behavior",
+                "inv_0",
+                json!({"app.txt":"v1","extra.txt":"v1"}),
+            ),
+        ] {
+            let mut run = run();
+            run.invocations
+                .push(check_receipt(0, "./original", false, "v1"));
+            let mut middle = check_receipt(1, "./changed", false, "v1");
+            middle.call.arguments["verification"]["kind"] = json!(kind);
+            middle.call.arguments["verification"]["replaces"] = json!(parent);
+            middle.result.as_mut().unwrap().data["verification"]["files"] = paths.clone();
+            run.invocations.push(middle);
+            let mut last = check_receipt(2, "./passing", true, "v1");
+            last.call.arguments["verification"]["replaces"] = json!("inv_1");
+            run.invocations.push(last);
+            assert!(
+                latest(&run, &BTreeMap::new()).is_some(),
+                "{kind} / {parent} / {paths}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "read-only replay of a saved browser repair chain; no model requests or workspace execution"]
+    fn saved_browser_replacement_chain_finishes_after_passing_correction() {
+        let run: Run = serde_json::from_slice(
+            &std::fs::read(std::env::var("WW_BROWSER_REPAIR_REPLAY").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let last = run.invocations.last().unwrap();
+        assert_eq!(last.call.name, "browser.check");
+        assert_eq!(
+            last.result.as_ref().unwrap().data["verification"]["passed"],
+            true
+        );
+        let cycle = latest(&run, &BTreeMap::new());
+        assert!(
+            cycle.is_none(),
+            "passing correction left obligation: {:?}",
+            cycle.map(|c| c.observation(&run))
+        );
     }
 
     #[test]

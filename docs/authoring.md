@@ -90,6 +90,20 @@ optional screenshot. A page load or screenshot alone cannot pass verification.
 Declare `verification.criteria` and all relevant source/test `paths` to record
 hash-bound evidence; the HTML entry is always included and later changes invalidate it. Checks prove the supplied
 assertions, not every acceptance criterion automatically.
+Each call starts a fresh page. Split long flows into focused scenarios of at most
+16 actions, including the actions needed to reach each expected state. A failed
+action reports its one-based index, selector/predicate, last successful interaction
+and observed target state; visible control names and page text help diagnose a
+mistaken selector or expectation. Diagnostic observations never rerun the failed
+action or predicate. Correct broken checks with `verification.replaces` instead
+of changing working application behavior to satisfy them. For reference-based UI
+work, compare the screenshot's composition and controls with the supplied image;
+successful text assertions alone do not establish visual fidelity.
+`verification.replaces` can name the original failed invocation or a failed
+replacement in its explicit ancestry. Every link must cover its parent's paths;
+only a successful behavioral check clears the obligation. Unrelated checks and
+inspections do not become aliases for the original failure. The TUI displays
+`Check passed` or `Check failed` separately from tool execution status.
 
 On Linux install the optional host runtime explicitly with
 `sh scripts/install-browser.sh chromium` (system Python with pip and Chromium runtime

@@ -112,6 +112,13 @@ pub(crate) fn verification_rejection(arguments: &Value, result: &Value) -> Optio
     if let Some(issue) = crate::process_input::invocation_issue(arguments) {
         return Some(issue);
     }
+    if arguments.get("verification").is_some()
+        && arguments["verification"]["kind"].as_str().is_none()
+    {
+        return Some(
+            "Process execution alone is not behavioral evidence. This command has no verification.kind, so it is diagnostic only. For a real test, specify kind=behavior, execute the entry point and assert the criteria; use kind=syntax or kind=inspection for diagnostics. This result does not resolve a failed check.",
+        );
+    }
     if arguments["verification"]["kind"] == "inspection" {
         return Some(
             "Inspection is diagnostic evidence, not a behavioral verification. Execute the entry point and assert the required behavior before claiming completion.",
@@ -388,7 +395,7 @@ pub(crate) async fn findings(
         })
         .find_map(|(n, i)| i.result.as_ref().map(|r| (n, i, r)))
     else {
-        return Ok(Some("The implementation has no recorded behavioral verification. Use process.run or browser.check with verification:{criteria:[actual acceptance criteria],paths:[all relevant source and test files, relative to workspace]}. Run assertions through real startup/input paths, inspect failures, fix them, and repeat. For an interactive app, syntax alone does not verify behavior. Do not claim completion if checks cannot run; report the blocker via interaction.ask.".into()));
+        return Ok(Some("The implementation has no recorded behavioral verification. Use process.run or browser.check with verification:{kind:behavior,criteria:[planned acceptance criteria],paths:[all relevant source and test files, relative to workspace]}. Run assertions through real startup/input paths, inspect failures, fix them, and repeat. For an interactive app, syntax alone does not verify behavior. Do not claim completion if checks cannot run; report the blocker via interaction.ask.".into()));
     };
     let evidence = receipts
         .get(&invocation.invocation_id)
@@ -514,7 +521,7 @@ mod tests {
             "/usr/bin/node",
             "C:\\Program Files\\nodejs\\node.exe",
         ] {
-            let args = json!({"argv":[program,"-e",script],"verification":{"criteria":["Exit code 0 and output printed"],"paths":["tetris.html"]}});
+            let args = json!({"argv":[program,"-e",script],"verification":{"kind":"behavior","criteria":["Exit code 0 and output printed"],"paths":["tetris.html"]}});
             assert!(verification_rejection(&args, &json!({"exit_code":0,"stdout":"has render: false\nhas audio: false\nhas loop: false"})).is_some(), "{program}");
         }
     }
@@ -565,6 +572,35 @@ mod tests {
             ]),
         ] {
             assert!(!inspection_only(&json!({"argv":argv})), "{argv}");
+        }
+    }
+
+    #[test]
+    fn untyped_process_success_is_diagnostic_for_every_program() {
+        for argv in [
+            json!(["python3", "-c", "s=open('index.html').read();print(s)"]),
+            json!(["node", "-e", "console.log('source inventory')"]),
+            json!(["ruby", "-e", "puts File.read('index.html')"]),
+            json!(["custom-inspector"]),
+            json!(["cargo", "test"]),
+        ] {
+            let args = json!({"argv":argv,"verification":{"criteria":["Claimed check"],"paths":["index.html"]}});
+            assert!(
+                verification_rejection(&args, &json!({"exit_code":0}))
+                    .unwrap()
+                    .contains("no verification.kind")
+            );
+        }
+        for kind in ["behavior", "syntax", "inspection"] {
+            let args = json!({"argv":["custom-test-runner"],"verification":{"kind":kind,"criteria":["Required behavior"],"paths":["app"]}});
+            assert_eq!(
+                verification_rejection(&args, &json!({"exit_code":0})).is_none(),
+                kind == "behavior"
+            );
+            assert_eq!(
+                verification_rejection(&args, &json!({"exit_code":1})).is_none(),
+                kind != "inspection"
+            );
         }
     }
 

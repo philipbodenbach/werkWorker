@@ -931,7 +931,7 @@ async fn read_recovery_supports_edit_and_verified_completion() {
                     "process.run",
                     json!({
                         "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],
-                        "verification":{"criteria":["Final fixture content is two"],"paths":["game.txt"]}
+                        "verification":{"kind":"behavior","criteria":["Final fixture content is two"],"paths":["game.txt"]}
                     }),
                 )
             } else {
@@ -1163,7 +1163,7 @@ async fn bounded_read_recovery_can_verify_without_forcing_an_edit() {
             "process.run",
             json!({
                 "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],
-                "verification":{"criteria":["Existing content is one"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["Existing content is one"],"paths":["game.txt"]}
             }),
         ),
         ScriptedTurn::text("Verified existing content"),
@@ -1414,7 +1414,7 @@ fn failing_check(n: usize) -> ScriptedTurn {
         "process.run",
         json!({
             "argv":["/bin/sh","-c",format!("printf 'TypeError: g.board is undefined\\n' >&2; exit 1 # attempt {n}")],
-            "verification":{"criteria":[format!("Check the state mismatch, attempt {n}")],"paths":["game.txt"]}
+            "verification":{"kind":"behavior","criteria":[format!("Check the state mismatch, attempt {n}")],"paths":["game.txt"]}
         }),
     )
 }
@@ -1591,15 +1591,15 @@ async fn new_diagnostic_results_restore_reads_without_requiring_file_changes() {
         turns.extend([
             call("process.run",json!({
                 "argv":["/bin/sh","-c",format!("printf 'Different diagnostic {n}\\n' >&2; exit 1")],
-                "verification":{"criteria":["Inspect the failure"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["Inspect the failure"],"paths":["game.txt"]}
             })),
             read("game.txt"),read("game.txt"),
         ]);
     }
     turns.extend([
-        // The public schema permits a legacy check without kind. Its explicit
-        // replacement must be honored once that verification succeeds.
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"replaces":"$unresolved-check","criteria":["Existing state is valid"],"paths":["game.txt"]}})),
+        // A declared behavioral check can replace the failed check once it
+        // succeeds; untyped legacy commands are diagnostic only.
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"kind":"behavior","replaces":"$unresolved-check","criteria":["Existing state is valid"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified existing state"),
     ]);
     let (engine, session, _) = fixture(turns, dir.path(), false).await;
@@ -1664,9 +1664,9 @@ async fn fresh_repeated_reads_restore_content_then_recover_to_verified_completio
         call("files.write",json!({"path":"game.txt","content":"overwrite"})),
         edit("one","two"),
         // Review the first recovery increment; its concrete failure permits repair.
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"kind":"behavior","criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
         read("game.txt"), read("game.txt"), edit("two","three"),
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"kind":"behavior","criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified final content"),
     ],dir.path(),false).await;
     let run = session

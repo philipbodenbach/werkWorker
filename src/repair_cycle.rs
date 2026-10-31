@@ -206,7 +206,7 @@ mod tests {
         receipt(
             index,
             "process.run",
-            json!({"argv":[program],"verification":{"criteria":["Required behavior"],"paths":["app.txt"]}}),
+            json!({"argv":[program],"verification":{"kind":"behavior","criteria":["Required behavior"],"paths":["app.txt"]}}),
             json!({"exit_code":if passed {0} else {1},"stderr":format!("diagnostic {index}"),"workspace_changed":false,
                 "verification":{"passed":passed,"files":{"app.txt":hash(revision)}}}),
         )
@@ -351,6 +351,52 @@ mod tests {
             cycle.is_none(),
             "passing correction left obligation: {:?}",
             cycle.map(|c| c.observation(&run))
+        );
+    }
+
+    #[test]
+    fn historical_untyped_process_success_cannot_replace_a_failed_browser_check() {
+        let mut run = run();
+        run.invocations.push(receipt(0, "browser.check",
+            json!({"path":"index.html","actions":[{"type":"click","selector":"#next"}],"verification":{"criteria":["Next advances"],"paths":["index.html"]}}),
+            json!({"passed":false,"exit_code":1,"errors":["index.html:4:1: SyntaxError: Unexpected token 'const'"],"verification":{"passed":false,"files":{"index.html":"v1"}}})));
+        run.invocations.push(receipt(1, "process.run",
+            json!({"argv":["python3","-c","s=open('/workspace/index.html').read();print(repr(s[:220]))"],"verification":{"replaces":"inv_0","criteria":["Inspect source"],"paths":["index.html"]}}),
+            // Old saved receipts may incorrectly claim this inspection passed.
+            json!({"exit_code":0,"verification":{"passed":true,"files":{"index.html":"v1"}}})));
+        let restored: Run = serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+        let cycle = latest(&restored, &BTreeMap::new()).unwrap();
+        assert_eq!(cycle.source_invocation, "inv_0");
+        assert!(cycle.last_failure.contains("index.html:4:1"));
+        let mut corrected = run.invocations[0].clone();
+        corrected.invocation_id = "corrected".into();
+        corrected.message_index = 2;
+        corrected.result = Some(ToolResult::ok(
+            json!({"passed":true,"exit_code":0,"verification":{"passed":true,"files":{"index.html":"v2"}}}),
+        ));
+        run.invocations.push(corrected);
+        assert!(latest(&run, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    #[ignore = "read-only replay of the source-inventory incident; no model or workspace execution"]
+    fn saved_source_inventory_leaves_the_real_browser_failure_open() {
+        let run: Run = serde_json::from_slice(
+            &std::fs::read(std::env::var("WW_BROWSER_INSPECTION_REPLAY").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let last = run.invocations.last().unwrap();
+        assert_eq!(last.call.name, "process.run");
+        let data = &last.result.as_ref().unwrap().data;
+        assert_eq!(data["verification"]["passed"], true);
+        assert!(crate::completion::verification_rejection(&last.call.arguments, data).is_some());
+        let cycle = latest(&run, &BTreeMap::new()).unwrap();
+        assert_eq!(cycle.argv["tool"], "browser.check");
+        assert!(cycle.last_failure.contains("Unexpected token 'const'"));
+        assert!(cycle.rounds.len() >= stop_limit(&run));
+        eprintln!(
+            "Saved run: source inspection rejected; real browser failure still open after {} decisions",
+            cycle.rounds.len()
         );
     }
 

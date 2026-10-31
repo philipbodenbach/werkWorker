@@ -276,6 +276,85 @@ async fn real_browser_exercises_input_catches_failures_and_returns_screenshot() 
 }
 
 #[tokio::test]
+async fn source_inventory_does_not_emit_a_passing_verification() {
+    if std::env::var_os("REQUIRE_SANDBOX").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<script>const STEPS = [ const BROKEN = 1;</script>",
+    )
+    .unwrap();
+    let ctx = context(dir.path()).await;
+    let result = call(&ctx, "process.run", json!({
+        "argv":["python3","-c","import re;s=open('/workspace/index.html',encoding='utf-8').read();print(repr(s[:220]))"],
+        "verification":{"criteria":["Inspect the STEPS source"],"paths":["index.html"]}
+    })).await.unwrap();
+    assert_eq!(result.data["exit_code"], 0);
+    assert!(result.data["stdout"].as_str().unwrap().contains("BROKEN"));
+    assert!(
+        result.data["verification_rejected"]
+            .as_str()
+            .unwrap()
+            .contains("no verification.kind")
+    );
+    assert!(result.data.get("verification").is_none(), "{}", result.data);
+}
+
+#[tokio::test]
+async fn browser_startup_syntax_error_reports_location_before_interaction() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let args = json!({"path":"index.html","screenshot":false,
+        "actions":[{"type":"click","selector":"#next"},{"type":"expect_text","selector":"#next","text":"Model"}],
+        "verification":{"criteria":["Next advances to Model"],"paths":["index.html"]}});
+    // The missing button is a consequence of startup failure, not a bad selector.
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<!doctype html><body>Loop\n<script>\nconst STEPS = [\nconst broken = 1;\n</script>",
+    )
+    .unwrap();
+    let failed = call(&ctx, "browser.check", args.clone()).await.unwrap();
+    assert_eq!(failed.data["passed"], false, "{}", failed.data);
+    assert_eq!(failed.data["failure_phase"], "startup");
+    assert_eq!(failed.data["actions"], json!([]));
+    assert!(failed.data.get("failed_action").is_none());
+    let error = &failed.data["page_errors"][0];
+    assert_eq!(error["path"], "index.html", "{}", failed.data);
+    assert_eq!(error["line"], 4);
+    assert_eq!(error["column"], 1);
+    assert_eq!(error["source_line"], "const broken = 1;");
+    assert!(failed.data["errors"].to_string().contains("index.html:4:1"));
+    assert!(!failed.data["errors"].to_string().contains("Timeout"));
+    // Check external-script locations, too; HTML line numbers cannot stand in.
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<body>Loop<script src='app.js'></script>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "// Broken\nconst STEPS = [\nconst broken = 1;",
+    )
+    .unwrap();
+    let external = call(&ctx, "browser.check", args.clone()).await.unwrap();
+    assert_eq!(
+        external.data["page_errors"][0]["path"], "app.js",
+        "{}",
+        external.data
+    );
+    assert_eq!(external.data["page_errors"][0]["line"], 3);
+    std::fs::write(dir.path().join("app.js"), "document.body.innerHTML='<button id=next>Task</button>';document.getElementById('next').onclick=e=>e.target.textContent='Model';").unwrap();
+    let corrected = call(&ctx, "browser.check", args).await.unwrap();
+    assert_eq!(corrected.data["passed"], true, "{}", corrected.data);
+    assert!(corrected.data.get("page_errors").is_none());
+}
+
+#[tokio::test]
 async fn browser_failure_identifies_wrong_tab_expectation_and_missing_selector() {
     if std::env::var_os("REQUIRE_BROWSER").is_none() {
         return;

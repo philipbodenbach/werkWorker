@@ -37,7 +37,7 @@ fn verify() -> ScriptedTurn {
         "process.run",
         json!({
             "argv":["/bin/sh","-c", ". ./counter.sh; actual=$(increment 0); if [ \"$actual\" != 1 ]; then printf '%s\\n' 'increment(0) must be 1' >&2; exit 1; fi"],
-            "verification":{"criteria":["Public increment advances the count"],"paths":["counter.sh"]}
+            "verification":{"kind":"behavior","criteria":["Public increment advances the count"],"paths":["counter.sh"]}
         }),
     )
 }
@@ -504,7 +504,7 @@ async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit
                 call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":before})),
                 call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":after})),
                 call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],
-                    "verification":{"criteria":["Syntax is valid"],"paths":["counter.sh"]}})),
+                    "verification":{"kind":"behavior","criteria":["Syntax is valid"],"paths":["counter.sh"]}})),
                 verify(),
             ]);
         }
@@ -640,8 +640,8 @@ async fn repeated_small_edits_cannot_postpone_a_behavioral_check() {
     );
     turns.push(call("files.edit", json!({"path":"counter.sh","expected_hash":hash(with_default),"old":with_default,"new":final_code})));
     // Metadata cannot turn a successful source dump into a behavioral check.
-    turns.push(call("process.run", json!({"argv":["cat","counter.sh"],"verification":{"criteria":["Read the public increment function"],"paths":["counter.sh"]}})));
-    turns.push(call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],"verification":{"criteria":["Syntax is valid"],"paths":["counter.sh"]}})));
+    turns.push(call("process.run", json!({"argv":["cat","counter.sh"],"verification":{"kind":"behavior","criteria":["Read the public increment function"],"paths":["counter.sh"]}})));
+    turns.push(call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],"verification":{"kind":"behavior","criteria":["Syntax is valid"],"paths":["counter.sh"]}})));
     turns.push(ScriptedTurn::text("The source was read successfully; done"));
     turns.extend([verify(), ScriptedTurn::text("Implemented and verified")]);
     let (engine, session, provider) = fixture(turns, dir.path()).await;
@@ -998,7 +998,7 @@ async fn passing_receipt_without_recovery_action_does_not_reopen_exploration() {
     turns.extend((0..4).map(|_| call("files.read", json!({"path":"counter.sh"}))));
     turns.extend([
         // A generic process can exit zero without establishing the task's behavior.
-        call("process.run", json!({"argv":["/bin/sh","-c","printf 'looked at the source\\n'"],"verification":{"criteria":["Claimed check"],"paths":["counter.sh"]}})),
+        call("process.run", json!({"argv":["/bin/sh","-c","printf 'looked at the source\\n'"],"verification":{"kind":"behavior","criteria":["Claimed check"],"paths":["counter.sh"]}})),
         call("files.edit", json!({"path":"counter.sh","expected_hash":hash(initial),"old":initial,"new":repaired})),
         verify(), ScriptedTurn::text("Increment verified"),
     ]);

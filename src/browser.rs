@@ -97,15 +97,15 @@ pub(crate) async fn execute(args: Value, ctx: &ToolContext) -> Result<ToolResult
         ));
     }
     let input = json!({"path":path,"actions":args["actions"],"screenshot":args["screenshot"].as_bool().unwrap_or(true)});
-    let argv = vec![
-        "/usr/bin/python3".into(),
-        "-c".into(),
-        include_str!("../scripts/browser_check.py").into(),
-        input.to_string(),
-    ];
+    let argv = vec!["/usr/bin/python3".into(), "-".into(), input.to_string()];
     let out = ctx
         .sandbox
-        .run_browser(&ctx.workspace, &argv, ctx.cancel.clone())
+        .run_browser(
+            &ctx.workspace,
+            &argv,
+            ctx.cancel.clone(),
+            include_str!("../scripts/browser_check.py"),
+        )
         .await?;
     if out.exit_code != Some(0) || out.timed_out || out.cancelled {
         return Err(WorkerError::new(

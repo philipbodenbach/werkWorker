@@ -77,7 +77,7 @@ pub(crate) fn check_tools(
             {
                 required.push(json!("verification"));
             }
-            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
+            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification.kind=behavior, planned criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
         } else if matches!(
             tool.name.as_str(),
             "files.edit" | "files.insert" | "files.write"
@@ -440,6 +440,8 @@ mod tests {
         // A real execution receipt still advances the same state normally.
         run.invocations.last_mut().unwrap().call.arguments["argv"] =
             json!(["node", "game.test.js"]);
+        run.invocations.last_mut().unwrap().call.arguments["verification"]["kind"] =
+            json!("behavior");
         assert_eq!(
             observation(&run, &BTreeMap::new())["suggested_phase"],
             "review"

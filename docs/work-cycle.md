@@ -632,3 +632,51 @@ with native Windows Python 3.10; the complete Windows Python suite requires
 3.11 or later for `tomllib` (GitHub uses 3.12). The saved-run replay and tests
 use no real model or GPU. No remote workflow was rerun and no installed command
 was replaced; live convergence and system stability remain unverified.
+
+## Plan-driven build and acceptance loop (2026-10-31)
+
+The coding skill now gives a task- and model-independent working algorithm.
+The request and supplied references determine the acceptance criteria. A profile
+provides default quality rules and available tools, not a fixed substitute task.
+For mixed work, planning, code, content interpretation and visual comparison
+belong to the same plan; they do not require switching between separate loops.
+
+1. Derive observable outcomes from the request and reference material. In each
+   plan step, state the criterion, its check method and later its evidence.
+   Preserve delivery constraints and user corrections.
+2. Inspect the current work and exposed capabilities once. Choose independent
+   reads/reviews for available concurrency; keep writes and their checks ordered.
+3. Build a small complete implementation of the main flow. For visual work,
+   reproduce reference composition and proportions before optional details.
+4. Test the actual entry point. Compare an early screenshot with the supplied
+   visual reference; inspect content meaning separately from interaction tests.
+   A screenshot's existence or a passing DOM assertion proves no visual match.
+5. Classify each failure as implementation, check, invocation or environment.
+   Use the recorded failure location/state, make one justified correction and
+   rerun the affected check. Fix broken checks through explicit replacement.
+6. Record evidence and current revisions against the planned criteria. Recheck
+   affected criteria after changes; avoid repeating completed checks without a
+   concrete gap. Deliver after acceptance, reporting any unverified criterion.
+
+This uses the existing plan descriptions and checkpoint; it does not add a new
+criterion-ID schema or claim automatic semantic validation of image/content
+judgments. Runtime guards still independently check plan status, actual tool
+outcomes, outstanding failures and current file hashes. The explicit process
+check contract is documented in [harness](harness.md#coding-acceptance-and-continuous-work).
+
+### Capabilities available through Worker and Werk
+
+| Capability already implemented | Use in this algorithm | Boundary |
+| --- | --- | --- |
+| Model-scoped limits and inference capacity via Werk Protocol | Budget complete edits and admit independent helpers only within verified slots | `parallel_tool_calls` alone does not establish inference capacity or throughput |
+| Admission/native token counts, image reserves and compaction | Keep the criteria, references and current evidence usable within the actual context | Do not invent larger limits or erase the original task during recovery |
+| Configured subagent model on the same Werk connection | Assign a bounded independent content/acceptance review while the parent builds | Children start with supplied context, not the parent's images/history; keep visual comparison with the parent unless the helper can explicitly access both images |
+| Local `browser.check` and optional persistent browser tools | Validate the actual artifact and inspect its rendered state | Shell-installed Chromium is independent; persistent browser observation alone is not a behavioral receipt |
+| Advertised reasoning tiers and preserved user settings | Honor the selected model's supported settings | Do not silently turn reasoning on, change models or assume it repairs runtime faults |
+
+These mechanisms are grounded in [Worker's delegation contract](subagents.md),
+[context admission](context.md), [browser tools](authoring.md) and the local
+Werk Protocol implementation. DSH's separation of the event-driven loop and tool
+executor, and little-coder's bounded corrective feedback informed the design;
+neither requires a second provider-specific runtime. See the primary-source
+links in [harness](harness.md#coding-acceptance-and-continuous-work).

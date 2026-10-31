@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sys
 import threading
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -54,6 +54,40 @@ def target_state(page, selector):
     return state
 
 
+def record_exception(event):
+    # CDP carries locations for parse errors even when pageerror has no stack.
+    errors = result.setdefault('page_errors', [])
+    if len(errors) >= 2:
+        return
+    details = event['exceptionDetails']
+    exception = details.get('exception', {})
+    diagnostic = {'message': exception.get('description', details.get('text', 'JavaScript error')).split('\n')[0][:300]}
+    location = details
+    if not location.get('url'):
+        location = next(iter(details.get('stackTrace', {}).get('callFrames', [])), details)
+    url = location.get('url', '')
+    if url.startswith(origin + '/'):
+        path = (root / unquote(urlsplit(url).path).lstrip('/')).resolve()
+        if path.is_relative_to(root):
+            line = location.get('lineNumber', 0) + 1
+            column = location.get('columnNumber', 0) + 1
+            diagnostic.update(path=str(path.relative_to(root))[:240], line=line, column=column)
+            try:
+                with path.open('rb') as source:
+                    lines = source.read(1_048_576).decode('utf-8', errors='replace').splitlines()
+                if 0 < line <= len(lines):
+                    start = max(0, column - 121)
+                    diagnostic['source_line'] = lines[line - 1][start:start + 300]
+                    diagnostic['source_column_start'] = start + 1
+            except OSError:
+                pass
+    errors.append(diagnostic)
+    # Keep the location in the normal errors as well: repair summaries retain it.
+    location_text = f"{diagnostic['path']}:{diagnostic['line']}:{diagnostic['column']}: " if 'path' in diagnostic else ''
+    if len(result['errors']) < 16:
+        result['errors'].append(location_text + diagnostic['message'])
+
+
 try:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=['--disable-gpu', '--disable-dev-shm-usage', '--renderer-process-limit=2', '--num-raster-threads=2'])
@@ -64,6 +98,9 @@ try:
         page = context.new_page()
         page.set_default_timeout(3000)
         page.on('pageerror', lambda error: result['errors'].append(str(error)[:1000]) if len(result['errors']) < 16 else None)
+        diagnostics = context.new_cdp_session(page)
+        diagnostics.on('Runtime.exceptionThrown', record_exception)
+        diagnostics.send('Runtime.enable')
         def record_console(msg):
             if len(result['console']) < 12:
                 result['console'].append({'type': msg.type, 'text': msg.text[:500]})
@@ -77,6 +114,9 @@ try:
             response = page.goto(origin + '/' + quote(args['path'], safe='/'), wait_until='load', timeout=10000)
             if response is None or response.status >= 400:
                 raise RuntimeError('Local page failed to load')
+            if result['errors']:
+                result['failure_phase'] = 'startup'
+                raise RuntimeError('Page startup failed; actions were not run. Fix the reported page error before checking interactions.')
             for index, action in enumerate(args.get('actions', []), start=1):
                 current_action = action_details(action, index)
                 kind = action['type']

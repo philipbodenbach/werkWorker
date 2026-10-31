@@ -1358,13 +1358,13 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
         if checked {
             turns.push(tool_turn("check-version", "process.run", json!({
                 "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = incomplete"],
-                "verification":{"criteria":["The initial fixture state is persisted"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["The initial fixture state is persisted"],"paths":["game.txt"]}
             })));
             // Review of a passing first candidate cannot replace a later failed
             // acceptance check or turn the remaining task into a success.
             turns.push(tool_turn("remaining-check", "process.run", json!({
                 "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = complete"],
-                "verification":{"criteria":["The complete fixture state is persisted"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["The complete fixture state is persisted"],"paths":["game.txt"]}
             })));
         }
         turns.push(tool_turn("finished-plan", "task.plan", finished_plan));

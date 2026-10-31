@@ -21,7 +21,7 @@ fn plan(status: &str) -> ScriptedTurn {
 fn verify(expected: &str) -> ScriptedTurn {
     call(
         "process.run",
-        json!({"argv":["/bin/sh","-c",format!("test \"$(cat game.txt)\" = {expected}")],"verification":{"criteria":["Fixture file matches expected state"],"paths":["game.txt"]}}),
+        json!({"argv":["/bin/sh","-c",format!("test \"$(cat game.txt)\" = {expected}")],"verification":{"kind":"behavior","criteria":["Fixture file matches expected state"],"paths":["game.txt"]}}),
     )
 }
 async fn engine(turns: Vec<ScriptedTurn>, dir: &std::path::Path) -> (WorkerEngine, SessionHandle) {
@@ -265,7 +265,7 @@ async fn truncated_verification_keeps_durable_evidence_and_current_plan_in_conte
     let (engine,session)=engine(vec![
         plan("completed"),
         call("files.write",json!({"path":"./game.txt","content":"verified"})),
-        call("process.run",json!({"argv":["/bin/sh","-c","test $(cat game.txt) = verified && seq 1 4000"],"verification":{"criteria":["Fixture content is verified"],"paths":["/workspace/game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test $(cat game.txt) = verified && seq 1 4000"],"verification":{"kind":"behavior","criteria":["Fixture content is verified"],"paths":["/workspace/game.txt"]}})),
         ScriptedTurn::text("Verified"),
     ],dir.path()).await;
     let run = session
@@ -330,7 +330,7 @@ async fn a_check_that_changes_its_own_source_is_not_accepted() {
     let dir = tempfile::tempdir().unwrap();
     let (engine,session)=engine(vec![
         call("files.write",json!({"path":"game.txt","content":"stub"})),
-        call("process.run",json!({"argv":["/bin/sh","-c","printf repaired > game.txt"],"verification":{"criteria":["State is correct"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","printf repaired > game.txt"],"verification":{"kind":"behavior","criteria":["State is correct"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Done"),verify("repaired"),ScriptedTurn::text("Verified after repair"),
     ],dir.path()).await;
     let run = session

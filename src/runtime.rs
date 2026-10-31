@@ -539,6 +539,7 @@ impl Sandbox {
         workspace: &Workspace,
         argv: &[String],
         cancel: CancellationToken,
+        script: &str,
     ) -> Result<ProcessOutput> {
         // Bound expensive Chromium launches across main/child engines in this
         // process. Waiting is cancellable and consumes no inference request.
@@ -547,8 +548,17 @@ impl Sandbox {
             permit = BROWSER.lock() => permit,
             _ = cancel.cancelled() => return Err(WorkerError::new("cancelled", "Browser wait cancelled")),
         };
-        self.run_observed(workspace, false, argv, ".", cancel, None, true, None)
-            .await
+        self.run_observed(
+            workspace,
+            false,
+            argv,
+            ".",
+            cancel,
+            None,
+            true,
+            Some(script),
+        )
+        .await
     }
     /// Browser broker uses an empty workspace and private network namespace.
     #[cfg(target_os = "linux")]

@@ -207,7 +207,7 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed literal argv, no implicit shell or network. For scripts use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind: behavior (real assertions through entry points), syntax, or inspection. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. /workspace persists; /tmp is fresh per call.",
+                "Sandboxed literal argv, no implicit shell or network. For scripts use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. /workspace persists; /tmp is fresh per call.",
                 object(
                     json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"stdin":{"type":"string","maxLength":32768,"description":"Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files."},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
@@ -270,7 +270,7 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Track outcome milestones for multi-step work. Keep the current milestone in_progress; mark completed only from evidence. For coding, build a runnable version, review it, then repair concrete gaps. Save checkpoint at phase changes so the next action and interface decisions survive compaction. Replace the current plan, including its checkpoint; do not replan after every read.",
+                "Derive outcomes and acceptance criteria from the task and references. State each criterion, check method and evidence in step descriptions; complete only when satisfied. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps. Save checkpoint at phase changes; replace the current plan and checkpoint, not after every read.",
                 object(
                     json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}},
                         "checkpoint":{"type":"object","properties":{
@@ -469,7 +469,7 @@ impl Tool for Builtin {
                         if let Some(reason) = crate::completion::verification_rejection(&args, &result) {
                             result["verification_rejected"] = json!(reason);
                         } else {
-                            result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                            result["verification"] = json!({"kind":args["verification"]["kind"],"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
                         }
                     }
                     result

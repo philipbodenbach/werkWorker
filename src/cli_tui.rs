@@ -21,11 +21,21 @@ use werk_worker::*;
 
 fn tool_result_label(result: &ToolResult) -> String {
     let label = if result.status == Outcome::Succeeded
+        && result.data["verification_rejected"].is_string()
+    {
+        if result.data["exit_code"] == 0 {
+            "Diagnostic completed".into()
+        } else {
+            "Diagnostic failed".into()
+        }
+    } else if result.status == Outcome::Succeeded
         && (result.data["passed"] == false || result.data["verification"]["passed"] == false)
     {
         "Check failed".into()
     } else if result.status == Outcome::Succeeded
-        && (result.data["passed"] == true || result.data["verification"]["passed"] == true)
+        && (result.data["passed"] == true
+            || result.data["verification"]["passed"] == true
+                && result.data["verification"]["kind"] == "behavior")
     {
         "Check passed".into()
     } else {
@@ -2923,8 +2933,20 @@ mod tests {
                 "Check passed",
             ),
             (
-                serde_json::json!({"verification":{"passed":true}}),
+                serde_json::json!({"verification":{"kind":"behavior","passed":true}}),
                 "Check passed",
+            ),
+            (
+                serde_json::json!({"verification":{"passed":true}}),
+                "Succeeded",
+            ),
+            (
+                serde_json::json!({"exit_code":0,"verification_rejected":"No kind"}),
+                "Diagnostic completed",
+            ),
+            (
+                serde_json::json!({"exit_code":1,"verification_rejected":"Inspection"}),
+                "Diagnostic failed",
             ),
             (serde_json::json!({"path":"app.html"}), "Succeeded"),
         ] {

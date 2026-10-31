@@ -332,10 +332,18 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
         source_hash: "fixture".into(),
         summary: "Earlier reads omitted".into(),
     });
+    // Match the runtime's profile/policy selection. Unrelated catalogue growth
+    // must not consume this fixture's context and evict the restored anchor.
+    let tools = engine
+        .tools()
+        .into_iter()
+        .filter(|t| saved.profile.tools.contains(&t.name) && saved.policy.can_request(t))
+        .collect();
     let (after, _) = DefaultContextBuilder
-        .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
+        .build(&saved, saved.run(&run.id).unwrap(), tools)
         .await
         .unwrap();
+    assert_eq!(after.tools.len(), saved.profile.tools.len());
     assert!(after.tools.iter().any(|t| t.name == "files.read"));
     assert!(after.tools.iter().any(|t| t.name == "files.edit"));
     let pages: Vec<_> = after

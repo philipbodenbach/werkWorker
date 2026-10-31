@@ -91,6 +91,11 @@ pub trait ModelProvider: Send + Sync {
     fn request_fingerprint(&self, request: &ModelRequest) -> String {
         fingerprint(&(self.identity(), request))
     }
+    /// Optional server admission plan, possibly an explicitly labeled estimate.
+    /// Kept separate from exact native counts; generation still revalidates.
+    async fn admission_input_tokens(&self, _request: &ModelRequest) -> Result<Option<usize>> {
+        Ok(None)
+    }
     /// Exact native input count when supported; None keeps conservative fallback.
     async fn count_input_tokens(&self, _request: &ModelRequest) -> Result<Option<usize>> {
         Ok(None)
@@ -102,9 +107,12 @@ pub trait ModelProvider: Send + Sync {
     }
     /// Called only after a complete, validated response, never partial streams.
     fn observe_completed_usage(&self, _request: &ModelRequest, _usage: &Usage) {}
-    /// Admission estimate: prefer an exact count, then native text/tool tokens
-    /// plus an image reserve. Never advertise the latter as an exact count.
+    /// Prefer the server admission plan, then exact native counts or native
+    /// text/tool tokens plus an image reserve. Keep estimates labeled as such.
     async fn estimate_input_tokens(&self, request: &ModelRequest) -> Result<usize> {
+        if let Some(count) = self.admission_input_tokens(request).await? {
+            return Ok(count);
+        }
         if let Some(count) = self.count_input_tokens(request).await? {
             return Ok(count);
         }
@@ -142,6 +150,13 @@ pub trait ModelProvider: Send + Sync {
     }
     /// Optional, throttled refresh of model capacity. No generation or loading.
     async fn refresh_concurrency(&self) {}
+    /// Bounded cleanup allowance after a run deadline interrupts a dispatched
+    /// request. Keep polling the owned future to confirm remote completion;
+    /// never use this allowance to dispatch another request or execute tools.
+    /// Providers without remote work retain immediate deadline cancellation.
+    fn deadline_drain_timeout(&self) -> Duration {
+        Duration::ZERO
+    }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +510,9 @@ pub struct WerkConfig {
     pub capabilities: ModelCapabilities,
     pub stream: bool,
     pub timeout_ms: u64,
+    /// Cleanup only, separate from the run budget and transport idle timeout.
+    #[serde(default = "default_deadline_drain_timeout_ms")]
+    pub deadline_drain_timeout_ms: u64,
     pub max_body_bytes: usize,
     pub options: BTreeMap<String, Value>,
 }
@@ -507,10 +525,15 @@ impl WerkConfig {
             capabilities: ModelCapabilities::default(),
             stream: true,
             timeout_ms: 120_000,
+            deadline_drain_timeout_ms: default_deadline_drain_timeout_ms(),
             max_body_bytes: 8 * 1024 * 1024,
             options: BTreeMap::new(),
         }
     }
+}
+
+fn default_deadline_drain_timeout_ms() -> u64 {
+    600_000
 }
 
 pub(crate) fn validate_reasoning_effort(value: &Value) -> Result<()> {
@@ -571,6 +594,7 @@ impl WerkClient {
         }
         if config.timeout_ms == 0
             || config.timeout_ms > 600_000
+            || config.deadline_drain_timeout_ms > 600_000
             || config.max_body_bytes == 0
             || config.max_body_bytes > 16 * 1024 * 1024
         {
@@ -634,7 +658,7 @@ impl WerkClient {
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
         self.send_chat(request.timeout(self.timeout)).await
     }
-    // Streaming inference is bounded by inactivity and the engine's run deadline,
+    // Streaming inference is bounded by inactivity and the engine's run/cleanup deadlines,
     // not an HTTP total-duration timer that discards a healthy long generation.
     async fn send_chat(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
         request.send().await.map_err(|e| {
@@ -844,6 +868,8 @@ pub struct WerkProvider {
     output_limit: Option<usize>,
     pub context_limit_source: String,
     token_counts: Mutex<BTreeMap<String, usize>>,
+    admission_counts: Mutex<BTreeMap<String, (usize, bool)>>,
+    admission_unavailable: std::sync::atomic::AtomicBool,
     token_count_unavailable: std::sync::atomic::AtomicBool,
     image_token_count_unavailable: std::sync::atomic::AtomicBool,
     image_estimates: Mutex<BTreeMap<String, usize>>,
@@ -1137,6 +1163,8 @@ impl WerkProvider {
             output_limit: generation_limits.as_ref().and_then(|l| l.max_output_tokens),
             context_limit_source,
             token_counts: Mutex::new(BTreeMap::new()),
+            admission_counts: Mutex::new(BTreeMap::new()),
+            admission_unavailable: std::sync::atomic::AtomicBool::new(false),
             token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             image_token_count_unavailable: std::sync::atomic::AtomicBool::new(false),
             image_estimates: Mutex::new(BTreeMap::new()),
@@ -1424,6 +1452,18 @@ impl ModelProvider for WerkProvider {
             .copied()
     }
     fn input_token_source(&self, request: &ModelRequest) -> &'static str {
+        if let Some((_, native)) = self
+            .admission_counts
+            .lock()
+            .unwrap()
+            .get(&fingerprint(request))
+        {
+            return if *native {
+                "native_exact"
+            } else {
+                "server_admission_estimate"
+            };
+        }
         if self.cached_input_tokens(request).is_some() {
             return "native_exact";
         }
@@ -1450,6 +1490,98 @@ impl ModelProvider for WerkProvider {
             return "provider_unspecified";
         }
         "wire_bytes_estimate"
+    }
+    async fn admission_input_tokens(&self, request: &ModelRequest) -> Result<Option<usize>> {
+        self.check_inference_available()?;
+        if self
+            .admission_unavailable
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || !self.runtime_capabilities.iter().any(|c| {
+                c.id == "api.chat.admission"
+                    && c.status == CapabilityStatus::Supported
+                    && c.operations.iter().any(|op| op == "admission")
+            })
+        {
+            return Ok(None);
+        }
+        let key = fingerprint(request);
+        if let Some((count, _)) = self.admission_counts.lock().unwrap().get(&key) {
+            return Ok(Some(*count));
+        }
+        let mut body = self.chat_body(request)?;
+        body["stream"] = json!(false);
+        body.as_object_mut().unwrap().remove("stream_options");
+        let mut retries = 0;
+        let value = loop {
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client.control_request(
+                    reqwest::Method::POST,
+                    "/werk/v1/chat/admission",
+                    Some(body.clone()),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err(WorkerError::transient("admission_timeout")));
+            match result {
+                Ok(value) => break value,
+                Err(error) if error.code == "werk_protocol_unsupported" => {
+                    self.admission_unavailable
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(None);
+                }
+                Err(error) if error.retryable && retries < 2 => {
+                    retries += 1;
+                    tokio::time::sleep(Duration::from_millis(
+                        error.retry_after_ms.unwrap_or(100 * retries),
+                    ))
+                    .await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let valid_count = |v: &Value| {
+            v.as_u64()
+                .filter(|n| *n > 0 && *n <= 2_000_000)
+                .map(|n| n as usize)
+        };
+        let count = valid_count(&value["input_tokens"])
+            .ok_or_else(|| WorkerError::new("invalid_envelope", "Invalid admission token count"))?;
+        if value["model"].as_str() != Some(&self.config.model)
+            || value["max_output_tokens"].as_u64() != Some(request.max_output_tokens as u64)
+            || !matches!(
+                value["token_count_method"].as_str(),
+                Some("native" | "estimate")
+            )
+        {
+            return Err(WorkerError::new(
+                "invalid_envelope",
+                "Admission response does not match this model/request or count method",
+            ));
+        }
+        if !value["context_tokens"].is_null() {
+            let context = valid_count(&value["context_tokens"])
+                .filter(|n| *n > 512)
+                .ok_or_else(|| {
+                    WorkerError::new("invalid_envelope", "Invalid admission context limit")
+                })?;
+            self.context_limit
+                .fetch_min(context, std::sync::atomic::Ordering::SeqCst);
+        }
+        let native = value["token_count_method"] == "native";
+        if native {
+            let mut exact = self.token_counts.lock().unwrap();
+            if exact.len() >= 64 {
+                exact.clear();
+            }
+            exact.insert(key.clone(), count);
+        }
+        let mut cache = self.admission_counts.lock().unwrap();
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(key, (count, native));
+        Ok(Some(count))
     }
     async fn count_input_tokens(&self, request: &ModelRequest) -> Result<Option<usize>> {
         self.check_inference_available()?;
@@ -1523,6 +1655,9 @@ impl ModelProvider for WerkProvider {
         cache.insert(fingerprint(request), count);
         Ok(Some(count))
     }
+    fn deadline_drain_timeout(&self) -> Duration {
+        Duration::from_millis(self.config.deadline_drain_timeout_ms)
+    }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         self.check_inference_available()?;
         if self
@@ -1534,11 +1669,11 @@ impl ModelProvider for WerkProvider {
                 "Request exceeds the model/server output ceiling",
             ));
         }
+        // Admission may report a smaller live limit than initial discovery.
+        let input_tokens = self.estimate_input_tokens(&request).await?;
         let limit = self.capabilities().context_tokens.ok_or_else(|| WorkerError::new("context_limit_unknown", "Set capabilities.context_tokens to the server's per-request context limit; discovery could not establish it"))?;
         if request.max_output_tokens == 0
-            || self
-                .estimate_input_tokens(&request)
-                .await?
+            || input_tokens
                 .saturating_add(request.max_output_tokens)
                 .saturating_add(512)
                 > limit
@@ -1615,9 +1750,22 @@ impl ModelProvider for WerkProvider {
                             ));
                         }
                     }
+                    let detail = |field: &str| {
+                        value["error"]
+                            .get(field)
+                            .or_else(|| value["error"]["details"].get(field))
+                    };
+                    let input = detail("prompt_tokens").and_then(Value::as_u64);
+                    let output = detail("max_tokens").and_then(Value::as_u64);
+                    let method = detail("token_count_method")
+                        .and_then(Value::as_str)
+                        .filter(|m| matches!(*m, "native" | "estimate"))
+                        .unwrap_or("unknown");
                     return Err(WorkerError::new(
                         "context_overflow",
-                        "Server rejected the context; no smaller verified limit was supplied",
+                        format!(
+                            "Server rejected context admission: input={input:?}, output={output:?}, context={reported:?}, count_method={method}. Rebuild against the server admission budget; no smaller context limit was reported."
+                        ),
                     ));
                 }
                 if let Ok(value) = serde_json::from_slice::<Value>(&bytes)

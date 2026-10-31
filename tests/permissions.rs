@@ -698,6 +698,134 @@ fn request_mode_never_bypasses_hard_denies_paths_or_read_only_workers() {
 }
 
 #[tokio::test]
+async fn remembered_process_approval_covers_new_commands_and_session_restart() {
+    let sandbox = Sandbox::default();
+    if let Err(error) = sandbox.doctor().await {
+        if std::env::var_os("REQUIRE_SANDBOX").is_some() {
+            panic!("Required real sandbox unavailable: {error}");
+        }
+        eprintln!("SKIP real sandbox: {error}");
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let mut session_id: Option<String> = None;
+    for commands in [["first", "second"], ["after-restart", "another-command"]] {
+        let resumed = session_id.is_some();
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            call("process.run", json!({"argv":["/bin/echo",commands[0]]})),
+            call(
+                "process.run",
+                json!({"argv":["/bin/sh","-c",format!("printf {}", commands[1])],"cwd":"."}),
+            ),
+            ScriptedTurn::text("done"),
+        ]));
+        let engine = WorkerEngine::builder(provider)
+            .store(Arc::new(
+                SqliteStore::open(storage.path().join("session.sqlite"))
+                    .await
+                    .unwrap(),
+            ))
+            .sandbox(sandbox.clone())
+            .harness(werk_worker::harness::HarnessConfig {
+                coding_checks: false,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let session = if let Some(id) = &session_id {
+            engine.open_session(id).await.unwrap()
+        } else {
+            engine
+                .create_session(
+                    AgentProfile::bundled("coding-basic").unwrap(),
+                    workspace.path(),
+                    HostPolicy {
+                        request_approvals: true,
+                        workspace_writable: true,
+                        tool_permissions: [("process.run".into(), policy::ToolPermission::Ask)]
+                            .into(),
+                        ..Default::default()
+                    },
+                    Value::Null,
+                )
+                .await
+                .unwrap()
+        };
+        let run = session
+            .submit("Run the commands", &id("start"), Limits::default(), None)
+            .await
+            .unwrap();
+        if !resumed {
+            let request = approval(&run, 0).await;
+            run.respond_to_approval(
+                &request.request_id,
+                ApprovalDecision::AllowForSession,
+                "remember-process",
+            )
+            .await
+            .unwrap();
+        }
+        let completed = tokio::time::timeout(Duration::from_secs(5), run.wait())
+            .await
+            .expect("Remembered process access must not ask again for a different command")
+            .unwrap();
+        assert_eq!(completed.status, RunStatus::Completed);
+        let completed = run.status().await.unwrap();
+        assert_eq!(completed.invocations.len(), 2);
+        assert_eq!(
+            completed
+                .invocations
+                .iter()
+                .filter(|i| i.approval.is_some())
+                .count(),
+            usize::from(!resumed)
+        );
+        for (invocation, output) in completed.invocations.iter().zip(commands) {
+            let result = invocation.result.as_ref().unwrap();
+            assert_eq!(result.status, Outcome::Succeeded);
+            assert_eq!(result.data["exit_code"], 0);
+            assert_eq!(result.data["stdout"].as_str().unwrap().trim(), output);
+            assert_eq!(invocation.prepared["sandbox"]["network"], false);
+            assert_eq!(invocation.prepared["sandbox"]["host_home"], false);
+        }
+        let mut policy = session.snapshot().await.unwrap().policy;
+        let grant = &policy.remembered_grants[0];
+        assert_eq!(grant.tool, "process.run");
+        assert_eq!(grant.resource, "workspace");
+        assert!(grant.arguments_hash.is_none());
+        let registry = ToolRegistry::builtins().unwrap();
+        let process = registry.get("process.run").unwrap().definition();
+        let args = json!({"argv":["/bin/echo","new arguments"]});
+        assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Allow);
+        assert_eq!(
+            policy.evaluate(
+                &registry.get("process.start").unwrap().definition(),
+                &args,
+                &[]
+            ),
+            PolicyDecision::Ask
+        );
+        let mut changed_version = process.clone();
+        changed_version.version = "2".into();
+        assert_eq!(
+            policy.evaluate(&changed_version, &args, &[]),
+            PolicyDecision::Ask
+        );
+        policy
+            .tool_permissions
+            .insert("process.run".into(), policy::ToolPermission::Deny);
+        assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Deny);
+        policy.tool_permissions.clear();
+        policy.hard_denied_tools.push("process.run".into());
+        assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Deny);
+        session_id = Some(session.id().await);
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn explicit_process_approval_runs_in_the_real_workspace_sandbox() {
     let sandbox = Sandbox::default();
     if let Err(error) = sandbox.doctor().await {

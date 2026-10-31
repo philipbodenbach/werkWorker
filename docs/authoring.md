@@ -35,7 +35,7 @@ Builtin inventory:
 |---|---|
 | Files | files.read, files.list, files.find, files.search, files.read_image, files.write, files.edit, files.insert |
 | Process | process.run, process.start, process.status, process.cancel, process.wait, process.log |
-| Browser | browser.check (optional local runtime) |
+| Browser | browser.check; browser.open, browser.observe, browser.navigate, browser.action, browser.close, browser.evaluate, browser.history, browser.download (optional runtime) |
 | Broker | http.fetch; explicitly registered tickets.create / werk.* |
 | Instructions | skills.list, skills.load |
 | Interaction | interaction.ask, task.plan |
@@ -90,9 +90,23 @@ optional screenshot. A page load or screenshot alone cannot pass verification.
 Declare `verification.criteria` and all relevant source/test `paths` to record
 hash-bound evidence; the HTML entry is always included and later changes invalidate it. Checks prove the supplied
 assertions, not every acceptance criterion automatically.
+Each call starts a fresh page. Split long flows into focused scenarios of at most
+16 actions, including the actions needed to reach each expected state. A failed
+action reports its one-based index, selector/predicate, last successful interaction
+and observed target state; visible control names and page text help diagnose a
+mistaken selector or expectation. Diagnostic observations never rerun the failed
+action or predicate. Correct broken checks with `verification.replaces` instead
+of changing working application behavior to satisfy them. For reference-based UI
+work, compare the screenshot's composition and controls with the supplied image;
+successful text assertions alone do not establish visual fidelity.
+`verification.replaces` can name the original failed invocation or a failed
+replacement in its explicit ancestry. Every link must cover its parent's paths;
+only a successful behavioral check clears the obligation. Unrelated checks and
+inspections do not become aliases for the original failure. The TUI displays
+`Check passed` or `Check failed` separately from tool execution status.
 
 On Linux install the optional host runtime explicitly with
-`sh scripts/install-browser.sh` (system Python with pip and Chromium runtime
+`sh scripts/install-browser.sh chromium` (system Python with pip and Chromium runtime
 libraries required). It installs pinned Playwright plus Chromium under
 `$XDG_DATA_HOME/werk-worker/tools/browser`, or `WERK_WORKER_BROWSER_RUNTIME`.
 Restart WW and use a new/updated coding profile to expose the tool. Discovery
@@ -110,6 +124,150 @@ Screenshots become bounded model images when supported and artifact references
 when an artifact store is configured. A screenshot can aid review but does not
 establish functionality. See tests/agent_tools.rs; set REQUIRE_BROWSER=1 and
 REQUIRE_SANDBOX=1 to require actual Chromium/bubblewrap tests.
+
+## Persistent browser control
+
+`browser.open`, `browser.observe`, `browser.navigate`, `browser.action`,
+`browser.close`, `browser.evaluate`, `browser.history` and `browser.download`
+control a separate headless browser, retaining tabs, cookies and form state
+across tool calls. They are ordinary JSON tools shared by all
+tool-capable model providers, including local Qwen, Llama, DeepSeek and GLM
+models served by Werk. No Qwen-specific SDK or model-name allowlist is involved.
+Text and accessibility snapshots work without vision; `browser.observe` can
+add a screenshot for image-capable models. Model tool-calling quality still
+depends on the selected model and server configuration.
+
+Install with `sh scripts/install-browser.sh` for Chromium, Firefox and WebKit,
+or name the engines to install. Playwright's platform libraries and OpenSSL
+must be available. Existing Linux Chrome, Edge, Brave, Opera and Vivaldi are
+supported through their standard executable locations; they are not downloaded
+or selected from arbitrary model-provided paths. WebKit is the automation
+engine, not an installed Safari app. Native macOS/Windows and existing personal
+browser windows are not currently supported by WW's Linux isolation backend.
+
+On Debian/Ubuntu, `sh scripts/install-browser.sh --local-deps` can download
+missing platform libraries into the runtime's `deps` directory without sudo or
+system package changes. It requires `python3-apt`, follows the pinned Playwright
+dependency plan and extracts repository packages without executing maintainer
+scripts. Other systems can use Playwright's documented platform dependency setup.
+
+Enter **`/browser on`** in the TUI to enable browser mode for the current
+session. `/browser` prints the panel URL; `/browser off` disables subsequent
+agent actions and rejects unresolved browser approvals. The panel's Stop button
+cancels the active run. Enabling this mode adds the browser tools to any profile;
+workspace/process grants alone do not authorize them. Hard denies still apply.
+SDK hosts use `SessionHandle::set_browser_mode`, `browser_panel` and
+`set_browser_rule`; these are host APIs, never model tools.
+Enabling browser mode also exposes `browser.check` with Ask permission so coding
+tasks can test a local HTML entry directly. That isolated local check is separate
+from the persistent HTTP(S) browser panel; it supplies behavioral verification
+without requiring a host development server. Hard denies still apply.
+
+The loopback panel provides website rules for browsing, consequential actions,
+unlabelled coordinate clicks/dragging, downloads, session history and page
+scripts. Each category supports Ask/Allow/Deny on an exact HTTP(S) origin or `*`
+for defaults. All categories initially Ask. After the first page approval,
+ordinary observations, scrolling, non-sensitive input and navigation inside the
+approved scope proceed without repeated prompts. Form submission and other
+buttons/keys ask by default. A site's Allow rule does not grant access to another
+site. Session/project approval choices remember the displayed category and site;
+the panel's rule editor changes session policy only. F5/project save can persist
+those settings through the existing trusted configuration store.
+
+Choose **Take over** to pause the agent between actions. Click the page image,
+enter text in the panel, navigate or select tabs, then **Continue agent**. The
+current action may finish before takeover; manual controls report busy until
+then. Manual input goes directly to the isolated browser and is not added to
+model messages or durable commands. Password, payment and OTP fields reject
+normal model typing, have their values redacted from text/element snapshots and
+are masked in screenshots. Detection uses field type, labels and autocomplete;
+this is not a universal secret detector. Use manual entry for credentials, and
+do not paste them into chat. Script approval is broader: an approved page script
+can read page state, including field values.
+
+`browser.evaluate` displays the exact page JavaScript and requires **Allow once**
+every time, even with Full Access or remembered grants. Scripts can be disabled;
+Allow for session is rejected. `browser.history` reads only this isolated
+session's navigation history. `browser.download` saves an explicitly requested
+URL as a bounded artifact (4 MiB maximum; requires an artifact store), using the
+same scoped network broker. It does not execute files. Uploads are unavailable.
+
+This workflow follows the browser-mode, site-permission and manual-handoff
+approach documented in [Unsloth Browser Use](https://unsloth.ai/docs/basics/browser-use).
+WerkWorker implements it in its own tool and host-permission system; it does not
+require a Qwen or browser extension.
+
+Example calls (the first result supplies the real `browser_id`):
+
+```json
+{"url":"https://example.com","browser":"firefox"}
+{"browser_id":"browser_…","action":"click","target":{"role":"link","name":"More information"}}
+{"browser_id":"browser_…","screenshot":true}
+{"browser_id":"browser_…"}
+```
+
+These are arguments for `browser.open`, `browser.action`, `browser.observe`
+and `browser.close`, respectively. Prefer a fresh `target.ref` from the returned
+`controls` list. Other targets accept a CSS selector, exact accessible role/name,
+or exact label, optionally within an iframe selector. References expire after
+the next snapshot; after manual takeover, observe again before acting.
+Actions also include fill, press, select, hover, scroll, back/forward/reload,
+bounded wait, and new/select/close tab. The result includes stable tab IDs.
+
+For visual tasks such as canvas painting, use `click_at`/`move` with pixel `x,y`
+or `drag` with a `path` of 2–64 points. The viewport is 1024×768; resized model
+screenshots report `scale_x/scale_y` to translate image pixels to that viewport.
+For example, `{"browser_id":"browser_…","action":"drag","path":[{"x":40,"y":320},{"x":80,"y":360},{"x":120,"y":320}],"screenshot":true}`
+draws one reviewed mouse stroke. Every action updates the local panel at
+`viewer_url`, including the last mouse position. The panel is bound to loopback
+and protected by an unguessable path. Host commands additionally require a
+same-origin JSON POST and a custom header. The agent's network broker rejects
+all panel ports even if loopback access was approved. Direct tool integrations
+without a host panel retain a read-only preview. Updates are snapshots after
+actions, not continuous video. Engine shutdown/session deletion closes the panel.
+
+Opening approves exact `allowed_origins` (scheme, host and port); the initial
+URL origin is included automatically. CDN, login and redirect origins must be
+listed explicitly. Host/loopback services additionally need `private_origins`,
+which must be a subset of those approved origins. For example, local development
+can use `{"url":"http://127.0.0.1:3000","private_origins":["http://127.0.0.1:3000"]}`.
+`browser.navigate` and `browser.download` can request another public origin;
+preparation exposes the expanded scope for approval before any I/O. Adding a
+private-origin exception still requires closing and opening a new browser.
+
+All control tools are external writes: loading or observing a page can run
+scripts that change remote data. Browser mode applies the category/site rules;
+without explicit browser mode the existing per-tool approval policy is retained. Prepared approvals show the browser,
+origin scope, current URL, revision and exact action. A changed session revision
+invalidates old approvals. Page contents cannot grant access. Timeout/cancellation
+closes the affected browser and reports uncertain remote effects; never blindly
+repeat a submission. Closing a browser does not undo remote changes.
+
+The browser has an empty workspace/home and no host network. A private proxy
+forwards only approved HTTP(S) requests through Rust's bounded, DNS-pinned broker,
+checking every redirect and validating upstream HTTPS certificates. Cookies stay
+in the isolated browser. No personal profile, inherited proxy, file upload or
+arbitrary host command is exposed. Reviewed JavaScript runs only in the page;
+reviewed downloads stay in the owned artifact store.
+WebSockets, service workers and streaming requests are blocked. Background
+networking outside an approved action is disabled; some live websites require
+these unsupported features. A page snapshot is observation, not behavioral
+verification for coding completion; use `browser.check` for that purpose.
+
+At most four browsers per registry and twelve tabs per browser are allowed.
+Actions have a 50-second bound; requests/bodies and process resources are bounded.
+Persistent browsers have separate host-configurable
+`browser_session_memory_bytes` (2 GiB summed process-tree RSS by default) and
+`browser_session_cpu_seconds` (300 CPU seconds per process) limits; normal
+commands and one-shot `browser.check` keep their existing limits. Browser
+processes use at most two CPUs and 1024 descriptors per process.
+Browser sessions expire after 15 minutes and are not persisted on engine restart.
+Close idle browsers explicitly; engine shutdown and conversation deletion also
+clean them up. To require real cross-engine tests:
+
+```sh
+REQUIRE_BROWSER=1 WW_BROWSER_ENGINES=chromium,firefox,webkit cargo test --test browser_control -- --test-threads=1
+```
 
 Validation on 2026-10-24: 269 Rust tests passed, including real Chromium and
 bubblewrap checks, with three opt-in saved-session replays excluded. Strict

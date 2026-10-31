@@ -38,6 +38,7 @@ pub trait Tool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    pub(crate) browsers: Arc<crate::browser_control::BrowserSessions>,
 }
 impl ToolRegistry {
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
@@ -89,6 +90,8 @@ impl ToolRegistry {
         for name in crate::agents::AGENT_TOOLS {
             registry.register(Arc::new(crate::agents::AgentTool((*name).into())))?;
         }
+        let browsers = registry.browsers.clone();
+        crate::browser_control::register(&mut registry, browsers)?;
         Ok(registry)
     }
 }
@@ -204,9 +207,9 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed argv, no network. To verify code, supply verification with behavioral criteria and all relevant source/test paths. Run real assertions through public entry points; syntax-only checks are insufficient for interactive behavior. A successful check records file hashes; later changes require another check. /workspace persists; /tmp is fresh each call.",
+                "Sandboxed literal argv, no implicit shell or network. For scripts use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. /workspace persists; /tmp is fresh per call.",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"stdin":{"type":"string","maxLength":32768,"description":"Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files."},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
                 ),
             ),
@@ -267,7 +270,7 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Track outcome milestones for multi-step work. Keep the current milestone in_progress; mark completed only from evidence. For coding, build a runnable version, review it, then repair concrete gaps. Save checkpoint at phase changes so the next action and interface decisions survive compaction. Replace the current plan, including its checkpoint; do not replan after every read.",
+                "Derive outcomes and acceptance criteria from the task and references. State each criterion, check method and evidence in step descriptions; complete only when satisfied. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps. Save checkpoint at phase changes; replace the current plan and checkpoint, not after every read.",
                 object(
                     json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}},
                         "checkpoint":{"type":"object","properties":{
@@ -390,6 +393,18 @@ impl Tool for Builtin {
                     json!({"path":args["path"],"before":original,"after":args["content"]});
             }
             "process.run" | "process.start" => {
+                if let Some(issue) = crate::process_input::invocation_issue(&args) {
+                    return Err(WorkerError::new("invalid_process_invocation", issue));
+                }
+                if args["stdin"]
+                    .as_str()
+                    .is_some_and(|input| input.len() > crate::process_input::STDIN_LIMIT)
+                {
+                    return Err(WorkerError::new(
+                        "invalid_stdin",
+                        "Standard input exceeds 32768 bytes; use a workspace script for larger programs",
+                    ));
+                }
                 let cwd = process_cwd(args["cwd"].as_str().unwrap_or("."))?;
                 args["cwd"] = json!(cwd);
                 args["sandbox"] = json!({"backend":"bubblewrap","workspace_writable":ctx.writable,"network":false,"host_home":false,"limits":ctx.sandbox.limits});
@@ -439,14 +454,22 @@ impl Tool for Builtin {
                 if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
                 else{
                     let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
-                    let output = ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?;
+                    let output = if let Some(input) = args["stdin"].as_str() {
+                        ctx.sandbox.run_with_stdin(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone(),input).await?
+                    } else {
+                        ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?
+                    };
                     let mut result = serde_json::to_value(&output)?;
+                    if output.exit_code != Some(0) || output.timed_out || output.cancelled {
+                        result["failure_excerpt"] = json!(crate::completion::diagnostic_excerpt(
+                            if output.stderr.is_empty() { &output.stdout } else { &output.stderr }, 1000));
+                    }
                     if !before.is_empty() {
                         let after = crate::completion::verification_files(&args, &ctx.workspace).await?;
                         if let Some(reason) = crate::completion::verification_rejection(&args, &result) {
                             result["verification_rejected"] = json!(reason);
                         } else {
-                            result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                            result["verification"] = json!({"kind":args["verification"]["kind"],"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
                         }
                     }
                     result

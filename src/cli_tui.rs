@@ -19,6 +19,34 @@ use ratatui::{
 use std::{io::IsTerminal, pin::Pin, time::Duration};
 use werk_worker::*;
 
+fn tool_result_label(result: &ToolResult) -> String {
+    let label = if result.status == Outcome::Succeeded
+        && result.data["verification_rejected"].is_string()
+    {
+        if result.data["exit_code"] == 0 {
+            "Diagnostic completed".into()
+        } else {
+            "Diagnostic failed".into()
+        }
+    } else if result.status == Outcome::Succeeded
+        && (result.data["passed"] == false || result.data["verification"]["passed"] == false)
+    {
+        "Check failed".into()
+    } else if result.status == Outcome::Succeeded
+        && (result.data["passed"] == true
+            || result.data["verification"]["passed"] == true
+                && result.data["verification"]["kind"] == "behavior")
+    {
+        "Check passed".into()
+    } else {
+        format!("{:?}", result.status)
+    };
+    match result.error_code.as_deref() {
+        Some(code) => format!("{label} {code}"),
+        None => label,
+    }
+}
+
 // Exact werk1112 top/terminal palette; attribution in NOTICE.
 pub(crate) const BG: Color = Color::Rgb(9, 13, 23);
 const PANEL: Color = Color::Rgb(15, 21, 35);
@@ -209,12 +237,16 @@ const E: [&str; 5] = [r" ______", r"/ ____/", r"/ __/  ", r"/ /___ ", r"/_____/"
 const R: [&str; 5] = [r" ____  ", r"/ __ \", r"/ /_/ /", r"/ _, _/", r"/_/ |_|"];
 const K: [&str; 5] = [r" __ __ ", r"/ //_/", r"/ ,<  ", r"/ /| | ", r"/_/ |_|"];
 const O: [&str; 5] = [r" ____  ", r"/ __ \ ", r"/ / / /", r"/ /_/ /", r" \____/"];
-const COMMANDS: [(&str, &str); 14] = [
+const COMMANDS: [(&str, &str); 15] = [
     ("/help", "Show keyboard shortcuts and commands"),
     ("/clear", "Clear the visible conversation"),
     ("/cancel", "Cancel the active run"),
     ("/quit", "Close werkWorker"),
     ("/agents", "Browse subagent progress and tool results"),
+    (
+        "/browser",
+        "Browser mode on/off, website permissions and manual control",
+    ),
     (
         "/permissions",
         "Show active tools, rights and how to change them",
@@ -222,7 +254,10 @@ const COMMANDS: [(&str, &str); 14] = [
     ("/setup", "Configure server, model and credentials"),
     ("/view", "Choose Compact or Cockpit layout"),
     ("/sessions", "Start a new chat or open a previous session"),
-    ("/settings", "Edit profile, permissions, tools and skills"),
+    (
+        "/settings",
+        "Edit profile, permissions, tools, skills and delegation",
+    ),
     ("/effort", "Choose model reasoning effort; /effort <tier>"),
     ("/reasoning", "Choose reasoning tier or server default"),
     ("/expand", "Expand all code blocks"),
@@ -403,6 +438,7 @@ struct View {
     pasted_texts: Vec<text_input::PastedText>,
     pasted_images: Vec<(String, attachments::ImageAttachment)>,
     session_images: Vec<String>,
+    browser_preview: Option<String>,
     image_number: usize,
     clipboard: Option<tokio::task::JoinHandle<std::io::Result<text_input::Clipboard>>>,
     submitting: bool,
@@ -421,7 +457,7 @@ struct View {
     chat_area: Rect,
     panes: [ScrollPane; 8],
     settings: Option<crate::cli_config::Editor>,
-    settings_tabs: [Rect; 4],
+    settings_tabs: [Rect; crate::cli_config::TABS.len()],
     settings_apply: Rect,
     settings_scope: Rect,
     settings_discard: Rect,
@@ -796,6 +832,10 @@ impl View {
     }
     fn refresh_permissions(&mut self, data: &SessionData) {
         (self.access_summary, self.permissions) = permission_details(data);
+        if let Ok(level) = werk_worker::parallel::DelegationLevel::from_metadata(&data.metadata) {
+            self.permissions
+                .push_str(&format!("\nDelegation: {}", level.label()));
+        }
         self.access_hint = if !data.policy.tool_permissions.is_empty()
             || !data.policy.remembered_grants.is_empty()
         {
@@ -896,7 +936,9 @@ impl View {
     fn response_options(&self) -> Vec<String> {
         if let Some(request) = &self.approval {
             let mut options = vec!["Allow once".into(), "Deny".into()];
-            if request.session_id == self.session_id {
+            if request.session_id == self.session_id
+                && request.description["tool"] != "browser.evaluate"
+            {
                 let scope = approval_scope(request);
                 options.push(format!("Allow {scope} · session"));
                 options.push(format!("Allow {scope} · save for project"));
@@ -984,8 +1026,16 @@ impl View {
         }
         match event.event {
             EventKind::TextDelta { text, .. } => self.append_stream(&text),
-            EventKind::Subagent { goal, status, .. } => {
-                self.append(&format!("\n  agent · {status:?} · {goal}\n"))
+            EventKind::Subagent {
+                goal,
+                status,
+                error,
+                ..
+            } => {
+                self.append(&format!("\n  agent · {status:?} · {goal}\n"));
+                if let Some(error) = error {
+                    self.append(&format!("  reason · {}: {}\n", error.code, error.message));
+                }
             }
             EventKind::ContextPlanned { snapshot } => {
                 self.context_status = format!(
@@ -1021,6 +1071,9 @@ impl View {
             EventKind::Diagnostic { code } if code == "completion_pending" => {
                 self.append("\nVerification incomplete. Continuing implementation and checks; the task is not completed.\n");
             }
+            EventKind::Diagnostic { code } if code == "model_deadline_draining" => {
+                self.append("\nTime budget reached. Waiting for the current inference to finish safely; no further tool calls will run. Other agents can continue in available slots.\n");
+            }
             EventKind::Diagnostic { code } if code.starts_with("compaction_low_progress:") => {
                 self.append("\n  context · Compaction freed little space. Reusing the shortened history; repeated history sweeps are stopped.\n");
             }
@@ -1041,11 +1094,21 @@ impl View {
                 self.tools += 1;
                 self.append(&format!("\n  tool · {name}\n"));
             }
-            EventKind::ToolCompleted { result, .. } => self.append(&format!(
-                "  result · {:?} {}\n",
-                result.status,
-                result.error_code.unwrap_or_default()
-            )),
+            EventKind::ToolCompleted { result, .. } => {
+                self.append(&format!("  result · {}\n", tool_result_label(&result)));
+                if let Some(url) = result.data["viewer_url"].as_str()
+                    && self.browser_preview.as_deref() != Some(url)
+                {
+                    self.append(&format!(
+                        "  Browser preview (open in your browser): {url}\n"
+                    ));
+                    self.browser_preview = Some(url.to_owned());
+                }
+                if result.data["closed"] == true && result.data["browser_id"].is_string() {
+                    self.browser_preview = None;
+                    self.append("  Browser session and preview closed.\n");
+                }
+            }
             // Pending requests and their addressed run are refreshed together from
             // snapshots. Root events must not replace a displayed child request.
             EventKind::RunState { status } => {
@@ -1207,9 +1270,8 @@ fn agent_details(run: &Run, goal: &str) -> String {
             }
             if let Some(result) = &invocation.result {
                 view.append(&format!(
-                    "Result: {:?} {}\n{}\n",
-                    result.status,
-                    result.error_code.as_deref().unwrap_or(""),
+                    "Result: {}\n{}\n",
+                    tool_result_label(result),
                     serde_json::to_string_pretty(&result.data).unwrap_or_default()
                 ));
             }
@@ -1277,7 +1339,7 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
         (
             " Approval ",
             format!(
-                "Agent: {}\nTool: {}\n{}\n\nApproves only this action. Sandbox and hard denies still apply.",
+                "Agent: {}\nTool: {}\n{}\n\nAllow once approves this action. Session/project choices remember the displayed scope. Sandbox and hard denies still apply.",
                 view.request_owner,
                 request.description["tool"].as_str().unwrap_or("unknown"),
                 serde_json::to_string_pretty(&request.description).unwrap_or_default()
@@ -2106,8 +2168,20 @@ fn approval_answer(input: &str) -> Option<bool> {
 
 fn approval_scope(request: &ApprovalRequest) -> String {
     let tool = request.description["tool"].as_str().unwrap_or("tool");
+    if crate::browser_policy::TOOLS.contains(&tool) {
+        return format!(
+            "{} on {}",
+            request.description["arguments"]["browser_category"]
+                .as_str()
+                .unwrap_or("actions"),
+            request.description["arguments"]["origin"]
+                .as_str()
+                .unwrap_or("this site")
+        );
+    }
     match request.description["effect"].as_str() {
         Some("read" | "write") => format!("{tool} in workspace"),
+        Some("process") => format!("{tool} in sandboxed workspace"),
         _ => "exact prepared action".into(),
     }
 }
@@ -2138,9 +2212,12 @@ async fn approve_choice(
             "\n\n{} · {tool}: {}\n",
             view.request_owner,
             match choice {
-                0 => "Allowed once",
-                1 => "Denied",
-                _ => "Allowed and remembered for this session",
+                0 => "Allowed once".into(),
+                1 => "Denied".into(),
+                _ => format!(
+                    "Allowed and remembered for this session ({})",
+                    approval_scope(&request)
+                ),
             }
         ));
         view.approval = None;
@@ -2207,11 +2284,7 @@ fn restore_history(view: &mut View, data: &SessionData) {
                         view.append(&format!("you › {answer}\n"));
                     }
                 } else if let Some(result) = invocation.and_then(|i| i.result.as_ref()) {
-                    view.append(&format!(
-                        "  result · {:?} {}\n",
-                        result.status,
-                        result.error_code.as_deref().unwrap_or_default()
-                    ));
+                    view.append(&format!("  result · {}\n", tool_result_label(result)));
                 }
             }
             _ => {}
@@ -2538,8 +2611,8 @@ pub async fn show(
                     } else if let Some(editor) = &mut view.settings {
                         view.discard_armed = false;
                         match key.code {
-                            KeyCode::Tab | KeyCode::Right => editor.tab = (editor.tab + 1) % 4,
-                            KeyCode::BackTab | KeyCode::Left => editor.tab = (editor.tab + 3) % 4,
+                            KeyCode::Tab | KeyCode::Right => editor.tab = (editor.tab + 1) % crate::cli_config::TABS.len(),
+                            KeyCode::BackTab | KeyCode::Left => editor.tab = (editor.tab + crate::cli_config::TABS.len() - 1) % crate::cli_config::TABS.len(),
                             KeyCode::Up | KeyCode::Down => editor.move_selection(key.code == KeyCode::Up),
                             KeyCode::Char(' ') | KeyCode::Enter => editor.activate(),
                             KeyCode::Char('p') => editor.save_project = !editor.save_project,
@@ -2720,6 +2793,12 @@ pub async fn show(
                         KeyCode::Char(c) if !ctrl && !c.is_control() && view.expanded_input_len() + c.len_utf8() <= text_input::INPUT_LIMIT => { view.insert_input(&c.to_string()); },
                         KeyCode::Enter if !view.input.trim().is_empty() => {
                             let input = view.input.clone();
+                            if input=="/browser" || input.starts_with("/browser ") {
+                                let session=session.as_ref().ok_or_else(||WorkerError::new("session_required","Connect a session first"))?;
+                                let message=crate::cli_config::browser_command(session,&input).await?;
+                                view.append(&format!("\n\n{message}\n"));view.refresh_permissions(&session.snapshot().await?);
+                                view.input.clear();view.edited_input();return Ok(());
+                            }
                             if input.starts_with("/permissions ") {
                                 let session = session.as_ref().ok_or_else(|| WorkerError::new("session_required", "Connect a session first"))?;
                                 let message = crate::cli_config::permission_command(session, &input).await?;
@@ -2833,6 +2912,66 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_events_distinguish_verification_outcomes_from_execution_success() {
+        for (data, expected) in [
+            (
+                serde_json::json!({"passed":false,"exit_code":1}),
+                "Check failed",
+            ),
+            (
+                serde_json::json!({"verification":{"passed":false}}),
+                "Check failed",
+            ),
+            (
+                serde_json::json!({"passed":true,"verification":{"passed":false}}),
+                "Check failed",
+            ),
+            (
+                serde_json::json!({"passed":true,"exit_code":0}),
+                "Check passed",
+            ),
+            (
+                serde_json::json!({"verification":{"kind":"behavior","passed":true}}),
+                "Check passed",
+            ),
+            (
+                serde_json::json!({"verification":{"passed":true}}),
+                "Succeeded",
+            ),
+            (
+                serde_json::json!({"exit_code":0,"verification_rejected":"No kind"}),
+                "Diagnostic completed",
+            ),
+            (
+                serde_json::json!({"exit_code":1,"verification_rejected":"Inspection"}),
+                "Diagnostic failed",
+            ),
+            (serde_json::json!({"path":"app.html"}), "Succeeded"),
+        ] {
+            let result = ToolResult::ok(data);
+            assert_eq!(result.status, Outcome::Succeeded);
+            let mut view = View::default();
+            view.event(WorkerEvent {
+                schema_version: 1,
+                event_id: "event".into(),
+                session_id: "session".into(),
+                run_id: Some("run".into()),
+                cursor: 1,
+                timestamp_ms: 0,
+                event: EventKind::ToolCompleted {
+                    invocation_id: "invocation".into(),
+                    result,
+                },
+            });
+            assert_eq!(view.transcript, format!("  result · {expected}\n"));
+        }
+        let mut failed = ToolResult::ok(serde_json::json!({"passed":true}));
+        failed.status = Outcome::Failed;
+        failed.error_code = Some("browser_failed".into());
+        assert_eq!(tool_result_label(&failed), "Failed browser_failed");
+    }
 
     fn test_image() -> attachments::ImageAttachment {
         let mut bytes = std::io::Cursor::new(Vec::new());

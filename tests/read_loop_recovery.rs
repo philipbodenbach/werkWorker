@@ -332,10 +332,18 @@ async fn compaction_restores_a_working_anchor_from_persisted_receipts_once() {
         source_hash: "fixture".into(),
         summary: "Earlier reads omitted".into(),
     });
+    // Match the runtime's profile/policy selection. Unrelated catalogue growth
+    // must not consume this fixture's context and evict the restored anchor.
+    let tools = engine
+        .tools()
+        .into_iter()
+        .filter(|t| saved.profile.tools.contains(&t.name) && saved.policy.can_request(t))
+        .collect();
     let (after, _) = DefaultContextBuilder
-        .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
+        .build(&saved, saved.run(&run.id).unwrap(), tools)
         .await
         .unwrap();
+    assert_eq!(after.tools.len(), saved.profile.tools.len());
     assert!(after.tools.iter().any(|t| t.name == "files.read"));
     assert!(after.tools.iter().any(|t| t.name == "files.edit"));
     let pages: Vec<_> = after
@@ -923,7 +931,7 @@ async fn read_recovery_supports_edit_and_verified_completion() {
                     "process.run",
                     json!({
                         "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],
-                        "verification":{"criteria":["Final fixture content is two"],"paths":["game.txt"]}
+                        "verification":{"kind":"behavior","criteria":["Final fixture content is two"],"paths":["game.txt"]}
                     }),
                 )
             } else {
@@ -1155,7 +1163,7 @@ async fn bounded_read_recovery_can_verify_without_forcing_an_edit() {
             "process.run",
             json!({
                 "argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],
-                "verification":{"criteria":["Existing content is one"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["Existing content is one"],"paths":["game.txt"]}
             }),
         ),
         ScriptedTurn::text("Verified existing content"),
@@ -1318,7 +1326,51 @@ async fn fixture(
     denied: bool,
 ) -> (WorkerEngine, SessionHandle, Arc<ScriptedProvider>) {
     let provider = Arc::new(ScriptedProvider::new(turns));
-    let engine = WorkerEngine::builder(provider.clone())
+    // Opt-in scripted replacements use the actual obligation ID advertised in
+    // model context, just as a model correcting a broken check would do.
+    struct ReplacementChecks(Arc<ScriptedProvider>);
+    #[async_trait::async_trait]
+    impl ModelProvider for ReplacementChecks {
+        fn identity(&self) -> String {
+            self.0.identity()
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            self.0.capabilities()
+        }
+        fn concurrency(&self) -> InferenceConcurrency {
+            self.0.concurrency()
+        }
+        async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
+            use futures_util::StreamExt;
+            let source = request
+                .messages
+                .iter()
+                .filter_map(|message| serde_json::from_str::<Value>(&message.content).ok())
+                .find(|value| value["event"] == "coding_task_state")
+                .map(|value| {
+                    value["data"]["work_cycle"]["unresolved_check"]["source_invocation"].clone()
+                })
+                .unwrap_or(Value::Null);
+            let stream = self.0.stream(request).await?;
+            Ok(Box::pin(stream.map(move |delta| {
+                delta.map(|mut delta| {
+                    if let ModelDelta::Tool { arguments, .. } = &mut delta {
+                        let mut args: Value = serde_json::from_str(arguments).unwrap();
+                        if args["verification"]["replaces"] == "$unresolved-check" {
+                            assert!(
+                                source.is_string(),
+                                "Replacement requires a retained failed check"
+                            );
+                            args["verification"]["replaces"] = source.clone();
+                            *arguments = args.to_string();
+                        }
+                    }
+                    delta
+                })
+            })))
+        }
+    }
+    let engine = WorkerEngine::builder(Arc::new(ReplacementChecks(provider.clone())))
         .build()
         .await
         .unwrap();
@@ -1362,7 +1414,7 @@ fn failing_check(n: usize) -> ScriptedTurn {
         "process.run",
         json!({
             "argv":["/bin/sh","-c",format!("printf 'TypeError: g.board is undefined\\n' >&2; exit 1 # attempt {n}")],
-            "verification":{"criteria":[format!("Check the state mismatch, attempt {n}")],"paths":["game.txt"]}
+            "verification":{"kind":"behavior","criteria":[format!("Check the state mismatch, attempt {n}")],"paths":["game.txt"]}
         }),
     )
 }
@@ -1491,7 +1543,7 @@ async fn actual_file_change_rearms_failure_recovery() {
     std::fs::write(dir.path().join("game.txt"), "one").unwrap();
     let (engine,session,provider)=fixture(vec![
         failing_check(1),failing_check(2),edit("one","two"),failing_check(3),failing_check(4),
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],"verification":{"criteria":["Corrected state"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = two"],"verification":{"kind":"behavior","replaces":"$unresolved-check","criteria":["Corrected state"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified the correction"),
     ],dir.path(),false).await;
     let run = session
@@ -1539,13 +1591,15 @@ async fn new_diagnostic_results_restore_reads_without_requiring_file_changes() {
         turns.extend([
             call("process.run",json!({
                 "argv":["/bin/sh","-c",format!("printf 'Different diagnostic {n}\\n' >&2; exit 1")],
-                "verification":{"criteria":["Inspect the failure"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["Inspect the failure"],"paths":["game.txt"]}
             })),
             read("game.txt"),read("game.txt"),
         ]);
     }
     turns.extend([
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"criteria":["Existing state is valid"],"paths":["game.txt"]}})),
+        // A declared behavioral check can replace the failed check once it
+        // succeeds; untyped legacy commands are diagnostic only.
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = one"],"verification":{"kind":"behavior","replaces":"$unresolved-check","criteria":["Existing state is valid"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified existing state"),
     ]);
     let (engine, session, _) = fixture(turns, dir.path(), false).await;
@@ -1610,9 +1664,9 @@ async fn fresh_repeated_reads_restore_content_then_recover_to_verified_completio
         call("files.write",json!({"path":"game.txt","content":"overwrite"})),
         edit("one","two"),
         // Review the first recovery increment; its concrete failure permits repair.
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"kind":"behavior","criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
         read("game.txt"), read("game.txt"), edit("two","three"),
-        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = three"],"verification":{"kind":"behavior","criteria":["Final fixture content is three"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified final content"),
     ],dir.path(),false).await;
     let run = session

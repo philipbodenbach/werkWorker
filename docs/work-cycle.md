@@ -1,6 +1,64 @@
 # Keep implementation moving toward the requested result
 
-## Current status: action admission and resource-safe validation
+## General execution contract
+
+The target is a complete runnable core first, followed by behavioral checks and
+focused fix iterations. Simplify optional polish to fit an output allowance;
+do not substitute an unconnected scaffold for the first working version.
+Independent implementations with disjoint file ownership, acceptance planning
+and focused diagnostics can run concurrently within verified host capacity.
+Check and repair phases retain admitted delegation and child-control tools;
+the phase filter must not serialize independent helper work.
+No model name, architecture or tokens-per-second threshold selects this workflow.
+
+`process.run.verification.kind` distinguishes `behavior`, `syntax` and
+`inspection`. Successful syntax/inspection does not establish behavior; a parser
+failure remains useful repair evidence. Existing calls without the optional kind
+retain their legacy contract. An arbitrary executable's semantics cannot be
+proved from its exit code; checks still need real assertions through entry points.
+Malformed interpreter invocations (for example a shell here-document placed in
+one literal Python argument) are rejected before execution/approval with a
+correction hint. Historical receipts for those invocations and rejected
+inspections do not start application repair cycles.
+
+`process.run` accepts optional `stdin` (at most 32768 UTF-8 bytes), for example
+`{"argv":["python3","-"],"stdin":"print('ready')"}`. Input is delivered literally,
+then closed; it is part of the exact prepared approval. No shell is inserted,
+and timeout, cancellation, read-only mounts and all sandbox limits remain in
+force. This permits one script/check call without a temporary-file write or
+shell quoting. Inspection scripts retain the same verification rules as inline
+argv scripts. Failure excerpts preserve both the beginning and the end of a
+diagnostic so a long echoed source line cannot hide the final exception.
+
+A failed check starts a durable repair cycle. Edits, changed error strings,
+replanning and unrelated successful commands do not erase that obligation.
+Rerun the original check after finishing a correction. If the check itself was
+broken, a corrected check can supply `verification.kind: "behavior"` and
+`verification.replaces: "<source_invocation>"` from `work_cycle.unresolved_check`.
+It must pass against unchanged files and cover the original paths before it
+resolves the cycle. Declaring a replacement alone has no effect.
+An accepted legacy verification without `kind` can also explicitly replace a
+check; the optional field must not silently invalidate otherwise valid evidence.
+Declared syntax/inspection still cannot pass as behavioral verification.
+
+The cycle is reconstructed from receipts across resume/compaction. A tool batch
+counts as one model decision. After `4 * max(3, max_repeated_calls)` decisions
+without resolution (12 by default), the runtime stops with
+`repair_cycle_exhausted`, preserving work and reporting the unresolved failure.
+If the boundary decision just applied an edit, one final check is offered before
+stopping. This is a check-only phase: a passing recheck resolves the obligation;
+a failed check or another decision exhausts the allowance. Edits cannot repeatedly
+reset the limit. This prevents reporting an obsolete failure immediately after
+the model has applied its correction.
+This guard also applies in continuous mode. It bounds wasted work; it is not a
+claim of completed implementation or universal model quality.
+
+Automatic helpers use the configured wall allowance, not a separate fixed
+three-minute cutoff. One replacement is allowed after failure and new parent
+file changes; no retry loop, additional permissions or extra inference slots are
+created. See [subagent limits](subagents.md).
+
+## Previous investigation: action admission and resource-safe validation
 
 The follow-up still does **not** establish reliable real-model completion. The
 latest candidate fixes further concrete recovery dead ends, while live inference
@@ -32,7 +90,10 @@ The latest changes are provider-independent:
   writes carry their applied receipts, not a lone stale pre-action diagnosis.
   Canonical history is unchanged; newer versions supersede old checkpoint text.
 - Start the existing automatic acceptance reviewer only after a current passing
-  check, not after the first scaffold write. An earlier explicit-reasoning live
+  check in **Conservative** delegation mode. **Active** (now the default) starts
+  after the first actual file change; **Max** can start a check-planning helper
+  once a substantial plan exists. See [delegation levels](subagents.md).
+  An earlier explicit-reasoning live
   test started review too early; its child exhausted the wall allowance and
   the shared provider correctly refused further uncertain inference. Review
   still cannot replace actual verification or grant capabilities.
@@ -571,3 +632,51 @@ with native Windows Python 3.10; the complete Windows Python suite requires
 3.11 or later for `tomllib` (GitHub uses 3.12). The saved-run replay and tests
 use no real model or GPU. No remote workflow was rerun and no installed command
 was replaced; live convergence and system stability remain unverified.
+
+## Plan-driven build and acceptance loop (2026-10-31)
+
+The coding skill now gives a task- and model-independent working algorithm.
+The request and supplied references determine the acceptance criteria. A profile
+provides default quality rules and available tools, not a fixed substitute task.
+For mixed work, planning, code, content interpretation and visual comparison
+belong to the same plan; they do not require switching between separate loops.
+
+1. Derive observable outcomes from the request and reference material. In each
+   plan step, state the criterion, its check method and later its evidence.
+   Preserve delivery constraints and user corrections.
+2. Inspect the current work and exposed capabilities once. Choose independent
+   reads/reviews for available concurrency; keep writes and their checks ordered.
+3. Build a small complete implementation of the main flow. For visual work,
+   reproduce reference composition and proportions before optional details.
+4. Test the actual entry point. Compare an early screenshot with the supplied
+   visual reference; inspect content meaning separately from interaction tests.
+   A screenshot's existence or a passing DOM assertion proves no visual match.
+5. Classify each failure as implementation, check, invocation or environment.
+   Use the recorded failure location/state, make one justified correction and
+   rerun the affected check. Fix broken checks through explicit replacement.
+6. Record evidence and current revisions against the planned criteria. Recheck
+   affected criteria after changes; avoid repeating completed checks without a
+   concrete gap. Deliver after acceptance, reporting any unverified criterion.
+
+This uses the existing plan descriptions and checkpoint; it does not add a new
+criterion-ID schema or claim automatic semantic validation of image/content
+judgments. Runtime guards still independently check plan status, actual tool
+outcomes, outstanding failures and current file hashes. The explicit process
+check contract is documented in [harness](harness.md#coding-acceptance-and-continuous-work).
+
+### Capabilities available through Worker and Werk
+
+| Capability already implemented | Use in this algorithm | Boundary |
+| --- | --- | --- |
+| Model-scoped limits and inference capacity via Werk Protocol | Budget complete edits and admit independent helpers only within verified slots | `parallel_tool_calls` alone does not establish inference capacity or throughput |
+| Admission/native token counts, image reserves and compaction | Keep the criteria, references and current evidence usable within the actual context | Do not invent larger limits or erase the original task during recovery |
+| Configured subagent model on the same Werk connection | Assign a bounded independent content/acceptance review while the parent builds | Children start with supplied context, not the parent's images/history; keep visual comparison with the parent unless the helper can explicitly access both images |
+| Local `browser.check` and optional persistent browser tools | Validate the actual artifact and inspect its rendered state | Shell-installed Chromium is independent; persistent browser observation alone is not a behavioral receipt |
+| Advertised reasoning tiers and preserved user settings | Honor the selected model's supported settings | Do not silently turn reasoning on, change models or assume it repairs runtime faults |
+
+These mechanisms are grounded in [Worker's delegation contract](subagents.md),
+[context admission](context.md), [browser tools](authoring.md) and the local
+Werk Protocol implementation. DSH's separation of the event-driven loop and tool
+executor, and little-coder's bounded corrective feedback informed the design;
+neither requires a second provider-specific runtime. See the primary-source
+links in [harness](harness.md#coding-acceptance-and-continuous-work).

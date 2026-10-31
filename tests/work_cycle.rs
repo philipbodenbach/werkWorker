@@ -37,7 +37,7 @@ fn verify() -> ScriptedTurn {
         "process.run",
         json!({
             "argv":["/bin/sh","-c", ". ./counter.sh; actual=$(increment 0); if [ \"$actual\" != 1 ]; then printf '%s\\n' 'increment(0) must be 1' >&2; exit 1; fi"],
-            "verification":{"criteria":["Public increment advances the count"],"paths":["counter.sh"]}
+            "verification":{"kind":"behavior","criteria":["Public increment advances the count"],"paths":["counter.sh"]}
         }),
     )
 }
@@ -221,7 +221,8 @@ async fn wandering_reads_are_redirected_then_real_review_and_repair_finish() {
             .unwrap()
             .contains("increment(0) must be 1")
     );
-    assert_eq!(cycle(&requests[10]).unwrap()["suggested_phase"], "build");
+    // A mutation does not discharge the failing check or restart broad building.
+    assert_eq!(cycle(&requests[10]).unwrap()["suggested_phase"], "repair");
     assert_eq!(cycle(&requests[11]).unwrap()["suggested_phase"], "review");
     assert_eq!(cycle(&requests[11]).unwrap()["refocus"], false);
     assert!(
@@ -229,6 +230,128 @@ async fn wandering_reads_are_redirected_then_real_review_and_repair_finish() {
             .messages
             .iter()
             .all(|m| !m.content.contains("Runtime work-cycle recovery"))
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn repair_cycle_bounds_changing_failures_but_allows_a_verified_correction() {
+    if let Err(error) = sandbox().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let verify = || {
+        call(
+            "process.run",
+            json!({
+                "argv":["/bin/sh","-c",". ./counter.sh; actual=$(value); if [ \"$actual\" != good ]; then printf 'Expected good, got %s\\n' \"$actual\" >&2; exit 1; fi"],
+                "verification":{"kind":"behavior","criteria":["Public value returns good"],"paths":["counter.sh"]}
+            }),
+        )
+    };
+    for resolves in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut content = "value() { printf '%s' bad0; }\n".to_owned();
+        let mut turns = vec![
+            call(
+                "files.write",
+                json!({"path":"counter.sh","content":content}),
+            ),
+            verify(),
+        ];
+        for n in 1..=8 {
+            let replacement = if resolves && n == 6 {
+                "good".into()
+            } else {
+                format!("bad{n}")
+            };
+            turns.push(call("files.edit",json!({"path":"counter.sh","expected_hash":hash(&content),"old":format!("bad{}",n-1),"new":replacement})));
+            content = content.replace(&format!("bad{}", n - 1), &replacement);
+            turns.push(verify());
+            if resolves && n == 6 {
+                break;
+            }
+        }
+        turns.push(ScriptedTurn::text("Verified the working core flow"));
+        let (engine, session, provider) = fixture(turns, dir.path()).await;
+        let run = session
+            .submit(
+                "Build the core flow, then fix failing behavior",
+                "start",
+                Limits::continuous(),
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        if resolves {
+            assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+            assert_eq!(
+                cycle(provider.requests().last().unwrap()).unwrap()["unresolved_check"],
+                Value::Null
+            );
+        } else {
+            assert_eq!(result.error.unwrap().code, "repair_cycle_exhausted");
+            assert_eq!(provider.requests().len(), 14); // Build + twelve decisions + boundary recheck.
+            assert_eq!(
+                run.status()
+                    .await
+                    .unwrap()
+                    .invocations
+                    .last()
+                    .unwrap()
+                    .call
+                    .name,
+                "process.run"
+            );
+            let saved = session.snapshot().await.unwrap();
+            let restored: SessionData =
+                serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+            assert_eq!(restored.run(&run.id).unwrap().status, RunStatus::Failed);
+            assert!(
+                std::fs::read_to_string(dir.path().join("counter.sh"))
+                    .unwrap()
+                    .contains("value()")
+            );
+        }
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn declared_syntax_and_inspection_remain_diagnostics_until_behavior_is_exercised() {
+    if let Err(error) = sandbox().doctor().await {
+        assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (engine,session,_) = fixture(vec![
+        call("files.write",json!({"path":"counter.sh","content":"increment() { printf '%s' 1; }\n"})),
+        call("process.run",json!({"argv":["/bin/sh","-c",". ./counter.sh"],"verification":{"kind":"syntax","criteria":["Definitions load"],"paths":["counter.sh"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","printf 'inspected'"],"verification":{"kind":"inspection","criteria":["Diagnostics printed"],"paths":["counter.sh"]}})),
+        verify(), ScriptedTurn::text("Verified increment(0)"),
+    ],dir.path()).await;
+    let run = session
+        .submit(
+            "Build a working counter",
+            "start",
+            Limits::continuous(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    let saved = run.status().await.unwrap();
+    for invocation in &saved.invocations[1..3] {
+        let data = &invocation.result.as_ref().unwrap().data;
+        assert_eq!(data["exit_code"], 0);
+        assert!(data["verification_rejected"].is_string());
+        assert!(data["verification"].is_null());
+    }
+    assert_eq!(
+        saved.invocations[3].result.as_ref().unwrap().data["verification"]["passed"],
+        true
     );
     engine.close().await.unwrap();
 }
@@ -381,7 +504,7 @@ async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit
                 call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":before})),
                 call("files.edit", json!({"path":"counter.sh","expected_hash":hash(before),"old":before,"new":after})),
                 call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],
-                    "verification":{"criteria":["Syntax is valid"],"paths":["counter.sh"]}})),
+                    "verification":{"kind":"behavior","criteria":["Syntax is valid"],"paths":["counter.sh"]}})),
                 verify(),
             ]);
         }
@@ -517,8 +640,8 @@ async fn repeated_small_edits_cannot_postpone_a_behavioral_check() {
     );
     turns.push(call("files.edit", json!({"path":"counter.sh","expected_hash":hash(with_default),"old":with_default,"new":final_code})));
     // Metadata cannot turn a successful source dump into a behavioral check.
-    turns.push(call("process.run", json!({"argv":["cat","counter.sh"],"verification":{"criteria":["Read the public increment function"],"paths":["counter.sh"]}})));
-    turns.push(call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],"verification":{"criteria":["Syntax is valid"],"paths":["counter.sh"]}})));
+    turns.push(call("process.run", json!({"argv":["cat","counter.sh"],"verification":{"kind":"behavior","criteria":["Read the public increment function"],"paths":["counter.sh"]}})));
+    turns.push(call("process.run", json!({"argv":["/bin/sh","-n","counter.sh"],"verification":{"kind":"behavior","criteria":["Syntax is valid"],"paths":["counter.sh"]}})));
     turns.push(ScriptedTurn::text("The source was read successfully; done"));
     turns.extend([verify(), ScriptedTurn::text("Implemented and verified")]);
     let (engine, session, provider) = fixture(turns, dir.path()).await;
@@ -584,6 +707,52 @@ async fn repeated_small_edits_cannot_postpone_a_behavioral_check() {
     assert_eq!(
         std::fs::read_to_string(dir.path().join("counter.sh")).unwrap(),
         with_default
+    );
+    let mut checkpoint = snapshot.clone();
+    checkpoint.run_mut(&run.id).unwrap().invocations.truncate(9);
+    checkpoint
+        .profile
+        .tools
+        .extend(agents::AGENT_TOOLS.iter().map(|name| (*name).to_owned()));
+    let available: Vec<_> = engine
+        .tools()
+        .into_iter()
+        .filter(|tool| checkpoint.profile.tools.contains(&tool.name))
+        .collect();
+    let (parallel, _) = DefaultContextBuilder
+        .build(
+            &checkpoint,
+            checkpoint.run(&run.id).unwrap(),
+            available.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cycle(&parallel).unwrap()["check_due"], true);
+    for name in agents::AGENT_TOOLS {
+        assert!(
+            parallel.tools.iter().any(|tool| tool.name == *name),
+            "Checkpoint hid {name}"
+        );
+    }
+    assert!(!parallel.tools.iter().any(|tool| tool.name == "files.read"));
+    // Phase selection preserves only admitted capabilities; it cannot add a
+    // delegation tool excluded by a hard profile/policy decision upstream.
+    let (restricted, _) = DefaultContextBuilder
+        .build(
+            &checkpoint,
+            checkpoint.run(&run.id).unwrap(),
+            available
+                .into_iter()
+                .filter(|tool| tool.name != "delegate_task")
+                .collect(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !restricted
+            .tools
+            .iter()
+            .any(|tool| tool.name == "delegate_task")
     );
     let mut denied = snapshot;
     denied.run_mut(&run.id).unwrap().invocations.truncate(9);
@@ -829,7 +998,7 @@ async fn passing_receipt_without_recovery_action_does_not_reopen_exploration() {
     turns.extend((0..4).map(|_| call("files.read", json!({"path":"counter.sh"}))));
     turns.extend([
         // A generic process can exit zero without establishing the task's behavior.
-        call("process.run", json!({"argv":["/bin/sh","-c","printf 'looked at the source\\n'"],"verification":{"criteria":["Claimed check"],"paths":["counter.sh"]}})),
+        call("process.run", json!({"argv":["/bin/sh","-c","printf 'looked at the source\\n'"],"verification":{"kind":"behavior","criteria":["Claimed check"],"paths":["counter.sh"]}})),
         call("files.edit", json!({"path":"counter.sh","expected_hash":hash(initial),"old":initial,"new":repaired})),
         verify(), ScriptedTurn::text("Increment verified"),
     ]);

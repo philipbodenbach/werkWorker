@@ -25,6 +25,8 @@ use std::{
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
+mod browser_host;
+
 fn configuration_allowed(status: RunStatus) -> bool {
     (status.terminal() && status != RunStatus::Interrupted)
         || matches!(status, RunStatus::WaitingInput | RunStatus::WaitingApproval)
@@ -306,6 +308,7 @@ impl WorkerEngine {
         metadata: Value,
     ) -> Result<SessionHandle> {
         self.ensure_open()?;
+        crate::parallel::DelegationLevel::from_metadata(&metadata)?;
         for name in &profile.tools {
             self.inner.tools.get(name)?;
         }
@@ -501,6 +504,9 @@ impl WorkerEngine {
                 .lock()
                 .await
                 .retain(|id, _| !ids.contains(id));
+            for id in &ids {
+                engine.inner.tools.browsers.close(Some(id)).await;
+            }
             Ok(ids.into_iter().collect())
         })
         .await
@@ -675,7 +681,9 @@ impl WorkerEngine {
             .collect::<Vec<_>>();
         for session in sessions {
             let guard = session.data.lock().await;
+            let session_id = guard.id.clone();
             drop(guard);
+            self.inner.tools.browsers.close(Some(&session_id)).await;
         }
         self.inner.store.close().await
     }
@@ -721,6 +729,49 @@ impl SessionHandle {
     }
     pub fn available_skills(&self) -> Vec<crate::skills::Skill> {
         self.engine.skills()
+    }
+    /// Trusted host preference, below explicit project configuration. Safe to
+    /// change during a run. In-flight model
+    /// requests retain their prompt; fresh delegation admission uses this value.
+    /// Existing children are not cancelled or given different permissions.
+    pub async fn set_delegation_level(
+        &self,
+        level: crate::parallel::DelegationLevel,
+        command_id: &str,
+    ) -> Result<CommandReceipt> {
+        self.engine.ensure_open()?;
+        let _delegation = self.engine.inner.delegation.lock().await;
+        let payload = json!({"method":"set_delegation_level","level":level});
+        self.update(|d| {
+            if d.parent.is_some() {
+                return Err(WorkerError::new(
+                    "root_required",
+                    "Set delegation in the root session",
+                ));
+            }
+            if d.metadata.is_null() {
+                d.metadata = json!({});
+            }
+            if !d.metadata.is_object() {
+                return Err(WorkerError::new(
+                    "delegation_level",
+                    "Session metadata must be an object",
+                ));
+            }
+            let receipt = d.command(command_id, &payload, None)?;
+            if matches!(receipt.status, ReceiptStatus::Duplicate) {
+                return Ok(receipt);
+            }
+            d.metadata[crate::parallel::PREFERENCE_KEY] = json!(level);
+            d.emit(
+                None,
+                EventKind::Diagnostic {
+                    code: "delegation_level_updated".into(),
+                },
+            );
+            Ok(receipt)
+        })
+        .await
     }
     /// Trusted host configuration for an idle or waiting root session. This is not a model
     /// tool. Historical messages/skill versions and hard denies are retained.
@@ -1310,6 +1361,22 @@ impl SessionHandle {
                 let children = self.finish_children(&run_id).await;
                 let cleanup = self.engine.inner.jobs.cleanup(&run_id).await.and(children);
                 let result = result.and(cleanup);
+                let browser_cleanup = {
+                    let data = self.runtime.data.lock().await;
+                    result.is_err()
+                        || shutdown.is_cancelled()
+                        || data.run(&run_id).is_ok_and(|run| {
+                            matches!(run.status, RunStatus::Cancelling | RunStatus::Cancelled)
+                        })
+                };
+                if browser_cleanup {
+                    self.engine
+                        .inner
+                        .tools
+                        .browsers
+                        .close(Some(&self.id().await))
+                        .await;
+                }
                 let settled = self
                     .update(|d| {
                         let run = d.run_mut(&run_id)?;
@@ -1440,6 +1507,7 @@ impl SessionHandle {
         }
         'steps: loop {
             self.check_running(run_id, shutdown).await?;
+            self.wait_for_browser_operator(run_id, shutdown).await?;
             let pending = self
                 .snapshot()
                 .await?
@@ -1474,7 +1542,9 @@ impl SessionHandle {
             .await?;
             // Reviews must see the latest accepted user constraints, including
             // steering that arrived while the previous tool was running.
-            self.maybe_start_review(run_id).await?;
+            let checkpoint = self.snapshot().await?;
+            crate::repair_cycle::check(&checkpoint, checkpoint.run(run_id)?)?;
+            self.maybe_start_review(run_id, &checkpoint).await?;
             // Project every completed tool result before inserting assistant
             // feedback, preserving contiguous call/result groups.
             self.deliver_ready_children(run_id).await?;
@@ -1572,6 +1642,7 @@ impl SessionHandle {
                 &self.engine.inner.execution,
                 &self.provider().concurrency(),
                 data.parent.as_ref().map_or(0, |parent| parent.depth),
+                crate::parallel::DelegationLevel::from_metadata(&data.metadata)?,
             );
             crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
             if crate::completion::enabled(&data, run)? {
@@ -2027,13 +2098,26 @@ impl SessionHandle {
             }
             child_work.extend(reviewed.invocations);
             reviewed.invocations = child_work;
-            if let Some(detail) = crate::completion::findings(
+            let unresolved = if state.config.completion.is_none()
+                && crate::failure_progress::enabled(&data, run)?
+            {
+                crate::repair_cycle::latest(run, &state.verifications).map(|cycle| {
+                    format!(
+                        "A previous failing check is unresolved: {}. Rerun it after correcting the implementation, or explicitly replace a broken check with a successful behavioral check using verification.replaces and covering its paths. Current obligation: {}",
+                        cycle.source_invocation,
+                        cycle.observation(run)
+                    )
+                })
+            } else {
+                None
+            };
+            if let Some(detail) = unresolved.or(crate::completion::findings(
                 &reviewed,
                 &state.verifications,
                 &self.runtime.workspace,
                 state.config.completion.is_none(),
             )
-            .await?
+            .await?)
             {
                 let progress = crate::completion::progress(&reviewed);
                 state.final_rejections = if state.final_progress == progress {
@@ -2474,6 +2558,8 @@ impl SessionHandle {
         request: crate::providers::ModelRequest,
         shutdown: &CancellationToken,
     ) -> Result<(Message, Option<Usage>, Value)> {
+        let dispatched = AtomicBool::new(false);
+        let draining = AtomicBool::new(false);
         let operation = async {
             let data = self.snapshot().await?;
             let limits = crate::context::effective_limits(
@@ -2507,6 +2593,7 @@ impl SessionHandle {
             let _slot = self.runtime.inference.slots.acquire().await;
             let _host_slot = self.engine.inner.host_model_slots.acquire().await;
             self.charge_tree_request(run_id).await?;
+            dispatched.store(true, Ordering::Release);
             let mut stream = self.provider().stream(request.clone()).await?;
             let mut assembler = ResponseAssembler::default();
             let limit = self.snapshot().await?.run(run_id)?.limits.max_output_bytes;
@@ -2518,7 +2605,11 @@ impl SessionHandle {
                 let next = tokio::select! {
                     next = stream.next() => next,
                     _ = tokio::time::sleep_until(flush_at), if !pending.is_empty() => {
-                        self.flush_model_events(run_id, &mut pending).await?;
+                        if draining.load(Ordering::Acquire) {
+                            pending.clear();
+                        } else {
+                            self.flush_model_events(run_id, &mut pending).await?;
+                        }
                         pending_bytes = 0;
                         flush_at = tokio::time::Instant::now() + Duration::from_millis(100);
                         continue;
@@ -2528,10 +2619,26 @@ impl SessionHandle {
                 let delta = match next {
                     Ok(delta) => delta,
                     Err(error) => {
-                        self.flush_model_events(run_id, &mut pending).await?;
+                        if !draining.load(Ordering::Acquire) {
+                            self.flush_model_events(run_id, &mut pending).await?;
+                        }
                         return Err(error);
                     }
                 };
+                if draining.load(Ordering::Acquire) {
+                    // Consume only transport completion after the deadline.
+                    // Late text and tool fragments never enter the transcript
+                    // or the tool execution path. Werk settles its receipt
+                    // before yielding a terminal delta.
+                    pending.clear();
+                    if matches!(delta, ModelDelta::Finish { .. } | ModelDelta::Done) {
+                        return Err(WorkerError::new(
+                            "wall_budget",
+                            "Run wall-time budget reached",
+                        ));
+                    }
+                    continue;
+                }
                 if let Err(error) = assembler.push(&delta, limit) {
                     self.flush_model_events(run_id, &mut pending).await?;
                     return Err(error);
@@ -2610,7 +2717,78 @@ impl SessionHandle {
         };
         tokio::pin!(operation);
         loop {
-            tokio::select! {result=&mut operation=>return result,_=tokio::time::sleep(Duration::from_millis(20))=>self.check_running_without_wait(run_id,shutdown)?,_=shutdown.cancelled()=>return Err(WorkerError::new("cancelled","Model request cancelled"))}
+            tokio::select! {
+                _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Model request cancelled")),
+                result = &mut operation => return result,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                    let Err(error) = self.check_running_without_wait(run_id, shutdown) else {
+                        continue;
+                    };
+                    let grace = self.provider().deadline_drain_timeout().min(Duration::from_secs(600));
+                    if error.code != "wall_budget" || !dispatched.load(Ordering::Acquire) || grace.is_zero() {
+                        return Err(error);
+                    }
+                    draining.store(true, Ordering::Release);
+                    // Keep ownership of the request AND both inference permits.
+                    // No detached task, retry, or reset of the provider's safety
+                    // latch. Other sessions can keep using their available slots.
+                    // Poll the notice alongside the operation: awaiting a session
+                    // update alone could deadlock its queued mutex acquisition.
+                    let cleanup = async {
+                        tokio::join!(&mut operation, self.update(|data| {
+                            data.emit(Some(run_id), EventKind::Diagnostic {
+                                code: "model_deadline_draining".into(),
+                            });
+                            Ok(())
+                        }))
+                    };
+                    // RunHandle::cancel persists Cancelling; only engine
+                    // shutdown cancels the actor token. Observe both, without
+                    // polling or dropping/recreating a queued mutex future.
+                    let cancelled = async {
+                        let mut changed = self.runtime.changed.subscribe();
+                        loop {
+                            changed.borrow_and_update();
+                            let status = self.runtime.data.lock().await.run(run_id)?.status;
+                            if matches!(status, RunStatus::Cancelling | RunStatus::Cancelled) {
+                                return Ok::<(), WorkerError>(());
+                            }
+                            changed.changed().await.map_err(|_| WorkerError::new("closed", "Session closed during inference cleanup"))?;
+                        }
+                    };
+                    let outcome = tokio::select! {
+                        _ = shutdown.cancelled() => return Err(WorkerError::new("cancelled", "Model request cancelled")),
+                        result = cancelled => {
+                            result?;
+                            return Err(WorkerError::new("cancelled", "Model request cancelled"));
+                        }
+                        result = tokio::time::timeout(grace, cleanup) => result,
+                    };
+                    let code = match outcome {
+                        Ok((result, notice)) => {
+                            notice?;
+                            match result {
+                                Err(cause) if cause.code != "wall_budget" => format!("model_deadline_drain_failed:{}", cause.code),
+                                _ => "model_deadline_drain_finished".into(),
+                            }
+                        }
+                        // Return before awaiting another session update: the
+                        // still-pending operation may own a queued mutex permit.
+                        // Dropping it preserves the provider's unresolved guard.
+                        Err(_) => return Err(WorkerError::new("wall_budget", format!(
+                            "Run wall-time budget reached; inference cleanup did not finish within {} ms",
+                            grace.as_millis()
+                        ))),
+                    };
+                    self.update(|data| {
+                        data.emit(Some(run_id), EventKind::Diagnostic { code });
+                        Ok(())
+                    }).await?;
+                    // The expired run still fails with its original cause,
+                    // even if its late response was a valid answer or tool call.
+                    return Err(error);
+                }
+            }
         }
     }
     async fn flush_model_events(&self, run_id: &str, pending: &mut Vec<EventKind>) -> Result<()> {
@@ -2996,7 +3174,7 @@ impl SessionHandle {
                         progress.occurrences,
                         progress.exit_code,
                         crate::completion::excerpt(&progress.command.to_string(), 300),
-                        crate::completion::excerpt(&progress.detail, 1000)
+                        crate::completion::diagnostic_excerpt(&progress.detail, 1000)
                     ),
                 ));
             }
@@ -3110,6 +3288,13 @@ impl SessionHandle {
             }
             return self.outcome(run_id, invocation_id, result).await;
         }
+        if crate::browser_policy::TOOLS.contains(&def.name.as_str()) {
+            self.wait_for_browser_operator(run_id, shutdown).await?;
+            let data = self.snapshot().await?;
+            if data.parent.is_none() && data.policy.browser.as_ref().is_some_and(|p| p.enabled) {
+                self.browser_panel().await?;
+            }
+        }
         let tool = self.engine.inner.tools.get(&def.name)?;
         if fingerprint(&tool.definition()) != fingerprint(def) {
             return Err(WorkerError::new(
@@ -3214,14 +3399,17 @@ impl SessionHandle {
                 Ok(v) => v,
                 Err(e) => {
                     let mut result = ToolResult::error(Outcome::ValidationError, &e.code);
-                    if def.name == "browser.check" {
+                    if def.name.starts_with("browser.") {
                         result.data = json!({"message":e.message});
                     } else if (matches!(
                         def.name.as_str(),
                         "files.edit" | "files.write" | "files.insert"
                     ) && e.code == "write_conflict")
                         || (matches!(def.name.as_str(), "process.run" | "process.start")
-                            && e.code == "path_denied")
+                            && matches!(
+                                e.code.as_str(),
+                                "path_denied" | "invalid_process_invocation" | "invalid_stdin"
+                            ))
                     {
                         // Builtin path/file preparation emits static, non-secret
                         // reasons. The model must distinguish a stale base
@@ -3482,6 +3670,9 @@ impl SessionHandle {
                 )
                 .await;
         }
+        if crate::browser_policy::TOOLS.contains(&def.name.as_str()) {
+            self.wait_for_browser_operator(run_id, shutdown).await?;
+        }
         self.update(|d| {
             if !d.profile.tools.contains(&def.name)
                 || d.policy
@@ -3569,6 +3760,7 @@ impl SessionHandle {
                             | "process.wait"
                             | "process.log"
                     )
+                    || crate::browser_control::TOOLS.contains(&def.name.as_str())
                 {
                     result.data = json!({"message": e.message});
                 }
@@ -3819,22 +4011,31 @@ impl RunHandle {
             let receipt=d.command(command_id,&json!({"method":"approval","run":self.id,"request":request_id,"decision":decision}),Some(&self.id))?;if matches!(receipt.status,ReceiptStatus::Duplicate){return Ok(receipt);}
             if decision==ApprovalDecision::AllowSameArguments&&!d.policy.allow_similar{return Err(WorkerError::new("similar_disabled","Host did not enable exact-scope reusable approvals"));}
             if decision==ApprovalDecision::AllowForSession && d.parent.is_some(){return Err(WorkerError::new("root_required","Reusable access must be configured in the root session; child approvals remain one-time"));}
+            let browser_mode=d.policy.browser.is_some();
             let r=d.run_mut(&self.id)?;if !matches!(r.status,RunStatus::WaitingApproval|RunStatus::Interrupted){return Err(WorkerError::new("stale_request","Run is not awaiting approval"));}
             let i=r.invocations.iter_mut().find(|i|i.approval.as_ref().is_some_and(|a|a.request_id==request_id)).ok_or_else(||WorkerError::new("unknown_request","Approval does not belong to this run"))?;
             let a=i.approval.as_mut().unwrap();if a.decision.is_some()||a.expires_at_ms<=now_ms(){return Err(WorkerError::new("stale_request","Approval is resolved or expired"));}
             if a.arguments_hash!=approval_key(i.definition.as_ref().unwrap(),&i.prepared){return Err(WorkerError::new("scope_conflict","Prepared arguments no longer match approval"));}
+            if i.call.name=="browser.evaluate" && !matches!(decision,ApprovalDecision::AllowOnce|ApprovalDecision::Deny) {return Err(WorkerError::new("browser_script_approval","Page scripts require one-time approval every time"));}
             a.decision=Some(decision.clone());if decision==ApprovalDecision::AllowSameArguments{r.similar_grants.push(a.arguments_hash.clone());}
             if decision==ApprovalDecision::AllowForSession {
                 let def=i.definition.as_ref().unwrap();
+                if crate::browser_policy::TOOLS.contains(&def.name.as_str()) && browser_mode {
+                    let site=i.prepared["origin"].as_str().unwrap_or("").to_owned();
+                    let category=i.prepared["browser_category"].as_str().unwrap_or("actions").to_owned();
+                    d.policy.browser.as_mut().unwrap().set(&site,&category,crate::policy::ToolPermission::Allow)?;
+                } else {
                 let files=matches!(def.effect, Effect::Read|Effect::Write);
+                let workspace_tool=files || def.effect==Effect::Process;
                 let grant=crate::policy::CapabilityGrant {
                     tool:def.name.clone(), version:def.version.clone(),
                     resource:if files {".".into()} else {crate::policy::resource(def,&i.prepared)?},
-                    arguments_hash:if files {None} else {Some(fingerprint(&i.prepared))},
+                    arguments_hash:if workspace_tool {None} else {Some(fingerprint(&i.prepared))},
                     expires_at_ms:None, preapproved:true,
                 };
                 d.policy.remembered_grants.retain(|g| !(g.tool==grant.tool && g.arguments_hash==grant.arguments_hash));
                 d.policy.remembered_grants.push(grant);
+                }
             }
             d.run_mut(&self.id)?.resume_approval_clock(now_ms());
             d.emit(Some(&self.id),EventKind::ApprovalResolved{request_id:request_id.into(),decision});Ok(receipt)

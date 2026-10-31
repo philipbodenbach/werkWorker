@@ -45,6 +45,9 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         turn("files.write", {"path": "two.txt", "content": "two"}),
         turn(text="Both files written"),
         turn(text="Pasted message received"),
+        turn("process.run", {"argv": ["/bin/sh", "-c", "printf first > process-one.txt"]}),
+        turn("process.run", {"argv": ["/bin/sh", "-c", "printf second > process-two.txt"], "cwd": "."}),
+        turn(text="Both commands completed"),
     ]))
     grants = root / "grants.json"
     grants.write_text(json.dumps({"workspace_writable": False, "grants": [
@@ -188,6 +191,19 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         wait("Pasted message received")
         users = [m["content"] for m in state("state.sqlite")["messages"] if m["role"] == "user"]
         assert users[-1] == f"Read: {first} and {second}", "Collapsed markers must not replace the actual prompt"
+        os.write(master, b"Run the commands\r")
+        wait("Allow process.run in sandboxed workspace")
+        assert not (workspace / "process-one.txt").exists()
+        os.write(master, b"\x1b[B\x1b[B\r")
+        wait("Both commands completed")
+        assert (workspace / "process-one.txt").read_text() == "first"
+        assert (workspace / "process-two.txt").read_text() == "second"
+        process_run = state("state.sqlite")["runs"][-1]
+        assert sum(i.get("approval") is not None for i in process_run["invocations"]) == 1
+        policy = json.loads(policy_path.read_text())["policy"]
+        process_grant = next(g for g in policy["remembered_grants"] if g["tool"] == "process.run")
+        assert process_grant["resource"] == "workspace"
+        assert process_grant["arguments_hash"] is None
         # Granular settings are keyboard-editable and visibly selected.
         os.write(master, b"\x1b[15~\x1b[B")
         wait("Workspace writes:")
@@ -204,10 +220,18 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         assert proc.wait(timeout=10) == 0
         assert termios.tcgetattr(slave) == before
         screen = Screen()
-        proc = start("restart.sqlite", ["tui", "--demo"])
-        wait("Conversation")
+        restart_script = root / "restart-script.json"
+        restart_script.write_text(json.dumps([
+            turn("process.run", {"argv": ["/bin/sh", "-c", "printf restored > process-restart.txt"]}),
+            turn(text="Saved process permission reused"),
+        ]))
+        proc = start("restart.sqlite", ["--script", str(restart_script), "tui", "Run another command"])
+        wait("Saved process permission reused")
         restored = state("restart.sqlite")
         assert restored["policy"]["tool_permissions"] == json.loads(policy_path.read_text())["policy"]["tool_permissions"]
+        assert process_grant in restored["policy"]["remembered_grants"]
+        assert (workspace / "process-restart.txt").read_text() == "restored"
+        assert all(i.get("approval") is None for i in restored["runs"][0]["invocations"])
         assert "files.write" in restored["profile"]["tools"]
         os.write(master, b"\x11")
         assert proc.wait(timeout=10) == 0

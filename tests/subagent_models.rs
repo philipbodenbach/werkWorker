@@ -192,7 +192,7 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
                 Some(("files.write",json!({"path":"game.txt","content":"implementation"})))
             } else if !called("process.run") {
                 Some(("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = implementation"],
-                    "verification":{"criteria":["Initial fixture state is persisted"],"paths":["game.txt"]}})))
+                    "verification":{"kind":"behavior","criteria":["Initial fixture state is persisted"],"paths":["game.txt"]}})))
             } else {None};
             return if let Some((name,args))=next {
                 reply(json!({"role":"assistant","content":"","tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":args.to_string()}}]}))

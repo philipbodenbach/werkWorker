@@ -133,29 +133,19 @@ impl SessionHandle {
     /// One focused, read-only acceptance review for nontrivial coding work.
     /// It shares admission/policy with explicit delegation and never substitutes
     /// a child's prose for executable verification by the parent.
-    pub(crate) async fn maybe_start_review(&self, run_id: &str) -> Result<()> {
-        let data = self.snapshot().await?;
+    pub(crate) async fn maybe_start_review(&self, run_id: &str, data: &SessionData) -> Result<()> {
         let run = data.run(run_id)?;
+        use crate::parallel::DelegationLevel;
+        let level = DelegationLevel::from_metadata(&data.metadata)?;
         if data.parent.is_some()
+            || level == DelegationLevel::Off
             || run.final_text.is_some()
-            || !crate::completion::enabled(&data, run)?
-            || !run.children.is_empty()
+            || !crate::completion::enabled(data, run)?
             || run.plan["steps"].as_array().is_none_or(|steps| {
                 steps.len() < 3
                     || !steps.iter().any(|step| {
                         matches!(step["status"].as_str(), Some("pending" | "in_progress"))
                     })
-            })
-            || !run.invocations.iter().any(|i| {
-                matches!(
-                    i.call.name.as_str(),
-                    "files.write" | "files.edit" | "files.insert"
-                ) && i.result.as_ref().is_some_and(|r| {
-                    r.status == Outcome::Succeeded
-                        && r.data["sha256"].as_str().is_some_and(|hash| {
-                            i.call.arguments["expected_hash"].as_str() != Some(hash)
-                        })
-                })
             })
             || self.execution_status()["effective_model_requests"]
                 .as_u64()
@@ -168,12 +158,62 @@ impl SessionHandle {
         {
             return Ok(());
         }
-        // Review a runnable candidate, not the first scaffold. Starting a
-        // second investigator after the first write consumed shared context,
-        // requests and reasoning time while the parent still had no version to
-        // exercise. A current passing check is the handoff to review.
-        let state = crate::harness::state(&data, run_id)?;
-        if crate::work_cycle::observation(run, &state.verifications)["suggested_phase"] != "review"
+        // One live automatic helper at a time. A failed helper must not occupy
+        // that role forever, but retries require new parent work and are bounded.
+        let review_prefix = format!("review_{run_id}");
+        if run.children.len() >= 2 {
+            return Ok(());
+        }
+        for link in &run.children {
+            if link.delegation_id != review_prefix
+                && !link.delegation_id.starts_with(&format!("{review_prefix}_"))
+            {
+                return Ok(()); // Explicit delegation already owns the split.
+            }
+            let child = self
+                .engine
+                .open_session(&link.session_id)
+                .await?
+                .snapshot()
+                .await?;
+            let Some(previous) = child.runs.last().filter(|r| r.status == RunStatus::Failed) else {
+                return Ok(()); // Includes completed, interrupted and user-cancelled work.
+            };
+            let new_work = data.events.iter().any(|event| {
+                event.timestamp_ms > previous.started_at_ms
+                    && event.run_id.as_deref() == Some(run_id)
+                    && matches!(&event.event, EventKind::ToolCompleted { invocation_id, result }
+                        if result.status == Outcome::Succeeded
+                        && (result.data["workspace_changed"] == true
+                            || run.invocations.iter().any(|i| &i.invocation_id == invocation_id
+                                && matches!(i.call.name.as_str(), "files.write" | "files.edit" | "files.insert")
+                                && result.data["sha256"].as_str().is_some_and(|hash|
+                                    i.call.arguments["expected_hash"].as_str() != Some(hash)))))
+            });
+            if !new_work {
+                return Ok(());
+            }
+        }
+        let changed = run.invocations.iter().any(|i| {
+            matches!(
+                i.call.name.as_str(),
+                "files.write" | "files.edit" | "files.insert"
+            ) && i.result.as_ref().is_some_and(|r| {
+                r.status == Outcome::Succeeded
+                    && r.data["sha256"].as_str().is_some_and(|hash| {
+                        i.call.arguments["expected_hash"].as_str() != Some(hash)
+                    })
+            })
+        });
+        if level != DelegationLevel::Max && !changed {
+            return Ok(());
+        }
+        // Conservative preserves the existing late handoff. Higher levels opt
+        // into the extra inference cost of reviewing an unfinished candidate.
+        let state = crate::harness::state(data, run_id)?;
+        if level == DelegationLevel::Conservative
+            && crate::work_cycle::observation(run, &state.verifications)["suggested_phase"]
+                != "review"
         {
             return Ok(());
         }
@@ -195,7 +235,9 @@ impl SessionHandle {
         }
         limits.max_tool_invocations = limits.max_tool_invocations.min(8);
         limits.max_steps = limits.max_steps.min(8);
-        limits.max_wall_ms = limits.max_wall_ms.min(180_000);
+        // Use the configured host wall allowance. A fixed three-minute cap can
+        // expire during one normal request on a slow/offloaded backend. Request
+        // and tool budgets still bound work; the parent deadline still applies.
         let mut updates: Vec<_> = data
             .messages
             .iter()
@@ -208,7 +250,7 @@ impl SessionHandle {
         updates.reverse();
         let mut receipts = Vec::new();
         let mut receipt_bytes = 2;
-        for receipt in crate::working_state::bounded_files(&data, run) {
+        for receipt in crate::working_state::bounded_files(data, run) {
             let metadata = json!({"path":receipt["path"],"status":receipt["status"],"sha256":receipt["sha256"],"total_lines":receipt["total_lines"],"total_bytes":receipt["total_bytes"]});
             receipt_bytes += metadata.to_string().len() + 1;
             if receipt_bytes > 4096 {
@@ -216,10 +258,35 @@ impl SessionHandle {
             }
             receipts.push(metadata);
         }
+        let goal = if !changed {
+            "Independently derive a concise acceptance checklist and behavioral test scenarios from the supplied requirements and plan. Inspect existing relevant files only if needed; the implementation may not exist yet. Identify ambiguities and edge cases for the parent, who is implementing. Do not implement, repeat the parent's broad investigation, or claim the user's task is complete."
+        } else {
+            "Perform one focused acceptance review of the remaining coding work. Inspect only relevant current files; prioritize concrete missing behavior and behavioral assertions through real entry points. The parent continues implementing; its candidate may be incomplete. Do not implement, repeat broad searches, or claim the user's task is complete."
+        };
         let task = DelegateTask {
-            goal: "Perform one focused acceptance review of the remaining coding work. Inspect only relevant current files; prioritize concrete missing behavior and behavioral assertions through real entry points. The parent continues implementing. You have at most 6 model requests and 8 tool calls: finish with concise evidence and test recommendations within that budget, even if inspection is incomplete. Do not implement, repeat broad searches, or claim the user's task is complete.".into(),
-            context: format!("User requirements (bounded):\n{}\nRecent user updates, in chronological order (bounded):\n{}\nCurrent plan (bounded):\n{}\nLatest file receipts (historical observations; recheck before relying on changing files):\n{}", crate::completion::excerpt(&run.input, 4000), crate::completion::excerpt(&serde_json::to_string(&updates)?, 3200), crate::completion::excerpt(&run.plan.to_string(), 2500), serde_json::to_string(&receipts)?),
-            tools: Some(data.profile.tools.iter().filter(|t| matches!(t.as_str(), "files.read" | "files.list" | "files.search" | "files.find")).cloned().collect()),
+            goal: format!(
+                "{goal} You have at most 6 model requests and 8 tool calls: finish with concise evidence and test recommendations within that budget, even if inspection is incomplete."
+            ),
+            context: format!(
+                "User requirements (bounded):\n{}\nRecent user updates, in chronological order (bounded):\n{}\nCurrent plan (bounded):\n{}\nLatest file receipts (historical observations; recheck before relying on changing files):\n{}",
+                crate::completion::excerpt(&run.input, 4000),
+                crate::completion::excerpt(&serde_json::to_string(&updates)?, 3200),
+                crate::completion::excerpt(&run.plan.to_string(), 2500),
+                serde_json::to_string(&receipts)?
+            ),
+            tools: Some(
+                data.profile
+                    .tools
+                    .iter()
+                    .filter(|t| {
+                        matches!(
+                            t.as_str(),
+                            "files.read" | "files.list" | "files.search" | "files.find"
+                        )
+                    })
+                    .cloned()
+                    .collect(),
+            ),
             read_only: true,
         };
         if task.tools.as_ref().is_none_or(Vec::is_empty) {
@@ -236,13 +303,20 @@ impl SessionHandle {
             .delegate_with_limits(
                 run_id,
                 vec![task],
-                &format!("review_{run_id}"),
+                &format!("{review_prefix}_{}", run.children.len()),
                 Some(limits),
             )
             .await
         {
             Ok(_) => Ok(()),
-            Err(error) if matches!(error.code.as_str(), "agent_capacity" | "agent_limit") => Ok(()),
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "agent_capacity" | "agent_limit" | "delegation_disabled"
+                ) =>
+            {
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }
@@ -393,6 +467,23 @@ impl SessionHandle {
             }
             return self.children(run_id).await;
         }
+        use crate::parallel::DelegationLevel;
+        let mut disabled = DelegationLevel::from_metadata(&data.metadata)? == DelegationLevel::Off;
+        if let Some(parent) = &data.parent {
+            let root = self
+                .engine
+                .open_session(&parent.root_session)
+                .await?
+                .snapshot()
+                .await?;
+            disabled |= DelegationLevel::from_metadata(&root.metadata)? == DelegationLevel::Off;
+        }
+        if disabled {
+            return Err(WorkerError::new(
+                "delegation_disabled",
+                "Delegation is off for this session. Change it in Settings > Agents or project config.",
+            ));
+        }
         let config = &self.engine.inner.execution;
         let depth = data.parent.as_ref().map_or(1, |p| p.depth + 1);
         if depth > config.max_depth
@@ -517,6 +608,7 @@ impl SessionHandle {
                         session_id: child_id.clone(),
                         goal: task.goal.clone(),
                         status: RunStatus::Queued,
+                        error: None,
                     },
                 );
                 Ok(())
@@ -607,6 +699,7 @@ impl SessionHandle {
                             session_id: c.session_id.clone(),
                             goal: c.goal.clone(),
                             status: c.run.as_ref().map_or(RunStatus::Interrupted, |r| r.status),
+                            error: c.run.as_ref().and_then(|r| r.error.clone()),
                         },
                     );
                 }
@@ -696,6 +789,7 @@ impl SessionHandle {
                     d.emit(Some(run_id), EventKind::Subagent {
                         session_id: child.session_id.clone(), goal: child.goal.clone(),
                         status: child.run.as_ref().map_or(RunStatus::Interrupted, |r| r.status),
+                        error: child.run.as_ref().and_then(|r| r.error.clone()),
                     });
                 }
             }

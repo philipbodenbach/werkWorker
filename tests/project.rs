@@ -16,6 +16,52 @@ fn write(root: &Path, path: &str, text: &str) {
 }
 
 #[tokio::test]
+async fn delegation_level_is_validated_saved_and_inherited_without_changing_other_defaults() {
+    use werk_worker::parallel::DelegationLevel;
+    assert!(
+        ProjectConfig::parse(b"{}")
+            .unwrap()
+            .delegation_level
+            .is_none()
+    );
+    assert_eq!(
+        DelegationLevel::from_metadata(&serde_json::Value::Null).unwrap(),
+        DelegationLevel::Active
+    );
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        CONFIG,
+        r#"{"model":"parent","subagent_model":"helper","delegation_level":"active"}"#,
+    );
+    for level in DelegationLevel::ALL {
+        let project = Project::load(dir.path()).await.unwrap();
+        let mut config = project.config.clone();
+        config.delegation_level = Some(level);
+        project.save(dir.path(), &config).await.unwrap();
+        let restored = Project::load(dir.path()).await.unwrap();
+        assert_eq!(restored.config.delegation_level, Some(level));
+        assert_eq!(restored.config.subagent_model.as_deref(), Some("helper"));
+        assert_eq!(
+            DelegationLevel::from_metadata(&restored.scoped_metadata()).unwrap(),
+            level
+        );
+    }
+    for invalid in [
+        serde_json::json!("aggressive"),
+        serde_json::json!(4),
+        serde_json::json!(true),
+    ] {
+        assert!(
+            ProjectConfig::parse(
+                &serde_json::to_vec(&serde_json::json!({"delegation_level":invalid})).unwrap()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn optional_subagent_model_survives_project_settings_save() {
     let dir = tempfile::tempdir().unwrap();
     write(

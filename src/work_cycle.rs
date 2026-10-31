@@ -53,11 +53,12 @@ pub(crate) fn check_tools(
         matches!(
             t.name.as_str(),
             "process.run" | "browser.check" | "interaction.ask"
-        ) || (action_due
-            && matches!(
-                t.name.as_str(),
-                "files.edit" | "files.insert" | "files.write" | "task.plan"
-            ))
+        ) || crate::agents::is_agent_tool(&t.name)
+            || (action_due
+                && matches!(
+                    t.name.as_str(),
+                    "files.edit" | "files.insert" | "files.write" | "task.plan"
+                ))
     });
     for tool in tools {
         // The underlying write tool already supports atomic hash-bound
@@ -76,7 +77,7 @@ pub(crate) fn check_tools(
             {
                 required.push(json!("verification"));
             }
-            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
+            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification.kind=behavior, planned criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
         } else if matches!(
             tool.name.as_str(),
             "files.edit" | "files.insert" | "files.write"
@@ -124,14 +125,19 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
     // Distinguish redundant coverage from useful initial investigation; do not
     // require a write to qualify for context recovery or infer task intent.
     let read_recovery = crate::read_progress::recovery_active(run);
+    let repair = crate::repair_cycle::latest(run, &state.verifications);
+    let repair_focus = repair.as_ref().is_some_and(|c| c.focus_due(run));
     if cycle["refocus"] != true
         && cycle["check_due"] != true
         && cycle["action_due"] != true
         && !read_recovery
+        && !repair_focus
     {
         return Ok(None);
     }
-    let reason = if cycle["action_due"] == true {
+    let reason = if repair_focus {
+        "A previous failing check is still unresolved. Activity and different diagnostics are not proof of a fix. Finish the runnable correction and recheck it; preserve the working parts."
+    } else if cycle["action_due"] == true {
         "Investigation is exhausted for this version. The next action must implement the runnable increment or exercise its behavior using the retained source and check result. Broad inspection tools are temporarily deferred."
     } else if cycle["check_due"] == true {
         "Implementation and investigation have accumulated without a new behavioral check. More reads or small edits do not clear this checkpoint."
@@ -162,6 +168,7 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
 /// Replayed from receipts on every request, including after resume/compaction.
 /// Plans and successful shell reads cannot manufacture implementation progress.
 pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Value {
+    let repair = crate::repair_cycle::latest(run, receipts);
     let mut files = BTreeMap::<String, String>::new();
     let mut checks = BTreeSet::new();
     let mut last_change = None;
@@ -291,12 +298,17 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
     // Recovery is an action/review cycle: its first real edit must be checked
     // before ordinary exploration resumes, even when it is the first change.
     check_due |= crate::read_progress::recovery_check_due(run);
+    // A boundary edit must be checked before reporting its preceding failure.
+    check_due |= repair
+        .as_ref()
+        .is_some_and(|cycle| cycle.final_check_due(run));
     // A later edit invalidates review; a due check remains latched above.
     // Completion still checks all required files/criteria with the real gate.
     // Straight implementation can finish its first version. Interleaved small
     // edits must not erase accumulated investigation and postpone execution.
     let phase = match last_check {
         _ if check_due => "check",
+        _ if repair.is_some() => "repair",
         Some((position, _, evidence)) if last_change.is_none_or(|(n, _)| n <= position) => {
             if evidence["passed"] == true {
                 "review"
@@ -323,7 +335,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
             "Run a small behavioral smoke check of the current entry point now. Exercise startup and the main user interaction against current files. If the version is not runnable yet, record that concrete failure and repair the missing connection before optional polish. Then repeat the check. Do not spend another cycle gathering broad context or making unrelated small edits."
         }
         "repair" => {
-            "Fix the concrete failure in latest_check, then rerun the behavioral check. Keep the working version and its interfaces."
+            "Finish the correction for unresolved_check (or latest_check if no unresolved check is retained), then rerun that check. A broken check can be replaced explicitly by a successful behavioral check covering its paths. Keep the working version and its interfaces; independent diagnosis can continue in parallel."
         }
         "review" => {
             "Compare the checked version with the full request and remaining milestones. Implement only concrete missing behavior; otherwise complete the plan and report verified results."
@@ -349,6 +361,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
                 .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
         })),
         "suggested_phase": phase,
+        "unresolved_check": repair.as_ref().map(|c| c.observation(run)),
         "next_action": next_action,
         "checkpoint_predates_change": last_change.is_some_and(|(n, _)| last_plan.is_none_or(|p| p < n)),
         "last_change": last_change.map(|(_, i)| {
@@ -361,9 +374,9 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "latest_check": last_check.map(|(_, i, evidence)| {
             let result = i.result.as_ref().unwrap();
             json!({"source_invocation":i.invocation_id,"passed":evidence["passed"],
-                "failure_excerpt": if evidence["passed"] == false { Some(crate::completion::excerpt(
+                "failure_excerpt": if evidence["passed"] == false { Some(crate::completion::diagnostic_excerpt(
                     result.data["stderr"].as_str().filter(|s| !s.is_empty())
-                        .or_else(|| result.data["stdout"].as_str()).unwrap_or("See the recorded check result"), 512)) } else { None }})
+                        .or_else(|| result.data["stdout"].as_str()).unwrap_or("See the recorded check result"), 1000)) } else { None }})
         }),
         "investigation_calls_since_progress": investigation,
         "changes_since_check": changes_since_check,
@@ -427,6 +440,8 @@ mod tests {
         // A real execution receipt still advances the same state normally.
         run.invocations.last_mut().unwrap().call.arguments["argv"] =
             json!(["node", "game.test.js"]);
+        run.invocations.last_mut().unwrap().call.arguments["verification"]["kind"] =
+            json!("behavior");
         assert_eq!(
             observation(&run, &BTreeMap::new())["suggested_phase"],
             "review"

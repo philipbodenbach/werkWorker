@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
             "Run the relevant checks.",
             vec![call(
                 "process.run",
-                json!({"argv":["/usr/bin/python3","test_math_helper.py"],"cwd":".","verification":{"criteria":["addition returns correct sums"],"paths":["math_helper.py","test_math_helper.py"]}}),
+                json!({"argv":["/usr/bin/python3","test_math_helper.py"],"cwd":".","verification":{"kind":"behavior","criteria":["addition returns correct sums"],"paths":["math_helper.py","test_math_helper.py"]}}),
             )],
         ),
         ScriptedTurn::text(

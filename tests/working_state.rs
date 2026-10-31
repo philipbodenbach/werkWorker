@@ -183,7 +183,7 @@ async fn failed_edit_cannot_be_bypassed_by_shell_deletion_and_recovers_to_verifi
             call(
                 "process.run",
                 json!({"argv":["sh","-c","test \"$(cat game.txt)\" = repaired"],
-            "verification":{"criteria":["Game fixture is repaired"],"paths":["game.txt"]}}),
+            "verification":{"kind":"behavior","criteria":["Game fixture is repaired"],"paths":["game.txt"]}}),
             ),
             ScriptedTurn::text("Verified"),
         ],
@@ -241,7 +241,7 @@ async fn path_aliases_version_checks_and_noop_writes_do_not_reset_read_loop() {
             read("game.txt"),
             call("process.run", json!({
                 "argv":["python3","-c","from pathlib import Path; assert Path('game.txt').read_text() == 'working'"],
-                "verification":{"criteria":["Existing content is working"],"paths":["game.txt"]}
+                "verification":{"kind":"behavior","criteria":["Existing content is working"],"paths":["game.txt"]}
             })),
             ScriptedTurn::text("Verified existing content"),
         ],
@@ -756,7 +756,7 @@ async fn consolidation_verifies_remaining_files_without_recreating_deleted_sourc
         call("files.write", json!({"path":"game.txt","content":"consolidated"})),
         process(&["rm", "old.txt"]),
         call("process.run", json!({"argv":["sh","-c","test ! -e old.txt && test \"$(cat game.txt)\" = consolidated"],
-            "verification":{"criteria":["Consolidated output works and obsolete source is gone"],"paths":["game.txt"]}})),
+            "verification":{"kind":"behavior","criteria":["Consolidated output works and obsolete source is gone"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Verified consolidated output"),
     ], dir.path()).await;
     let run = session

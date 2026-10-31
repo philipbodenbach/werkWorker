@@ -219,8 +219,17 @@ field preserve their previous contract; new follow-ups enable the new default.
 Use the existing sandboxed process tool, for example:
 
 ```json
-{"argv":["python3","-m","unittest","test_game.py"],"verification":{"criteria":["Start creates a board","Input moves the active piece"],"paths":["game.py","test_game.py"]}}
+{"argv":["python3","-m","unittest","test_game.py"],"verification":{"kind":"behavior","criteria":["Start creates a board","Input moves the active piece"],"paths":["game.py","test_game.py"]}}
 ```
+
+`process.run` requires an explicit `verification.kind: "behavior"` to admit a
+successful behavioral receipt. `inspection`, successful `syntax`, and omitted
+kind remain diagnostics: they execute normally, return their output and a
+`verification_rejected` explanation, and cannot clear a check obligation.
+This also applies when replaying old untyped process receipts; a follow-up must
+run a declared check. The TUI distinguishes `Diagnostic completed` from `Check
+passed` and no longer promotes an old untyped success to `Check passed`.
+`browser.check` already owns an assertion runner and defaults to behavior.
 
 The host hashes the named files before and after execution and records a receipt
 only from the actual tool outcome. Exit status zero, no cancellation/timeout,
@@ -241,6 +250,23 @@ exercise real entry points; syntax checks, reviewer prose and model claims alone
 are insufficient. A host-supplied `completion` check can replace the model-selected
 check, while the current plan still gates completion. Missing tools or permissions
 remain blockers, never automatic grants.
+
+Browser startup exceptions retain bounded source path, one-based line/column
+and source excerpts. Startup failures skip interaction actions, avoiding a
+secondary missing-selector timeout that obscures the parser/runtime error.
+The browser script uses the existing asynchronous stdin transport; it is not
+subject to the per-argument command limit. Cancellation and sandbox restrictions
+are unchanged.
+
+The 2026-10-31 repair review consulted [DSH's agent loop](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/core/agent-loop)
+for its separation of durable tool results from model execution, and
+[little-coder's quality monitor](https://github.com/itayinbarr/little-coder/blob/main/.pi/extensions/quality-monitor/index.ts)
+for immediate, bounded correction feedback and its distinction between transport
+errors and model-output failures. Worker keeps its own receipt-based checks;
+these references do not validate the semantics of arbitrary test programs.
+Werk Protocol's inference/control API transports the tool messages and governs
+request limits; local check success remains the Worker's responsibility. This
+change needs no protocol extension or provider/model-specific branch.
 
 With verified server context/output ceilings, coding tools use request-local
 section guidance derived from output and reasoning budgets. Character targets

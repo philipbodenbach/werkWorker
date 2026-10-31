@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
@@ -417,6 +417,9 @@ pub struct ProcessLimits {
     pub processes: u64,
     /// Chromium uses a larger bounded thread allowance than command tools.
     pub browser_processes: u64,
+    /// Persistent browser sessions retain multiple tabs and browser services.
+    pub browser_session_memory_bytes: u64,
+    pub browser_session_cpu_seconds: u64,
     pub output_bytes: usize,
 }
 impl Default for ProcessLimits {
@@ -427,6 +430,8 @@ impl Default for ProcessLimits {
             cpu_seconds: 30,
             processes: 128,
             browser_processes: 512,
+            browser_session_memory_bytes: 2_147_483_648,
+            browser_session_cpu_seconds: 300,
             output_bytes: 1_048_576,
         }
     }
@@ -496,14 +501,45 @@ impl Sandbox {
         cwd: &str,
         cancel: CancellationToken,
     ) -> Result<ProcessOutput> {
-        self.run_observed(workspace, writable, argv, cwd, cancel, None, false)
+        self.run_observed(workspace, writable, argv, cwd, cancel, None, false, None)
             .await
+    }
+    /// Supply literal input to a single sandboxed command. EOF is delivered
+    /// after the bounded input; cancellation and resource limits still apply.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_stdin(
+        &self,
+        workspace: &Workspace,
+        writable: bool,
+        argv: &[String],
+        cwd: &str,
+        cancel: CancellationToken,
+        stdin: &str,
+    ) -> Result<ProcessOutput> {
+        if stdin.len() > crate::process_input::STDIN_LIMIT {
+            return Err(WorkerError::new(
+                "invalid_stdin",
+                "Standard input exceeds 32768 bytes; use a workspace script for larger programs",
+            ));
+        }
+        self.run_observed(
+            workspace,
+            writable,
+            argv,
+            cwd,
+            cancel,
+            None,
+            false,
+            Some(stdin),
+        )
+        .await
     }
     pub(crate) async fn run_browser(
         &self,
         workspace: &Workspace,
         argv: &[String],
         cancel: CancellationToken,
+        script: &str,
     ) -> Result<ProcessOutput> {
         // Bound expensive Chromium launches across main/child engines in this
         // process. Waiting is cancellable and consumes no inference request.
@@ -512,9 +548,241 @@ impl Sandbox {
             permit = BROWSER.lock() => permit,
             _ = cancel.cancelled() => return Err(WorkerError::new("cancelled", "Browser wait cancelled")),
         };
-        self.run_observed(workspace, false, argv, ".", cancel, None, true)
-            .await
+        self.run_observed(
+            workspace,
+            false,
+            argv,
+            ".",
+            cancel,
+            None,
+            true,
+            Some(script),
+        )
+        .await
     }
+    /// Browser broker uses an empty workspace and private network namespace.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn browser_command(&self) -> Result<tokio::process::Command> {
+        let mut browser = self.clone();
+        browser.limits.cpu_seconds = self.limits.browser_session_cpu_seconds;
+        browser.command(None, false, &[], ".", true, true).await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn command(
+        &self,
+        workspace: Option<&Workspace>,
+        writable: bool,
+        argv: &[String],
+        cwd: &str,
+        browser: bool,
+        pipe_stdin: bool,
+    ) -> Result<tokio::process::Command> {
+        relative_path(cwd)?;
+        if let Some(workspace) = workspace {
+            workspace.revalidate().await?;
+        }
+        let mut command = tokio::process::Command::new(&self.bubblewrap);
+        command
+            .env_clear()
+            .stdin(if pipe_stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        command.args([
+            "--unshare-all",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--dir",
+            "/run",
+        ]);
+        use std::os::fd::AsRawFd;
+        let workspace_fd = workspace.map(|w| w.root.as_raw_fd());
+        if let Some(fd) = workspace_fd {
+            command
+                .arg(if writable {
+                    "--bind-fd"
+                } else {
+                    "--ro-bind-fd"
+                })
+                .arg(fd.to_string())
+                .arg("/workspace");
+        } else {
+            command.args(["--dir", "/workspace"]);
+        }
+        command.args([
+            "--chdir",
+            &format!("/workspace/{cwd}"),
+            "--setenv",
+            "PATH",
+            "/usr/bin:/bin",
+            "--setenv",
+            "HOME",
+            "/tmp",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+        ]);
+        if browser {
+            let runtime = crate::browser::runtime_path().ok_or_else(|| {
+                WorkerError::new(
+                    "browser_unavailable",
+                    "Install the WW browser runtime with scripts/install-browser.sh",
+                )
+            })?;
+            command
+                .args(["--ro-bind"])
+                .arg(runtime)
+                .arg("/opt/werk-browser");
+            command.args([
+                "--ro-bind-try",
+                "/etc/fonts",
+                "/etc/fonts",
+                "--setenv",
+                "PYTHONPATH",
+                "/opt/werk-browser/python",
+                "--setenv",
+                "PLAYWRIGHT_BROWSERS_PATH",
+                "/opt/werk-browser/browsers",
+            ]);
+            // Optional private library bundle, installed by the host. No model
+            // arguments can choose loader paths or executable directories.
+            #[cfg(target_arch = "x86_64")]
+            let multiarch = "x86_64-linux-gnu";
+            #[cfg(target_arch = "aarch64")]
+            let multiarch = "aarch64-linux-gnu";
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            command.args([
+                "--setenv", "LD_LIBRARY_PATH",
+                &format!("/opt/werk-browser/deps/usr/lib/{multiarch}:/opt/werk-browser/deps/lib/{multiarch}"),
+                "--setenv", "XDG_DATA_DIRS", "/opt/werk-browser/deps/usr/share:/usr/share",
+                "--setenv", "GIO_EXTRA_MODULES", &format!("/opt/werk-browser/deps/usr/lib/{multiarch}/gio/modules"),
+                "--setenv", "GST_PLUGIN_PATH_1_0", &format!("/opt/werk-browser/deps/usr/lib/{multiarch}/gstreamer-1.0"),
+            ]);
+        }
+        if browser && workspace.is_none() {
+            for path in crate::browser_control::BROWSER_INSTALL_DIRS {
+                if std::path::Path::new(path).is_dir() {
+                    command.args(["--ro-bind", path, path]);
+                }
+            }
+        }
+        if browser && std::env::var("WERK_WORKER_BROWSER_DEBUG").as_deref() == Ok("1") {
+            command.args(["--setenv", "DEBUG", "pw:browser"]);
+        }
+        command.arg("--");
+        command.args(argv);
+        let limits = self.limits.clone();
+        // RLIMIT_NPROC is charged to the real host UID, including threads,
+        // not to the PID namespace. Reserve a bounded allowance above the
+        // current UID baseline. This is a UID-wide ceiling, not a cgroup.
+        let process_ceiling = host_task_baseline().await?.saturating_add(if browser {
+            limits.browser_processes
+        } else {
+            limits.processes
+        });
+        // SAFETY: only async-signal-safe libc calls before exec; no allocation/locks.
+        unsafe {
+            command.pre_exec(move || {
+                // Do not inherit the embedding host's control sockets/pipes.
+                // Only the pinned workspace descriptor is passed to bwrap,
+                // which consumes it for mounting and closes it before exec.
+                if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if workspace_fd.is_some_and(|fd| libc::fcntl(fd, libc::F_SETFD, 0) < 0) {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if browser {
+                    // Keep software rendering from occupying the host CPU.
+                    let mut allowed: libc::cpu_set_t = std::mem::zeroed();
+                    let mut bounded: libc::cpu_set_t = std::mem::zeroed();
+                    if libc::sched_getaffinity(
+                        0,
+                        std::mem::size_of::<libc::cpu_set_t>(),
+                        &mut allowed,
+                    ) != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let mut count = 0;
+                    for cpu in 0..libc::CPU_SETSIZE as usize {
+                        if libc::CPU_ISSET(cpu, &allowed) {
+                            libc::CPU_SET(cpu, &mut bounded);
+                            count += 1;
+                            if count == 2 {
+                                break;
+                            }
+                        }
+                    }
+                    if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &bounded)
+                        != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                for (resource, value) in [
+                    // Chromium/V8 reserve large *virtual* address arenas.
+                    // Browser RSS is independently bounded below.
+                    (
+                        libc::RLIMIT_AS,
+                        if browser {
+                            64 * 1024_u64.pow(4)
+                        } else {
+                            limits.memory_bytes
+                        },
+                    ),
+                    (libc::RLIMIT_CPU, limits.cpu_seconds),
+                    (libc::RLIMIT_NPROC, process_ceiling),
+                    (libc::RLIMIT_FSIZE, 16 * 1024 * 1024),
+                    // Firefox's per-tab IPC brokers need more than 128 FDs.
+                    (libc::RLIMIT_NOFILE, if browser { 1024 } else { 128 }),
+                    (libc::RLIMIT_CORE, 0),
+                ] {
+                    let limit = libc::rlimit {
+                        rlim_cur: value,
+                        rlim_max: value,
+                    };
+                    if libc::setrlimit(resource, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(command)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn run_observed(
         &self,
@@ -525,10 +793,11 @@ impl Sandbox {
         cancel: CancellationToken,
         live: Option<Arc<LiveOutput>>,
         browser: bool,
+        stdin: Option<&str>,
     ) -> Result<ProcessOutput> {
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (workspace, writable, argv, cwd, cancel, live, browser);
+            let _ = (workspace, writable, argv, cwd, cancel, live, browser, stdin);
             return Err(WorkerError::new(
                 "sandbox_unavailable",
                 "Only Linux bubblewrap is supported",
@@ -548,179 +817,16 @@ impl Sandbox {
             {
                 return Err(WorkerError::new("invalid_argv", "Invalid program/argv"));
             }
-            relative_path(cwd)?;
-            workspace.revalidate().await?;
-            let mut command = tokio::process::Command::new(&self.bubblewrap);
-            command
-                .env_clear()
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            command.args([
-                "--unshare-all",
-                "--die-with-parent",
-                "--new-session",
-                "--cap-drop",
-                "ALL",
-                "--clearenv",
-                "--ro-bind",
-                "/usr",
-                "/usr",
-                "--symlink",
-                "usr/bin",
-                "/bin",
-                "--symlink",
-                "usr/lib",
-                "/lib",
-                "--symlink",
-                "usr/lib64",
-                "/lib64",
-                "--proc",
-                "/proc",
-                "--dev",
-                "/dev",
-                "--tmpfs",
-                "/tmp",
-                "--dir",
-                "/home",
-                "--dir",
-                "/run",
-            ]);
-            use std::os::fd::AsRawFd;
-            let workspace_fd = workspace.root.as_raw_fd();
-            command
-                .arg(if writable {
-                    "--bind-fd"
-                } else {
-                    "--ro-bind-fd"
-                })
-                .arg(workspace_fd.to_string())
-                .arg("/workspace");
-            command.args([
-                "--chdir",
-                &format!("/workspace/{cwd}"),
-                "--setenv",
-                "PATH",
-                "/usr/bin:/bin",
-                "--setenv",
-                "HOME",
-                "/tmp",
-                "--setenv",
-                "LANG",
-                "C.UTF-8",
-            ]);
-            if browser {
-                let runtime = crate::browser::runtime_path().ok_or_else(|| {
-                    WorkerError::new(
-                        "browser_unavailable",
-                        "Install the WW browser runtime with scripts/install-browser.sh",
-                    )
-                })?;
-                command
-                    .args(["--ro-bind"])
-                    .arg(runtime)
-                    .arg("/opt/werk-browser");
-                command.args([
-                    "--ro-bind-try",
-                    "/etc/fonts",
-                    "/etc/fonts",
-                    "--setenv",
-                    "PYTHONPATH",
-                    "/opt/werk-browser/python",
-                    "--setenv",
-                    "PLAYWRIGHT_BROWSERS_PATH",
-                    "/opt/werk-browser/browsers",
-                ]);
-            }
-            if browser && std::env::var("WERK_WORKER_BROWSER_DEBUG").as_deref() == Ok("1") {
-                command.args(["--setenv", "DEBUG", "pw:browser"]);
-            }
-            command.arg("--");
-            command.args(argv);
-            let limits = self.limits.clone();
-            // RLIMIT_NPROC is charged to the real host UID, including threads,
-            // not to the PID namespace. Reserve a bounded allowance above the
-            // current UID baseline. This is a UID-wide ceiling, not a cgroup.
-            let process_ceiling = host_task_baseline().await?.saturating_add(if browser {
-                limits.browser_processes
-            } else {
-                limits.processes
-            });
-            // SAFETY: only async-signal-safe libc calls before exec; no allocation/locks.
-            unsafe {
-                command.pre_exec(move || {
-                    // Do not inherit the embedding host's control sockets/pipes.
-                    // Only the pinned workspace descriptor is passed to bwrap,
-                    // which consumes it for mounting and closes it before exec.
-                    if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::fcntl(workspace_fd, libc::F_SETFD, 0) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if browser {
-                        // Keep software rendering from occupying the host CPU.
-                        let mut allowed: libc::cpu_set_t = std::mem::zeroed();
-                        let mut bounded: libc::cpu_set_t = std::mem::zeroed();
-                        if libc::sched_getaffinity(
-                            0,
-                            std::mem::size_of::<libc::cpu_set_t>(),
-                            &mut allowed,
-                        ) != 0
-                        {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        let mut count = 0;
-                        for cpu in 0..libc::CPU_SETSIZE as usize {
-                            if libc::CPU_ISSET(cpu, &allowed) {
-                                libc::CPU_SET(cpu, &mut bounded);
-                                count += 1;
-                                if count == 2 {
-                                    break;
-                                }
-                            }
-                        }
-                        if libc::sched_setaffinity(
-                            0,
-                            std::mem::size_of::<libc::cpu_set_t>(),
-                            &bounded,
-                        ) != 0
-                        {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                    }
-                    for (resource, value) in [
-                        // Chromium/V8 reserve large *virtual* address arenas.
-                        // Browser RSS is independently bounded below.
-                        (
-                            libc::RLIMIT_AS,
-                            if browser {
-                                64 * 1024_u64.pow(4)
-                            } else {
-                                limits.memory_bytes
-                            },
-                        ),
-                        (libc::RLIMIT_CPU, limits.cpu_seconds),
-                        (libc::RLIMIT_NPROC, process_ceiling),
-                        (libc::RLIMIT_FSIZE, 16 * 1024 * 1024),
-                        (libc::RLIMIT_NOFILE, 128),
-                        (libc::RLIMIT_CORE, 0),
-                    ] {
-                        let limit = libc::rlimit {
-                            rlim_cur: value,
-                            rlim_max: value,
-                        };
-                        if libc::setrlimit(resource, &limit) != 0 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                    }
-                    if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+            let mut command = self
+                .command(
+                    Some(workspace),
+                    writable,
+                    argv,
+                    cwd,
+                    browser,
+                    stdin.is_some(),
+                )
+                .await?;
             let mut child = command.spawn().map_err(|_| {
                 WorkerError::new(
                     "sandbox_unavailable",
@@ -729,6 +835,26 @@ impl Sandbox {
             })?;
             let stdout = child.stdout.take().unwrap();
             let stderr = child.stderr.take().unwrap();
+            let input = child.stdin.take();
+            // Poll input concurrently with process completion and output drains.
+            // Dropping this future closes the pipe on exit/timeout/cancellation;
+            // a child that never reads cannot leave a detached writer behind.
+            let input_task = async move {
+                if let Some(mut pipe) = input {
+                    let result = pipe.write_all(stdin.unwrap_or_default().as_bytes()).await;
+                    drop(pipe);
+                    if let Err(error) = result
+                        && error.kind() != std::io::ErrorKind::BrokenPipe
+                    {
+                        return Err(WorkerError::new(
+                            "process_io",
+                            "Failed to deliver standard input",
+                        ));
+                    }
+                }
+                Ok::<(), WorkerError>(())
+            };
+            tokio::pin!(input_task);
             let out_task = tokio::spawn(drain_live(
                 stdout,
                 self.limits.output_bytes,
@@ -739,12 +865,26 @@ impl Sandbox {
             let mut cancelled = false;
             let mut timed_out = false;
             let child_pid = child.id().unwrap_or(0);
-            let status = tokio::select! {
-                s = child.wait() => s?,
-                _ = cancel.cancelled() => { cancelled=true; child.kill().await?; child.wait().await? },
-                _ = tokio::time::sleep(Duration::from_millis(self.limits.timeout_ms)) => { timed_out=true; child.kill().await?; child.wait().await? },
-                _ = browser_memory_limit(child_pid, self.limits.memory_bytes), if browser => { timed_out=true; child.kill().await?; child.wait().await? },
-            };
+            let status = {
+                let status_task = async {
+                    Ok::<_, WorkerError>(tokio::select! {
+                        s = child.wait() => s?,
+                        _ = cancel.cancelled() => { cancelled=true; child.kill().await?; child.wait().await? },
+                        _ = tokio::time::sleep(Duration::from_millis(self.limits.timeout_ms)) => { timed_out=true; child.kill().await?; child.wait().await? },
+                        _ = browser_memory_limit(child_pid, self.limits.memory_bytes), if browser => { timed_out=true; child.kill().await?; child.wait().await? },
+                    })
+                };
+                tokio::pin!(status_task);
+                tokio::select! {
+                    status = &mut status_task => status,
+                    input_result = &mut input_task => {
+                        // A failed input transport is not an application assertion.
+                        // Still reap the bounded process and its output tasks.
+                        let status = status_task.await;
+                        input_result.and(status)
+                    }
+                }
+            }?;
             // PID namespace teardown kills all descendants, including detached groups.
             let (out, ot) = out_task
                 .await
@@ -861,7 +1001,7 @@ async fn drain_live<R: AsyncRead + Unpin>(
     Ok((result, truncated))
 }
 
-async fn browser_memory_limit(pid: u32, limit: u64) {
+pub(crate) async fn browser_memory_limit(pid: u32, limit: u64) {
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let rss = tokio::task::spawn_blocking(move || {
@@ -972,6 +1112,7 @@ impl JobManager {
                     child_cancel,
                     Some(log),
                     false,
+                    None,
                 )
                 .await;
             // A finished notification also promises the workspace is released.

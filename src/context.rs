@@ -441,7 +441,7 @@ impl DefaultContextBuilder {
                         .max(usize::from(previous_output_limit))
                         .min(8));
             format!(
-                "\nOutput budget: {budget} tokens total, including reasoning and tool JSON. Be brief. Build large files across turns: FIRST files.write a skeleton under 1000 characters with unique insertion markers, no implementation. THEN files.edit one section at a time, aiming below {} new characters per call. Use the latest successful sha256 as expected_hash. Insert complete functions/blocks with balanced delimiters; never cut a function/string to fit. Preserve a marker for the next section. Keep names/interfaces consistent; reread file ranges when earlier code leaves context. Finish all sections and remove markers before completion. Reuse successful work; do not rewrite the entire file.\n",
+                "\nOutput budget: {budget} tokens total, including reasoning and tool JSON. Be brief. Build large files across turns: FIRST create the smallest runnable end-to-end version including one real interaction. Simplify its design to fit; do not start with disconnected placeholders or an empty implementation. THEN files.edit one complete section at a time, aiming below {} new characters per call. Use the latest successful sha256 as expected_hash. Insert complete functions/blocks with balanced delimiters; never cut a function/string to fit. Keep names/interfaces consistent; reread file ranges when earlier code leaves context. Finish all sections before completion. Reuse successful work; do not rewrite the entire file.\n",
                 chunk_chars.max(128),
             )
         };

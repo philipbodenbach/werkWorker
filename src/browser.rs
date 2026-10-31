@@ -24,7 +24,7 @@ pub(crate) fn definition() -> ToolDefinition {
         json!({"type":"object","properties":props,"required":required,"additionalProperties":false})
     };
     ToolDefinition { name:"browser.check".into(), version:"1".into(), effect:Effect::Process,
-        description:"Test a local HTML entry point in isolated Chromium with a read-only workspace. Supply ordered real clicks/keys and assertions; returns JS errors, assertion results and screenshot. Example actions: press ArrowLeft, expect expression='document.querySelector(\"#score\").textContent !== \"0\"'. A load/screenshot alone is NOT verification. Include verification criteria and all relevant source/test paths to record evidence. External network unavailable; runtime must be installed by host.".into(),
+        description:"Test a local HTML entry point in isolated Chromium with a read-only workspace. Each call starts a fresh page; use up to 16 ordered clicks/keys and assertions per focused scenario. Returns JS errors, assertions and screenshot; failures include the one-based failed_action, last interaction, target state and available controls. Diagnose the check before editing the application. Compare screenshots with supplied visual references; passing assertions alone do not establish visual quality. A load/screenshot alone is NOT behavioral verification. Include verification criteria and relevant source/test paths; use verification.replaces to replace a broken check. External network unavailable; runtime must be installed by host.".into(),
         input_schema:json!({"type":"object","properties":{
             "path":{"type":"string","maxLength":1024},"screenshot":{"type":"boolean"},
             "actions":{"type":"array","maxItems":16,"items":{"oneOf":[
@@ -34,7 +34,7 @@ pub(crate) fn definition() -> ToolDefinition {
                 action("expect_visible",json!({"selector":text}), &["selector"]), action("expect_text",json!({"selector":text,"text":text}), &["selector","text"]),
                 action("expect",json!({"expression":text}), &["expression"])
             ]}},
-            "verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":16,"items":text},"paths":{"type":"array","minItems":1,"maxItems":64,"items":text}},"required":["criteria","paths"],"additionalProperties":false}
+            "verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":16,"items":text},"paths":{"type":"array","minItems":1,"maxItems":64,"items":text}},"required":["criteria","paths"],"additionalProperties":false}
         },"required":["path","actions"],"additionalProperties":false}), timeout_ms:60000, output_limit:8192, concurrency_safe:true }
 }
 pub(crate) async fn prepare(mut args: Value, ctx: &ToolContext) -> Result<Value> {
@@ -97,15 +97,15 @@ pub(crate) async fn execute(args: Value, ctx: &ToolContext) -> Result<ToolResult
         ));
     }
     let input = json!({"path":path,"actions":args["actions"],"screenshot":args["screenshot"].as_bool().unwrap_or(true)});
-    let argv = vec![
-        "/usr/bin/python3".into(),
-        "-c".into(),
-        include_str!("../scripts/browser_check.py").into(),
-        input.to_string(),
-    ];
+    let argv = vec!["/usr/bin/python3".into(), "-".into(), input.to_string()];
     let out = ctx
         .sandbox
-        .run_browser(&ctx.workspace, &argv, ctx.cancel.clone())
+        .run_browser(
+            &ctx.workspace,
+            &argv,
+            ctx.cancel.clone(),
+            include_str!("../scripts/browser_check.py"),
+        )
         .await?;
     if out.exit_code != Some(0) || out.timed_out || out.cancelled {
         return Err(WorkerError::new(

@@ -491,7 +491,7 @@ async fn host_upgrade_during_question_enables_real_writes_and_persists_in_same_s
             "start",
             Limits {
                 // This fixture tests approvals, not prompt-size admission.
-                context_tokens: 32768,
+                context_tokens: 65536,
                 reserve_output_tokens: 4096,
                 ..Default::default()
             },

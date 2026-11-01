@@ -93,6 +93,7 @@ pub(crate) struct EngineInner {
     pub(crate) child_permits: Mutex<BTreeMap<String, tokio::sync::OwnedSemaphorePermit>>,
     pub(crate) delegation: Mutex<()>,
     workspace_access: Arc<crate::parallel::WorkspaceAccess>,
+    pub(crate) waits: Arc<crate::parallel::WaitGraph>,
 }
 #[derive(Clone)]
 pub struct WorkerEngine {
@@ -183,6 +184,7 @@ impl EngineBuilder {
                 child_permits: Mutex::new(BTreeMap::new()),
                 delegation: Mutex::new(()),
                 workspace_access: Arc::new(crate::parallel::WorkspaceAccess::default()),
+                waits: Arc::new(crate::parallel::WaitGraph::default()),
                 execution: self.execution,
                 provider: self.provider,
                 store: self.store,
@@ -1502,6 +1504,7 @@ impl SessionHandle {
         if initial_run.limits.model_compaction
             && initial_run.metrics.model_requests == 0
             && initial_run.history_start > 0
+            && !crate::agents::report_due(&initial, initial_run)
         {
             self.compact_history(run_id, shutdown).await?;
         }
@@ -1586,6 +1589,7 @@ impl SessionHandle {
                 self.provider().as_ref(),
             )?;
             let run = &effective_run;
+            let reporting = crate::agents::report_due(&data, run);
             // Phase refusals finish at admission, before execute_invocation.
             // They must still obey the existing exact-call repetition guard.
             if let Some(invocation) = run.invocations.last().filter(|i| {
@@ -1649,6 +1653,9 @@ impl SessionHandle {
                 crate::completion::bound_tools(&mut defs, fixed_file_bounds);
             }
             crate::working_state::bound_repairs(&data, run, &mut defs);
+            if reporting {
+                defs.clear();
+            }
             let planning = self.engine.inner.context.build_with_provider(
                 &data,
                 run,
@@ -1917,6 +1924,21 @@ impl SessionHandle {
                         if !error.retryable || retries >= max_retries {
                             return Err(error);
                         }
+                        // Retries consume model requests too. Rebuild when the
+                        // next attempt is the reserved report; never replay an
+                        // inspection prompt into the last request allowance.
+                        let current = self.snapshot().await?;
+                        let current_run = current.run(run_id)?;
+                        if !reporting
+                            && crate::agents::report_due(&current, current_run)
+                            && current_run
+                                .limits
+                                .max_model_requests
+                                .saturating_sub(current_run.metrics.model_requests)
+                                <= 1
+                        {
+                            continue 'steps;
+                        }
                         let jitter = (now_ms() % 53) + 1;
                         let delay = error
                             .retry_after_ms
@@ -1928,6 +1950,29 @@ impl SessionHandle {
                 }
             };
             let has_calls = !message.tool_calls.is_empty();
+            if reporting && has_calls {
+                // Some providers still emit calls when no tools were offered.
+                // Do not execute them or mistake their prose for a review.
+                let error = WorkerError::new(
+                    "delegated_report_missing",
+                    "The delegated worker requested more tools during its reporting phase. No further tools were executed; partial receipts are available to the parent.",
+                );
+                self.update(|d| {
+                    let attempt = d.run_mut(run_id)?.attempts.last_mut().unwrap();
+                    attempt.completed = true;
+                    attempt.error = Some(error.clone());
+                    d.emit(
+                        Some(run_id),
+                        EventKind::AttemptFailed {
+                            attempt_id: completed_attempt.clone(),
+                            code: error.code.clone(),
+                        },
+                    );
+                    Ok(())
+                })
+                .await?;
+                return Err(error);
+            }
             self.update(|d| {
                 let r = d.run(run_id)?;
                 if r.limits.tools_exceeded(
@@ -3213,6 +3258,11 @@ impl SessionHandle {
         shutdown: &CancellationToken,
     ) -> Result<()> {
         let invocation_id = &invocation.invocation_id;
+        let _invocation_wait = self
+            .engine
+            .inner
+            .waits
+            .wait_for(run_id, vec![invocation_id.clone()])?;
         let data = self.snapshot().await?;
         let run = data.run(run_id)?;
         if crate::harness::config(&data, run)?.mode != crate::harness::HarnessMode::Classic
@@ -3220,6 +3270,11 @@ impl SessionHandle {
             && crate::harness::repeated_calls(&data, run, &invocation.call)?
                 > run.limits.max_repeated_calls
         {
+            if crate::agents::is_review(&data) {
+                return self
+                    .outcome(run_id, invocation_id, crate::agents::repeated_inspection())
+                    .await;
+            }
             return Err(WorkerError::new(
                 "repetition_limit",
                 "Repeated identical calls without new evidence exceeded the run limit",
@@ -3366,12 +3421,11 @@ impl SessionHandle {
                 || !def.concurrency_safe && def.effect == Effect::Read;
             loop {
                 self.check_running(run_id, shutdown).await?;
-                if let Some(lease) = self
-                    .engine
-                    .inner
-                    .workspace_access
-                    .try_acquire(&context.workspace.path, write)
-                {
+                if let Some(lease) = self.engine.inner.workspace_access.try_acquire(
+                    &context.workspace.path,
+                    write,
+                    invocation_id,
+                ) {
                     context.workspace_lease = Some(lease);
                     break;
                 }
@@ -3381,6 +3435,13 @@ impl SessionHandle {
                     result.data = json!({"jobs":jobs,"message":"A running background job holds workspace access. Use process.wait (no inference while waiting) or process.cancel, then retry. Do not repeatedly read/list the locked workspace."});
                     return self.outcome(run_id, invocation_id, result).await;
                 }
+                let _workspace_wait = self.engine.inner.waits.wait_for(
+                    invocation_id,
+                    self.engine
+                        .inner
+                        .workspace_access
+                        .blockers(&context.workspace.path, write),
+                )?;
                 self.cooperative_delay(run_id, shutdown, 20).await?;
             }
         }
@@ -3453,6 +3514,11 @@ impl SessionHandle {
             > run.limits.max_repeated_calls
             && !crate::read_progress::enabled(&data, run, &invocation.call)?
         {
+            if crate::agents::is_review(&data) {
+                return self
+                    .outcome(run_id, invocation_id, crate::agents::repeated_inspection())
+                    .await;
+            }
             return Err(WorkerError::new(
                 "repetition_limit",
                 "Repeated identical calls without new evidence exceeded the run limit",

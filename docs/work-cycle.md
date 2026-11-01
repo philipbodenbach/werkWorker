@@ -42,8 +42,15 @@ check; the optional field must not silently invalidate otherwise valid evidence.
 Declared syntax/inspection still cannot pass as behavioral verification.
 
 The cycle is reconstructed from receipts across resume/compaction. A tool batch
-counts as one model decision. After `4 * max(3, max_repeated_calls)` decisions
-without resolution (12 by default), the runtime stops with
+counts as one model decision. Newly passed assertions in a related browser recheck
+renew the investigation allowance without clearing the original obligation.
+Assertion identity includes the executed action prefix, so repeating the same
+passing assertions does not renew it. Changed error text (for example changing
+the wrong returned value), invalid predicates, unrelated checks and file changes
+alone are not progress. Generic process failures without structured assertion
+outcomes cannot establish partial success; a passing covering check still resolves
+the obligation normally.
+After `4 * max(3, max_repeated_calls)` decisions without such progress (12 by default), the runtime stops with
 `repair_cycle_exhausted`, preserving work and reporting the unresolved failure.
 If the boundary decision just applied an edit, one final check is offered before
 stopping. This is a check-only phase: a passing recheck resolves the obligation;

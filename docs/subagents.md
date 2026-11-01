@@ -18,15 +18,28 @@ tools and permission/capacity for delegation. No level creates busywork or
 guarantees that the model will delegate on every request.
 The reviewer receives the requirements, recent user corrections, current plan and
 bounded file observations (historical paths/hashes) and can inspect files. Automatic
-reviews have a small finite budget even when their parent runs continuously;
-explicitly delegated tasks retain their inherited limits. A review that exhausts
-its budget is reported as incomplete. It can be replaced **once**, after new
+reviews inherit the parent's resource policy, including continuous mode; there is
+no separate six-request ceiling. Read-only children may keep inspecting while
+obtaining new file versions/ranges or new observations. Repeated covered reads,
+unchanged search results, status polling and failed calls do not reset progress.
+After `max_repeated_calls` decisions without new evidence, tools are withdrawn
+and the next decision must report findings and limitations. Parallel calls count
+as one decision; any new evidence in that batch advances the review. This measures
+observable information, not semantic proof that the review is adequate.
+With an explicitly finite host budget, the last model request or step is reserved
+for reporting as well. Retries consume that budget. The phase is reconstructed
+from durable receipts after resume and is retained during context compaction.
+It does not add requests or guarantee
+a report if inference fails, the shared tree budget runs out, or the model ignores
+the reporting instruction. Failed children deliver bounded historical tool receipts,
+explicitly marked incomplete, rather than losing all inspected evidence.
+Parent image attachments are not forwarded to automatic reviewers; their context
+states this limitation so that they do not claim a visual comparison.
+A failed review can be replaced **once**, after new
 parent file changes since it started. Explicit delegations, completed reviews,
 interrupted or user-cancelled children do not trigger automatic replacements.
-Automatic review ceilings are six model requests, eight tool calls and eight
-steps, with the configured parent wall allowance (default 15 minutes), further
-reduced by tighter inherited limits and the parent deadline. There is no separate
-three-minute cutoff tied to assumed model speed. They share the existing tree
+Finite reviews respect the configured parent deadline and resource limits.
+There is no separate cutoff tied to assumed task complexity or model speed. They share the existing tree
 request budget; admission leaves room for
 parent work but does not reserve requests against concurrent consumption.
 Completed child results arrive at the parent's next model decision while work
@@ -42,6 +55,13 @@ provider, while an uncertain backend outcome still blocks new inference.
 Review failures include their original error code in the parent chat.
 It cannot write files, execute processes, or replace the parent’s behavior tests. Children run in the same
 engine, not by spawning another CLI binary.
+
+The runtime records active agent joins, tool dependencies and workspace-lock
+owners in a wait graph. A circular dependency is refused with `deadlock_detected`;
+guards remove the edges when an operation completes or is cancelled. Background
+jobs retain their own lease ownership, so a slow independent job is not mistaken
+for an agent deadlock. Inference retains its separate request/deadline recovery;
+waiting for user approval is not itself a deadlock.
 
 The model's `delegate_task` description includes the effective configured inference
 capacity without requiring a separate status call. It recommends at most one helper

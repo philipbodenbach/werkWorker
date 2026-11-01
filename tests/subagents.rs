@@ -642,8 +642,11 @@ async fn delegation_levels_start_helpers_at_distinct_stages_and_respect_capacity
                 level.unwrap_or_default()
             );
             let limits = &child.run.as_ref().unwrap().limits;
-            assert!(!limits.continuous);
-            assert_eq!(limits.max_model_requests, 6);
+            assert!(limits.continuous);
+            assert_eq!(
+                limits.max_model_requests,
+                Limits::default().max_model_requests
+            );
             assert_eq!(
                 limits.max_wall_ms,
                 run.status().await.unwrap().limits.max_wall_ms
@@ -1498,14 +1501,24 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
         );
         if let Some(child) = children.first() {
             let review = child.run.as_ref().unwrap();
-            assert!(!review.limits.continuous);
-            assert_eq!(review.limits.max_model_requests, 6);
-            assert_eq!(review.limits.max_tool_invocations, 8);
+            assert!(review.limits.continuous);
+            assert_eq!(
+                review.limits.max_model_requests,
+                Limits::default().max_model_requests
+            );
+            assert_eq!(
+                review.limits.max_tool_invocations,
+                Limits::default().max_tool_invocations
+            );
             assert!(review.metrics.model_requests <= 6);
             if looping {
                 assert_eq!(review.status, RunStatus::Failed);
-                assert_eq!(review.error.as_ref().unwrap().code, "request_budget");
-                assert_eq!(review.metrics.model_requests, 6);
+                assert_eq!(
+                    review.error.as_ref().unwrap().code,
+                    "delegated_report_missing"
+                );
+                assert_eq!(review.metrics.model_requests, 5);
+                assert_eq!(review.metrics.tool_invocations, 4);
             } else {
                 assert_eq!(review.status, RunStatus::Completed);
             }
@@ -1528,6 +1541,217 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
             assert!(review.input.contains("game.txt"));
         }
         assert!(result.text.is_none());
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn reviews_continue_with_progress_then_report_stagnation_and_deliver_partial_evidence() {
+    use werk_worker::policy::ToolPermission;
+    for (failure, ignore_report) in [
+        (None, false),
+        (Some("backend_busy"), false),
+        (Some("model_output_limit"), false),
+        (None, true),
+    ] {
+        let reads = 10;
+        let mut child_turns: Vec<_> = (0..reads)
+            .map(|n| {
+                tool_turn(
+                    &format!("inspect_{n}"),
+                    "files.read",
+                    json!({"path":format!("source_{n}.txt")}),
+                )
+            })
+            .collect();
+        child_turns.extend((0..3).map(|n| {
+            tool_turn(
+                &format!("repeat_{n}"),
+                "files.read",
+                json!({"path":"source_9.txt","start_line":1,"end_line":n+1}),
+            )
+        }));
+        if let Some(code) = failure {
+            let mut error = WorkerError::new(code, "Controlled interrupted inference");
+            error.retryable = true;
+            child_turns.push(ScriptedTurn {
+                deltas: vec![],
+                delay_ms: 0,
+                error: Some(error),
+            });
+        }
+        child_turns.push(if ignore_report {
+            tool_turn("forbidden_extra_read", "files.read", json!({"path":"source_0.txt"}))
+        } else {
+            ScriptedTurn::text("Inspected the available source. Behavior and visual requirements remain unverified; run the planned acceptance checks.")
+        });
+        let provider = Arc::new(CodingReviewProbe {
+            capacity: 2,
+            root: ScriptedProvider::new(vec![
+                tool_turn(
+                    "plan",
+                    "task.plan",
+                    json!({"steps":[
+                        {"id":"inspect","description":"Inspect","status":"in_progress"},
+                        {"id":"implement","description":"Implement","status":"pending"},
+                        {"id":"verify","description":"Verify","status":"pending"}
+                    ]}),
+                ),
+                tool_turn(
+                    "ready",
+                    "interaction.ask",
+                    json!({"question":"ready?","choices":["continue"]}),
+                ),
+                tool_turn("collect", "agents.wait", json!({})),
+                tool_turn(
+                    "joined",
+                    "interaction.ask",
+                    json!({"question":"joined?","choices":["continue"]}),
+                ),
+            ]),
+            child: ScriptedProvider::new(child_turns),
+            seen: Mutex::new(vec![]),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..10 {
+            std::fs::write(
+                dir.path().join(format!("source_{n}.txt")),
+                if n == 9 {
+                    "fully inspected\n".into()
+                } else {
+                    format!("source {n}\n{}", "observed evidence\n".repeat(160))
+                },
+            )
+            .unwrap();
+        }
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    name: "coding-basic".into(),
+                    schema_version: 1,
+                    prompt: "Implement and verify".into(),
+                    skills: vec![],
+                    tools: [
+                        "task.plan",
+                        "files.read",
+                        "files.write",
+                        "delegate_task",
+                        "agents.wait",
+                        "interaction.ask",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
+                },
+                dir.path(),
+                HostPolicy {
+                    workspace_writable: true,
+                    tool_permissions: [("files.read".into(), ToolPermission::Allow)].into(),
+                    ..Default::default()
+                },
+                json!({"project_config":{"delegation_level":"max"}}),
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Implement using the acceptance criteria",
+                "start",
+                Limits {
+                    continuous: true,
+                    context_tokens: 16384,
+                    reserve_output_tokens: 1024,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let ready = wait_for_question(&run, "ready?").await;
+        let children = run.subagents().await.unwrap();
+        assert_eq!(children.len(), 1);
+        let child = run.subagent(&children[0].session_id).await.unwrap();
+        let result = child.wait().await.unwrap();
+        let review = child.status().await.unwrap();
+        assert_eq!(review.metrics.tool_invocations, reads + 3);
+        assert_eq!(
+            review.metrics.model_requests,
+            reads + 4 + u32::from(failure.is_some())
+        );
+        assert_eq!(
+            result.status,
+            if ignore_report {
+                RunStatus::Failed
+            } else {
+                RunStatus::Completed
+            },
+            "{result:?}"
+        );
+        if ignore_report {
+            assert_eq!(result.error.unwrap().code, "delegated_report_missing");
+        }
+        let seen = provider.seen.lock().unwrap().clone();
+        let last = seen
+            .iter()
+            .rev()
+            .find(|r| {
+                r.messages
+                    .iter()
+                    .any(|m| m.role == Role::System && m.content.contains("delegated worker"))
+            })
+            .unwrap();
+        assert!(last.tools.is_empty());
+        assert!(
+            last.messages
+                .iter()
+                .any(|m| m.content.contains("delegated_report_due"))
+        );
+        assert!(
+            review
+                .input
+                .contains("Parent image attachments are not included")
+        );
+        if failure.is_none() {
+            assert!(
+                review
+                    .contexts
+                    .iter()
+                    .any(|c| !c.omitted_messages.is_empty()),
+                "fixture must exercise compaction"
+            );
+        }
+        run.respond_to_interaction(&ready.request_id, "continue", "continue")
+            .await
+            .unwrap();
+        wait_for_question(&run, "joined?").await;
+        let saved = session.snapshot().await.unwrap();
+        let payload = saved
+            .messages
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+            .find(|v| v["event"] == "subagent_results")
+            .unwrap();
+        let delivered = &payload["data"]["agents"][0];
+        if ignore_report {
+            assert_eq!(delivered["partial_evidence"]["review_complete"], false);
+            assert!(delivered["text"].is_null());
+            assert!(
+                !delivered["partial_evidence"]["receipts"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            assert!(
+                delivered["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("remain unverified")
+            );
+        }
         engine.close().await.unwrap();
     }
 }

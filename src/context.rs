@@ -331,6 +331,9 @@ impl DefaultContextBuilder {
     ) -> Result<(ModelRequest, ContextSnapshot)> {
         validate_messages(&session.messages)?;
         crate::work_cycle::check_tools(session, run, &mut tools)?;
+        if crate::agents::report_due(session, run) {
+            tools.clear();
+        }
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         let file_budget = if tools.iter().any(|t| {
             matches!(
@@ -553,6 +556,11 @@ impl DefaultContextBuilder {
         }
         // Only the stable host/profile prefix has system authority. Rebuild all
         // lower-authority evidence together, including after rolling compaction.
+        if let Some(feedback) = crate::agents::report_feedback(session, run) {
+            prompt.push('\n');
+            prompt.push_str(crate::agents::REPORT_GUIDANCE);
+            dynamic.push(feedback);
+        }
         let project_messages = crate::project::context_messages(session)?;
         let prefix = |omitted: &BTreeSet<usize>, summary: &str| -> Vec<Message> {
             if !minimal {

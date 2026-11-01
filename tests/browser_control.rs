@@ -46,6 +46,171 @@ fn assert_ok(result: &ToolResult) {
 }
 
 #[tokio::test]
+async fn browser_target_recovers_after_output_limit_and_compaction_in_the_engine() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    use werk_worker::{
+        browser_policy::BrowserPolicy, profiles::AgentProfile, providers::ModelDelta,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("preview.html"),
+        format!(
+            "<!doctype html><title>Recovered preview</title><body>Current local page</body>\n{}",
+            "<!-- previous source evidence -->\n".repeat(400)
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("notes.txt"),
+        "Historical inspection evidence.\n".repeat(250),
+    )
+    .unwrap();
+    let call = |id: &str, name: &str, arguments: Value| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments,
+    };
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::calls(
+            "",
+            vec![call("read", "files.read", json!({"path":"preview.html"}))],
+        ),
+        ScriptedTurn::calls(
+            "",
+            vec![call("notes", "files.read", json!({"path":"notes.txt"}))],
+        ),
+        ScriptedTurn {
+            delay_ms: 0,
+            error: None,
+            deltas: vec![
+                ModelDelta::Tool {
+                    index: 0,
+                    id: "incomplete".into(),
+                    name: "browser.open".into(),
+                    arguments: "{\"path\":".into(),
+                },
+                ModelDelta::Finish {
+                    reason: "length".into(),
+                },
+                ModelDelta::Done,
+            ],
+        },
+        ScriptedTurn::calls("", vec![call("missing_target", "browser.open", json!({}))]),
+        ScriptedTurn::calls(
+            "",
+            vec![call(
+                "corrected_target",
+                "browser.open",
+                json!({"path":"preview.html"}),
+            )],
+        ),
+        ScriptedTurn::text("Opened the local preview."),
+    ]));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let mut browser = BrowserPolicy::default();
+    browser
+        .set(
+            "http://workspace.invalid",
+            "browsing",
+            ToolPermission::Allow,
+        )
+        .unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                schema_version: 1,
+                name: "preview".into(),
+                prompt: "Inspect and preview the local file.".into(),
+                tools: vec!["files.read".into(), "browser.open".into()],
+                skills: vec![],
+            },
+            dir.path(),
+            HostPolicy {
+                browser: Some(browser),
+                tool_permissions: [("files.read".into(), ToolPermission::Allow)].into(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Open preview.html in the browser",
+            "start",
+            Limits {
+                context_tokens: 16384,
+                reserve_output_tokens: 1024,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(60), run.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{result:?}");
+    let saved = run.status().await.unwrap();
+    assert_eq!(saved.metrics.model_requests, 6);
+    assert_eq!(
+        saved.invocations.len(),
+        4,
+        "incomplete calls must never enter execution"
+    );
+    assert_eq!(saved.invocations[2].call.arguments, json!({}));
+    assert_eq!(
+        saved.invocations[2].result.as_ref().unwrap().status,
+        Outcome::ValidationError
+    );
+    let opened = saved.invocations[3].result.as_ref().unwrap();
+    assert_ok(opened);
+    assert!(
+        opened.data["text"]
+            .as_str()
+            .unwrap()
+            .contains("Current local page")
+    );
+    assert!(
+        opened.data["viewer_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://127.0.0.1:")
+    );
+    assert!(
+        saved
+            .contexts
+            .iter()
+            .any(|c| !c.omitted_messages.is_empty()),
+        "exercise compacted context"
+    );
+    let requests = provider.requests();
+    let correction = &requests[4];
+    let diagnostic = correction
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("missing_target"))
+        .unwrap();
+    assert!(diagnostic.content.contains("exactly one alternative"));
+    assert!(diagnostic.content.contains("path"));
+    assert!(diagnostic.content.contains("url"));
+    assert!(
+        correction
+            .messages
+            .iter()
+            .any(|m| m.content.contains("preview.html"))
+    );
+    werk_worker::context::validate_messages(&session.snapshot().await.unwrap().messages).unwrap();
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn workspace_open_is_scoped_validated_and_bound_to_the_reviewed_entry() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.html"), "<body>Before</body>").unwrap();
@@ -56,7 +221,10 @@ async fn workspace_open_is_scoped_validated_and_bound_to_the_reviewed_entry() {
         json!({}),
         json!({"path":"index.html","url":"https://example.com"}),
     ] {
-        assert!(validate_arguments(&tool.definition().input_schema, &args).is_err());
+        let error = validate_arguments(&tool.definition().input_schema, &args).unwrap_err();
+        assert!(error.message.contains("exactly one alternative"));
+        assert!(error.message.contains("required fields [\"path\"]"));
+        assert!(error.message.contains("required fields [\"url\"]"));
     }
     let prepared = tool
         .prepare(json!({"path":"index.html"}), &ctx)

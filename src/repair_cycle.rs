@@ -15,6 +15,7 @@ pub(crate) struct RepairCycle {
     // Only explicit, path-covering descendants of the active obligation.
     // Keep each parent's paths so a replacement cannot drop intermediate scope.
     replacements: BTreeMap<String, BTreeSet<String>>,
+    passed_assertions: BTreeSet<String>,
 }
 
 fn command(invocation: &ToolInvocation) -> String {
@@ -106,15 +107,52 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
             last_failure: String::new(),
             browser_failure: None,
             replacements: [(invocation.invocation_id.clone(), paths.clone())].into(),
+            passed_assertions: BTreeSet::new(),
         });
+        // Renew only on newly passed assertions, not changing failure strings
+        // ("expected good, got bad1" -> "bad2" is still the same failure).
+        // Browser receipts identify the executed prefix; a generic process
+        // failure without structured outcomes cannot establish this progress.
+        let valid_failure = result.data["failed_action"]["failure_origin"] != "check"
+            && result.data["failed_action"]["failure_origin"] != "runtime";
+        let relevant = related || current.source_invocation == invocation.invocation_id;
+        let mut progressed = false;
+        if relevant
+            && valid_failure
+            && invocation.call.name == "browser.check"
+            && let (Some(actions), Some(outcomes)) = (
+                invocation.call.arguments["actions"].as_array(),
+                result.data["actions"].as_array(),
+            )
+        {
+            for (index, outcome) in outcomes.iter().enumerate().take(actions.len()) {
+                if outcome["passed"] != true {
+                    break;
+                }
+                if matches!(
+                    outcome["type"].as_str(),
+                    Some("expect" | "expect_visible" | "expect_text")
+                ) {
+                    progressed |= current.passed_assertions.insert(fingerprint(&(
+                        invocation.call.arguments["path"].clone(),
+                        &actions[..=index],
+                    )));
+                }
+            }
+        }
+        if related && progressed {
+            current.rounds.clear();
+        }
         if related {
             current
                 .replacements
                 .insert(invocation.invocation_id.clone(), paths);
         }
         current.rounds.insert(invocation.message_index);
-        current.last_failure = failure;
-        current.browser_failure = result.data.get("failed_action").cloned();
+        if relevant {
+            current.last_failure = failure;
+            current.browser_failure = result.data.get("failed_action").cloned();
+        }
     }
     cycle
 }
@@ -151,6 +189,7 @@ impl RepairCycle {
         "failed_command_excerpt":crate::completion::excerpt(&self.argv.to_string(), 1400),
         "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
         "decisions_without_resolution":self.rounds.len(),
+        "progress_policy":"Newly passed assertions in a related check renew the investigation allowance. The original obligation remains until a covering check passes. Changing error strings and file activity alone do not renew it.",
         "decision_limit":stop_limit(run),
         "final_check_due":self.final_check_due(run),
         "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
@@ -194,7 +233,7 @@ pub(crate) fn check(session: &SessionData, run: &Run) -> Result<()> {
             return Err(WorkerError::new(
                 "repair_cycle_exhausted",
                 format!(
-                    "A failed check remains unresolved after {} model decisions, including edits and changed diagnostics. Work and receipts are retained; the task is incomplete. Failed check: {}. Latest failure: {}",
+                    "A failed check remains unresolved after {} model decisions without newly passed assertions in a related recheck. Work and receipts are retained; the task is incomplete. Failed check: {}. Latest failure: {}",
                     cycle.rounds.len(),
                     crate::completion::excerpt(&cycle.argv.to_string(), 400),
                     crate::completion::diagnostic_excerpt(&cycle.last_failure, 1000)
@@ -235,6 +274,42 @@ mod tests {
             json!({"exit_code":if passed {0} else {1},"stderr":format!("diagnostic {index}"),"workspace_changed":false,
                 "verification":{"passed":passed,"files":{"app.txt":hash(revision)}}}),
         )
+    }
+
+    #[test]
+    fn newly_passed_assertions_extend_repair_but_old_cycles_do_not() {
+        let mut run = run();
+        let check = |n: usize, milestone: usize, passed: bool| {
+            receipt(
+                n,
+                "browser.check",
+                json!({"path":"app.html","actions":[{"type":"expect","expression":format!("stage >= {milestone}")},{"type":"expect","expression":"done === true"}],
+                "verification":{"kind":"behavior","replaces":"inv_0","criteria":["Complete all milestones"],"paths":["app.html"]}}),
+                json!({"exit_code":if passed {0} else {1},"errors":[format!("Not complete at {n}")],"actions":[{"type":"expect","passed":true}],
+                "failed_action":{"index":2,"failure_origin":"application"},"verification":{"passed":passed,"files":{"app.html":format!("v{n}")}}}),
+            )
+        };
+        for n in 0..30 {
+            run.invocations.push(check(n, n, false));
+            let cycle = latest(&run, &BTreeMap::new()).unwrap();
+            assert_eq!(
+                cycle.rounds.len(),
+                1,
+                "fresh related rechecks may exceed twelve total decisions"
+            );
+            assert_eq!(
+                cycle.source_invocation, "inv_0",
+                "progress never clears the obligation"
+            );
+        }
+        for n in 30..45 {
+            run.invocations.push(check(n, n % 2, false));
+        }
+        let restored: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        let cycle = latest(&restored, &BTreeMap::new()).unwrap();
+        assert!(cycle.rounds.len() >= stop_limit(&restored));
+        run.invocations.push(check(45, 29, true));
+        assert!(latest(&run, &BTreeMap::new()).is_none());
     }
 
     #[test]

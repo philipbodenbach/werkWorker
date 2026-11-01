@@ -6,7 +6,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
-struct Coverage {
+pub(crate) struct Coverage {
     hash: String,
     ranges: Vec<(u64, u64)>,
 }
@@ -27,7 +27,7 @@ impl Coverage {
         ranges
     }
 
-    fn observe(&mut self, hash: &str, start: u64, end: u64) -> u64 {
+    pub(crate) fn observe(&mut self, hash: &str, start: u64, end: u64) -> u64 {
         if self.hash != hash {
             self.hash = hash.into();
             self.ranges.clear();

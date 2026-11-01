@@ -102,6 +102,59 @@ async fn history(groups: usize) -> SessionData {
 }
 
 #[tokio::test]
+async fn explicit_finite_review_limits_reserve_synthesis_but_continuous_reviews_do_not() {
+    use werk_worker::{agents::ParentLink, tools::ToolRegistry};
+    let mut state = history(0).await;
+    state.parent = Some(ParentLink {
+        session_id: "parent".into(),
+        run_id: "parent_run".into(),
+        root_session: "parent".into(),
+        root_run: "parent_run".into(),
+        depth: 1,
+    });
+    state.policy.workspace_writable = false;
+    state.profile.tools = vec!["files.read".into()];
+    state.runs[0].limits.max_model_requests = 6;
+    state.runs[0].metrics.model_requests = 5;
+    let definitions = vec![
+        ToolRegistry::builtins()
+            .unwrap()
+            .get("files.read")
+            .unwrap()
+            .definition(),
+    ];
+    let (request, _) = DefaultContextBuilder
+        .build_with_provider(
+            &state,
+            &state.runs[0],
+            definitions.clone(),
+            &Counter::default(),
+        )
+        .await
+        .unwrap();
+    assert!(request.tools.is_empty());
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("delegated_report_due"))
+    );
+    state.runs[0].limits.continuous = true;
+    state.runs[0].metrics.model_requests = 50;
+    let (request, _) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], definitions, &Counter::default())
+        .await
+        .unwrap();
+    assert!(!request.tools.is_empty());
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("delegated_report_due"))
+    );
+}
+
+#[tokio::test]
 async fn long_history_planning_has_bounded_counts_and_reuses_selection_after_resume() {
     let mut state = history(120).await;
     let original = state.messages.clone();

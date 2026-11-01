@@ -128,8 +128,10 @@ pub fn validate_arguments(schema: &Value, args: &Value) -> Result<()> {
             .take(4)
             .map(|e| {
                 format!(
-                    "argument {} violates schema {}",
-                    e.instance_path, e.schema_path
+                    "argument {} violates schema {}{}",
+                    e.instance_path,
+                    e.schema_path,
+                    constraint_hint(schema, &e.schema_path.to_string()),
                 )
             })
             .collect::<Vec<_>>()
@@ -140,6 +142,58 @@ pub fn validate_arguments(schema: &Value, args: &Value) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Explain the declared constraint, never echo the rejected instance (which
+/// may contain credentials). Also works for alternatives with no root-level
+/// required fields, such as a URL-or-workspace-path target.
+fn constraint_hint(schema: &Value, pointer: &str) -> String {
+    let Some((parent, keyword)) = pointer.rsplit_once('/') else {
+        return String::new();
+    };
+    let Some(constraint) = schema.pointer(pointer) else {
+        return String::new();
+    };
+    let hint = match keyword {
+        "oneOf" | "anyOf" => {
+            let alternatives = constraint
+                .as_array()
+                .map(|branches| {
+                    branches
+                        .iter()
+                        .take(8)
+                        .map(|branch| match branch.get("required") {
+                            Some(fields) => format!("required fields {fields}"),
+                            None => "another declared schema alternative".into(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                })
+                .unwrap_or_default();
+            format!(
+                "satisfy {} alternative: {alternatives}",
+                if keyword == "oneOf" {
+                    "exactly one"
+                } else {
+                    "at least one"
+                }
+            )
+        }
+        "required" => format!("required fields: {constraint}"),
+        "type" => format!("expected type: {constraint}"),
+        "additionalProperties" => {
+            let keys: Vec<_> = schema
+                .pointer(parent)
+                .and_then(|v| v["properties"].as_object())
+                .map(|p| p.keys().take(32).collect())
+                .unwrap_or_default();
+            format!("allowed fields: {keys:?}")
+        }
+        "enum" | "const" | "minimum" | "maximum" | "minLength" | "maxLength" | "minItems"
+        | "maxItems" => format!("{keyword}: {constraint}"),
+        _ => return String::new(),
+    };
+    format!(" ({})", crate::completion::excerpt(&hint, 512))
 }
 fn object(props: Value, required: &[&str]) -> Value {
     json!({"type":"object","properties":props,"required":required,"additionalProperties":false})

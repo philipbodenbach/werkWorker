@@ -96,7 +96,7 @@ async fn finish(run: &RunHandle) -> RunResult {
 }
 
 #[tokio::test]
-async fn automatic_review_deadline_keeps_parallel_parent_and_shared_provider_usable() {
+async fn continuous_reviews_and_explicit_deadlines_keep_the_shared_provider_usable() {
     // Cover cancellation while waiting for headers, consuming SSE, and awaiting
     // a non-streaming response. No live model, subprocess or sandbox fixture.
     for (streaming, before_headers) in [(true, true), (true, false), (false, true)] {
@@ -124,8 +124,7 @@ async fn automatic_review_deadline_keeps_parallel_parent_and_shared_provider_usa
                 });
                 let planned = messages.iter().any(|m| m["role"] == "tool");
                 let message = if child {
-                    // Even a complete late tool call must not execute.
-                    call("files.read", json!({"path":"must-not-be-read.txt"}))
+                    call("files.read", json!({"path":"review.txt"}))
                 } else if !planned {
                     call(
                         "task.plan",
@@ -154,11 +153,19 @@ async fn automatic_review_deadline_keeps_parallel_parent_and_shared_provider_usa
             .await
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review.txt"), "Review evidence").unwrap();
         let session = engine
             .create_session(
                 profile(true),
                 dir.path(),
-                HostPolicy::default(),
+                HostPolicy {
+                    tool_permissions: [(
+                        "files.read".into(),
+                        werk_worker::policy::ToolPermission::Allow,
+                    )]
+                    .into(),
+                    ..Default::default()
+                },
                 json!({"project_config":{"delegation_level":"max"}}),
             )
             .await
@@ -192,25 +199,15 @@ async fn automatic_review_deadline_keeps_parallel_parent_and_shared_provider_usa
             _ => unreachable!(),
         };
         let child = run.subagent(&child_id).await.unwrap();
-        event(
-            &child,
-            |e| matches!(e, EventKind::Diagnostic {code} if code == "model_deadline_draining"),
-        )
-        .await;
-        assert!(!child.status().await.unwrap().status.terminal());
+        let review = finish(&child).await;
+        assert!(child.status().await.unwrap().limits.continuous);
         assert!(
             run.status().await.unwrap().metrics.model_requests >= 2,
             "parent continues concurrently"
         );
-        assert_eq!(
-            session.execution_status()["free_model_slots"],
-            0,
-            "cleanup must retain the child's inference permit"
-        );
-        let review = finish(&child).await;
-        assert_eq!(review.error.unwrap().code, "wall_budget");
-        assert_eq!(review.metrics.model_requests, 1);
-        assert_eq!(review.metrics.tool_invocations, 0);
+        assert_eq!(review.error.unwrap().code, "delegated_report_missing");
+        assert_eq!(review.metrics.model_requests, 5);
+        assert_eq!(review.metrics.tool_invocations, 4);
         let child_data = engine
             .open_session(&child_id)
             .await
@@ -218,19 +215,15 @@ async fn automatic_review_deadline_keeps_parallel_parent_and_shared_provider_usa
             .snapshot()
             .await
             .unwrap();
-        assert!(!child_data.events.iter().any(|e| matches!(
-            e.event,
-            EventKind::ToolPrepared { .. }
-                | EventKind::ToolDelta { .. }
-                | EventKind::ModelCompleted { .. }
-        )));
+        assert!(!child_data.events.iter().any(|e| matches!(&e.event,
+            EventKind::Diagnostic { code } if code == "model_deadline_draining")));
         let result = finish(&run).await;
         // The fixture has no implementation or verification: its normal coding
         // acceptance gate still applies. It must not fail with inference_unresolved.
         assert_eq!(result.error.unwrap().code, "completion_stalled");
         assert!(result.metrics.model_requests >= 3);
         let saved = session.snapshot().await.unwrap();
-        assert!(saved.events.iter().any(|e| matches!(&e.event, EventKind::Subagent { error:Some(error), .. } if error.code == "wall_budget")));
+        assert!(saved.events.iter().any(|e| matches!(&e.event, EventKind::Subagent { error:Some(error), .. } if error.code == "delegated_report_missing")));
         let other_dir = tempfile::tempdir().unwrap();
         let other = engine
             .create_session(
@@ -241,6 +234,29 @@ async fn automatic_review_deadline_keeps_parallel_parent_and_shared_provider_usa
             )
             .await
             .unwrap();
+        // Explicit finite budgets still drain late inference for every wire
+        // mode above. A continuous review no longer invents this deadline.
+        let finite = other
+            .submit(
+                "Check the connection",
+                "finite",
+                Limits {
+                    max_wall_ms: 400,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        event(
+            &finite,
+            |e| matches!(e, EventKind::Diagnostic {code} if code == "model_deadline_draining"),
+        )
+        .await;
+        let expired = finish(&finite).await;
+        assert_eq!(expired.error.unwrap().code, "wall_budget");
+        assert_eq!(expired.metrics.model_requests, 1);
+        assert_eq!(expired.metrics.tool_invocations, 0);
         // A fresh ordinary session sharing the very same provider also works.
         let followup = other
             .submit("Check the connection", "check", Limits::default(), None)

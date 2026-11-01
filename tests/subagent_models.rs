@@ -270,9 +270,15 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
     assert_eq!(saved.profile.tools, vec!["files.read"]);
     let review = child.run.as_ref().unwrap();
     assert_eq!(review.status, RunStatus::Completed);
-    assert!(!review.limits.continuous);
-    assert_eq!(review.limits.max_model_requests, 6);
-    assert_eq!(review.limits.max_tool_invocations, 8);
+    assert!(review.limits.continuous);
+    assert_eq!(
+        review.limits.max_model_requests,
+        Limits::default().max_model_requests
+    );
+    assert_eq!(
+        review.limits.max_tool_invocations,
+        Limits::default().max_tool_invocations
+    );
     assert!(
         server
             .requests

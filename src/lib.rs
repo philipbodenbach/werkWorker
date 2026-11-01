@@ -25,6 +25,7 @@ mod reasoning;
 mod repair_cycle;
 #[cfg(test)]
 mod repetition_tests;
+mod review_progress;
 pub mod runtime;
 pub mod sessions;
 pub mod skills;

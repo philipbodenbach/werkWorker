@@ -2,9 +2,58 @@
 use crate::{core::*, providers::InferenceConcurrency};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+/// Active dependencies only, removed on completion or cancellation. A slow
+/// operation is not a deadlock: only a directed wait cycle trips this guard.
+#[derive(Default)]
+pub(crate) struct WaitGraph {
+    edges: Mutex<BTreeMap<String, (String, Vec<String>)>>,
+}
+pub(crate) struct WaitGuard {
+    id: String,
+    graph: Arc<WaitGraph>,
+}
+impl WaitGraph {
+    pub fn wait_for(
+        self: &Arc<Self>,
+        waiter: &str,
+        dependencies: Vec<String>,
+    ) -> Result<WaitGuard> {
+        let mut edges = self.edges.lock().unwrap();
+        let mut pending = dependencies.clone();
+        let mut visited = BTreeSet::new();
+        while let Some(node) = pending.pop() {
+            if node == waiter {
+                return Err(WorkerError::new(
+                    "deadlock_detected",
+                    format!(
+                        "Circular runtime wait detected at {waiter}. The new wait was refused; existing work is retained."
+                    ),
+                ));
+            }
+            if visited.insert(node.clone()) {
+                for (_, targets) in edges.values().filter(|(owner, _)| *owner == node) {
+                    pending.extend(targets.iter().cloned());
+                }
+            }
+        }
+        let id = id("wait");
+        edges.insert(id.clone(), (waiter.into(), dependencies));
+        Ok(WaitGuard {
+            id,
+            graph: self.clone(),
+        })
+    }
+}
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        self.graph.edges.lock().unwrap().remove(&self.id);
+    }
+}
 
 /// Delegation strategy, independent of host capacity and tool permissions.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,26 +264,42 @@ impl Drop for InferencePermit {
 }
 #[derive(Default)]
 pub(crate) struct WorkspaceAccess {
-    leases: Mutex<Vec<(String, PathBuf, bool)>>,
+    leases: Mutex<Vec<(String, PathBuf, bool, String)>>,
 }
 pub struct WorkspaceLease {
     id: String,
     access: Arc<WorkspaceAccess>,
 }
 impl WorkspaceAccess {
-    pub fn try_acquire(self: &Arc<Self>, path: &Path, write: bool) -> Option<Arc<WorkspaceLease>> {
+    pub fn try_acquire(
+        self: &Arc<Self>,
+        path: &Path,
+        write: bool,
+        owner: &str,
+    ) -> Option<Arc<WorkspaceLease>> {
         let mut leases = self.leases.lock().unwrap();
-        if leases.iter().any(|(_, other, exclusive)| {
+        if leases.iter().any(|(_, other, exclusive, _)| {
             (write || *exclusive) && (path.starts_with(other) || other.starts_with(path))
         }) {
             return None;
         }
         let id = id("lease");
-        leases.push((id.clone(), path.to_owned(), write));
+        leases.push((id.clone(), path.to_owned(), write, owner.into()));
         Some(Arc::new(WorkspaceLease {
             id,
             access: self.clone(),
         }))
+    }
+    pub fn blockers(&self, path: &Path, write: bool) -> Vec<String> {
+        self.leases
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, other, exclusive, _)| {
+                (write || *exclusive) && (path.starts_with(other) || other.starts_with(path))
+            })
+            .map(|(_, _, _, owner)| owner.clone())
+            .collect()
     }
 }
 impl Drop for WorkspaceLease {
@@ -243,7 +308,7 @@ impl Drop for WorkspaceLease {
             .leases
             .lock()
             .unwrap()
-            .retain(|(id, _, _)| *id != self.id);
+            .retain(|(id, _, _, _)| *id != self.id);
     }
 }
 
@@ -251,22 +316,71 @@ impl Drop for WorkspaceLease {
 mod tests {
     use super::*;
     #[test]
+    fn wait_cycles_are_rejected_and_cancelled_dependencies_are_removed() {
+        let graph = Arc::new(WaitGraph::default());
+        let access = Arc::new(WorkspaceAccess::default());
+        let path = Path::new("workspace");
+        let lease = access.try_acquire(path, true, "parent_tool").unwrap();
+        let parent = graph
+            .wait_for("parent", vec!["parent_tool".into()])
+            .unwrap();
+        let joined_child = graph.wait_for("parent_tool", vec!["child".into()]).unwrap();
+        let child = graph.wait_for("child", vec!["child_tool".into()]).unwrap();
+        assert_eq!(
+            graph
+                .wait_for("child_tool", access.blockers(path, false))
+                .err()
+                .unwrap()
+                .code,
+            "deadlock_detected"
+        );
+        drop(joined_child); // completion/cancellation releases the dependency
+        let valid = graph
+            .wait_for("child_tool", access.blockers(path, false))
+            .unwrap();
+        drop(valid);
+        drop(lease);
+        assert!(access.blockers(path, false).is_empty());
+        drop(parent);
+        drop(child);
+        assert!(graph.edges.lock().unwrap().is_empty());
+        assert!(graph.wait_for("self", vec!["self".into()]).is_err());
+        // A background job retains a lease but does not depend on its parent:
+        // waiting for that job is not a cycle, even if it is slow.
+        let job = access.try_acquire(path, true, "background_job").unwrap();
+        let wait = graph
+            .wait_for("parent", access.blockers(path, true))
+            .unwrap();
+        drop(job);
+        drop(wait);
+    }
+    #[test]
     fn overlapping_workspaces_share_reads_and_exclude_writers_until_last_lease_drops() {
         let access = Arc::new(WorkspaceAccess::default());
         let path = Path::new("workspace");
-        let read = access.try_acquire(path, false).unwrap();
+        let read = access.try_acquire(path, false, "reader").unwrap();
         let retained_by_job = read.clone();
-        let nested = access.try_acquire(&path.join("child"), false).unwrap();
-        assert!(access.try_acquire(path, true).is_none());
-        assert!(access.try_acquire(Path::new("independent"), true).is_some());
+        let nested = access
+            .try_acquire(&path.join("child"), false, "nested")
+            .unwrap();
+        assert!(access.try_acquire(path, true, "writer").is_none());
+        assert!(
+            access
+                .try_acquire(Path::new("independent"), true, "independent")
+                .is_some()
+        );
         drop(read);
         drop(nested);
-        assert!(access.try_acquire(path, true).is_none());
+        assert!(access.try_acquire(path, true, "writer").is_none());
         drop(retained_by_job);
-        let write = access.try_acquire(path, true).unwrap();
-        assert!(access.try_acquire(&path.join("child"), false).is_none());
+        let write = access.try_acquire(path, true, "writer").unwrap();
+        assert!(
+            access
+                .try_acquire(&path.join("child"), false, "nested")
+                .is_none()
+        );
         drop(write);
-        assert!(access.try_acquire(path, false).is_some());
+        assert!(access.try_acquire(path, false, "reader").is_some());
     }
 }
 

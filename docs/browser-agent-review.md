@@ -24,10 +24,9 @@ The original repair tests now use a fixed set of original goals: inventing a new
 assertion at each failed recheck no longer counts as genuine improvement. The
 existing browser recovery test retains all recovery/compaction assertions, with
 20k context capacity for the expanded v3 contract and skill metadata.
-The all-tools permission-upgrade fixture now retains its existing 64k context
-capacity after restart as well; its approval and actual-write assertions remain.
-Browser guidance is scoped to browser-capable contexts, preserving the existing
-small-context file/skill evidence regression.
+Tool descriptions stay compact and browser guidance is scoped to browser-capable
+contexts. Existing small-context file/skill, read recovery and permission-upgrade
+regressions retain their original budgets and assertions.
 
 ## New integration
 
@@ -119,7 +118,23 @@ model run and a text-model DOM run remain open.**
 
 ## Checks
 
-Required commands and focused suites:
+Completed on 2026-11-01 at `186463b` plus local final corrections:
+
+- `cargo fmt --check`, `cargo check --locked --all-targets` and
+  `cargo clippy --locked --all-targets -- -D warnings`: passed.
+- `cargo test --locked --all-targets --no-fail-fast`: 405 reported passed,
+  0 failed, 20 ignored, including the existing review/partial-evidence,
+  WaitGraph, recovery and mixed coding completion regressions. Tests gated
+  off without `REQUIRE_BROWSER` are not counted as real-browser evidence.
+- Explicit Chromium suites: `browser_control` 12 passed / 2 opt-in tests ignored;
+  `browser_mode` 8 passed. A concurrent run initially hit an OS resource error
+  while starting Chromium; the separate complete rerun passed.
+- Python observation regressions: 2 passed using real Chromium.
+- Panel JavaScript syntax checked with `node --check`; `git diff --check` passed.
+- The live-site probe was explicitly executed separately; outcomes are above.
+  The real-model executable produced a `backend_unavailable` report, not a pass.
+
+Reproduction commands:
 
 ```sh
 cargo fmt --check

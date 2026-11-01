@@ -203,6 +203,60 @@ fn policy() -> HostPolicy {
 }
 
 #[tokio::test]
+async fn invalid_browser_calls_never_fabricate_checkpoints_or_bypass_repetition_limits() {
+    let workspace = tempfile::tempdir().unwrap();
+    let turns = (0..4)
+        .map(|n| {
+            Reply::Turn(ScriptedTurn::calls(
+                "",
+                vec![ToolCall {
+                    id: format!("open-{n}"),
+                    name: "browser.open".into(),
+                    arguments: json!({}),
+                }],
+            ))
+        })
+        .collect();
+    let provider = Arc::new(RecoveryProvider::new(turns));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let mut profile = profile();
+    profile.tools = vec!["browser.open".into()];
+    let session = engine
+        .create_session(
+            profile,
+            workspace.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("Open https://example.com", "open", Limits::default(), None)
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.error.unwrap().code, "repetition_limit");
+    let state = run.status().await.unwrap();
+    for invocation in state.invocations.iter().take(3) {
+        let result = invocation.result.as_ref().unwrap();
+        assert_eq!(result.status, Outcome::ValidationError);
+        assert_eq!(result.data["executed"], false);
+        assert!(result.data["message"].as_str().unwrap().contains("url"));
+    }
+    assert_eq!(provider.requests().len(), 4);
+    for request in provider.requests() {
+        assert!(!request.messages.iter().any(|m| {
+            serde_json::from_str::<Value>(&m.content)
+                .is_ok_and(|v| v["event"] == "browser_checkpoint")
+        }));
+    }
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn recovery_grows_the_actual_budget_within_provider_and_host_caps() {
     for (provider_cap, host_cap, expected) in [
         (Some(8192), None, 8192),

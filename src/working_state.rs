@@ -46,6 +46,11 @@ pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Mes
         .chain(std::iter::once(run))
         .flat_map(|r| &r.invocations)
         .filter(|i| crate::browser_progress::is_browser(&i.call) || i.call.name == "browser.open")
+        .filter(|i| {
+            i.result.as_ref().is_some_and(|r| {
+                r.data["browser_id"].is_string() && r.data["observation_id"].is_string()
+            })
+        })
         .last()?;
     let data = &invocation.result.as_ref()?.data;
     let observation: serde_json::Map<String, Value> = [
@@ -70,7 +75,10 @@ pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Mes
             matches!(
                 i.call.name.as_str(),
                 "browser.open" | "browser.navigate" | "browser.action" | "browser.evaluate"
-            )
+            ) && i.result.as_ref().is_some_and(|r| {
+                r.data["browser_id"] == data["browser_id"]
+                    && (r.data["action_executed"] == true || r.data["action_outcome"] == "unknown")
+            })
         })
         .last();
     Some(crate::harness::feedback(
@@ -333,4 +341,85 @@ pub(crate) fn changes(before: &BTreeMap<String, Value>, after: BTreeMap<String, 
             .filter(|(p, value)| before.get(p) != Some(value))
             .collect::<BTreeMap<_, _>>()
     )
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+    use crate::{api::WorkerEngine, policy::HostPolicy, profiles::AgentProfile, providers::*};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn validation_is_not_an_observation_and_real_checkpoint_echo_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine =
+            WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text(
+                "seed",
+            )])))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    schema_version: 1,
+                    name: "fixture".into(),
+                    prompt: "Browse".into(),
+                    tools: vec![],
+                    skills: vec![],
+                },
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        session
+            .submit("Browse", "seed", Limits::default(), None)
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let mut data = session.snapshot().await.unwrap();
+        engine.close().await.unwrap();
+        let invalid: ToolInvocation = serde_json::from_value(json!({
+            "invocation_id":"invalid", "step_id":"step", "message_index":1,
+            "call":{"id":"invalid","name":"browser.open","arguments":{}},
+            "status":"finished","prepared":{},
+            "result":ToolResult::error(Outcome::ValidationError,"validation_error")
+        }))
+        .unwrap();
+        data.runs[0].invocations.push(invalid.clone());
+        assert!(browser_checkpoint(&data, &data.runs[0]).is_none());
+
+        let observed = &mut data.runs[0].invocations[0];
+        observed.invocation_id = "opened".into();
+        observed.call.id = "opened".into();
+        observed.call.arguments = json!({"url":"https://example.com"});
+        observed.result = Some(ToolResult::ok(json!({
+            "browser_id":"live", "observation_id":"observed-1", "tab_id":1,
+            "action_executed":true, "title":"Actual page"
+        })));
+        data.runs[0].invocations.push(invalid);
+        let checkpoint = browser_checkpoint(&data, &data.runs[0]).unwrap();
+        let value: Value = serde_json::from_str(&checkpoint.content).unwrap();
+        assert_eq!(value["data"]["observation"]["observation_id"], "observed-1");
+        assert_eq!(value["data"]["observed_effect"]["status"], "succeeded");
+        let mut request = ModelRequest {
+            messages: vec![checkpoint.clone()],
+            tools: vec![],
+            max_output_tokens: 512,
+            output_schema: None,
+            reasoning_tier: None,
+        };
+        assert!(
+            crate::harness::is_feedback_echo(&data, &data.runs[0], &request, &checkpoint).unwrap()
+        );
+        request.messages.clear();
+        assert!(
+            !crate::harness::is_feedback_echo(&data, &data.runs[0], &request, &checkpoint).unwrap(),
+            "A harness source label alone does not establish ownership"
+        );
+    }
 }

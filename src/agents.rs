@@ -279,7 +279,20 @@ impl SessionHandle {
                     })
             })
         });
-        if level != DelegationLevel::Max && !changed {
+        // Browser mode/skill selection is evidence of an interaction workflow,
+        // not an implementation. Even Max must wait for actual file changes
+        // before automatically assigning a coding reviewer in that workflow.
+        // Explicit delegation and all coding completion checks remain available.
+        let browsing = data.policy.browser.as_ref().is_some_and(|p| p.enabled)
+            || run.invocations.iter().any(|i| {
+                crate::browser_policy::TOOLS.contains(&i.call.name.as_str())
+                    || (i.call.name == "skills.load"
+                        && i.call.arguments["name"] == "browser-use"
+                        && i.result
+                            .as_ref()
+                            .is_some_and(|r| r.status == Outcome::Succeeded))
+            });
+        if !changed && (level != DelegationLevel::Max || browsing) {
             return Ok(());
         }
         // Conservative preserves the existing late handoff. Higher levels opt

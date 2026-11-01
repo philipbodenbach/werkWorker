@@ -16,6 +16,10 @@ Automatic helpers require at least three plan steps with remaining work, two
 verified configured model slots, no active or successful helper, available read
 tools and permission/capacity for delegation. No level creates busywork or
 guarantees that the model will delegate on every request.
+In browser mode, or after selecting the browser-use skill/browser tools, even
+Max waits for an actual file change before starting an automatic coding reviewer.
+A drawing/game/form plan alone is not implementation work. Explicit delegation
+remains available, and mixed tasks retain their coding reviews and completion checks.
 The reviewer receives the requirements, recent user corrections, current plan and
 bounded file observations (historical paths/hashes) and can inspect files. Automatic
 reviews inherit the parent's resource policy, including continuous mode; there is

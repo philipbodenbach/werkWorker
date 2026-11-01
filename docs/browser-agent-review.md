@@ -33,7 +33,8 @@ regressions retain their original budgets and assertions.
 - Bundled `browser-use` skill with immutable session snapshots, activation in
   browser-capable runs, profile integration and restoration into older sessions.
 - Host-owned Auto/DOM/Vision settings, generic `visual:true`, explicit screenshot
-  overrides and prepared-setting checks. Browser tools are version 3.
+  overrides and prepared-setting checks. `browser.open` is version 4 after the
+  native-schema correction below; the other browser controls remain version 3.
 - Observation identity and a bounded browser checkpoint in Working State;
   at most two browser frames in planned requests, with user images retained.
 - Panel/TUI settings, observed activity, task status, vision problems and expiry.
@@ -116,7 +117,44 @@ reported `backend_unavailable` / `network_error` before any model request. No
 model or hardware was downloaded or changed. **A genuine multi-step visual
 model run and a text-model DOM run remain open.**
 
-## Checks
+## JSPaint follow-up, 2026-11-01
+
+A real user run on `bbb515b` ended after 987.8 seconds with `repetition_limit`:
+three `browser.open {}` calls failed validation and the fourth was stopped
+before execution. No JSPaint observation or drawing was produced.
+The active backend was configured with Qwen3.8-Flash-Next Q4_K_M and a vision
+projector; this failure preceded visual inference.
+
+The running llama.cpp build's schema parser reads `oneOf` alternatives without
+merging their siblings. The previous required-only branches lost the target
+properties. A reduced reproduction linked against that build's native library
+produced `anyOf / any / any`; complete branches produced
+`anyOf / object required=url / object required=path`. This confirms a schema
+incompatibility; it does not measure the model's drawing ability.
+
+`browser.open` v4 now keeps complete, mutually exclusive object alternatives,
+including optional field constraints, with root properties retained for chat
+templates. Descriptions stay compact to preserve existing context budgets.
+Missing targets and repetition limits are still enforced before effects.
+Validation failures no longer fabricate empty browser checkpoints or replace
+the last real observation, and exact echoes of emitted checkpoints enter bounded
+response recovery. Browser workflows no longer trigger an automatic coding
+review at plan creation in Max mode; actual file changes still trigger reviews.
+
+Regression coverage includes independent alternative validation, the serialized
+WerkProvider request, the engine's repeated invalid calls, checkpoint provenance
+and echo handling, and browser-only plans followed by real implementation work.
+The authenticated server returned HTTP 401 to a new client, so no additional
+real-model drawing run was claimed during the correction.
+
+Correction validation on `bbb515b` plus local changes: format/check/Clippy passed;
+the full Rust suite reported 408 passed, 0 failed and 20 ignored. Explicit
+Chromium runs passed 12 `browser_control` tests (2 opt-in tests ignored) and all
+8 `browser_mode` tests, including the actual WerkProvider image request path.
+Restart the rebuilt worker and choose a fresh session for the next model test;
+an already running worker keeps its previous tool definitions.
+
+## Initial feature checks
 
 Completed on 2026-11-01 at `186463b` plus local final corrections:
 

@@ -325,6 +325,14 @@ compaction. The agent derives completion criteria, reuses its browser ID and
 checks observed effects. Pure browser tasks require no synthetic workspace edits;
 coding tasks retain their file verification requirements.
 
+`browser.open` requires exactly one target, for example
+`{"url":"https://jspaint.app"}` or `{"path":"index.html"}`. Version 4 expresses
+these alternatives as complete object schemas so native tool parsers retain
+the target fields. Missing targets are still rejected before execution; the
+host does not invent a URL from chat text. Validation failures create no browser
+checkpoint. Checkpoints require actual observation IDs, and copying an emitted
+checkpoint as the model's answer uses the existing bounded echo recovery.
+
 Use `/browser perception auto`, `dom` or `vision`, the panel selector, or the
 host API `set_browser_settings(BrowserSettings, command_id)`:
 

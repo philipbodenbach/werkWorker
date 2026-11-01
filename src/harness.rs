@@ -278,6 +278,11 @@ pub(crate) fn is_feedback_echo(
             .filter(|observation| request.messages.contains(observation)),
     );
     owned.extend(
+        crate::working_state::browser_checkpoint(session, run)
+            .into_iter()
+            .filter(|observation| request.messages.contains(observation)),
+    );
+    owned.extend(
         crate::work_cycle::continuation(session, run)?
             .into_iter()
             .filter(|observation| {

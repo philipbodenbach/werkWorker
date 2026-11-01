@@ -1172,6 +1172,14 @@ async fn browser_images_reach_the_actual_werk_backend_request_in_vision_and_dom_
         let server=support::Server::start(move |request| {
             if request.path!="/v1/chat/completions" {return support::werk(request);}
             let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            let open = request.body["tools"].as_array().unwrap().iter()
+                .find(|t|t["function"]["name"]=="browser.open").unwrap();
+            for branch in open["function"]["parameters"]["oneOf"].as_array().unwrap() {
+                let target=branch["required"][0].as_str().unwrap();
+                assert_eq!(branch["type"],"object");
+                assert_eq!(branch["properties"][target]["type"],"string");
+                assert!(validate_arguments(branch,&json!({})).is_err());
+            }
             let messages=request.body["messages"].as_array().unwrap();
             let images=messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count();
             if perception==Perception::Vision && n>0 { assert!((1..=2).contains(&images),"current image must survive, comparison frame is optional"); }

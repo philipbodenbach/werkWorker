@@ -423,6 +423,14 @@ impl ScrollPane {
         };
     }
 }
+#[derive(Debug, PartialEq)]
+enum QuestionAction {
+    Answer(String),
+    WriteAnswer,
+    BrowserPermissions,
+    WorkspacePermissions,
+}
+
 #[derive(Default)]
 struct View {
     effort: crate::cli_effort::Picker,
@@ -439,6 +447,8 @@ struct View {
     pasted_images: Vec<(String, attachments::ImageAttachment)>,
     session_images: Vec<String>,
     browser_preview: Option<String>,
+    browser_enabled: bool,
+    browser_permissions_url: Option<String>,
     image_number: usize,
     clipboard: Option<tokio::task::JoinHandle<std::io::Result<text_input::Clipboard>>>,
     submitting: bool,
@@ -832,6 +842,10 @@ impl View {
     }
     fn refresh_permissions(&mut self, data: &SessionData) {
         (self.access_summary, self.permissions) = permission_details(data);
+        self.browser_enabled = data.policy.browser.as_ref().is_some_and(|p| p.enabled);
+        if !self.browser_enabled {
+            self.browser_permissions_url = None;
+        }
         if let Ok(level) = werk_worker::parallel::DelegationLevel::from_metadata(&data.metadata) {
             self.permissions
                 .push_str(&format!("\nDelegation: {}", level.label()));
@@ -946,14 +960,42 @@ impl View {
             options
         } else if let Some(question) = &self.interaction {
             let mut options = question.choices.clone();
-            if !options.is_empty() {
-                options.push("Write my own answer".into());
+            options.push("Write my own answer".into());
+            if self.browser_enabled {
+                options.push("Website permissions · show browser panel link (/browser)".into());
             }
-            options.push("Edit permissions · session / project (F5)".into());
+            options.push("Workspace permissions · session / project (F5)".into());
             options
         } else {
             vec![]
         }
+    }
+    fn question_action(&self, selected: usize) -> Option<QuestionAction> {
+        let question = self.interaction.as_ref()?;
+        if let Some(answer) = question.choices.get(selected) {
+            return Some(QuestionAction::Answer(answer.clone()));
+        }
+        match selected.checked_sub(question.choices.len())? {
+            0 => Some(QuestionAction::WriteAnswer),
+            1 if self.browser_enabled => Some(QuestionAction::BrowserPermissions),
+            index if index == 1 + usize::from(self.browser_enabled) => {
+                Some(QuestionAction::WorkspacePermissions)
+            }
+            _ => None,
+        }
+    }
+
+    async fn show_browser_permissions(&mut self, session: Option<&SessionHandle>) -> Result<()> {
+        let session = session
+            .ok_or_else(|| WorkerError::new("session_required", "Connect a session first"))?;
+        let url = format!("{}#permissions", session.browser_panel().await?);
+        self.append(&format!(
+            "\n\nWebsite permissions · open this browser panel link:\n{url}\n"
+        ));
+        self.browser_permissions_url = Some(url);
+        self.pane(Pane::Request).offset = 0;
+        self.error.clear();
+        Ok(())
     }
     fn open_appearance(&mut self) {
         self.layout_selected = usize::from(self.layout == LayoutMode::Cockpit);
@@ -1346,9 +1388,18 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
             ),
         )
     } else if let Some(request) = &view.interaction {
+        let browser_link = view
+            .browser_permissions_url
+            .as_ref()
+            .map_or_else(String::new, |url| {
+                format!("Website permissions · open in your browser:\n{url}\n\n")
+            });
         (
             " Question ",
-            format!("Agent: {}\n\n{}", view.request_owner, request.question),
+            format!(
+                "Agent: {}\n\n{browser_link}{}",
+                view.request_owner, request.question
+            ),
         )
     } else {
         return;
@@ -1399,7 +1450,7 @@ fn draw_request(frame: &mut Frame, view: &mut View, area: Rect) {
     } else if options.is_empty() {
         "Type your answer below · Enter send · Alt-↑↓ details"
     } else {
-        "↑↓ choose · Enter send · or type your own answer · Alt-↑↓ details"
+        "↑↓ choose · Enter select · type below to answer · Alt-↑↓ details"
     };
     frame.render_widget(Paragraph::new(shortcut_text(hint)), rows[2]);
 }
@@ -2769,15 +2820,23 @@ pub async fn show(
                         view.paste_notice = "Draft cleared · pending paste cancelled.".into();
                         view.input.clear(); view.edited_input();
                     } else if key.code == KeyCode::Enter && view.input.is_empty() && view.interaction.is_some() {
-                        let answer = view.interaction.as_ref().and_then(|q| q.choices.get(view.choice_selected)).cloned();
-                        if let (Some(run), Some(answer)) = (addressed.as_ref().or(active.as_ref()), answer) {
-                            answer_question(&mut view, run, &answer).await?;
-                        } else if view.choice_selected + 1 == view.response_options().len() {
-                            view.open_settings(session.as_ref()).await;
-                            if let Some(editor) = &mut view.settings {
-                                editor.tab = 1;
-                                editor.selected[1] = 1;
+                        match view.question_action(view.choice_selected) {
+                            Some(QuestionAction::Answer(answer)) => {
+                                if let Some(run) = addressed.as_ref().or(active.as_ref()) {
+                                    answer_question(&mut view, run, &answer).await?;
+                                }
                             }
+                            Some(QuestionAction::BrowserPermissions) => {
+                                view.show_browser_permissions(session.as_ref()).await?;
+                            }
+                            Some(QuestionAction::WorkspacePermissions) => {
+                                view.open_settings(session.as_ref()).await;
+                                if let Some(editor) = &mut view.settings {
+                                    editor.tab = 1;
+                                    editor.selected[1] = 1;
+                                }
+                            }
+                            Some(QuestionAction::WriteAnswer) | None => {}
                         }
                     } else if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Up | KeyCode::Down) {
                         let pane = if view.approval.is_some() || view.interaction.is_some() { Pane::Request } else { Pane::Session };
@@ -2912,6 +2971,79 @@ pub async fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_question_without_suggestions_exposes_answer_and_website_permissions() {
+        let mut view = View {
+            browser_enabled: true,
+            interaction: Some(InteractionRequest {
+                request_id: "restore-browser".into(),
+                question: "Please restore the browser.".into(),
+                choices: vec![],
+                answer: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(view.question_action(0), Some(QuestionAction::WriteAnswer));
+        assert_eq!(
+            view.question_action(1),
+            Some(QuestionAction::BrowserPermissions)
+        );
+        assert_eq!(
+            view.question_action(2),
+            Some(QuestionAction::WorkspacePermissions)
+        );
+        assert_eq!(view.question_action(3), None);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 32)).unwrap();
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("› Write my own answer"));
+        assert!(rendered.contains("Website permissions"));
+        assert!(rendered.contains("Workspace permissions"));
+        assert!(!rendered.contains("Allow once"));
+
+        view.browser_permissions_url = Some("http://127.0.0.1:1234/view_test/#permissions".into());
+        terminal.draw(|f| draw(f, &mut view)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("http://127.0.0.1:1234/view_test/#permissions"));
+        assert!(view.interaction.as_ref().unwrap().answer.is_none());
+
+        view.interaction.as_mut().unwrap().choices = vec!["Retry".into()];
+        assert_eq!(
+            view.question_action(0),
+            Some(QuestionAction::Answer("Retry".into()))
+        );
+        assert_eq!(view.question_action(1), Some(QuestionAction::WriteAnswer));
+        assert_eq!(
+            view.question_action(2),
+            Some(QuestionAction::BrowserPermissions)
+        );
+        view.browser_enabled = false;
+        assert_eq!(
+            view.question_action(2),
+            Some(QuestionAction::WorkspacePermissions)
+        );
+        assert!(
+            !view
+                .response_options()
+                .iter()
+                .any(|label| label.contains("Website"))
+        );
+    }
 
     #[test]
     fn tool_events_distinguish_verification_outcomes_from_execution_success() {

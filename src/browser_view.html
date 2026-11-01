@@ -12,6 +12,7 @@
 <footer>Own isolated browser session, separate from your personal tabs. Snapshots update after actions. Password, payment and one-time-code entry belongs to you. Closing this panel does not stop the agent.</footer>
 <script>
 const $=id=>document.getElementById(id);let revision=-1,host=null,pending=null,busy=false,approvalKey='',tabsKey='';
+if(location.hash==='#permissions')$('rules').hidden=false;
 async function control(op,extra={}){if(busy)return;busy=true;$('error').textContent='';try{const r=await fetch('control',{method:'POST',headers:{'Content-Type':'application/json','X-Werk-Browser':'1'},body:JSON.stringify({op,...extra})});const data=await r.json();if(!r.ok||data.error)throw Error(data.error||'Request failed');return data;}catch(e){$('error').textContent=e.message;}finally{busy=false;}}
 async function manual(args){if(!host?.paused)return;await control('manual',{arguments:args});}
 $('enabled').onchange=()=>control('mode',{enabled:$('enabled').checked});$('takeover').onclick=()=>control('pause');$('resume').onclick=()=>control('resume');$('stop').onclick=()=>control('stop');$('settings').onclick=()=>{$('rules').hidden=!$('rules').hidden;};

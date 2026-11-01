@@ -595,13 +595,24 @@ async fn host_upgrade_during_question_enables_real_writes_and_persists_in_same_s
     let session = engine.open_session(&session_id).await.unwrap();
     assert!(session.snapshot().await.unwrap().policy.request_approvals);
     let run = session
-        .submit("Continue", "next", Limits::default(), None)
+        .submit(
+            "Continue",
+            "next",
+            Limits {
+                // Preserve this approval fixture's context capacity on resume.
+                context_tokens: 65536,
+                reserve_output_tokens: 4096,
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
     let request = approval(&run, 0).await;
     assert!(!workspace.path().join("after-restart.txt").exists());
     answer(&run, &request, true).await;
-    assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
     assert!(workspace.path().join("after-restart.txt").exists());
     engine.close().await.unwrap();
 }

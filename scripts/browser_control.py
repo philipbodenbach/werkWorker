@@ -14,6 +14,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -76,12 +77,14 @@ class Proxy:
             def forward(self):
                 epoch = driver.epoch
                 if not driver.active:
+                    driver.block_transport("background_network_disabled")
                     self.send_error(403, "No browser action is active")
                     self.close_connection = True
                     return
                 try:
                     length = int(self.headers.get("content-length", "0"))
                     if length < 0 or length > 1048576 or self.headers.get("transfer-encoding") or self.headers.get("upgrade"):
+                        driver.block_transport("streaming_request_unsupported")
                         raise ValueError("Unsupported streaming request")
                     body = self.rfile.read(length) if length else b""
                     url = self.scheme + "://" + self.authority + self.path if self.authority else self.path
@@ -137,6 +140,7 @@ class Driver:
         self.secrets = set()
         self.ref_sequence = 0
         self.epoch = 0
+        self.transport_blocks = []
         self.lock = threading.Lock()
         self.proxy = Proxy(self)
 
@@ -188,7 +192,10 @@ class Driver:
         self.context = self.browser.new_context(
             viewport={"width": 1024, "height": 768},
             service_workers="block", accept_downloads=False, ignore_https_errors=True)
-        self.context.route_web_socket("**/*", lambda ws: ws.close())
+        def blocked_socket(ws):
+            self.block_transport("websocket_unsupported")
+            ws.close()
+        self.context.route_web_socket("**/*", blocked_socket)
         self.context.on("page", self.add_page)
         self.page = self.context.new_page()
         self.page.goto(args["url"], wait_until="domcontentloaded")
@@ -223,17 +230,21 @@ class Driver:
         values=[]; masks=[]
         if not self.page:
             return values,masks
-        for frame in self.page.frames[:16]:
+        if len(self.page.frames) > 16:
+            raise ValueError("Protected-field scan exceeds frame limit")
+        for frame in self.page.frames:
             fields=frame.locator('input,textarea,[contenteditable=true]')
-            for i in range(min(fields.count(),100)):
+            if fields.count() > 100:
+                raise ValueError("Protected-field scan exceeds field limit")
+            for i in range(fields.count()):
                 field=fields.nth(i)
                 try:
                     if self.info(field)['protected']:
                         value=field.evaluate("e => e.value || e.innerText || ''")
                         if value: values.append(value)
                         masks.append(field)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    raise ValueError("Protected-field scan failed") from exc
         return values,masks
 
     def focused_element(self):
@@ -327,49 +338,98 @@ class Driver:
                     if self.page is None:
                         self.page = self.context.new_page()
 
-    def snapshot(self, screenshot=False):
+    def block_transport(self, reason):
+        # No URL, credentials or page payload in transport diagnostics.
+        if reason not in self.transport_blocks and len(self.transport_blocks) < 16:
+            self.transport_blocks.append(reason)
+
+    def semantic(self):
+        # Exclude known incidental/live regions. Cursor, refs, time and pixel
+        # animation are deliberately absent from semantic progress.
+        return self.page.evaluate(r"""() => {
+          const root=document.body?.cloneNode(true);
+          if(!root) return '';
+          root.querySelectorAll('script,style,canvas,[aria-live],[role=timer],time').forEach(e=>e.remove());
+          return (root.textContent||'').replace(/\s+/g,' ').trim().slice(0,6000);
+        }""")
+
+    def settle(self):
+        start=time.monotonic(); previous=None; stable_since=start
+        while time.monotonic()-start < 1.2:
+            self.page.wait_for_timeout(100)
+            sample=self.semantic()
+            now=time.monotonic()
+            if sample != previous:
+                previous=sample; stable_since=now
+            if now-start >= 0.4 and now-stable_since >= 0.2:
+                return {"state":"settled", "waited_ms":round((now-start)*1000)}, sample
+        return {"state":"bounded_wait", "waited_ms":1200}, None
+
+    def snapshot(self, screenshot=False, stable_text=None):
         self.pages = {key: page for key, page in self.pages.items() if not page.is_closed()}
         if self.page is None or self.page.is_closed():
             self.page = next(iter(self.pages.values()), None)
-        result = {"url": self.page.url if self.page else "about:blank", "tabs": [], "viewport": {"width": 1024, "height": 768}, "pointer": self.pointer}
+        result = {"url": self.page.url if self.page else "about:blank", "tabs": [],
+                  "viewport": {"width": 1024, "height": 768}, "pointer": self.pointer,
+                  "observation_errors":[], "transport_diagnostics":list(self.transport_blocks),
+                  "transport_policy":{"websocket":"unsupported", "service_worker":"blocked", "background_network":"disabled", "streaming":"bounded_buffer_only"}}
+        self.transport_blocks.clear()
         for key, page in self.pages.items():
             result["tabs"].append({"tab_id": key, "url": page.url[:512], "active": page == self.page})
-        if self.page:
-            self.references = {}
-            result["controls"] = []
-            controls_size=0
-            for element in self.page.query_selector_all('a,button,input,select,textarea,[role=button],[contenteditable=true],canvas')[:100]:
-                try:
-                    if not element.is_visible(): continue
-                    meta=self.info(element)
-                    controls_size+=len(json.dumps(meta,ensure_ascii=True))
-                    if controls_size>10000: break
-                    self.ref_sequence += 1
-                    ref=f'e{self.ref_sequence}'
-                    self.references[ref]=element
-                    meta['ref']=ref
-                    result['controls'].append(meta)
-                    if len(result['controls'])>=40: break
-                except Exception:
-                    continue
-            result["title"] = self.page.title()[:512]
-            body = self.page.locator("body")
-            if body.count():
-                result["text"] = body.inner_text(timeout=2000)[:6000]
-                result["accessibility"] = body.aria_snapshot(timeout=2000)[:8000]
+            if page == self.page: result["tab_id"] = key
+        self.references = {}
+        if not self.page: return result
+        def part(name, operation):
+            try:
+                result[name] = operation()
+            except Exception:
+                result["observation_errors"].append({"part":name,"reason":"extraction_failed"})
+        # Fail closed: a partial protection scan cannot authorize any replacement
+        # frame or text. Other extraction failures do not discard a safe frame.
+        try:
             secret_values,masks=self.protected_values()
-            self.secrets.update(secret_values[:max(0,128-len(self.secrets))])
-            def redact(value):
-                if isinstance(value,str):
-                    for secret in self.secrets: value=value.replace(secret,'[private]')
-                elif isinstance(value,list): value=[redact(item) for item in value]
-                elif isinstance(value,dict): value={k:redact(v) for k,v in value.items()}
-                return value
-            for key in ("text","accessibility","title","controls"):
-                if key in result: result[key]=redact(result[key])
-            if screenshot:
-                result["screenshot_base64"] = base64.b64encode(
-                    self.page.screenshot(type="jpeg", quality=65, timeout=5000, mask=masks)).decode("ascii")
+            if len(self.secrets.union(secret_values)) > 128:
+                raise ValueError("Protected-value redaction capacity exceeded")
+            self.secrets.update(secret_values)
+        except Exception:
+            result["observation_errors"].append({"part":"protection","reason":"masking_unavailable"})
+            return result
+        def controls():
+            items=[]; size=0
+            for element in self.page.query_selector_all('a,button,input,select,textarea,[role=button],[contenteditable=true],canvas')[:100]:
+                if not element.is_visible(): continue
+                meta=self.info(element)
+                meta.update(element.evaluate("e=>({disabled:!!e.disabled,checked:!!e.checked,value:e.tagName==='SELECT'?e.value:undefined})"))
+                size+=len(json.dumps(meta,ensure_ascii=True))
+                if size>10000: break
+                self.ref_sequence+=1
+                ref=f'e{self.ref_sequence}'
+                self.references[ref]=element; meta['ref']=ref; items.append(meta)
+                if len(items)>=40: break
+            return items
+        part("controls", controls)
+        part("title", lambda: self.page.title()[:512])
+        body=self.page.locator("body")
+        part("text", lambda: body.inner_text(timeout=2000)[:6000])
+        part("accessibility", lambda: body.aria_snapshot(timeout=2000)[:8000])
+        part("visual_surface", lambda: self.page.locator('canvas,svg,[role=img],img').evaluate_all("""els => els.some(e => {
+            const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+            return r.width*r.height>=16384 && r.bottom>0 && r.right>0 && r.top<768 && r.left<1024 && s.display!=='none' && s.visibility!=='hidden';
+        })"""))
+        if stable_text is not None:
+            result["semantic_state"]={"url":result["url"],"text":stable_text,
+                "controls":[{k:v for k,v in meta.items() if k in ('tag','role','name','disabled','checked','value')}
+                            for meta in result.get("controls",[]) if meta.get('tag')!='canvas']}
+        def redact(value):
+            if isinstance(value,str):
+                for secret in self.secrets: value=value.replace(secret,'[private]')
+            elif isinstance(value,list): value=[redact(item) for item in value]
+            elif isinstance(value,dict): value={k:redact(v) for k,v in value.items()}
+            return value
+        result=redact(result)
+        if screenshot:
+            part("screenshot_base64", lambda: base64.b64encode(
+                self.page.screenshot(type="jpeg", quality=65, timeout=5000, mask=masks)).decode("ascii"))
         return result
 
     def run(self, tool, args):
@@ -382,7 +442,8 @@ class Driver:
         with self.lock:
             self.epoch += 1
             self.active = True
-        result = {}
+        result = {"action_executed":False}
+        stable_text = None
         try:
             if tool == "browser.open":
                 self.open(args)
@@ -401,18 +462,23 @@ class Driver:
                 if len(body)>4*1024*1024: raise ValueError('Download exceeds 4 MiB')
                 result['download_base64']=base64.b64encode(body).decode('ascii')
                 result['content_type']=response.headers.get('content-type','application/octet-stream')
-            # Include immediate event handlers/popups in this action's result.
-            if self.page and not self.page.is_closed():
-                self.page.wait_for_timeout(50)
+            result["action_executed"] = tool != "browser.observe"
         except Exception as exc:
+            result["action_executed"] = None
+            result["action_outcome"] = "unknown"
             result["error"] = str(exc)[:1500]
             for secret in self.secrets: result['error']=result['error'].replace(secret,'[private]')
         try:
             # Leave transport headroom for a maximum-sized download; the
             # existing panel frame remains valid for this nonvisual operation.
-            result.update(self.snapshot("download_base64" not in result))
-        except Exception as exc:
-            result.setdefault("error", str(exc)[:1500])
+            try:
+                if self.page and not self.page.is_closed():
+                    result["readiness"],stable_text=self.settle()
+            except Exception:
+                result["readiness"]={"state":"unavailable"}
+            result.update(self.snapshot("download_base64" not in result, stable_text))
+        except Exception:
+            result.setdefault("observation_errors", []).append({"part":"snapshot","reason":"extraction_failed"})
             result.setdefault("url", self.page.url if self.page else "about:blank")
         finally:
             with self.lock:

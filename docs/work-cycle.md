@@ -44,8 +44,10 @@ Declared syntax/inspection still cannot pass as behavioral verification.
 The cycle is reconstructed from receipts across resume/compaction. A tool batch
 counts as one model decision. Newly passed assertions in a related browser recheck
 renew the investigation allowance without clearing the original obligation.
-Assertion identity includes the executed action prefix, so repeating the same
-passing assertions does not renew it. Changed error text (for example changing
+Assertion identity uses the normalized page path and the original assertion goal,
+not its preceding actions. Only original goals can earn a new partial-success
+credit. Changing waits, adding trivial assertions or repeating a passing goal
+does not renew it; a corrected covering replacement can still resolve the cycle. Changed error text (for example changing
 the wrong returned value), invalid predicates, unrelated checks and file changes
 alone are not progress. Generic process failures without structured assertion
 outcomes cannot establish partial success; a passing covering check still resolves

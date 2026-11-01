@@ -66,6 +66,10 @@ impl SkillRegistry {
         let mut registry = Self::default();
         for (name, text) in [
             (
+                "browser-use",
+                include_str!("../skills/browser-use/SKILL.md"),
+            ),
+            (
                 "task-execution",
                 include_str!("../skills/task-execution/SKILL.md"),
             ),
@@ -100,6 +104,20 @@ impl SkillRegistry {
         self.skills
             .get(name)
             .ok_or_else(|| WorkerError::new("unknown_skill", "Skill not registered"))
+    }
+    pub(crate) fn ensure_browser(&self, session: &mut SessionData) {
+        if session.profile.tools.iter().any(|t| t == "browser.open") {
+            if !session.profile.skills.iter().any(|s| s == "browser-use") {
+                session.profile.skills.push("browser-use".into());
+            }
+            if let Ok(skill) = self.get("browser-use") {
+                session
+                    .skill_snapshots
+                    .entry("browser-use".into())
+                    .or_insert_with(|| skill.clone());
+            }
+            session.profile_hash = fingerprint(&session.profile);
+        }
     }
     /// Host-selected directory only. Symlinked metadata/resources are rejected.
     pub async fn load_directory(&mut self, root: &Path) -> Result<()> {

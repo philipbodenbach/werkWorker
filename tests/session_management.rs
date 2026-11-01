@@ -301,3 +301,73 @@ async fn rpc_session_deletion_requires_confirmation_and_drops_cached_handles() {
     );
     engine.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn old_browser_sessions_gain_the_skill_without_replacing_saved_snapshots() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemoryStore::default());
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::default()))
+        .store(store.clone())
+        .build()
+        .await
+        .unwrap();
+    let mut profile = AgentProfile::bundled("general-readonly").unwrap();
+    profile.tools.push("browser.open".into());
+    let session = engine
+        .create_session(profile, dir.path(), HostPolicy::default(), Value::Null)
+        .await
+        .unwrap();
+    let id = session.id().await;
+    engine.close().await.unwrap();
+    let mut saved = store.load(&id).await.unwrap();
+    let revision = saved.revision;
+    saved.revision += 1;
+    saved.profile.skills.retain(|name| name != "browser-use");
+    saved.skill_snapshots.remove("browser-use");
+    store.save(&saved, Some(revision)).await.unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::default()))
+        .store(store.clone())
+        .build()
+        .await
+        .unwrap();
+    let restored = engine
+        .open_session(&id)
+        .await
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+    assert!(
+        restored
+            .profile
+            .skills
+            .iter()
+            .any(|name| name == "browser-use")
+    );
+    assert!(restored.skill_snapshots.contains_key("browser-use"));
+    engine.close().await.unwrap();
+    let mut saved = store.load(&id).await.unwrap();
+    let revision = saved.revision;
+    saved.revision += 1;
+    saved.skill_snapshots.get_mut("browser-use").unwrap().body =
+        "Pinned historical browser guidance".into();
+    store.save(&saved, Some(revision)).await.unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::default()))
+        .store(store)
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .open_session(&id)
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap()
+            .skill_snapshots["browser-use"]
+            .body,
+        "Pinned historical browser guidance"
+    );
+    engine.close().await.unwrap();
+}

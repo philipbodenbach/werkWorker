@@ -20,12 +20,70 @@ pub(crate) fn path(value: &str) -> Result<String> {
 
 pub(crate) fn call_key(call: &ToolCall) -> String {
     let mut args = call.arguments.clone();
+    if crate::browser_progress::is_browser(call) {
+        if let Some(args) = args.as_object_mut() {
+            args.remove("screenshot");
+            args.remove("visual");
+        }
+        if args["target"]["ref"].is_string() {
+            args["target"]["ref"] = json!("ephemeral_ref");
+        }
+    }
     for field in ["path", "cwd"] {
         if let Some(value) = args[field].as_str().and_then(|p| path(p).ok()) {
             args[field] = json!(value);
         }
     }
     fingerprint(&(&call.name, args))
+}
+
+/// Browser receipts complement file evidence; plan text remains intent only.
+pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Message> {
+    let invocation = session
+        .runs
+        .iter()
+        .take_while(|r| r.id != run.id)
+        .chain(std::iter::once(run))
+        .flat_map(|r| &r.invocations)
+        .filter(|i| crate::browser_progress::is_browser(&i.call) || i.call.name == "browser.open")
+        .last()?;
+    let data = &invocation.result.as_ref()?.data;
+    let observation: serde_json::Map<String, Value> = [
+        "browser_id",
+        "tab_id",
+        "url",
+        "viewport",
+        "observation_id",
+        "revision",
+        "observed_at_ms",
+        "screenshot",
+        "progress",
+        "observation_errors",
+        "perception",
+        "action_executed",
+    ]
+    .into_iter()
+    .filter_map(|key| data.get(key).map(|v| (key.into(), v.clone())))
+    .collect();
+    let last_action = ordered(session, run)
+        .filter(|i| {
+            matches!(
+                i.call.name.as_str(),
+                "browser.open" | "browser.navigate" | "browser.action" | "browser.evaluate"
+            )
+        })
+        .last();
+    Some(crate::harness::feedback(
+        "browser_checkpoint",
+        json!({
+            "intent":crate::completion::excerpt(&run.plan.to_string(),1024),"intent_trust":"model plan, not evidence",
+            "last_action":last_action.map(|i|json!({"tool":i.call.name,"action":i.call.arguments["action"]})),
+            "observed_effect":{"title":data["title"],"text_excerpt":crate::completion::excerpt(data["text"].as_str().unwrap_or(""),768),"status":invocation.result.as_ref().map(|r|&r.status)},
+            "observation":observation,
+            "uncertainty":"Historical receipt, not a live-session assertion. Observe before acting after compaction, takeover or browser_changed. After restart open a new browser if the session is missing.",
+            "next_step":"Compare a fresh observation with the user goal; only claim criteria actually observed."
+        }),
+    ))
 }
 
 fn ordered<'a>(session: &'a SessionData, run: &'a Run) -> impl Iterator<Item = &'a ToolInvocation> {

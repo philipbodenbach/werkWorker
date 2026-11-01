@@ -2495,3 +2495,39 @@ async fn configured_protocol_capacity_survives_missing_observability_and_refresh
             .any(|r| r.path == "/v1/chat/completions")
     );
 }
+
+#[tokio::test]
+async fn rejected_browser_image_reports_the_actual_projector_diagnostic() {
+    let server=Server::start(|request| {
+        if request.path=="/v1/chat/completions" {
+            assert!(request.body["messages"].as_array().unwrap().iter().any(|m|m["content"].is_array()));
+            return Response {status:400,headers:vec![],body:json!({"error":{"code":"invalid_request","message":"Missing vision projector; run werk setup tool-model"}}).to_string().into_bytes()};
+        }
+        werk(request)
+    }).await;
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let mut message = Message::text(Role::User, "Browser frame");
+    message
+        .images
+        .push(attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap());
+    let error = provider
+        .stream(ModelRequest {
+            messages: vec![message],
+            tools: vec![],
+            max_output_tokens: 128,
+            output_schema: None,
+            reasoning_tier: None,
+        })
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "image_request_rejected");
+    assert!(error.message.contains("Missing vision projector"));
+    assert!(!error.retryable);
+}

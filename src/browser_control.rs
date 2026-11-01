@@ -50,9 +50,9 @@ struct BrowserTool {
 impl Tool for BrowserTool {
     fn definition(&self) -> ToolDefinition {
         let id = text(128);
-        let (description, schema) = match self.name.as_str() {
+        let (description, mut schema) = match self.name.as_str() {
             "browser.open" => (
-                "Open a page in the isolated browser, reusing the existing session. Supply path for a local workspace file (no webserver needed), OR url for HTTP(S). file:///workspace/... is also accepted. Local assets load from the workspace; reload shows edits. Returns browser_id, tabs, text and viewer_url for snapshots/host controls. Use browser.observe/action/navigate with browser_id. To change browser engine, close first. Choose chromium, firefox, webkit or an installed chrome/msedge/brave/opera/vivaldi. No personal profile. External origins need allowed_origins; private/loopback servers also need private_origins. Host approval applies; page loads can cause external writes.",
+                "Open url (HTTP(S)) OR a local workspace path in an isolated persistent browser. Reuses the current browser_id; close before changing engine. Returns text, controls, tabs and observation metadata. allowed_origins scopes additional sites; private_origins explicitly requests private-network exceptions. Host permissions apply to all requests. No personal profile. Use browser.observe/action/navigate with the returned browser_id; browser-use skill explains visual feedback and verification.",
                 {
                     let mut schema = object(
                         json!({"url":text(4096),"path":text(4096),"browser":{"type":"string","enum":["chromium","firefox","webkit","chrome","msedge","brave","opera","vivaldi"]},"allowed_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)},"private_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)}}),
@@ -106,9 +106,16 @@ impl Tool for BrowserTool {
                 object(json!({"browser_id":id}), &["browser_id"]),
             ),
         };
+        if matches!(
+            self.name.as_str(),
+            "browser.open" | "browser.navigate" | "browser.observe" | "browser.action"
+        ) {
+            schema["properties"]["screenshot"] = json!({"type":"boolean","description":"Explicit override: true requests an image even in DOM mode; false suppresses automatic images."});
+            schema["properties"]["visual"] = json!({"type":"boolean","description":"Express visual need (drawing, board, chart, layout) in Auto mode; does not change permissions."});
+        }
         ToolDefinition {
             name: self.name.clone(),
-            version: "2".into(),
+            version: "3".into(),
             effect: Effect::ExternalWrite,
             description: description.into(),
             input_schema: schema,
@@ -129,6 +136,7 @@ impl Tool for BrowserTool {
                         s.browser.clone(),
                         s.origins.clone(),
                         s.private.clone(),
+                        s.settings.budgets(),
                     )
                 })
             };
@@ -161,8 +169,14 @@ impl Tool for BrowserTool {
                     "private_origins must also be approved in allowed_origins or be the initial URL origin",
                 ));
             }
-            if let Some((browser_id, revision, browser, previous_origins, previous_private)) =
-                existing
+            if let Some((
+                browser_id,
+                revision,
+                browser,
+                previous_origins,
+                previous_private,
+                budgets,
+            )) = existing
             {
                 if args["browser"]
                     .as_str()
@@ -175,6 +189,7 @@ impl Tool for BrowserTool {
                         ),
                     ));
                 }
+                args["_session_budgets"] = budgets;
                 args["reuse_browser_id"] = json!(browser_id);
                 args["revision"] = json!(revision);
                 args["browser"] = json!(browser);
@@ -216,7 +231,7 @@ impl Tool for BrowserTool {
                 args["browser"] = json!("chromium");
             }
             args["isolation"] = json!(
-                "empty browser filesystem, isolated profile; approved workspace pages served read-only through HTTP broker; no direct network; session expires after 15 minutes"
+                "empty browser filesystem, isolated profile; approved workspace pages served read-only through HTTP broker; no direct network; bounded host-configured lifetime, idle and action limits"
             );
             return Ok(args);
         }
@@ -263,6 +278,7 @@ impl Tool for BrowserTool {
         args["browser"] = json!(session.browser);
         args["revision"] = json!(session.revision);
         args["expected_url"] = json!(session.url);
+        args["_session_budgets"] = session.settings.budgets();
         Ok(args)
     }
 
@@ -281,6 +297,46 @@ impl Tool for BrowserTool {
                 "Workspace browser entry changed since preparation; open the current file again",
             ));
         }
+        let settings: crate::browser_policy::BrowserSettings = args
+            .get("_browser_settings")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        settings.validate()?;
+        let images_supported = args["_images_supported"].as_bool().unwrap_or(true);
+        let perceptual = matches!(
+            self.name.as_str(),
+            "browser.open"
+                | "browser.navigate"
+                | "browser.observe"
+                | "browser.action"
+                | "browser.evaluate"
+        );
+        let explicitly_visual = perceptual
+            && (args["screenshot"] == true
+                || (args["screenshot"] != false
+                    && (settings.perception == crate::browser_policy::Perception::Vision
+                        || args["visual"] == true)));
+        if explicitly_visual && !images_supported {
+            return Err(error(
+                "images_unsupported",
+                "This task requests visual feedback but image input is disabled in the configured backend. Enable image input with a capable backend or use DOM for text-only work. No browser action executed.",
+            ));
+        }
+        let opening_new = self.name == "browser.open" && !args["reuse_browser_id"].is_string();
+        if !opening_new
+            && !matches!(self.name.as_str(), "browser.observe" | "browser.close")
+            && self.sessions.refresh.lock().await.contains(&ctx.session_id)
+        {
+            return Err(error(
+                "browser_changed",
+                "Observe the browser after Continue or context compaction before acting",
+            ));
+        }
+        let screenshot_override = args["screenshot"].as_bool();
+        let visual_requested = args["visual"] == true
+            || matches!(args["action"].as_str(), Some("click_at" | "drag" | "move"));
         // Own the process across awaits: cancelling/dropping the tool kills it,
         // rather than leaving a detached browser with unreviewed work pending.
         let mut session = {
@@ -323,9 +379,30 @@ impl Tool for BrowserTool {
                         "Browser changed since approval; inspect and prepare the action again",
                     ));
                 }
+                if current.needs_observation
+                    && !matches!(self.name.as_str(), "browser.observe" | "browser.close")
+                {
+                    return Err(error(
+                        "browser_changed",
+                        "Browser was manually controlled or context was compacted; observe before acting",
+                    ));
+                }
                 sessions.remove(&ctx.session_id).unwrap()
             }
         };
+        if session.actions >= session.settings.max_actions && self.name != "browser.close" {
+            session
+                .view
+                .stopped("Browser action budget exhausted")
+                .await;
+            session.stop().await;
+            return Err(error(
+                "browser_action_limit",
+                "Host browser action budget exhausted; session closed. No action executed.",
+            ));
+        }
+        session.actions += 1;
+        *session.last_activity.lock().await = tokio::time::Instant::now();
         if self.name == "browser.open" {
             session.private = serde_json::from_value(args["private_origins"].clone())?;
             if args["workspace_path"].is_string() {
@@ -360,7 +437,7 @@ impl Tool for BrowserTool {
                 "Downloads require a configured artifact store",
             ));
         }
-        let screenshot = args["screenshot"].as_bool().unwrap_or(false);
+
         let action = args["action"].as_str().unwrap_or(&self.name).to_owned();
         let reuse = self.name == "browser.open" && args["reuse_browser_id"].is_string();
         let work = session.exchange(
@@ -371,13 +448,36 @@ impl Tool for BrowserTool {
             },
             args,
         );
+        if self.name == "browser.observe" {
+            self.sessions.refresh.lock().await.remove(&ctx.session_id);
+        }
         let mut data = tokio::select! {
             result = work => result?,
             _ = ctx.cancel.cancelled() => return Err(error("outcome_unknown", "Browser action cancelled; session closed. Remote effects may have occurred; do not automatically repeat.")),
             _ = tokio::time::sleep(Duration::from_secs(50)) => return Err(error("outcome_unknown", "Browser action timed out; session closed. Inspect remote state before retrying.")),
         };
         session.record(&data);
+        session.needs_observation = false;
+        *session.last_activity.lock().await = tokio::time::Instant::now();
         data["browser_id"] = json!(session.id);
+        data["revision"] = json!(session.revision);
+        data["observation_id"] = json!(format!("{}:{}", session.id, session.revision));
+        data["observed_at_ms"] = json!(now_ms());
+        data["perception"] = json!(settings.perception);
+        data["budgets"] = json!({"lifetime_seconds":session.settings.lifetime_seconds,"idle_seconds":session.settings.idle_seconds,"max_actions":session.settings.max_actions,"actions_used":session.actions});
+        let screenshot = images_supported
+            && screenshot_override.unwrap_or(match settings.perception {
+                crate::browser_policy::Perception::Vision => true,
+                crate::browser_policy::Perception::Dom => false,
+                crate::browser_policy::Perception::Auto => {
+                    visual_requested || data["visual_surface"] == true
+                }
+            });
+        if !images_supported && data["visual_surface"] == true {
+            data["vision_issue"] = json!(
+                "Image input is disabled; visual content cannot be inspected. DOM observations remain available."
+            );
+        }
         data["browser"] = json!(session.browser);
         if self.name == "browser.open" {
             data["reused_session"] = json!(reuse);
@@ -404,20 +504,34 @@ impl Tool for BrowserTool {
             let bytes = STANDARD
                 .decode(encoded)
                 .map_err(|_| error("invalid_image", "Invalid browser screenshot"))?;
-            session
-                .view
-                .update(&result.data, bytes.clone(), session.revision, &action)
-                .await;
+            crate::browser_progress::stamp(&mut result.data, Some(&bytes));
             if screenshot {
                 let image = crate::attachments::ImageAttachment::from_bytes(&bytes)?;
                 result.data["screenshot"] = json!({"width":image.width,"height":image.height,"scale_x":1024.0 / f64::from(image.width),"scale_y":768.0 / f64::from(image.height)});
                 if let Some(store) = &ctx.artifacts {
-                    result
-                        .artifacts
-                        .push(store.put(&ctx.session_id, &ctx.run_id, bytes).await?);
+                    result.artifacts.push(
+                        store
+                            .put(&ctx.session_id, &ctx.run_id, bytes.clone())
+                            .await?,
+                    );
                 }
                 result.images.push(image);
             }
+            session
+                .view
+                .update(&result.data, bytes, session.revision, &action)
+                .await;
+        } else {
+            crate::browser_progress::stamp(&mut result.data, None);
+            if screenshot {
+                result.data["vision_issue"] = json!(
+                    "Action result retained, but no safe current screenshot is available. Observe again; do not repeat the action."
+                );
+            }
+            session
+                .view
+                .update(&result.data, vec![], session.revision, &action)
+                .await;
         }
         if let Some(encoded) = download.and_then(|v| v.as_str().map(str::to_owned)) {
             let bytes = STANDARD
@@ -585,6 +699,7 @@ pub(crate) struct BrowserSessions {
     slots: Arc<tokio::sync::Semaphore>,
     views: Mutex<BTreeMap<String, Arc<crate::browser_view::BrowserView>>>,
     paused: Mutex<std::collections::BTreeSet<String>>,
+    refresh: Mutex<std::collections::BTreeSet<String>>,
 }
 impl Default for BrowserSessions {
     fn default() -> Self {
@@ -593,6 +708,7 @@ impl Default for BrowserSessions {
             slots: Arc::new(tokio::sync::Semaphore::new(4)),
             views: Mutex::default(),
             paused: Mutex::default(),
+            refresh: Mutex::default(),
         }
     }
 }
@@ -626,11 +742,26 @@ impl BrowserSessions {
             paused.insert(id.into());
         } else {
             paused.remove(id);
+            self.refresh.lock().await.insert(id.into());
+            if let Some(session) = self.sessions.lock().await.get_mut(id) {
+                session.revision += 1;
+                session.needs_observation = true;
+            }
         }
     }
+    pub(crate) async fn require_observation(&self, id: &str) {
+        self.refresh.lock().await.insert(id.into());
+    }
     pub(crate) async fn current(&self, id: &str) -> Value {
-        let sessions = self.sessions.lock().await;
-        sessions.get(id).map_or(Value::Null,|s|json!({"browser_id":s.id,"revision":s.revision,"url":s.url,"tabs":s.snapshot["tabs"],"viewer_url":s.view.url,"history":s.history,"workspace":s.workspace.is_some()}))
+        let mut sessions = self.sessions.lock().await;
+        if sessions
+            .get(id)
+            .is_some_and(|s| s.stop_reason.load(std::sync::atomic::Ordering::Acquire) != 0)
+            && let Some(mut expired) = sessions.remove(id)
+        {
+            expired.stop().await;
+        }
+        sessions.get(id).map_or(Value::Null,|s|json!({"browser_id":s.id,"revision":s.revision,"url":s.url,"tabs":s.snapshot["tabs"],"viewer_url":s.view.url,"history":s.history,"workspace":s.workspace.is_some(),"budgets":s.settings,"actions_used":s.actions}))
     }
     pub(crate) async fn manual(self: &Arc<Self>, id: &str, mut args: Value) -> Result<Value> {
         if !args.is_object() {
@@ -701,10 +832,12 @@ impl BrowserSessions {
         args["human"] = json!(true);
         args["expected_url"] = json!(session.url);
         let action = args["action"].as_str().unwrap_or(tool).to_owned();
+        *session.last_activity.lock().await = tokio::time::Instant::now();
         let mut data = tokio::time::timeout(Duration::from_secs(50), session.exchange(tool, args))
             .await
             .map_err(|_| error("outcome_unknown", "Manual action timed out; browser closed"))??;
         session.record(&data);
+        *session.last_activity.lock().await = tokio::time::Instant::now();
         if let Some(encoded) = data
             .as_object_mut()
             .and_then(|o| o.remove("screenshot_base64"))
@@ -716,6 +849,11 @@ impl BrowserSessions {
             session
                 .view
                 .update(&data, bytes, session.revision, &format!("You · {action}"))
+                .await;
+        } else {
+            session
+                .view
+                .update(&data, vec![], session.revision, &format!("You · {action}"))
                 .await;
         }
         self.sessions.lock().await.insert(id.into(), session);
@@ -744,9 +882,11 @@ impl BrowserSessions {
         if let Some(id) = session_id {
             self.views.lock().await.remove(id);
             self.paused.lock().await.remove(id);
+            self.refresh.lock().await.remove(id);
         } else {
             self.views.lock().await.clear();
             self.paused.lock().await.clear();
+            self.refresh.lock().await.clear();
         }
     }
 }
@@ -763,6 +903,10 @@ struct BrowserSession {
     browser: String,
     workspace: Option<crate::runtime::Workspace>,
     revision: u64,
+    needs_observation: bool,
+    settings: crate::browser_policy::BrowserSettings,
+    actions: usize,
+    last_activity: Arc<Mutex<tokio::time::Instant>>,
     url: String,
     child: Child,
     input: ChildStdin,
@@ -850,12 +994,35 @@ impl BrowserSession {
         let memory = ctx.sandbox.limits.browser_session_memory_bytes;
         let stop_reason = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let reason = stop_reason.clone();
+        let settings: crate::browser_policy::BrowserSettings = args
+            .get("_browser_settings")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        settings.validate()?;
+        let lifetime = settings.lifetime_seconds;
+        let idle = settings.idle_seconds;
+        let last_activity = Arc::new(Mutex::new(tokio::time::Instant::now()));
+        let activity = last_activity.clone();
+        let watchdog_view = view.clone();
         let watchdog = tokio::spawn(async move {
             let code = tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(900)) => 1,
+                _ = tokio::time::sleep(Duration::from_secs(lifetime)) => 1,
                 _ = crate::runtime::browser_memory_limit(pid, memory) => 2,
+                _ = async { loop {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    if activity.lock().await.elapsed() >= Duration::from_secs(idle) { break; }
+                }} => 3,
             };
             reason.store(code, std::sync::atomic::Ordering::Release);
+            watchdog_view
+                .stopped(match code {
+                    1 => "Browser lifetime expired",
+                    3 => "Browser idle timeout expired",
+                    _ => "Browser memory limit exceeded",
+                })
+                .await;
             // Child remains owned and unreaped until this task is aborted in Drop.
             unsafe {
                 libc::kill(pid as i32, libc::SIGKILL);
@@ -873,6 +1040,10 @@ impl BrowserSession {
             browser: args["browser"].as_str().unwrap().into(),
             workspace: None,
             revision: 0,
+            needs_observation: false,
+            settings,
+            actions: 0,
+            last_activity,
             url: "about:blank".into(),
             child,
             input,
@@ -910,7 +1081,8 @@ impl BrowserSession {
                 .await?;
             if count == 0 || count as u64 > MESSAGE_LIMIT || line.last() != Some(&b'\n') {
                 let reason = match self.stop_reason.load(std::sync::atomic::Ordering::Acquire) {
-                    1 => "15-minute session lifetime exceeded",
+                    1 => "host-configured session lifetime exceeded",
+                    3 => "host-configured idle timeout exceeded",
                     2 => "browser process-tree memory limit exceeded",
                     _ => "browser transport closed or exceeded its output limit",
                 };
@@ -1071,6 +1243,17 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
         .send()
         .await
         .map_err(|_| error("network_error", "Browser HTTP request failed"))?;
+    if response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"))
+    {
+        return Err(error(
+            "browser_streaming_unsupported",
+            "Server-sent event streams are not supported by the bounded browser broker",
+        ));
+    }
     let status = response.status().as_u16();
     let headers: Vec<_> = response
         .headers()
@@ -1094,6 +1277,40 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
 #[cfg(test)]
 mod host_panel_tests {
     use super::*;
+    #[tokio::test]
+    async fn continue_during_owned_action_also_blocks_reopening_the_existing_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext {
+            workspace: crate::runtime::Workspace::open(dir.path()).await.unwrap(),
+            workspace_lease: None,
+            session_id: id("session"),
+            run_id: id("run"),
+            invocation_id: id("invocation"),
+            writable: false,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            sandbox: crate::runtime::Sandbox::default(),
+            jobs: Arc::default(),
+            artifacts: None,
+            artifact_refs: vec![],
+            skills: Default::default(),
+            native_jobs: vec![],
+        };
+        let sessions = Arc::new(BrowserSessions::default());
+        // An executing action owns the process outside the session map. The
+        // independent refresh marker must survive Continue in that interval.
+        sessions.pause(&ctx.session_id, true).await;
+        sessions.pause(&ctx.session_id, false).await;
+        let tool = BrowserTool {
+            name: "browser.open".into(),
+            sessions,
+        };
+        let result = tool
+            .execute(json!({"reuse_browser_id":"existing-browser"}), &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(result.code, "browser_changed");
+    }
+
     #[tokio::test]
     async fn panel_ports_are_blocked_before_dns_including_address_aliases() {
         let view = crate::browser_view::BrowserView::start().await.unwrap();

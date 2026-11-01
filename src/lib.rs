@@ -5,6 +5,7 @@ pub mod attachments;
 mod browser;
 mod browser_control;
 pub mod browser_policy;
+mod browser_progress;
 mod browser_view;
 mod browser_workspace;
 mod completion;

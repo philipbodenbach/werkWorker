@@ -91,6 +91,7 @@ fn site_permissions_never_promote_scripts_or_protected_fields() {
 struct QueueProvider {
     turns: Mutex<VecDeque<ScriptedTurn>>,
     requests: AtomicUsize,
+    captured: Mutex<Vec<ModelRequest>>,
 }
 impl QueueProvider {
     fn call(&self, name: &str, args: Value) {
@@ -114,6 +115,7 @@ impl ModelProvider for QueueProvider {
     }
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
         self.requests.fetch_add(1, Ordering::SeqCst);
+        self.captured.lock().unwrap().push(request.clone());
         let turn = self
             .turns
             .lock()
@@ -459,6 +461,18 @@ async fn browser_panel_approvals_manual_password_and_scripts_work_end_to_end() {
             .unwrap()
             .contains("browser_changed")
     );
+    // Continue now requires a fresh observation before the next action.
+    provider.call("browser.observe", json!({"browser_id":browser_id}));
+    let refreshed = session
+        .submit(
+            "Inspect manual changes",
+            "refresh-after-manual",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    finish(&refreshed).await;
     // Remembering this site's action category applies to a fresh invocation.
     for attempt in 0..2 {
         provider.call(
@@ -560,5 +574,331 @@ async fn browser_panel_approvals_manual_password_and_scripts_work_end_to_end() {
             .any(|r| r["reason"] == "browser_control_denied"),
         "{result:?}"
     );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn main_agent_changed_pages_allow_repeated_actions_and_observations_with_vision() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let (dir, engine, session, provider, client, panel) = setup().await;
+    // This fixture exposes the full host toolset and uses conservative token
+    // estimation. Native backend counting is tested separately.
+    let browser_limits = Limits {
+        context_tokens: 65536,
+        ..Limits::default()
+    };
+    std::fs::write(dir.path().join("counter.html"), r#"<!doctype html><title>Counter</title>
+        <button id="next" onclick="setTimeout(()=>document.querySelector('output').textContent=++window.n,250)">Next</button>
+        <output>0</output><script>window.n=0; document.onkeydown=()=>document.querySelector('output').textContent=++window.n;</script>"#).unwrap();
+    session.set_browser_mode(true, "mode").await.unwrap();
+    for category in ["browsing", "actions"] {
+        session
+            .set_browser_rule(
+                "http://workspace.invalid",
+                category,
+                ToolPermission::Allow,
+                &id("rule"),
+            )
+            .await
+            .unwrap();
+    }
+    session
+        .set_browser_settings(
+            browser_policy::BrowserSettings {
+                perception: browser_policy::Perception::Vision,
+                ..Default::default()
+            },
+            "vision",
+        )
+        .await
+        .unwrap();
+    provider.call("browser.open", json!({"path":"counter.html"}));
+    let opened = session
+        .submit("Open counter", "open", browser_limits.clone(), None)
+        .await
+        .unwrap();
+    finish(&opened).await;
+    let opening_state = opened.status().await.unwrap();
+    assert_eq!(
+        opening_state.status,
+        RunStatus::Completed,
+        "{:?}",
+        opening_state.error
+    );
+    let first = opened.status().await.unwrap().invocations[0]
+        .result
+        .clone()
+        .unwrap();
+    assert_eq!(first.images.len(), 1, "{first:?}");
+    let browser_id = first.data["browser_id"].clone();
+    for _ in 0..6 {
+        provider.call(
+            "browser.action",
+            json!({"browser_id":browser_id,"action":"click","target":{"selector":"#next"}}),
+        );
+        provider.call("browser.observe", json!({"browser_id":browser_id}));
+        provider.call(
+            "browser.action",
+            json!({"browser_id":browser_id,"action":"press","key":"ArrowRight"}),
+        );
+    }
+    let run = session
+        .submit(
+            "Advance twelve times",
+            "advance",
+            Limits {
+                max_steps: 32,
+                max_tool_invocations: 40,
+                ..browser_limits.clone()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    finish(&run).await;
+    let status = run.status().await.unwrap();
+    assert_eq!(status.invocations.len(), 18, "{:?} receipts={:?}", status.error,status.invocations.iter().map(|i|json!({"action":i.call.arguments["action"],"data":i.result.as_ref().map(|r| &r.data),"error":i.result.as_ref().and_then(|r|r.error_code.as_ref())})).collect::<Vec<_>>());
+    for i in &status.invocations {
+        let r = i.result.as_ref().unwrap();
+        assert_eq!(r.status, Outcome::Succeeded, "{r:?}");
+        assert_eq!(r.images.len(), 1);
+        assert!(r.data["observation_id"].is_string());
+        assert_eq!(r.data["tab_id"], 1);
+    }
+    assert!(
+        status
+            .invocations
+            .last()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .data["text"]
+            .as_str()
+            .unwrap()
+            .contains("12")
+    );
+    {
+        let requests = provider.captured.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.messages.iter().any(|m| !m.images.is_empty()))
+        );
+        for request in requests.iter() {
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .map(|m| m.images.len())
+                    .sum::<usize>()
+                    <= 2
+            );
+        }
+    }
+    // Continue invalidates the old action even if no manual navigation occurred.
+    control(&client, &panel, json!({"op":"pause"})).await;
+    control(
+        &client,
+        &panel,
+        json!({"op":"manual","arguments":{"action":"press","key":"ArrowRight"}}),
+    )
+    .await;
+    control(&client, &panel, json!({"op":"resume"})).await;
+    provider.call(
+        "browser.action",
+        json!({"browser_id":browser_id,"action":"press","key":"ArrowRight"}),
+    );
+    provider.call("browser.observe", json!({"browser_id":browser_id}));
+    let resumed = session
+        .submit(
+            "Inspect after manual edit",
+            "resume",
+            browser_limits.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    finish(&resumed).await;
+    let state = resumed.status().await.unwrap();
+    assert_eq!(
+        state.invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .error_code
+            .as_deref(),
+        Some("browser_changed")
+    );
+    assert!(
+        state.invocations[1].result.as_ref().unwrap().data["text"]
+            .as_str()
+            .unwrap()
+            .contains("13")
+    );
+    session
+        .set_browser_settings(
+            browser_policy::BrowserSettings {
+                perception: browser_policy::Perception::Dom,
+                ..Default::default()
+            },
+            "dom",
+        )
+        .await
+        .unwrap();
+    provider.call(
+        "browser.navigate",
+        json!({"browser_id":browser_id,"url":"http://workspace.invalid/counter.html"}),
+    );
+    let dom = session
+        .submit(
+            "Navigate in DOM mode",
+            "dom-run",
+            browser_limits.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    finish(&dom).await;
+    assert!(
+        dom.status().await.unwrap().invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .images
+            .is_empty()
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn unchanged_main_agent_observations_are_still_stopped() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let (dir, engine, session, provider, _, _) = setup().await;
+    std::fs::write(dir.path().join("idle.html"),"<button id='noop'>No effect</button><span aria-live='polite' id='blink'>blink</span><script>setInterval(()=>document.querySelector('#blink').textContent=String(Date.now()),80)</script>").unwrap();
+    session.set_browser_mode(true, "mode").await.unwrap();
+    for category in ["browsing", "actions"] {
+        session
+            .set_browser_rule(
+                "http://workspace.invalid",
+                category,
+                ToolPermission::Allow,
+                &id("rule"),
+            )
+            .await
+            .unwrap();
+    }
+    provider.call("browser.open", json!({"path":"idle.html"}));
+    let run = session
+        .submit("Open", "open", Limits::default(), None)
+        .await
+        .unwrap();
+    finish(&run).await;
+    let browser_id = run.status().await.unwrap().invocations[0]
+        .result
+        .as_ref()
+        .unwrap()
+        .data["browser_id"]
+        .clone();
+    for _ in 0..6 {
+        provider.call(
+            "browser.action",
+            json!({"browser_id":browser_id,"action":"click","target":{"selector":"#noop"}}),
+        );
+        provider.call("browser.observe", json!({"browser_id":browser_id}));
+    }
+    let run = session
+        .submit("Check stalled page", "stalled", Limits::default(), None)
+        .await
+        .unwrap();
+    finish(&run).await;
+    let status = run.status().await.unwrap();
+    assert!(
+        status
+            .invocations
+            .iter()
+            .any(|i| i.result.as_ref().is_some_and(|r| r
+                .error_code
+                .as_deref()
+                .is_some_and(|e| e.contains("repeat"))))
+            || status.status == RunStatus::Failed,
+        "{status:?}"
+    );
+    assert!(
+        status
+            .invocations
+            .iter()
+            .filter(|i| i
+                .result
+                .as_ref()
+                .is_some_and(|r| r.status == Outcome::Succeeded))
+            .count()
+            < 12
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn changing_host_perception_invalidates_an_outstanding_approval() {
+    let (dir, engine, session, provider, client, panel) = setup().await;
+    std::fs::write(dir.path().join("page.html"), "<body>Not opened</body>").unwrap();
+    session.set_browser_mode(true, "mode").await.unwrap();
+    provider.call("browser.open", json!({"path":"page.html"}));
+    let run = session
+        .submit("Open page", "request", Limits::default(), None)
+        .await
+        .unwrap();
+    let request = approval(&client, &panel).await;
+    assert_eq!(
+        request["description"]["arguments"]["_browser_settings"]["perception"],
+        "auto"
+    );
+    session
+        .set_browser_settings(
+            browser_policy::BrowserSettings {
+                perception: browser_policy::Perception::Vision,
+                ..Default::default()
+            },
+            "change",
+        )
+        .await
+        .unwrap();
+    control(&client,&panel,json!({"op":"approval","run_id":run.id,"request_id":request["request_id"],"decision":"allow"})).await;
+    finish(&run).await;
+    assert_eq!(
+        run.status()
+            .await
+            .unwrap()
+            .error
+            .as_ref()
+            .map(|e| e.code.as_str()),
+        Some("browser_settings_changed")
+    );
+    // A failed run also closes its preview endpoint during cleanup.
+    assert!(client.get(format!("{panel}state")).send().await.is_err());
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn perception_settings_do_not_enable_browser_mode_or_add_permissions() {
+    let (_dir, engine, session, _, client, panel) = setup().await;
+    session
+        .set_browser_settings(
+            browser_policy::BrowserSettings {
+                perception: browser_policy::Perception::Vision,
+                ..Default::default()
+            },
+            "vision-only",
+        )
+        .await
+        .unwrap();
+    let saved = session.snapshot().await.unwrap();
+    assert!(!saved.policy.browser.unwrap().enabled);
+    assert!(!saved.profile.tools.contains(&"browser.open".into()));
+    assert_eq!(state(&client, &panel).await["enabled"], false);
     engine.close().await.unwrap();
 }

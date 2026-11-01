@@ -144,7 +144,9 @@ async fn browser_target_recovers_after_output_limit_and_compaction_in_the_engine
             "Open preview.html in the browser",
             "start",
             Limits {
-                context_tokens: 16384,
+                // The v3 schema and bundled browser skill add context. The
+                // large read fixtures below still require actual compaction.
+                context_tokens: 20480,
                 reserve_output_tokens: 1024,
                 ..Default::default()
             },
@@ -1080,4 +1082,285 @@ async fn downloads_keep_cookie_scope_and_produce_owned_artifacts() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+#[ignore = "explicit live-site compatibility probe; no model decisions"]
+async fn live_browser_compatibility_probe() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let mut reports = Vec::new();
+    for url in [
+        "https://jspaint.app/",
+        "https://www.nytimes.com/games/wordle/index.html",
+        "https://lichess.org/",
+        "https://www.crazygames.com/game/8-ball-pool-billiards-multiplayer",
+    ] {
+        let result = call(&registry, &ctx, "browser.open", json!({"url":url})).await;
+        match result {
+            Ok(r) => {
+                reports.push(json!({"url":url,"status":r.status,"error_code":r.error_code,"action_error":r.data["error"],"blocked_requests":r.data["blocked_requests"],"transports":r.data["transport_diagnostics"],"title":r.data["title"],"controls":r.data["controls"].as_array().map(Vec::len),"images":r.images.len()}));
+                if r.data["browser_id"].is_string() {
+                    let _ = call(
+                        &registry,
+                        &ctx,
+                        "browser.close",
+                        json!({"browser_id":r.data["browser_id"]}),
+                    )
+                    .await;
+                }
+            }
+            Err(e) => reports.push(json!({"url":url,"error_code":e.code})),
+        }
+    }
+    let report = serde_json::to_string_pretty(&reports).unwrap();
+    if let Ok(path) = std::env::var("WW_COMPAT_REPORT") {
+        std::fs::write(path, &report).unwrap();
+    }
+    println!("{report}");
+}
+
+#[tokio::test]
+async fn host_browser_lifetime_idle_and_action_budgets_are_enforced() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    for (lifetime, idle, actions) in [(3, 30, 400), (30, 3, 400), (30, 30, 1)] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("page.html"), "<body>Budget</body>").unwrap();
+        let ctx = context(dir.path()).await;
+        let registry = ToolRegistry::builtins().unwrap();
+        let tool = registry.get("browser.open").unwrap();
+        let mut args = tool
+            .prepare(json!({"path":"page.html"}), &ctx)
+            .await
+            .unwrap();
+        args["_browser_settings"] = json!({"perception":"dom","lifetime_seconds":lifetime,"idle_seconds":idle,"max_actions":actions});
+        let opened = tool.execute(args, &ctx).await.unwrap();
+        assert_ok(&opened);
+        if actions > 1 {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+        let result = call(
+            &registry,
+            &ctx,
+            "browser.observe",
+            json!({"browser_id":opened.data["browser_id"]}),
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                error.code.as_str(),
+                "browser_action_limit" | "outcome_unknown"
+            ),
+            "{error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn browser_images_reach_the_actual_werk_backend_request_in_vision_and_dom_modes() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    use werk_worker::{browser_policy::*, profiles::AgentProfile, providers::*};
+    for perception in [Perception::Vision, Perception::Dom] {
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = step.clone();
+        let server=support::Server::start(move |request| {
+            if request.path!="/v1/chat/completions" {return support::werk(request);}
+            let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            let messages=request.body["messages"].as_array().unwrap();
+            let images=messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count();
+            if perception==Perception::Vision && n>0 { assert!((1..=2).contains(&images),"current image must survive, comparison frame is optional"); }
+            else {assert_eq!(images,0);}
+            for part in messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url") {
+                assert!(part["image_url"]["url"].as_str().unwrap().starts_with("data:image/jpeg;base64,"));
+            }
+            let browser_id=messages.iter().rev().filter(|m|m["role"]=="tool").find_map(|m| {
+                let data:Value=serde_json::from_str(m["content"].as_str()?).ok()?;data["data"]["browser_id"].as_str().map(str::to_owned)
+            });
+            let (name,args)=match n {
+                0=>("browser.open",json!({"path":"page.html"})),
+                1=>("browser.navigate",json!({"browser_id":browser_id,"url":"http://workspace.invalid/page.html"})),
+                2=>("browser.action",json!({"browser_id":browser_id,"action":"click","target":{"selector":"button"}})),
+                _=>return support::werk(request),
+            };
+            support::Response::json(json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":format!("call{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}]}))
+        }).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("page.html"),
+            "<button onclick='this.textContent=\"Done\"'>Change</button>",
+        )
+        .unwrap();
+        let config = WerkConfig {
+            base_url: server.origin.clone(),
+            stream: false,
+            capabilities: ModelCapabilities {
+                tool_calling: Support::Supported,
+                context_tokens: Some(32768),
+                images: if perception == Perception::Dom {
+                    Support::Unsupported
+                } else {
+                    Support::Unknown
+                },
+                ..Default::default()
+            },
+            ..WerkConfig::local("fixture-model")
+        };
+        let provider = WerkProvider::connect(config, None).await.unwrap();
+        let engine = WorkerEngine::builder(Arc::new(provider))
+            .build()
+            .await
+            .unwrap();
+        let mut browser = BrowserPolicy {
+            settings: BrowserSettings {
+                perception,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for category in ["browsing", "actions"] {
+            browser
+                .set("http://workspace.invalid", category, ToolPermission::Allow)
+                .unwrap();
+        }
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    schema_version: 1,
+                    name: "wire".into(),
+                    prompt: "Inspect".into(),
+                    tools: ["browser.open", "browser.navigate", "browser.action"]
+                        .map(str::to_owned)
+                        .into(),
+                    skills: vec![],
+                },
+                dir.path(),
+                HostPolicy {
+                    browser: Some(browser),
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Open, navigate, click and verify",
+                "wire",
+                Limits::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{result:?}");
+        assert_eq!(step.load(std::sync::atomic::Ordering::SeqCst), 4);
+        let state = run.status().await.unwrap();
+        assert!(
+            state
+                .invocations
+                .last()
+                .unwrap()
+                .result
+                .as_ref()
+                .unwrap()
+                .data["text"]
+                .as_str()
+                .unwrap()
+                .contains("Done")
+        );
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn scaled_canvas_coordinates_and_explicit_perception_overrides() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("noise.html"),r#"<style>body{margin:0}</style><canvas width="1024" height="768"></canvas><script>
+    const c=document.querySelector('canvas'),g=c.getContext('2d'),d=g.createImageData(1024,768);let seed=17;
+    for(let i=0;i<d.data.length;i+=4){for(let j=0;j<3;j++){seed=(Math.imul(seed,1664525)+1013904223)|0;d.data[i+j]=(seed>>>24);}d.data[i+3]=255;}g.putImageData(d,0,0);
+    c.onclick=e=>{g.fillStyle='#ff0000';g.fillRect(e.clientX-10,e.clientY-10,20,20);};</script>"#).unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"path":"noise.html","visual":true}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&opened);
+    let image = &opened.images[0];
+    assert!(image.width < 1024, "noise must exercise actual resizing");
+    let x = (160.0 * f64::from(image.width) / 1024.0
+        * opened.data["screenshot"]["scale_x"].as_f64().unwrap())
+    .round() as u64;
+    let y = (220.0 * f64::from(image.height) / 768.0
+        * opened.data["screenshot"]["scale_y"].as_f64().unwrap())
+    .round() as u64;
+    let browser_id = opened.data["browser_id"].clone();
+    let clicked = call(
+        &registry,
+        &ctx,
+        "browser.action",
+        json!({"browser_id":browser_id,"action":"click_at","x":x,"y":y,"screenshot":false}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&clicked);
+    assert!(clicked.images.is_empty());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let bytes = client
+        .get(format!(
+            "{}frame",
+            opened.data["viewer_url"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let pixels = image::load_from_memory(&bytes).unwrap().to_rgb8();
+    let pixel = pixels.get_pixel(160, 220);
+    assert!(
+        pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40,
+        "{pixel:?}"
+    );
+    let tool = registry.get("browser.observe").unwrap();
+    let mut args = tool
+        .prepare(json!({"browser_id":browser_id,"screenshot":true}), &ctx)
+        .await
+        .unwrap();
+    args["_browser_settings"] = json!({"perception":"dom"});
+    assert_eq!(
+        tool.execute(args.clone(), &ctx).await.unwrap().images.len(),
+        1
+    );
+    let mut denied = tool
+        .prepare(json!({"browser_id":browser_id,"screenshot":true}), &ctx)
+        .await
+        .unwrap();
+    denied["_images_supported"] = json!(false);
+    assert_eq!(
+        tool.execute(denied, &ctx).await.unwrap_err().code,
+        "images_unsupported"
+    );
+    let close = registry.get("browser.close").unwrap();
+    let mut close_args = close
+        .prepare(json!({"browser_id":browser_id}), &ctx)
+        .await
+        .unwrap();
+    close_args["_browser_settings"] = json!({"perception":"vision"});
+    close_args["_images_supported"] = json!(false);
+    assert_ok(&close.execute(close_args, &ctx).await.unwrap());
 }

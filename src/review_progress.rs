@@ -47,12 +47,25 @@ pub(crate) fn idle_decisions(run: &Run) -> usize {
             _ => None,
         };
         if let Some(rows) = rows {
+            let directory = (invocation.call.name == "files.list").then(|| {
+                crate::working_state::path(
+                    invocation.call.arguments["path"].as_str().unwrap_or("."),
+                )
+                .unwrap_or_default()
+            });
             for row in rows {
-                *fresh |= observations.insert(fingerprint(&(invocation.call.name.as_str(), row)));
+                *fresh |= observations.insert(fingerprint(&(
+                    invocation.call.name.as_str(),
+                    &directory,
+                    row,
+                )));
             }
             if rows.is_empty() {
-                *fresh |=
-                    observations.insert(fingerprint(&(invocation.call.name.as_str(), "empty")));
+                *fresh |= observations.insert(fingerprint(&(
+                    invocation.call.name.as_str(),
+                    &directory,
+                    "empty",
+                )));
             }
         } else {
             let data = match invocation.call.name.as_str() {
@@ -140,6 +153,33 @@ mod tests {
         assert_eq!(idle_decisions(&run), 0);
         let restored: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
         assert_eq!(idle_decisions(&restored), 0);
+    }
+    #[test]
+    fn directory_identity_distinguishes_siblings_but_not_aliases() {
+        let mut run = run();
+        for n in 0..4 {
+            observation(
+                &mut run,
+                n,
+                "files.list",
+                json!({"path":format!("apps/app{n}")}),
+                json!({"entries":["index.ts","package.json"]}),
+            );
+            assert_eq!(idle_decisions(&run), 0);
+        }
+        for (n, path) in ["./apps/app3", "apps/app3", "/workspace/apps/app3"]
+            .into_iter()
+            .enumerate()
+        {
+            observation(
+                &mut run,
+                n + 4,
+                "files.list",
+                json!({"path":path}),
+                json!({"entries":["index.ts","package.json"]}),
+            );
+            assert_eq!(idle_decisions(&run), n + 1);
+        }
     }
     #[test]
     fn query_churn_and_capacity_polling_do_not_reset_the_breaker() {

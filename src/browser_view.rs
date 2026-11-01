@@ -120,10 +120,15 @@ impl BrowserView {
             port,
         })
     }
+    pub async fn stopped(&self, reason: &str) {
+        let mut frame = self.frame.lock().await;
+        frame.metadata["stopped"] = json!(reason);
+        frame.jpeg.clear();
+    }
     pub async fn update(&self, data: &Value, jpeg: Vec<u8>, revision: u64, action: &str) {
         *self.frame.lock().await = Frame {
+            metadata: json!({"revision":revision,"title":data["title"],"url":data["url"],"pointer":data["pointer"],"viewport":data["viewport"],"action":action,"tabs":data["tabs"],"controls":data["controls"],"perception":data["perception"],"readiness":data["readiness"],"vision_issue":data["vision_issue"],"observation_errors":data["observation_errors"],"has_frame":!jpeg.is_empty()}),
             jpeg,
-            metadata: json!({"revision":revision,"title":data["title"],"url":data["url"],"pointer":data["pointer"],"viewport":data["viewport"],"action":action,"tabs":data["tabs"],"controls":data["controls"]}),
         };
     }
 }

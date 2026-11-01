@@ -101,9 +101,64 @@ pub async fn browser_command(session: &SessionHandle, command: &str) -> Result<S
             Ok("Browser mode disabled for subsequent actions. Stop the active run to interrupt an action already in progress.".into())
         }
         "/browser" => Ok(format!(
-            "/browser on · /browser off\nBrowser panel: {}",
+            "/browser on · /browser off · /browser perception auto|dom|vision · /browser limits <lifetime-seconds> <idle-seconds> <actions>\nBrowser panel: {}",
             session.browser_panel().await?
         )),
+        value if value.starts_with("/browser perception ") => {
+            let mut settings = session
+                .snapshot()
+                .await?
+                .policy
+                .browser
+                .unwrap_or_default()
+                .settings;
+            settings.perception = match value.trim_start_matches("/browser perception ") {
+                "auto" => crate::browser_policy::Perception::Auto,
+                "dom" => crate::browser_policy::Perception::Dom,
+                "vision" => crate::browser_policy::Perception::Vision,
+                _ => {
+                    return Err(WorkerError::new(
+                        "browser_command",
+                        "Use auto, dom or vision",
+                    ));
+                }
+            };
+            session
+                .set_browser_settings(settings, &id("browser-perception"))
+                .await?;
+            Ok(
+                "Browser perception updated. Existing prepared actions must be prepared again."
+                    .into(),
+            )
+        }
+        value if value.starts_with("/browser limits ") => {
+            let values: Vec<_> = value
+                .trim_start_matches("/browser limits ")
+                .split_whitespace()
+                .collect();
+            if values.len() != 3 {
+                return Err(WorkerError::new(
+                    "browser_command",
+                    "Use /browser limits <lifetime-seconds> <idle-seconds> <actions>",
+                ));
+            }
+            let mut settings = session
+                .snapshot()
+                .await?
+                .policy
+                .browser
+                .unwrap_or_default()
+                .settings;
+            let invalid =
+                |_| WorkerError::new("browser_command", "Limits must be positive integers");
+            settings.lifetime_seconds = values[0].parse().map_err(invalid)?;
+            settings.idle_seconds = values[1].parse().map_err(invalid)?;
+            settings.max_actions = values[2].parse().map_err(invalid)?;
+            session
+                .set_browser_settings(settings, &id("browser-limits"))
+                .await?;
+            Ok("Browser limits saved for the next browser session; reopen to apply them.".into())
+        }
         _ => Err(WorkerError::new(
             "browser_command",
             "Use /browser on, /browser off, or /browser to open the panel",

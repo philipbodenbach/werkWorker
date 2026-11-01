@@ -307,3 +307,9 @@ root goal and are not applied to child goals. In adaptive and preserved minimal 
 delivery uses a low-authority assistant data envelope with separately persisted
 harness provenance, rather than appearing as a new user request. The parent
 continues through the same synthesis loop and tree budget. See [harness](harness.md).
+
+
+Directory-list evidence is scoped to its normalized directory: `app0/index.ts`
+and `app1/index.ts` are distinct discoveries, while `./app0`, `app0` and
+`/workspace/app0` are aliases. Repeated listings remain idle. Changing a search
+query alone still does not create evidence when returned rows are unchanged.

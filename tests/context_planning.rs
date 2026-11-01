@@ -363,3 +363,72 @@ async fn reused_selection_does_not_duplicate_an_existing_model_summary() {
     let text = serde_json::to_string(&request.messages).unwrap();
     assert_eq!(text.matches("UNIQUE_MODEL_SUMMARY").count(), 1);
 }
+
+#[tokio::test]
+async fn browser_frames_compact_without_losing_original_user_image_or_checkpoint() {
+    let mut state = history(0).await;
+    state.runs[0].limits.context_tokens = 24000;
+    state.runs[0].limits.reserve_output_tokens = 1024;
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let image = attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap();
+    state.messages[0].images = vec![image.clone()];
+    for n in 0..24 {
+        let call = ToolCall {
+            id: format!("browser{n}"),
+            name: "browser.observe".into(),
+            arguments: serde_json::json!({"browser_id":"browser_live"}),
+        };
+        let mut assistant = Message::text(Role::Assistant, "Observe");
+        assistant.tool_calls.push(call.clone());
+        let index = state.messages.len();
+        state.messages.push(assistant);
+        let mut result = ToolResult::ok(
+            serde_json::json!({"browser_id":"browser_live","tab_id":1,"observation_id":format!("obs{n}"),"revision":n,"text":"page detail ".repeat(800)}),
+        );
+        result.images.push(image.clone());
+        state.messages.push(Message::tool(&call.id, &result));
+        state.runs[0].invocations.push(serde_json::from_value(serde_json::json!({"invocation_id":format!("inv{n}"),"step_id":format!("step{n}"),"message_index":index,"call":call,"status":"finished","prepared":{},"result":result})).unwrap());
+    }
+    let (request, snapshot) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+        .await
+        .unwrap();
+    assert!(!snapshot.omitted_messages.is_empty());
+    assert_eq!(
+        request
+            .messages
+            .iter()
+            .find(|m| m.role == Role::User)
+            .unwrap()
+            .images,
+        vec![image]
+    );
+    assert!(
+        request
+            .messages
+            .iter()
+            .map(|m| m.images.len())
+            .sum::<usize>()
+            <= 3
+    );
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("browser_checkpoint") && m.content.contains("obs23"))
+    );
+    assert!(
+        state.messages.iter().map(|m| m.images.len()).sum::<usize>() > 20,
+        "canonical receipts retain event evidence"
+    );
+    context::validate_messages(&request.messages).unwrap();
+    let counted = Counter::default()
+        .count_input_tokens(&request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.estimated_tokens, counted);
+}

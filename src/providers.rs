@@ -1696,6 +1696,7 @@ impl ModelProvider for WerkProvider {
                 "Streaming support is not confirmed",
             ));
         }
+        let has_images = request.messages.iter().any(|m| !m.images.is_empty());
         let body = self.chat_body(&request)?;
         let request = self
             .client
@@ -1768,6 +1769,24 @@ impl ModelProvider for WerkProvider {
                         ),
                     ));
                 }
+                if has_images
+                    && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                    && matches!(
+                        value["error"]["code"].as_str(),
+                        Some(
+                            "images_unsupported"
+                                | "image_input_unsupported"
+                                | "vision_unsupported"
+                                | "multimodal_not_supported"
+                                | "missing_mmproj"
+                        )
+                    )
+                {
+                    return Err(WorkerError::new(
+                        "images_unsupported",
+                        "The configured backend rejected image input. Check its vision capability and projector/mmproj configuration. Browser actions may already have completed; images were not processed. No backend was switched.",
+                    ));
+                }
                 if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
                     && matches!(
                         value["error"]["code"].as_str(),
@@ -1784,6 +1803,22 @@ impl ModelProvider for WerkProvider {
                             .chars()
                             .take(2048)
                             .collect::<String>(),
+                    ));
+                }
+                if has_images && let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                    let detail = value["error"]["message"]
+                        .as_str()
+                        .unwrap_or("No structured diagnostic supplied");
+                    let detail = if detail.contains("base64,") {
+                        "Backend diagnostic omitted because it contains an image payload".to_owned()
+                    } else {
+                        self.client.redact(detail).chars().take(512).collect()
+                    };
+                    return Err(WorkerError::new(
+                        "image_request_rejected",
+                        format!(
+                            "The configured backend rejected the image-bearing request: {detail}. Image feedback was not processed; inspect backend vision/projector support and request settings before continuing the visual task."
+                        ),
                     ));
                 }
             }

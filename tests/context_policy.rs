@@ -555,6 +555,20 @@ async fn compaction_retains_loaded_skill_and_directory_evidence() {
             .iter()
             .any(|c| !c.omitted_messages.is_empty())
     );
+    let expected_skill = run
+        .status()
+        .await
+        .unwrap()
+        .invocations
+        .iter()
+        .find(|i| i.call.name == "skills.load")
+        .unwrap()
+        .result
+        .as_ref()
+        .unwrap()
+        .data["body"]
+        .clone();
+    assert!(expected_skill.as_str().is_some_and(|body| !body.is_empty()));
     for request in &scripted.requests()[3..] {
         assert!(
             !request.messages[0]
@@ -574,9 +588,7 @@ async fn compaction_retains_loaded_skill_and_directory_evidence() {
             .map(|m| serde_json::from_str(&m.content).unwrap())
             .collect();
         assert!(
-            results.iter().any(|r| r.data["body"]
-                .as_str()
-                .is_some_and(|body| body.contains("then run its unit test"))),
+            results.iter().any(|r| r.data["body"] == expected_skill),
             "loaded skill lost"
         );
         assert!(

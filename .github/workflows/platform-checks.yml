@@ -8,6 +8,7 @@ permissions:
   contents: read
 jobs:
   native:
+    name: native (${{ matrix.check_os || matrix.os }}, ${{ matrix.platform }}, ${{ matrix.target }}, ${{ matrix.suffix }})
     strategy:
       fail-fast: false
       matrix:
@@ -24,7 +25,9 @@ jobs:
             platform: windows
             target: x86_64-pc-windows-msvc
             suffix: windows-x86_64.zip
-          - os: macos-14
+          - os: macos-15
+            # Preserve the required check name configured in main's branch protection.
+            check_os: macos-14
             platform: macos
             target: aarch64-apple-darwin
             suffix: macos-aarch64.tar.gz

@@ -185,14 +185,14 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
             let called = |name:&str| messages.iter().any(|m| m["tool_calls"].as_array().is_some_and(|calls| calls.iter().any(|c|c["function"]["name"]==name)));
             let next= if !called("task.plan") {
                 Some(("task.plan",json!({"steps":[
-                    {"id":"build","description":"Build","status":"in_progress"},
-                    {"id":"test","description":"Test","status":"pending"},
-                    {"id":"finish","description":"Finish","status":"pending"}]})))
+                    {"id":"build","description":"Build","status":"in_progress","acceptance_criteria":["Fixture exists"],"verification_method":"Read game.txt"},
+                    {"id":"test","description":"Test","status":"pending","acceptance_criteria":["Fixture contains expected state"],"verification_method":"Run state assertion"},
+                    {"id":"finish","description":"Finish","status":"pending","acceptance_criteria":["Report verified result"],"verification_method":"Check recorded receipts"}]})))
             } else if !called("files.write") {
                 Some(("files.write",json!({"path":"game.txt","content":"implementation"})))
             } else if !called("process.run") {
                 Some(("process.run",json!({"argv":["/bin/sh","-c","test \"$(cat game.txt)\" = implementation"],
-                    "verification":{"criteria":["Initial fixture state is persisted"],"paths":["game.txt"]}})))
+                    "verification":{"kind":"behavior","criteria":["Initial fixture state is persisted"],"paths":["game.txt"]}})))
             } else {None};
             return if let Some((name,args))=next {
                 reply(json!({"role":"assistant","content":"","tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":args.to_string()}}]}))
@@ -270,9 +270,15 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
     assert_eq!(saved.profile.tools, vec!["files.read"]);
     let review = child.run.as_ref().unwrap();
     assert_eq!(review.status, RunStatus::Completed);
-    assert!(!review.limits.continuous);
-    assert_eq!(review.limits.max_model_requests, 6);
-    assert_eq!(review.limits.max_tool_invocations, 8);
+    assert!(review.limits.continuous);
+    assert_eq!(
+        review.limits.max_model_requests,
+        Limits::default().max_model_requests
+    );
+    assert_eq!(
+        review.limits.max_tool_invocations,
+        Limits::default().max_tool_invocations
+    );
     assert!(
         server
             .requests

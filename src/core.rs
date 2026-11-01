@@ -343,8 +343,8 @@ pub enum ApprovalDecision {
     AllowOnce,
     Deny,
     AllowSameArguments,
-    /// Remember workspace file access for this tool, or exact prepared
-    /// arguments for other effects, in the owning root session.
+    /// Remember workspace access for this file or sandboxed process tool, or
+    /// exact prepared arguments for other effects, in the owning root session.
     AllowForSession,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,6 +545,8 @@ pub enum EventKind {
         session_id: String,
         goal: String,
         status: RunStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<WorkerError>,
     },
     SessionResumed,
     SessionForked {

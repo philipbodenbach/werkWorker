@@ -77,6 +77,23 @@ responses, including a reported output limit, retain ordinary recovery behavior.
 A healthy stream can run longer than the configured inactivity timeout while
 it continues delivering data.
 
+A run's wall-time deadline stops new work immediately. If a Werk inference is
+already dispatched, Worker keeps polling that same owned request for a bounded
+cleanup period instead of dropping it mid-generation. The default
+`WerkConfig.deadline_drain_timeout_ms` is 600,000 ms (maximum 600,000; zero disables
+cleanup). This is separate from `timeout_ms`, which still bounds transport
+inactivity. Both inference permits remain held until the request finishes or
+cleanup stops, while other agents can use available slots. No detached task or
+replacement request is started. Late text/tool calls are discarded, and the
+expired run still fails with `wall_budget`; a late answer never completes it.
+
+A confirmed terminal response leaves the shared provider usable. A missing
+terminal response, transport failure, cleanup timeout, or explicit user
+cancellation retains the conservative unresolved-inference protection. User
+cancellation and engine shutdown interrupt cleanup promptly. Providers without
+a cleanup allowance retain immediate deadline cancellation. The main chat also
+shows a failed subagent's original error code and message.
+
 ## Configured completion checks
 
 An optional [harness completion check](harness.md) makes saved final text a

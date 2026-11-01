@@ -15,16 +15,20 @@ fn call(name: &str, arguments: Value) -> ScriptedTurn {
 fn plan(status: &str) -> ScriptedTurn {
     call(
         "task.plan",
-        json!({"steps":[{"id":"game","description":"Implement and verify real start behavior","status":status}]}),
+        json!({"steps":[{"id":"game","description":"Implement and verify real start behavior","status":status,"acceptance_criteria":["Required fixture state is observed"],"verification_method":"Execute the state assertion"}]}),
     )
 }
 fn verify(expected: &str) -> ScriptedTurn {
     call(
         "process.run",
-        json!({"argv":["/bin/sh","-c",format!("test \"$(cat game.txt)\" = {expected}")],"verification":{"criteria":["Fixture file matches expected state"],"paths":["game.txt"]}}),
+        json!({"argv":["/bin/sh","-c",format!("test \"$(cat game.txt)\" = {expected}")],"verification":{"kind":"behavior","criteria":["Fixture file matches expected state"],"paths":["game.txt"]}}),
     )
 }
 async fn engine(turns: Vec<ScriptedTurn>, dir: &std::path::Path) -> (WorkerEngine, SessionHandle) {
+    let uses_plan = turns
+        .iter()
+        .flat_map(|t| &t.deltas)
+        .any(|d| matches!(d, ModelDelta::Tool { name, .. } if name == "task.plan"));
     let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(turns)))
         .build()
         .await
@@ -34,8 +38,10 @@ async fn engine(turns: Vec<ScriptedTurn>, dir: &std::path::Path) -> (WorkerEngin
         name: "coding-basic".into(),
         prompt: "Implement and verify".into(),
         tools: ["files.write", "files.edit", "process.run", "task.plan"]
+            .into_iter()
+            .filter(|name| *name != "task.plan" || uses_plan)
             .map(str::to_owned)
-            .to_vec(),
+            .collect(),
         skills: vec![],
     };
     let session = engine
@@ -98,6 +104,48 @@ async fn incomplete_implementation_and_failed_checks_are_repaired_before_complet
     assert_eq!(
         checks[1].result.as_ref().unwrap().data["verification"]["passed"],
         true
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
+        "playable"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn unrelated_success_cannot_hide_an_unresolved_check_at_completion() {
+    if !sandbox().await {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = engine(
+        vec![
+            call("files.write", json!({"path":"game.txt","content":"stub"})),
+            verify("playable"),
+            verify("stub"),
+            ScriptedTurn::text("The unrelated check passed; done"),
+            call("files.edit", json!({"path":"game.txt","expected_hash":hash("stub"),"old":"stub","new":"playable"})),
+            verify("playable"),
+            ScriptedTurn::text("The original failure is fixed and verified"),
+        ],
+        dir.path(),
+    ).await;
+    let result = session
+        .submit(
+            "Make the game playable",
+            "start",
+            Limits::continuous(),
+            None,
+        )
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+    assert_eq!(
+        result.text.as_deref(),
+        Some("The original failure is fixed and verified")
     );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("game.txt")).unwrap(),
@@ -223,7 +271,7 @@ async fn truncated_verification_keeps_durable_evidence_and_current_plan_in_conte
     let (engine,session)=engine(vec![
         plan("completed"),
         call("files.write",json!({"path":"./game.txt","content":"verified"})),
-        call("process.run",json!({"argv":["/bin/sh","-c","test $(cat game.txt) = verified && seq 1 4000"],"verification":{"criteria":["Fixture content is verified"],"paths":["/workspace/game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","test $(cat game.txt) = verified && seq 1 4000"],"verification":{"kind":"behavior","criteria":["Fixture content is verified"],"paths":["/workspace/game.txt"]}})),
         ScriptedTurn::text("Verified"),
     ],dir.path()).await;
     let run = session
@@ -288,7 +336,7 @@ async fn a_check_that_changes_its_own_source_is_not_accepted() {
     let dir = tempfile::tempdir().unwrap();
     let (engine,session)=engine(vec![
         call("files.write",json!({"path":"game.txt","content":"stub"})),
-        call("process.run",json!({"argv":["/bin/sh","-c","printf repaired > game.txt"],"verification":{"criteria":["State is correct"],"paths":["game.txt"]}})),
+        call("process.run",json!({"argv":["/bin/sh","-c","printf repaired > game.txt"],"verification":{"kind":"behavior","criteria":["State is correct"],"paths":["game.txt"]}})),
         ScriptedTurn::text("Done"),verify("repaired"),ScriptedTurn::text("Verified after repair"),
     ],dir.path()).await;
     let run = session

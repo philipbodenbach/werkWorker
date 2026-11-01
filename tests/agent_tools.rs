@@ -275,6 +275,389 @@ async fn real_browser_exercises_input_catches_failures_and_returns_screenshot() 
     assert_eq!(load_only.data["passed"], false);
 }
 
+#[tokio::test]
+async fn source_inventory_does_not_emit_a_passing_verification() {
+    if std::env::var_os("REQUIRE_SANDBOX").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<script>const STEPS = [ const BROKEN = 1;</script>",
+    )
+    .unwrap();
+    let ctx = context(dir.path()).await;
+    let result = call(&ctx, "process.run", json!({
+        "argv":["python3","-c","import re;s=open('/workspace/index.html',encoding='utf-8').read();print(repr(s[:220]))"],
+        "verification":{"criteria":["Inspect the STEPS source"],"paths":["index.html"]}
+    })).await.unwrap();
+    assert_eq!(result.data["exit_code"], 0);
+    assert!(result.data["stdout"].as_str().unwrap().contains("BROKEN"));
+    assert!(
+        result.data["verification_rejected"]
+            .as_str()
+            .unwrap()
+            .contains("no verification.kind")
+    );
+    assert!(result.data.get("verification").is_none(), "{}", result.data);
+}
+
+#[tokio::test]
+async fn browser_startup_syntax_error_reports_location_before_interaction() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let args = json!({"path":"index.html","screenshot":false,
+        "actions":[{"type":"click","selector":"#next"},{"type":"expect_text","selector":"#next","text":"Model"}],
+        "verification":{"criteria":["Next advances to Model"],"paths":["index.html"]}});
+    // The missing button is a consequence of startup failure, not a bad selector.
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<!doctype html><body>Loop\n<script>\nconst STEPS = [\nconst broken = 1;\n</script>",
+    )
+    .unwrap();
+    let failed = call(&ctx, "browser.check", args.clone()).await.unwrap();
+    assert_eq!(failed.data["passed"], false, "{}", failed.data);
+    assert_eq!(failed.data["failure_phase"], "startup");
+    assert_eq!(failed.data["actions"], json!([]));
+    assert!(failed.data.get("failed_action").is_none());
+    let error = &failed.data["page_errors"][0];
+    assert_eq!(error["path"], "index.html", "{}", failed.data);
+    assert_eq!(error["line"], 4);
+    assert_eq!(error["column"], 1);
+    assert_eq!(error["source_line"], "const broken = 1;");
+    assert!(failed.data["errors"].to_string().contains("index.html:4:1"));
+    assert!(!failed.data["errors"].to_string().contains("Timeout"));
+    // Check external-script locations, too; HTML line numbers cannot stand in.
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<body>Loop<script src='app.js'></script>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "// Broken\nconst STEPS = [\nconst broken = 1;",
+    )
+    .unwrap();
+    let external = call(&ctx, "browser.check", args.clone()).await.unwrap();
+    assert_eq!(
+        external.data["page_errors"][0]["path"], "app.js",
+        "{}",
+        external.data
+    );
+    assert_eq!(external.data["page_errors"][0]["line"], 3);
+    std::fs::write(dir.path().join("app.js"), "document.body.innerHTML='<button id=next>Task</button>';document.getElementById('next').onclick=e=>e.target.textContent='Model';").unwrap();
+    let corrected = call(&ctx, "browser.check", args).await.unwrap();
+    assert_eq!(corrected.data["passed"], true, "{}", corrected.data);
+    assert!(corrected.data.get("page_errors").is_none());
+}
+
+#[tokio::test]
+async fn browser_failure_identifies_wrong_tab_expectation_and_missing_selector() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let html = r#"<!doctype html><title>Tabs</title><body>
+      <button id="explain" role="tab" aria-selected="true">Explanation</button>
+      <button id="example" role="tab" aria-selected="false">Example</button>
+      <section id="explanation">Explanation content</section>
+      <section id="sample" hidden>Example content</section>
+      <button id="next">Next</button><output id="count">0</output>
+      <script>
+      const el = id => document.getElementById(id);
+      function select(example) {
+        el('explanation').hidden = example; el('sample').hidden = !example;
+        el('explain').setAttribute('aria-selected', String(!example));
+        el('example').setAttribute('aria-selected', String(example));
+      }
+      el('explain').onclick = () => select(false);
+      el('example').onclick = () => select(true);
+      el('next').onclick = () => el('count').textContent = 'unexpected action';
+      </script>"#;
+    std::fs::write(dir.path().join("tabs.html"), html).unwrap();
+    let failed = call(
+        &ctx,
+        "browser.check",
+        json!({
+            "path":"tabs.html",
+            "actions":[
+                {"type":"click","selector":"#example"},
+                {"type":"expect_visible","selector":"#sample"},
+                {"type":"expect_visible","selector":"#explanation"},
+                {"type":"click","selector":"#next"}
+            ],
+            "verification":{"criteria":["Switch between tabs"],"paths":["tabs.html"]}
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failed.data["passed"], false);
+    assert_eq!(failed.data["verification"]["passed"], false);
+    assert_eq!(failed.data["actions"].as_array().unwrap().len(), 2);
+    let failure = &failed.data["failed_action"];
+    assert_eq!(failure["index"], 3);
+    assert_eq!(failure["selector"], "#explanation");
+    assert_eq!(failure["last_interaction"]["selector"], "#example");
+    assert_eq!(failure["last_interaction"]["index"], 1);
+    assert_eq!(failure["target"]["count"], 1);
+    assert_eq!(failure["target"]["visible"], false);
+    assert_eq!(failure["target"]["hidden"], true);
+    assert_eq!(failure["target"]["text"], "Explanation content");
+    assert!(
+        failed.data["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "explain" && c["selected"] == "false")
+    );
+    assert_eq!(failed.data["title"], "Tabs");
+    let text = failed.data["text"].as_str().unwrap();
+    assert!(text.contains("Example content"));
+    assert!(!text.contains("Explanation content"));
+    assert!(!text.contains("unexpected action"));
+    assert_eq!(failed.images.len(), 1);
+
+    // Correct the check's missing click, preserving the working application.
+    let corrected = call(&ctx, "browser.check", json!({
+        "path":"tabs.html","screenshot":false,
+        "actions":[
+            {"type":"click","selector":"#example"},
+            {"type":"expect_visible","selector":"#sample"},
+            {"type":"click","selector":"#explain"},
+            {"type":"expect_visible","selector":"#explanation"}
+        ],
+        "verification":{"criteria":["Switch between tabs"],"paths":["tabs.html"],"replaces":"invocation_test"}
+    })).await.unwrap();
+    assert_eq!(corrected.data["passed"], true, "{}", corrected.data);
+    assert_eq!(corrected.data["assertions"], 2);
+    assert!(corrected.data.get("failed_action").is_none());
+
+    let missing = call(
+        &ctx,
+        "browser.check",
+        json!({
+            "path":"tabs.html","screenshot":false,
+            "actions":[{"type":"click","selector":"#dot3"}]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(missing.data["passed"], false);
+    assert_eq!(missing.data["failed_action"]["index"], 1);
+    assert_eq!(missing.data["failed_action"]["target"]["count"], 0);
+    assert!(
+        missing.data["failed_action"]
+            .get("last_interaction")
+            .is_none()
+    );
+    assert!(
+        missing.data["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "explain")
+    );
+
+    // Diagnostic observation must not re-evaluate a failed predicate.
+    let predicate = "(() => { const el = document.getElementById('count'); el.textContent = String(Number(el.textContent) + 1); throw new Error('predicate failure'); })()";
+    let expression = call(
+        &ctx,
+        "browser.check",
+        json!({
+            "path":"tabs.html","screenshot":false,
+            "actions":[{"type":"expect","expression":predicate}]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(expression.data["passed"], false);
+    assert_eq!(expression.data["failed_action"]["expression"], predicate);
+    assert_eq!(expression.data["failure_origin"], "check");
+    assert!(expression.data.get("page_errors").is_none());
+    assert!(expression.data["text"].as_str().unwrap().ends_with('1'));
+    assert!(
+        expression.data["errors"]
+            .to_string()
+            .contains("predicate failure")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("tabs.html")).unwrap(),
+        html
+    );
+}
+
+#[tokio::test]
+async fn browser_rejects_truthy_values_but_preserves_real_application_errors() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<body><button id=boom>Fail</button><script>document.getElementById('boom').onclick=()=>{throw new Error('application handler failed')};</script>").unwrap();
+    let ctx = context(dir.path()).await;
+    for expression in [
+        "'0:0'",
+        "1",
+        "({ok:true})",
+        "async () => 'value'",
+        "async () => { throw new Error('rejected check'); }",
+        "document.title,",
+    ] {
+        let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":expression}]})).await.unwrap();
+        assert_eq!(result.data["passed"], false, "{}", result.data);
+        assert_eq!(result.data["assertions"], 0);
+        assert_eq!(result.data["failure_origin"], "check");
+        assert!(result.data.get("page_errors").is_none());
+    }
+    let boolean=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"async () => document.querySelectorAll('button').length === 1"}]})).await.unwrap();
+    assert_eq!(boolean.data["passed"], true, "{}", boolean.data);
+    let false_check=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"false"}]})).await.unwrap();
+    assert_eq!(false_check.data["passed"], false);
+    assert_eq!(false_check.data["failure_origin"], "assertion_or_action");
+    assert!(
+        false_check.data["errors"].to_string().contains("timed out"),
+        "{}",
+        false_check.data
+    );
+    assert!(
+        !false_check.data["errors"]
+            .to_string()
+            .contains("subscriptable")
+    );
+    let app_error=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#boom"},{"type":"expect","expression":"true"}]})).await.unwrap();
+    assert_eq!(app_error.data["passed"], false, "{}", app_error.data);
+    assert_eq!(app_error.data["failure_origin"], "application");
+    assert!(
+        app_error.data["page_errors"]
+            .to_string()
+            .contains("application handler failed")
+    );
+    std::fs::write(dir.path().join("index.html"), "<body><button id=boom>Fail</button><script>document.getElementById('boom').onclick=()=>console.error('application reported failure');</script>").unwrap();
+    let console_error=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#boom"},{"type":"expect","expression":"true"}]})).await.unwrap();
+    assert_eq!(
+        console_error.data["passed"], false,
+        "{}",
+        console_error.data
+    );
+    assert_eq!(console_error.data["failure_origin"], "application");
+    assert!(console_error.data.get("page_errors").is_none());
+}
+
+#[tokio::test]
+async fn browser_expect_waits_for_delayed_boolean_and_async_results() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<body><button id=next>Next</button><output id=state>Waiting</output><script>document.querySelector('#next').onclick=()=>setTimeout(()=>document.querySelector('#state').textContent='Ready',350);</script>").unwrap();
+    let ctx = context(dir.path()).await;
+    for expression in [
+        "document.querySelector('#state').textContent === 'Ready'",
+        "async () => { await new Promise(r => setTimeout(r, 20)); return document.querySelector('#state').textContent === 'Ready'; }",
+    ] {
+        let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#next"},{"type":"expect","expression":expression}]})).await.unwrap();
+        assert_eq!(result.data["passed"], true, "{}", result.data);
+        assert_eq!(result.data["assertions"], 1);
+        assert!(result.data["page_errors"].is_null());
+    }
+    // An unresolved Promise also has a bounded assertion timeout, not a tool hang.
+    let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"() => new Promise(() => {})"}]})).await.unwrap();
+    assert_eq!(result.data["passed"], false);
+    assert_eq!(result.data["failure_origin"], "assertion_or_action");
+    assert!(
+        result.data["errors"].to_string().contains("timed out"),
+        "{}",
+        result.data
+    );
+}
+
+#[tokio::test]
+async fn browser_internal_failure_is_not_recorded_as_application_test_evidence() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // Fault injection: an invalid result crossing the JS/Python boundary must
+    // fail the verifier, never become a passed check or an application failure.
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<body>Fixture<script>Promise.race=()=>false;</script>",
+    )
+    .unwrap();
+    let ctx = context(dir.path()).await;
+    let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"true"}],"verification":{"criteria":["Fixture works"],"paths":["index.html"]}})).await.unwrap();
+    assert_eq!(result.status, Outcome::Failed, "{}", result.data);
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("verification_runtime_error")
+    );
+    assert_eq!(result.data["failure_origin"], "runtime");
+    assert!(result.data["verification"].is_null());
+    assert!(result.data["errors"].to_string().contains("invalid result"));
+}
+
+#[tokio::test]
+#[ignore = "read-only browser replay of a supplied local artifact; uses a temporary copy"]
+async fn saved_page_wrong_check_can_be_corrected_without_application_edits() {
+    let source = std::fs::read(std::env::var("WW_BROWSER_REPLAY_ENTRY").unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), &source).unwrap();
+    let ctx = context(dir.path()).await;
+    let failed=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,
+        "actions":[{"type":"click","selector":"#nextBtn"},{"type":"expect","expression":"document.querySelector('#panelStep').textContent === 'Step 02'"}]})).await.unwrap();
+    assert_eq!(failed.data["failure_origin"], "check", "{}", failed.data);
+    assert!(failed.data.get("page_errors").is_none());
+    let corrected=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,
+        "actions":[
+            {"type":"expect","expression":"document.querySelectorAll('#loopDiagram .node').length === 4 && document.querySelectorAll('#stepper .step').length === 5"},
+            {"type":"click","selector":"#nextBtn"},
+            {"type":"expect_text","selector":"#stepTag","text":"Step 02"},
+            {"type":"click","selector":"#tab-example"},
+            {"type":"expect_visible","selector":"#panelExample"},
+            {"type":"click","selector":"#tab-explain"},
+            {"type":"expect_visible","selector":"#panelExplain"}],
+        "verification":{"replaces":"invocation_test","criteria":["Navigation and tab controls work"],"paths":["index.html"]}})).await.unwrap();
+    assert_eq!(corrected.data["passed"], true, "{}", corrected.data);
+    assert_eq!(
+        std::fs::read(dir.path().join("index.html")).unwrap(),
+        source
+    );
+}
+
+#[tokio::test]
+#[ignore = "read-only replay of a supplied HTML file and browser action scenario"]
+async fn saved_browser_scenario_reports_actual_assertion_failure() {
+    let source = std::fs::read(std::env::var("WW_BROWSER_REPLAY_ENTRY").unwrap()).unwrap();
+    let mut args: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("WW_BROWSER_REPLAY_CHECK").unwrap()).unwrap(),
+    )
+    .unwrap();
+    args["path"] = json!("index.html");
+    args["screenshot"] = json!(false);
+    args.as_object_mut().unwrap().remove("verification");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), &source).unwrap();
+    let result = call(&context(dir.path()).await, "browser.check", args)
+        .await
+        .unwrap();
+    assert_eq!(result.status, Outcome::Succeeded);
+    assert_eq!(result.data["passed"], false);
+    assert_eq!(result.data["failure_origin"], "assertion_or_action");
+    assert!(result.data["errors"].to_string().contains("timed out"));
+    assert!(!result.data["errors"].to_string().contains("subscriptable"));
+    eprintln!(
+        "saved replay: {}",
+        json!({"failure":result.data["failed_action"],"errors":result.data["errors"],"controls":result.data["controls"]})
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("index.html")).unwrap(),
+        source
+    );
+}
+
 use std::sync::{
     Mutex,
     atomic::{AtomicUsize, Ordering},

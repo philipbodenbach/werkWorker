@@ -18,6 +18,43 @@ pub(crate) const GUIDANCE: &str = concat!(
     "For analysis-only requests, return findings without creating code.\n"
 );
 
+pub(crate) fn has_acceptance_plan(run: &Run) -> bool {
+    run.plan["steps"].as_array().is_some_and(|steps| {
+        !steps.is_empty()
+            && steps.iter().all(|step| {
+                step["acceptance_criteria"]
+                    .as_array()
+                    .is_some_and(|criteria| {
+                        !criteria.is_empty()
+                            && criteria
+                                .iter()
+                                .all(|c| c.as_str().is_some_and(|s| !s.trim().is_empty()))
+                    })
+                    && step["verification_method"]
+                        .as_str()
+                        .is_some_and(|s| !s.trim().is_empty())
+            })
+    })
+}
+
+pub(crate) fn plan_required(session: &SessionData, run: &Run) -> bool {
+    session.profile.tools.iter().any(|t| t == "task.plan")
+        && !session
+            .policy
+            .hard_denied_tools
+            .iter()
+            .any(|t| t == "task.plan")
+        && session.policy.tool_permissions.get("task.plan")
+            != Some(&crate::policy::ToolPermission::Deny)
+        && session
+            .profile
+            .tools
+            .iter()
+            .any(|t| matches!(t.as_str(), "files.write" | "files.edit" | "files.insert"))
+        && session.policy.workspace_writable
+        && !has_acceptance_plan(run)
+}
+
 const REFOCUS_AFTER: usize = 6;
 const CHECK_AFTER_CHANGES: usize = 3;
 
@@ -34,10 +71,45 @@ pub(crate) fn check_tools(
     if !crate::failure_progress::enabled(session, run)? {
         return Ok(());
     }
+    // Plan requirements come from the task/reference, not a profile's fixed
+    // checklist. Enforce a recorded criterion/method before implementation;
+    // read-only profiles and hosts without task.plan keep their existing seam.
+    if plan_required(session, run)
+        && tools
+            .iter()
+            .any(|t| t.name == "task.plan" && session.policy.can_request(t))
+    {
+        tools.retain(|t| {
+            t.effect == Effect::Read
+                || matches!(
+                    t.name.as_str(),
+                    "task.plan" | "skills.load" | "skills.list" | "interaction.ask"
+                )
+        });
+        for tool in tools {
+            tool.input_schema["x-werk-work-cycle"] = json!("plan");
+            if tool.name == "task.plan" {
+                tool.description.push_str(" Before implementation, record nonempty acceptance_criteria and verification_method for each step, derived from the task and references.");
+                tool.input_schema["properties"]["steps"]["minItems"] = json!(1);
+                tool.input_schema["properties"]["steps"]["items"]["required"] = json!([
+                    "id",
+                    "description",
+                    "status",
+                    "acceptance_criteria",
+                    "verification_method"
+                ]);
+            }
+        }
+        return Ok(());
+    }
     let state = crate::harness::state(session, &run.id)?;
     let cycle = observation(run, &state.verifications);
     let check_due = cycle["check_due"] == true;
     let action_due = cycle["action_due"] == true;
+    let check_repair = cycle["check_repair_due"] == true
+        && tools
+            .iter()
+            .any(|t| t.name == "browser.check" && session.policy.can_request(t));
     if !check_due && !action_due {
         return Ok(());
     }
@@ -48,16 +120,26 @@ pub(crate) fn check_tools(
     }) {
         return Ok(());
     }
-    let phase = if check_due { "check" } else { "repair" };
+    let phase = if check_repair {
+        "check_repair"
+    } else if check_due {
+        "check"
+    } else {
+        "repair"
+    };
     tools.retain(|t| {
+        if check_repair {
+            return matches!(t.name.as_str(), "browser.check" | "interaction.ask");
+        }
         matches!(
             t.name.as_str(),
             "process.run" | "browser.check" | "interaction.ask"
-        ) || (action_due
-            && matches!(
-                t.name.as_str(),
-                "files.edit" | "files.insert" | "files.write" | "task.plan"
-            ))
+        ) || crate::agents::is_agent_tool(&t.name)
+            || (action_due
+                && matches!(
+                    t.name.as_str(),
+                    "files.edit" | "files.insert" | "files.write" | "task.plan"
+                ))
     });
     for tool in tools {
         // The underlying write tool already supports atomic hash-bound
@@ -76,7 +158,7 @@ pub(crate) fn check_tools(
             {
                 required.push(json!("verification"));
             }
-            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
+            tool.description.push_str(" Work-cycle checkpoint: exercise startup and the main public interaction of the current implementation. Record verification.kind=behavior, planned criteria and relevant paths. Source dumps and syntax-only success are not behavioral checks.");
         } else if matches!(
             tool.name.as_str(),
             "files.edit" | "files.insert" | "files.write"
@@ -103,7 +185,11 @@ pub(crate) fn deferred_call(
     let mut result = ToolResult::error(Outcome::ValidationError, "work_cycle_check_required");
     result.data = json!({
         "requested_tool":call.name,"phase":phase,
-        "message":if phase == "repair" {
+        "message":if phase == "plan" {
+            "No implementation executed. First record task.plan with steps containing id, description, status, nonempty acceptance_criteria and verification_method. Derive criteria from the user's task and references, including behavior, content, visuals and delivery where relevant. Read necessary inputs, then implement against that plan."
+        } else if phase == "check_repair" {
+            "No action executed. The browser predicate failed, not the application. Correct its expression/selectors using the recorded DOM and rerun browser.check with verification.replaces. No application edit is needed solely to repair this check."
+        } else if phase == "repair" {
             "No action executed. Investigation of the current version has stalled. Use the retained current source and hash for a concrete repair, or execute a behavioral check. A real change returns to checking. A conflicting edit reopens targeted inspection. Reporting a genuine blocker remains available."
         } else {
             "No action executed. Run a behavioral check with verification criteria and relevant paths against the current entry point. Repeating reads or edits cannot satisfy this checkpoint. A failing check permits focused repair."
@@ -124,14 +210,19 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
     // Distinguish redundant coverage from useful initial investigation; do not
     // require a write to qualify for context recovery or infer task intent.
     let read_recovery = crate::read_progress::recovery_active(run);
+    let repair = crate::repair_cycle::latest(run, &state.verifications);
+    let repair_focus = repair.as_ref().is_some_and(|c| c.focus_due(run));
     if cycle["refocus"] != true
         && cycle["check_due"] != true
         && cycle["action_due"] != true
         && !read_recovery
+        && !repair_focus
     {
         return Ok(None);
     }
-    let reason = if cycle["action_due"] == true {
+    let reason = if repair_focus {
+        "A previous failing check is still unresolved. Activity and different diagnostics are not proof of a fix. Finish the runnable correction and recheck it; preserve the working parts."
+    } else if cycle["action_due"] == true {
         "Investigation is exhausted for this version. The next action must implement the runnable increment or exercise its behavior using the retained source and check result. Broad inspection tools are temporarily deferred."
     } else if cycle["check_due"] == true {
         "Implementation and investigation have accumulated without a new behavioral check. More reads or small edits do not clear this checkpoint."
@@ -162,6 +253,7 @@ pub(crate) fn continuation(session: &SessionData, run: &Run) -> Result<Option<Me
 /// Replayed from receipts on every request, including after resume/compaction.
 /// Plans and successful shell reads cannot manufacture implementation progress.
 pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Value {
+    let repair = crate::repair_cycle::latest(run, receipts);
     let mut files = BTreeMap::<String, String>::new();
     let mut checks = BTreeSet::new();
     let mut last_change = None;
@@ -291,12 +383,21 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
     // Recovery is an action/review cycle: its first real edit must be checked
     // before ordinary exploration resumes, even when it is the first change.
     check_due |= crate::read_progress::recovery_check_due(run);
+    // A boundary edit must be checked before reporting its preceding failure.
+    check_due |= repair
+        .as_ref()
+        .is_some_and(|cycle| cycle.final_check_due(run));
+    let check_repair_due = repair
+        .as_ref()
+        .is_some_and(|cycle| cycle.check_failure() && cycle.focus_due(run));
+    check_due |= check_repair_due;
     // A later edit invalidates review; a due check remains latched above.
     // Completion still checks all required files/criteria with the real gate.
     // Straight implementation can finish its first version. Interleaved small
     // edits must not erase accumulated investigation and postpone execution.
     let phase = match last_check {
         _ if check_due => "check",
+        _ if repair.is_some() => "repair",
         Some((position, _, evidence)) if last_change.is_none_or(|(n, _)| n <= position) => {
             if evidence["passed"] == true {
                 "review"
@@ -319,11 +420,14 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
             crate::read_progress::recovery_active(run)
         };
     let next_action = match phase {
+        _ if check_repair_due => {
+            "Correct the invalid browser predicate/selector using failed_action and the observed DOM, then rerun browser.check with verification.replaces. Preserve application code unless independent evidence shows an application defect."
+        }
         "check" => {
             "Run a small behavioral smoke check of the current entry point now. Exercise startup and the main user interaction against current files. If the version is not runnable yet, record that concrete failure and repair the missing connection before optional polish. Then repeat the check. Do not spend another cycle gathering broad context or making unrelated small edits."
         }
         "repair" => {
-            "Fix the concrete failure in latest_check, then rerun the behavioral check. Keep the working version and its interfaces."
+            "Finish the correction for unresolved_check (or latest_check if no unresolved check is retained), then rerun that check. A broken check can be replaced explicitly by a successful behavioral check covering its paths. Keep the working version and its interfaces; independent diagnosis can continue in parallel."
         }
         "review" => {
             "Compare the checked version with the full request and remaining milestones. Implement only concrete missing behavior; otherwise complete the plan and report verified results."
@@ -349,6 +453,8 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
                 .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
         })),
         "suggested_phase": phase,
+        "check_repair_due": check_repair_due,
+        "unresolved_check": repair.as_ref().map(|c| c.observation(run)),
         "next_action": next_action,
         "checkpoint_predates_change": last_change.is_some_and(|(n, _)| last_plan.is_none_or(|p| p < n)),
         "last_change": last_change.map(|(_, i)| {
@@ -361,9 +467,9 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "latest_check": last_check.map(|(_, i, evidence)| {
             let result = i.result.as_ref().unwrap();
             json!({"source_invocation":i.invocation_id,"passed":evidence["passed"],
-                "failure_excerpt": if evidence["passed"] == false { Some(crate::completion::excerpt(
+                "failure_excerpt": if evidence["passed"] == false { Some(crate::completion::diagnostic_excerpt(
                     result.data["stderr"].as_str().filter(|s| !s.is_empty())
-                        .or_else(|| result.data["stdout"].as_str()).unwrap_or("See the recorded check result"), 512)) } else { None }})
+                        .or_else(|| result.data["stdout"].as_str()).unwrap_or("See the recorded check result"), 1000)) } else { None }})
         }),
         "investigation_calls_since_progress": investigation,
         "changes_since_check": changes_since_check,
@@ -427,6 +533,8 @@ mod tests {
         // A real execution receipt still advances the same state normally.
         run.invocations.last_mut().unwrap().call.arguments["argv"] =
             json!(["node", "game.test.js"]);
+        run.invocations.last_mut().unwrap().call.arguments["verification"]["kind"] =
+            json!("behavior");
         assert_eq!(
             observation(&run, &BTreeMap::new())["suggested_phase"],
             "review"

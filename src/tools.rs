@@ -38,6 +38,7 @@ pub trait Tool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    pub(crate) browsers: Arc<crate::browser_control::BrowserSessions>,
 }
 impl ToolRegistry {
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
@@ -89,6 +90,8 @@ impl ToolRegistry {
         for name in crate::agents::AGENT_TOOLS {
             registry.register(Arc::new(crate::agents::AgentTool((*name).into())))?;
         }
+        let browsers = registry.browsers.clone();
+        crate::browser_control::register(&mut registry, browsers)?;
         Ok(registry)
     }
 }
@@ -118,12 +121,79 @@ pub fn validate_arguments(schema: &Value, args: &Value) -> Result<()> {
     let validator = jsonschema::validator_for(schema)
         .map_err(|_| WorkerError::new("invalid_schema", "Invalid tool schema"))?;
     if !validator.is_valid(args) {
+        // Report locations/constraints, not instance values (which can include
+        // secrets). A bare error code gives the model no correction to make.
+        let details = validator
+            .iter_errors(args)
+            .take(4)
+            .map(|e| {
+                format!(
+                    "argument {} violates schema {}{}",
+                    e.instance_path,
+                    e.schema_path,
+                    constraint_hint(schema, &e.schema_path.to_string()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(WorkerError::new(
             "validation_error",
-            "Arguments do not match the declared JSON Schema",
+            format!("Arguments do not match the declared JSON Schema: {details}"),
         ));
     }
     Ok(())
+}
+
+/// Explain the declared constraint, never echo the rejected instance (which
+/// may contain credentials). Also works for alternatives with no root-level
+/// required fields, such as a URL-or-workspace-path target.
+fn constraint_hint(schema: &Value, pointer: &str) -> String {
+    let Some((parent, keyword)) = pointer.rsplit_once('/') else {
+        return String::new();
+    };
+    let Some(constraint) = schema.pointer(pointer) else {
+        return String::new();
+    };
+    let hint = match keyword {
+        "oneOf" | "anyOf" => {
+            let alternatives = constraint
+                .as_array()
+                .map(|branches| {
+                    branches
+                        .iter()
+                        .take(8)
+                        .map(|branch| match branch.get("required") {
+                            Some(fields) => format!("required fields {fields}"),
+                            None => "another declared schema alternative".into(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                })
+                .unwrap_or_default();
+            format!(
+                "satisfy {} alternative: {alternatives}",
+                if keyword == "oneOf" {
+                    "exactly one"
+                } else {
+                    "at least one"
+                }
+            )
+        }
+        "required" => format!("required fields: {constraint}"),
+        "type" => format!("expected type: {constraint}"),
+        "additionalProperties" => {
+            let keys: Vec<_> = schema
+                .pointer(parent)
+                .and_then(|v| v["properties"].as_object())
+                .map(|p| p.keys().take(32).collect())
+                .unwrap_or_default();
+            format!("allowed fields: {keys:?}")
+        }
+        "enum" | "const" | "minimum" | "maximum" | "minLength" | "maxLength" | "minItems"
+        | "maxItems" => format!("{keyword}: {constraint}"),
+        _ => return String::new(),
+    };
+    format!(" ({})", crate::completion::excerpt(&hint, 512))
 }
 fn object(props: Value, required: &[&str]) -> Value {
     json!({"type":"object","properties":props,"required":required,"additionalProperties":false})
@@ -204,9 +274,9 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed argv, no network. To verify code, supply verification with behavioral criteria and all relevant source/test paths. Run real assertions through public entry points; syntax-only checks are insufficient for interactive behavior. A successful check records file hashes; later changes require another check. /workspace persists; /tmp is fresh each call.",
+                "Sandboxed literal argv, no implicit shell or network. For scripts use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. /workspace persists; /tmp is fresh per call.",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"stdin":{"type":"string","maxLength":32768,"description":"Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files."},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
                 ),
             ),
@@ -267,9 +337,9 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Track outcome milestones for multi-step work. Keep the current milestone in_progress; mark completed only from evidence. For coding, build a runnable version, review it, then repair concrete gaps. Save checkpoint at phase changes so the next action and interface decisions survive compaction. Replace the current plan, including its checkpoint; do not replan after every read.",
+                "Derive outcomes and acceptance criteria from the task and references. Each step records acceptance_criteria and verification_method; complete only from evidence. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps. Save checkpoint at phase changes; replace the current plan and checkpoint, not after every read.",
                 object(
-                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}},
+                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]},"acceptance_criteria":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"verification_method":{"type":"string","minLength":1,"maxLength":512}},"required":["id","description","status"],"additionalProperties":false}},
                         "checkpoint":{"type":"object","properties":{
                             "next_action":{"type":"string","maxLength":512},
                             "decisions":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":256}}
@@ -390,6 +460,18 @@ impl Tool for Builtin {
                     json!({"path":args["path"],"before":original,"after":args["content"]});
             }
             "process.run" | "process.start" => {
+                if let Some(issue) = crate::process_input::invocation_issue(&args) {
+                    return Err(WorkerError::new("invalid_process_invocation", issue));
+                }
+                if args["stdin"]
+                    .as_str()
+                    .is_some_and(|input| input.len() > crate::process_input::STDIN_LIMIT)
+                {
+                    return Err(WorkerError::new(
+                        "invalid_stdin",
+                        "Standard input exceeds 32768 bytes; use a workspace script for larger programs",
+                    ));
+                }
                 let cwd = process_cwd(args["cwd"].as_str().unwrap_or("."))?;
                 args["cwd"] = json!(cwd);
                 args["sandbox"] = json!({"backend":"bubblewrap","workspace_writable":ctx.writable,"network":false,"host_home":false,"limits":ctx.sandbox.limits});
@@ -406,7 +488,7 @@ impl Tool for Builtin {
                 let text=String::from_utf8(bytes.clone()).map_err(|_|WorkerError::new("encoding_error","File is not UTF-8"))?;
                 if let Some(start) = args["start_byte"].as_u64() {
                     if args.get("start_line").is_some() || args.get("end_line").is_some() || start > text.len() as u64 || !text.is_char_boundary(start as usize) {
-                        return Err(WorkerError::new("validation_error", "Use a UTF-8 byte boundary within the file, without line bounds"));
+                        return Err(WorkerError::new("validation_error", "Use start_byte alone at a UTF-8 byte boundary within the file, OR start_line/end_line. Remove the other addressing mode; do not combine byte and line bounds."));
                     }
                     return Ok(ToolResult::ok(json!({"path":path,"sha256":hash(bytes),"content":&text[start as usize..],"start_byte":start,"end_byte":text.len(),"total_bytes":text.len(),"mode":"bytes"})));
                 }
@@ -439,14 +521,22 @@ impl Tool for Builtin {
                 if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
                 else{
                     let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
-                    let output = ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?;
+                    let output = if let Some(input) = args["stdin"].as_str() {
+                        ctx.sandbox.run_with_stdin(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone(),input).await?
+                    } else {
+                        ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?
+                    };
                     let mut result = serde_json::to_value(&output)?;
+                    if output.exit_code != Some(0) || output.timed_out || output.cancelled {
+                        result["failure_excerpt"] = json!(crate::completion::diagnostic_excerpt(
+                            if output.stderr.is_empty() { &output.stdout } else { &output.stderr }, 1000));
+                    }
                     if !before.is_empty() {
                         let after = crate::completion::verification_files(&args, &ctx.workspace).await?;
                         if let Some(reason) = crate::completion::verification_rejection(&args, &result) {
                             result["verification_rejected"] = json!(reason);
                         } else {
-                            result["verification"] = json!({"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
+                            result["verification"] = json!({"kind":args["verification"]["kind"],"criteria":args["verification"]["criteria"],"files":after,"passed":output.exit_code==Some(0) && !output.timed_out && !output.cancelled && before==after});
                         }
                     }
                     result

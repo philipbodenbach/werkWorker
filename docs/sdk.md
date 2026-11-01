@@ -46,8 +46,11 @@ run. `FullAccess` is a host-selected approval mode within existing grants.
 including actions without a static grant. It never bypasses hard denies or
 read-only workspaces. `AllowSameArguments` does not skip this mode's confirmation.
 The explicit `AllowForSession` decision stores a host-owned remembered grant:
-workspace-wide use of the named file tool, or exact prepared arguments for other
-effects, bound to the tool version. It is available only on root session requests.
+workspace-wide use of the named file or sandboxed process tool, or exact prepared
+arguments for other effects, bound to the tool version. Remembering `process.run`
+covers different commands but does not cover `process.start`; sandbox restrictions
+still apply. Existing argument-bound grants remain exact. The decision is available
+only on root session requests.
 `HostPolicy.tool_permissions` supports per-tool `deny`, `ask` and `allow` rules;
 hard denies and workspace writability still take precedence. An explicit deny
 also overrides remembered grants. Hosts should clear a tool's remembered grants

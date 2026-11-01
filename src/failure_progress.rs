@@ -120,7 +120,7 @@ pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Messag
                     "stop_after_occurrences":stop_limit(run),
                     "remaining_attempts":stop_limit(run).saturating_sub(p.occurrences),
                     "last_command":p.command,"exit_code":p.exit_code,
-                    "failure_excerpt":crate::completion::excerpt(&p.detail, 1000),
+                    "failure_excerpt":crate::completion::diagnostic_excerpt(&p.detail, 1000),
                     "detail":"The same command failure keeps returning without an observed file change. Reuse this diagnosis and make a targeted correction, or choose a diagnostic that tests a different hypothesis. Repeating searches, reading new ranges, renaming criteria or restating the diagnosis does not reset this failure counter. The circuit breaker stops the run at stop_after_occurrences, including in continuous mode. Existing work is retained; recovery is not completion."
                 }),
             )

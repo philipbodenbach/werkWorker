@@ -128,7 +128,7 @@ the 2,048-character recovery bound for file content/replacement strings. Each
 process argv string also retains that recovery bound.
 The request schema and execution validator enforce actual schema bounds;
 the registered tool identity and approval scope are unchanged. These temporary
-schemas survive restart. A model must create a small working increment and then
+schemas survive restart. A model must create a small, complete runnable core and then
 use exact, hash-bound edits. This is conditional recovery, not a global skeleton
 requirement. Reasoning remains the selected protocol tier/server default; Worker
 does not silently lower effort to gain answer tokens. An identical

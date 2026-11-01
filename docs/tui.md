@@ -54,7 +54,7 @@ intact, and expanding restores the content. Questions and approvals stay visible
 | Ctrl-O / `/expand` / `/collapse` | Toggle, expand or collapse all code blocks |
 | Click a code block header | Expand or collapse that block |
 | F4 / `/view` | Choose and remember Compact or Cockpit |
-| F5 / `/settings` | Edit the current profile, permissions, enabled tools and skills |
+| F5 / `/settings` | Edit the current profile, permissions, tools, skills and delegation level |
 | `/sessions` | Choose a new chat or a previous conversation in this workspace |
 | F2 / `/permissions` | Inspect tools/skills/grants; E opens settings, Enter opens the all-tools approval shortcut |
 | F3 / `/agents` | Open the subagent inspector; Up/Down selects a child, Page Up/Down scrolls its details, Esc returns |
@@ -168,10 +168,10 @@ after completion starts a new run in the same session. Display history is bounde
 full committed events remain in SQLite. Untrusted text cannot emit terminal control
 characters. Redraws happen only after changes, at most 20 times per second.
 
-## Edit profiles, permissions, tools and skills
+## Edit profiles, permissions, tools, skills and agents
 
 Open **F5** or **`/settings`** (also **E** from F2). Use **Tab/Shift-Tab** or
-**Left/Right** to switch between Profiles, Permissions, Tools and Skills.
+**Left/Right** to switch between Profiles, Permissions, Tools, Skills and Agents.
 **Up/Down** selects an entry; **Space/Enter** chooses a profile or access preset,
 or toggles an individual tool/skill. Profiles include bundled and project/user
 profiles. Choosing a profile restores that preset's tool and skill selection;
@@ -181,9 +181,18 @@ Page Up/Down scrolls the details.
 
 **Ctrl-S** applies the draft to the current session and saves project defaults.
 **P** switches to saving only the current session. **Esc** closes the editor and
-discards unapplied changes. Applying requires an idle root session: finish or
-cancel active work first, including interrupted runs and subagents. The session
-ID and conversation history are preserved.
+discards unapplied changes. Profile/access edits require an idle or waiting root
+session without active children. Delegation-only changes also apply during a run;
+existing children finish normally. The session ID and history are preserved.
+
+**Agents** selects **Off → Conservative → Active → Max**, defaulting to **Active**.
+An explicit `delegation_level` in `.werkworker/config.json` always wins over the
+UI preference. The details pane shows the effective value and whether the
+project fixed it. Saving never replaces that project value. With project scope,
+the UI preference is stored separately alongside workspace access settings;
+session-only changes stay in that session. Higher levels encourage earlier/more
+delegation but never increase agent limits, permissions or inference capacity.
+See [subagents](subagents.md) for exact helper triggers.
 
 Profile, tool and skill selections are saved in `.werkworker/config.json`,
 preserving other project settings and checking for concurrent changes. Host

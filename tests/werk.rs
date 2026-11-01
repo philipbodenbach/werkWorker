@@ -24,6 +24,144 @@ fn config(origin: &str, stream: bool) -> WerkConfig {
 }
 
 #[tokio::test]
+async fn server_admission_estimate_prevents_multimodal_budget_mismatch() {
+    let server = Server::start(|r| match r.path.as_str() {
+        "/werk/v1/capabilities" => control(json!({"capabilities":[
+            {"id":"api.chat.admission","status":"supported","operations":["admission"],"detail":"shared budget"},
+            {"id":"api.chat.token_count","status":"supported","operations":["count_tokens"],"detail":"native text only"}
+        ]})),
+        "/werk/v1/chat/admission" => {
+            assert!(r.body["messages"][0]["content"].is_array());
+            assert_eq!(r.body["messages"][0]["content"][0]["text"], "Build the reference page");
+            control(json!({"model":"fixture-model","input_tokens":15000,"context_tokens":16384,
+                "max_output_tokens":r.body["max_completion_tokens"],"token_count_method":"estimate"}))
+        },
+        "/werk/v1/chat/count_tokens" => panic!("The shared admission plan must take priority over the text-only counter"),
+        "/v1/chat/completions" => {
+            assert!(15000 + r.body["max_completion_tokens"].as_u64().unwrap() <= 16384);
+            werk(r)
+        },
+        _ => werk(r),
+    }).await;
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let mut message = Message::text(Role::User, "Build the reference page");
+    message
+        .images
+        .push(attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap());
+    let mut request = ModelRequest {
+        reasoning_tier: None,
+        messages: vec![message],
+        tools: vec![],
+        max_output_tokens: 2048,
+        output_schema: None,
+    };
+    assert_eq!(provider.capabilities().context_tokens, Some(32768));
+    assert_eq!(
+        provider.stream(request.clone()).await.err().unwrap().code,
+        "context_overflow"
+    );
+    assert_eq!(provider.capabilities().context_tokens, Some(16384));
+    assert_eq!(
+        provider.estimate_input_tokens(&request).await.unwrap(),
+        15000
+    );
+    assert_eq!(
+        provider.estimate_input_tokens(&request).await.unwrap(),
+        15000
+    );
+    assert_eq!(
+        provider.input_token_source(&request),
+        "server_admission_estimate"
+    );
+    assert_eq!(provider.cached_input_tokens(&request), None);
+    assert!(
+        !server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path == "/v1/chat/completions")
+    );
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == "/werk/v1/chat/admission")
+            .count(),
+        1
+    );
+    request.max_output_tokens = 512;
+    let mut stream = provider.stream(request).await.unwrap();
+    while let Some(delta) = stream.next().await {
+        delta.unwrap();
+    }
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == "/v1/chat/completions")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn malformed_admission_is_rejected_before_inference() {
+    for patch in [
+        json!({"model":"wrong"}),
+        json!({"max_output_tokens":999}),
+        json!({"token_count_method":"pretend_exact"}),
+        json!({"input_tokens":0}),
+        json!({"context_tokens":1}),
+    ] {
+        let server=Server::start(move|r|match r.path.as_str() {
+            "/werk/v1/capabilities"=>control(json!({"capabilities":[{"id":"api.chat.admission","status":"supported","operations":["admission"],"detail":"fixture"}]})),
+            "/werk/v1/chat/admission"=>{
+                let mut response=json!({"model":"fixture-model","input_tokens":32,"max_output_tokens":128,"context_tokens":32768,"token_count_method":"native"});
+                response.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());control(response)
+            },
+            _=>werk(r),
+        }).await;
+        let provider = WerkProvider::connect(config(&server.origin, false), None)
+            .await
+            .unwrap();
+        let request = ModelRequest {
+            reasoning_tier: None,
+            messages: vec![Message::text(Role::User, "test")],
+            tools: vec![],
+            max_output_tokens: 128,
+            output_schema: None,
+        };
+        assert_eq!(
+            provider
+                .estimate_input_tokens(&request)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid_envelope"
+        );
+        assert!(
+            !server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.path == "/v1/chat/completions")
+        );
+    }
+}
+
+#[tokio::test]
 async fn generation_limits_are_negotiated_without_probes_and_legacy_stays_unknown() {
     for advertised in [false, true] {
         let server = Server::start(move |request| match request.path.as_str() {

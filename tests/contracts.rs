@@ -12,6 +12,33 @@ use werk_worker::{
 };
 
 #[test]
+fn invalid_tool_arguments_explain_constraints_without_echoing_secrets() {
+    use werk_worker::tools::validate_arguments;
+    let schema = json!({
+        "type":"object", "properties":{"source":{"type":"string"},"destination":{"type":"string"}},
+        "additionalProperties":false,
+        "oneOf":[{"required":["source"]},{"required":["destination"]}]
+    });
+    for args in [
+        json!({}),
+        json!({"source":"private-token", "destination":"private-token"}),
+    ] {
+        let error = validate_arguments(&schema, &args).unwrap_err();
+        assert!(error.message.contains("exactly one alternative"));
+        assert!(error.message.contains("source"));
+        assert!(error.message.contains("destination"));
+        assert!(!error.message.contains("private-token"));
+    }
+    let error = validate_arguments(&json!({"type":"object","required":["target"]}), &json!({}))
+        .unwrap_err();
+    assert!(error.message.contains("required fields: [\"target\"]"));
+    let error =
+        validate_arguments(&json!({"type":"integer"}), &json!("private-token")).unwrap_err();
+    assert!(error.message.contains("expected type: \"integer\""));
+    assert!(!error.message.contains("private-token"));
+}
+
+#[test]
 fn bundled_profile_tool_skill_references_and_cli_help_are_consistent() {
     let tools = ToolRegistry::builtins().unwrap();
     let skills = SkillRegistry::bundled().unwrap();

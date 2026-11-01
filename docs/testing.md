@@ -55,6 +55,7 @@ cargo build --bins
 python3 scripts/tests/tui_smoke.py target/debug/ww
 python3 scripts/tests/selection_tui_smoke.py target/debug/ww
 python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
+python3 scripts/tests/delegation_tui_smoke.py target/debug/ww
 python3 scripts/tests/setup_smoke.py target/debug/ww
 python3 scripts/generate-cli-reference.py target/debug/werk-worker --check
 ```
@@ -96,6 +97,25 @@ The PTY tests exercise F2 confirmation and typed `ja`, including real writes by
 two subagents without preconfigured grants or a coding profile.
 
 ## Adaptive harness
+
+`tests/process_input.rs` runs real sandbox checks for literal bounded stdin, EOF,
+early exits, blocked-input timeout/cancellation, and approval binding. Its engine
+fixture rejects a malformed interpreter invocation before approval and completes
+after one corrected script/check call. This measures orchestration steps, not
+model speed. `src/repair_cycle.rs` also replays legacy replacement receipts and
+excludes invalid command/inspection failures from application repair obligations.
+The opt-in `saved_malformed_check_does_not_exhaust_later_application_repair` replay
+uses a private `WW_REPLAY_SNAPSHOT` and executes neither tools nor model requests.
+
+Repair-cycle regressions in `tests/work_cycle.rs`, `tests/completion.rs` and
+`src/repair_cycle.rs` cover changing diagnostics, edits, unrelated passing checks,
+successful fixes, explicit replacement checks and durable receipt replay.
+Check phases preserve admitted delegation tools; hard capability exclusions
+still apply. Automatic-helper tests cover the configured wall allowance and one
+bounded replacement after failure and new parent work.
+An optional offline replay of a private session snapshot uses
+`WW_REPLAY_SNAPSHOT=/path/to/snapshot.json cargo test --lib saved_session_cannot_reset_repair -- --ignored --nocapture`.
+It executes no tools or model requests and proves bounded recovery, not task completion.
 
 `tests/harness.rs` covers explicit legacy migration, quiet operation without Markdown,
 scoped activation/removal, duplicate suppression, adaptive resume, stable authority, truncation,

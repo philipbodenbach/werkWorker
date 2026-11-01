@@ -49,6 +49,8 @@ pub struct HostPolicy {
     pub tool_permissions: BTreeMap<String, ToolPermission>,
     /// User-approved scopes remembered by the host, including in request mode.
     pub remembered_grants: Vec<CapabilityGrant>,
+    /// Explicit browser mode. None preserves the original per-tool policy.
+    pub browser: Option<crate::browser_policy::BrowserPolicy>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyDecision {
@@ -116,6 +118,11 @@ impl HostPolicy {
         {
             return false;
         }
+        if crate::browser_policy::TOOLS.contains(&def.name.as_str())
+            && let Some(browser) = &self.browser
+        {
+            return browser.enabled;
+        }
         def.effect == Effect::Internal
             || self.tool_permissions.contains_key(&def.name)
             || self.request_approvals
@@ -138,6 +145,17 @@ impl HostPolicy {
         let permission = self.tool_permissions.get(&def.name);
         if permission == Some(&ToolPermission::Deny) {
             return PolicyDecision::Deny;
+        }
+        if crate::browser_policy::TOOLS.contains(&def.name.as_str()) {
+            if args["protected_field"] == true {
+                return PolicyDecision::Deny;
+            }
+            if let Some(browser) = &self.browser {
+                return browser.evaluate(&def.name, args);
+            }
+            if def.name == "browser.evaluate" && self.can_request(def) {
+                return PolicyDecision::Ask;
+            }
         }
         if def.effect == Effect::Internal {
             return PolicyDecision::Allow;

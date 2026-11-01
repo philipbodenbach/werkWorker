@@ -24,10 +24,21 @@ async fn main() -> Result<()> {
         name: name.into(),
         arguments,
     };
+    let plan = |status: &str| {
+        call(
+            "task.plan",
+            json!({"steps":[{
+                "id":"addition","description":"Fix addition and verify the result",
+                "status":status,"acceptance_criteria":["add returns correct sums"],
+                "verification_method":"Run test_math_helper.py in the sandbox"
+            }]}),
+        )
+    };
     let provider = Arc::new(ScriptedProvider::new(vec![
         ScriptedTurn::calls(
             "Read the broken function.",
             vec![
+                plan("in_progress"),
                 call("skills.load", json!({"name":"coding-basic"})),
                 call("files.read", json!({"path":"AGENTS.md"})),
                 call("files.read", json!({"path":"math_helper.py"})),
@@ -44,9 +55,10 @@ async fn main() -> Result<()> {
             "Run the relevant checks.",
             vec![call(
                 "process.run",
-                json!({"argv":["/usr/bin/python3","test_math_helper.py"],"cwd":".","verification":{"criteria":["addition returns correct sums"],"paths":["math_helper.py","test_math_helper.py"]}}),
+                json!({"argv":["/usr/bin/python3","test_math_helper.py"],"cwd":".","verification":{"kind":"behavior","criteria":["addition returns correct sums"],"paths":["math_helper.py","test_math_helper.py"]}}),
             )],
         ),
+        ScriptedTurn::calls("Record the passing test evidence.", vec![plan("completed")]),
         ScriptedTurn::text(
             "Changed subtraction to addition; the sandbox test reports two passing checks.",
         ),

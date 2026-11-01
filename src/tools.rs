@@ -121,9 +121,22 @@ pub fn validate_arguments(schema: &Value, args: &Value) -> Result<()> {
     let validator = jsonschema::validator_for(schema)
         .map_err(|_| WorkerError::new("invalid_schema", "Invalid tool schema"))?;
     if !validator.is_valid(args) {
+        // Report locations/constraints, not instance values (which can include
+        // secrets). A bare error code gives the model no correction to make.
+        let details = validator
+            .iter_errors(args)
+            .take(4)
+            .map(|e| {
+                format!(
+                    "argument {} violates schema {}",
+                    e.instance_path, e.schema_path
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(WorkerError::new(
             "validation_error",
-            "Arguments do not match the declared JSON Schema",
+            format!("Arguments do not match the declared JSON Schema: {details}"),
         ));
     }
     Ok(())
@@ -270,9 +283,9 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Derive outcomes and acceptance criteria from the task and references. State each criterion, check method and evidence in step descriptions; complete only when satisfied. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps. Save checkpoint at phase changes; replace the current plan and checkpoint, not after every read.",
+                "Derive outcomes and acceptance criteria from the task and references. Each step records acceptance_criteria and verification_method; complete only from evidence. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps. Save checkpoint at phase changes; replace the current plan and checkpoint, not after every read.",
                 object(
-                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]}},"required":["id","description","status"],"additionalProperties":false}},
+                    json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]},"acceptance_criteria":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"verification_method":{"type":"string","minLength":1,"maxLength":512}},"required":["id","description","status"],"additionalProperties":false}},
                         "checkpoint":{"type":"object","properties":{
                             "next_action":{"type":"string","maxLength":512},
                             "decisions":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":256}}
@@ -421,7 +434,7 @@ impl Tool for Builtin {
                 let text=String::from_utf8(bytes.clone()).map_err(|_|WorkerError::new("encoding_error","File is not UTF-8"))?;
                 if let Some(start) = args["start_byte"].as_u64() {
                     if args.get("start_line").is_some() || args.get("end_line").is_some() || start > text.len() as u64 || !text.is_char_boundary(start as usize) {
-                        return Err(WorkerError::new("validation_error", "Use a UTF-8 byte boundary within the file, without line bounds"));
+                        return Err(WorkerError::new("validation_error", "Use start_byte alone at a UTF-8 byte boundary within the file, OR start_line/end_line. Remove the other addressing mode; do not combine byte and line bounds."));
                     }
                     return Ok(ToolResult::ok(json!({"path":path,"sha256":hash(bytes),"content":&text[start as usize..],"start_byte":start,"end_byte":text.len(),"total_bytes":text.len(),"mode":"bytes"})));
                 }

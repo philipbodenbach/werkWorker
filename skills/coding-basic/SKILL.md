@@ -6,8 +6,8 @@ metadata:
 ---
 Read AGENTS.md; preserve user work. Follow this outcome-driven loop:
 1. Extract requirements from the request AND supplied references. In task.plan,
-   state outcomes, acceptance criteria and check methods. Cover behavior, content,
-   appearance and delivery constraints.
+   give each step acceptance_criteria and verification_method. Cover behavior,
+   content, appearance and delivery constraints.
 2. Inspect exposed tools/capacity once. Parallelize independent reads/checks or
    reviews with available inputs/slots; keep dependent work ordered.
    Use files.find/search and bounded files.read ranges.

@@ -54,7 +54,6 @@ async fn fixture(
         "files.write",
         "files.edit",
         "process.run",
-        "task.plan",
     ];
     let session = engine
         .create_session(

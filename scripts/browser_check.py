@@ -32,6 +32,29 @@ origin = f'http://127.0.0.1:{server.server_port}'
 result = {'actions': [], 'assertions': 0, 'errors': [], 'console': [], 'passed': False}
 
 
+class InvalidCheck(Exception):
+    pass
+
+
+# Catch exceptions INSIDE the predicate so they never become uncaught page/CDP
+# errors. Return an error sentinel to stop polling without evaluating it again.
+PREDICATE = """async expression => {
+    try {
+        const candidate = (0, eval)('(' + expression + '\\n)');
+        const value = await (typeof candidate === 'function' ? candidate() : candidate);
+        if (typeof value !== 'boolean') {
+            return {check_error: 'Expected boolean true/false, received ' +
+                (value === null ? 'null' : typeof value) +
+                '. Use an explicit comparison or expect_text; a returned value is not an assertion.'};
+        }
+        return value;
+    } catch (error) {
+        return {check_error: 'Predicate threw: ' + String(error).slice(0, 600) +
+            '. Verify the expression and selectors against the observed DOM before changing application code.'};
+    }
+}"""
+
+
 def action_details(action, index):
     # Do not echo filled input values. Indices in diagnostics are one-based.
     details = {'index': index, 'type': action['type']}
@@ -116,6 +139,7 @@ try:
                 raise RuntimeError('Local page failed to load')
             if result['errors']:
                 result['failure_phase'] = 'startup'
+                result['failure_origin'] = 'application'
                 raise RuntimeError('Page startup failed; actions were not run. Fix the reported page error before checking interactions.')
             for index, action in enumerate(args.get('actions', []), start=1):
                 current_action = action_details(action, index)
@@ -136,19 +160,35 @@ try:
                     expect(page.locator(action['selector'])).to_contain_text(action['text'], timeout=3000)
                     result['assertions'] += 1
                 elif kind == 'expect':
-                    # This predicate runs in the page, never as a host expression.
-                    page.wait_for_function(action['expression'], timeout=3000)
+                    handle = page.wait_for_function(PREDICATE, arg=action['expression'], timeout=3000)
+                    try:
+                        value = handle.json_value()
+                    finally:
+                        handle.dispose()
+                    if value is not True:
+                        raise InvalidCheck(value['check_error'])
                     result['assertions'] += 1
                 else:
                     raise ValueError(f'Unsupported browser action: {kind}')
                 result['actions'].append({'type': kind, 'passed': True})
+                if result['errors']:
+                    result['failure_origin'] = 'application'
+                    raise RuntimeError('Application error during this action; see page_errors/console.')
                 if kind in ('click', 'press', 'fill'):
                     last_interaction = current_action
                 current_action = None
             result['passed'] = result['assertions'] > 0 and not result['errors'] and not any(m['type'] == 'error' for m in result['console'])
         except Exception as error:
+            application_failed = bool(result['errors'])
             result['errors'].append(str(error)[:2000])
             if current_action is not None:
+                # An assertion exception is a check failure, unless the page
+                # independently emitted an application error during the action.
+                origin = 'application' if application_failed else ('check' if isinstance(error, InvalidCheck) else 'assertion_or_action')
+                result['failure_origin'] = origin
+                current_action['failure_origin'] = origin
+                if origin == 'check':
+                    current_action['repair_hint'] = 'Correct this check using the observed element_ids and verification.replaces. This predicate error alone does not justify application edits.'
                 result['failed_action'] = current_action
                 if last_interaction is not None:
                     result['failed_action']['last_interaction'] = last_interaction
@@ -163,8 +203,10 @@ try:
             result['title'] = page.title()[:256]
             result['text'] = page.locator('body').inner_text(timeout=500)[:1000]
             if 'failed_action' in result:
+                result['element_ids'] = page.locator('[id]').evaluate_all('elements => elements.slice(0, 32).map(el => el.id.slice(0, 64))')
                 result['controls'] = page.locator('button, [role="button"], [role="tab"], select, input[type="submit"]').evaluate_all('''elements =>
-                    elements.filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden').slice(0, 12).map(el => ({
+                    elements.filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+                    .sort((a,b) => Number(!!b.id) - Number(!!a.id)).slice(0, 12).map(el => ({
                         id: el.id.slice(0, 80),
                         name: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 80),
                         selected: el.getAttribute('aria-selected'),
@@ -175,6 +217,7 @@ try:
         if args.get('screenshot', True):
             result['screenshot_base64'] = base64.b64encode(page.screenshot(type='jpeg', quality=60)).decode('ascii')
         browser.close()
+        result['passed'] = result['passed'] and not result['errors']
 except Exception as error:
     result['passed'] = False
     result['errors'].append(str(error)[:2000])

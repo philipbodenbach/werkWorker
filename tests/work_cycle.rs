@@ -23,7 +23,7 @@ fn plan(status: &str) -> ScriptedTurn {
     call(
         "task.plan",
         json!({
-            "steps":[{"id":"version","description":"Runnable counter with a verified increment","status":status}],
+            "steps":[{"id":"version","description":"Runnable counter with a verified increment","status":status,"acceptance_criteria":["increment(0) returns 1"],"verification_method":"Source counter.sh and assert the public increment result"}],
             "checkpoint":{"next_action":"Implement increment, then assert increment 0 produces 1",
                 "decisions":["counter.sh defines increment; source it in the check"]}
         }),
@@ -63,6 +63,10 @@ async fn fixture(
     turns: Vec<ScriptedTurn>,
     path: &std::path::Path,
 ) -> (WorkerEngine, SessionHandle, Arc<ScriptedProvider>) {
+    let uses_plan = turns
+        .iter()
+        .flat_map(|t| &t.deltas)
+        .any(|d| matches!(d, ModelDelta::Tool { name, .. } if name == "task.plan"));
     let provider = Arc::new(ScriptedProvider::new(turns));
     let engine = WorkerEngine::builder(provider.clone())
         .sandbox(sandbox())
@@ -84,8 +88,10 @@ async fn fixture(
                     "process.run",
                     "interaction.ask",
                 ]
+                .into_iter()
+                .filter(|name| *name != "task.plan" || uses_plan)
                 .map(str::to_owned)
-                .to_vec(),
+                .collect(),
                 skills: vec![],
             },
             path,

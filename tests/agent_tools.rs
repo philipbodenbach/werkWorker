@@ -476,6 +476,8 @@ async fn browser_failure_identifies_wrong_tab_expectation_and_missing_selector()
     .unwrap();
     assert_eq!(expression.data["passed"], false);
     assert_eq!(expression.data["failed_action"]["expression"], predicate);
+    assert_eq!(expression.data["failure_origin"], "check");
+    assert!(expression.data.get("page_errors").is_none());
     assert!(expression.data["text"].as_str().unwrap().ends_with('1'));
     assert!(
         expression.data["errors"]
@@ -485,6 +487,80 @@ async fn browser_failure_identifies_wrong_tab_expectation_and_missing_selector()
     assert_eq!(
         std::fs::read_to_string(dir.path().join("tabs.html")).unwrap(),
         html
+    );
+}
+
+#[tokio::test]
+async fn browser_rejects_truthy_values_but_preserves_real_application_errors() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<body><button id=boom>Fail</button><script>document.getElementById('boom').onclick=()=>{throw new Error('application handler failed')};</script>").unwrap();
+    let ctx = context(dir.path()).await;
+    for expression in [
+        "'0:0'",
+        "1",
+        "({ok:true})",
+        "async () => 'value'",
+        "async () => { throw new Error('rejected check'); }",
+        "document.title,",
+    ] {
+        let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":expression}]})).await.unwrap();
+        assert_eq!(result.data["passed"], false, "{}", result.data);
+        assert_eq!(result.data["assertions"], 0);
+        assert_eq!(result.data["failure_origin"], "check");
+        assert!(result.data.get("page_errors").is_none());
+    }
+    let boolean=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"async () => document.querySelectorAll('button').length === 1"}]})).await.unwrap();
+    assert_eq!(boolean.data["passed"], true, "{}", boolean.data);
+    let false_check=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"false"}]})).await.unwrap();
+    assert_eq!(false_check.data["passed"], false);
+    assert_eq!(false_check.data["failure_origin"], "assertion_or_action");
+    let app_error=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#boom"},{"type":"expect","expression":"true"}]})).await.unwrap();
+    assert_eq!(app_error.data["passed"], false, "{}", app_error.data);
+    assert_eq!(app_error.data["failure_origin"], "application");
+    assert!(
+        app_error.data["page_errors"]
+            .to_string()
+            .contains("application handler failed")
+    );
+    std::fs::write(dir.path().join("index.html"), "<body><button id=boom>Fail</button><script>document.getElementById('boom').onclick=()=>console.error('application reported failure');</script>").unwrap();
+    let console_error=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#boom"},{"type":"expect","expression":"true"}]})).await.unwrap();
+    assert_eq!(
+        console_error.data["passed"], false,
+        "{}",
+        console_error.data
+    );
+    assert_eq!(console_error.data["failure_origin"], "application");
+    assert!(console_error.data.get("page_errors").is_none());
+}
+
+#[tokio::test]
+#[ignore = "read-only browser replay of a supplied local artifact; uses a temporary copy"]
+async fn saved_page_wrong_check_can_be_corrected_without_application_edits() {
+    let source = std::fs::read(std::env::var("WW_BROWSER_REPLAY_ENTRY").unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), &source).unwrap();
+    let ctx = context(dir.path()).await;
+    let failed=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,
+        "actions":[{"type":"click","selector":"#nextBtn"},{"type":"expect","expression":"document.querySelector('#panelStep').textContent === 'Step 02'"}]})).await.unwrap();
+    assert_eq!(failed.data["failure_origin"], "check", "{}", failed.data);
+    assert!(failed.data.get("page_errors").is_none());
+    let corrected=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,
+        "actions":[
+            {"type":"expect","expression":"document.querySelectorAll('#loopDiagram .node').length === 4 && document.querySelectorAll('#stepper .step').length === 5"},
+            {"type":"click","selector":"#nextBtn"},
+            {"type":"expect_text","selector":"#stepTag","text":"Step 02"},
+            {"type":"click","selector":"#tab-example"},
+            {"type":"expect_visible","selector":"#panelExample"},
+            {"type":"click","selector":"#tab-explain"},
+            {"type":"expect_visible","selector":"#panelExplain"}],
+        "verification":{"replaces":"invocation_test","criteria":["Navigation and tab controls work"],"paths":["index.html"]}})).await.unwrap();
+    assert_eq!(corrected.data["passed"], true, "{}", corrected.data);
+    assert_eq!(
+        std::fs::read(dir.path().join("index.html")).unwrap(),
+        source
     );
 }
 

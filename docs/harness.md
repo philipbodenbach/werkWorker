@@ -208,6 +208,31 @@ and other tools retain their existing guards.
 
 ## Coding acceptance and continuous work
 
+When an adaptive coding profile exposes `task.plan` and file-editing tools with
+a writable workspace, implementation tools are withheld until a nonempty plan
+records `acceptance_criteria` and `verification_method` on every step. Reads and
+questions remain available to establish the task. Criteria come from the request
+and its references, including visual/content requirements where applicable.
+Existing plans without these fields must be completed before further coding.
+Read-only analysis and profiles without an available planning tool retain their
+existing contract. This enforces recording the criteria, not the semantic truth
+of a model's review; successful execution/current-file evidence remains required.
+
+Browser `expect` predicates must return a boolean. Strings, numbers, objects,
+syntax errors and thrown/rejected predicates produce `failure_origin: "check"`
+without being reported as application `page_errors`. A false boolean is an
+unmet assertion; it does not establish whether the app or expectation is wrong.
+Real startup/event-handler exceptions remain application errors. Diagnostics
+include actual element IDs and prioritize named controls.
+
+After the bounded diagnostic allowance for an invalid predicate, the runtime
+offers the browser recheck and clarification tools, rather than continuing to
+offer application edits and broad searches. A corrected check must explicitly
+replace the unresolved check and cover its files. No failed obligation is erased
+by this classification; repair limits remain active. The same pipeline preserves
+bounded tool-error explanations at validation, preparation and execution, so
+invalid read ranges no longer return only a bare error code.
+
 New `coding-basic` runs (including profiles using that skill) enable
 `coding_checks` by default. A final answer is only a candidate: all current plan
 steps must be completed, and code changes require a successful recorded check

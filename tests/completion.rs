@@ -15,7 +15,7 @@ fn call(name: &str, arguments: Value) -> ScriptedTurn {
 fn plan(status: &str) -> ScriptedTurn {
     call(
         "task.plan",
-        json!({"steps":[{"id":"game","description":"Implement and verify real start behavior","status":status}]}),
+        json!({"steps":[{"id":"game","description":"Implement and verify real start behavior","status":status,"acceptance_criteria":["Required fixture state is observed"],"verification_method":"Execute the state assertion"}]}),
     )
 }
 fn verify(expected: &str) -> ScriptedTurn {
@@ -25,6 +25,10 @@ fn verify(expected: &str) -> ScriptedTurn {
     )
 }
 async fn engine(turns: Vec<ScriptedTurn>, dir: &std::path::Path) -> (WorkerEngine, SessionHandle) {
+    let uses_plan = turns
+        .iter()
+        .flat_map(|t| &t.deltas)
+        .any(|d| matches!(d, ModelDelta::Tool { name, .. } if name == "task.plan"));
     let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::new(turns)))
         .build()
         .await
@@ -34,8 +38,10 @@ async fn engine(turns: Vec<ScriptedTurn>, dir: &std::path::Path) -> (WorkerEngin
         name: "coding-basic".into(),
         prompt: "Implement and verify".into(),
         tools: ["files.write", "files.edit", "process.run", "task.plan"]
+            .into_iter()
+            .filter(|name| *name != "task.plan" || uses_plan)
             .map(str::to_owned)
-            .to_vec(),
+            .collect(),
         skills: vec![],
     };
     let session = engine

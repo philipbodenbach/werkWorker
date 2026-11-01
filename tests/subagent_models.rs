@@ -185,9 +185,9 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
             let called = |name:&str| messages.iter().any(|m| m["tool_calls"].as_array().is_some_and(|calls| calls.iter().any(|c|c["function"]["name"]==name)));
             let next= if !called("task.plan") {
                 Some(("task.plan",json!({"steps":[
-                    {"id":"build","description":"Build","status":"in_progress"},
-                    {"id":"test","description":"Test","status":"pending"},
-                    {"id":"finish","description":"Finish","status":"pending"}]})))
+                    {"id":"build","description":"Build","status":"in_progress","acceptance_criteria":["Fixture exists"],"verification_method":"Read game.txt"},
+                    {"id":"test","description":"Test","status":"pending","acceptance_criteria":["Fixture contains expected state"],"verification_method":"Run state assertion"},
+                    {"id":"finish","description":"Finish","status":"pending","acceptance_criteria":["Report verified result"],"verification_method":"Check recorded receipts"}]})))
             } else if !called("files.write") {
                 Some(("files.write",json!({"path":"game.txt","content":"implementation"})))
             } else if !called("process.run") {

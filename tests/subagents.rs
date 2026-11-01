@@ -13,7 +13,14 @@ use werk_worker::{
     *,
 };
 
-fn tool_turn(id: &str, name: &str, arguments: Value) -> ScriptedTurn {
+fn tool_turn(id: &str, name: &str, mut arguments: Value) -> ScriptedTurn {
+    if name == "task.plan" {
+        for step in arguments["steps"].as_array_mut().unwrap() {
+            step["acceptance_criteria"] = json!(["The declared fixture milestone is satisfied"]);
+            step["verification_method"] =
+                json!("Inspect fixture outputs and run its state assertions");
+        }
+    }
     ScriptedTurn::calls(
         "",
         vec![ToolCall {
@@ -1448,7 +1455,10 @@ async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
                 .find(|request| {
                     !request.messages.iter().any(|message| {
                         message.role == Role::System && message.content.contains("delegated worker")
-                    })
+                    }) && request
+                        .tools
+                        .iter()
+                        .any(|tool| tool.name == "delegate_task")
                 })
                 .unwrap();
             let delegation = root

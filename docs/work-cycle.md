@@ -642,7 +642,7 @@ For mixed work, planning, code, content interpretation and visual comparison
 belong to the same plan; they do not require switching between separate loops.
 
 1. Derive observable outcomes from the request and reference material. In each
-   plan step, state the criterion, its check method and later its evidence.
+   plan step, record `acceptance_criteria`, `verification_method` and later evidence.
    Preserve delivery constraints and user corrections.
 2. Inspect the current work and exposed capabilities once. Choose independent
    reads/reviews for available concurrency; keep writes and their checks ordered.
@@ -658,9 +658,9 @@ belong to the same plan; they do not require switching between separate loops.
    affected criteria after changes; avoid repeating completed checks without a
    concrete gap. Deliver after acceptance, reporting any unverified criterion.
 
-This uses the existing plan descriptions and checkpoint; it does not add a new
-criterion-ID schema or claim automatic semantic validation of image/content
-judgments. Runtime guards still independently check plan status, actual tool
+Adaptive coding now requires these explicit plan fields before implementation
+when planning/editing tools are available. This does not claim automatic semantic
+validation of image/content judgments. Runtime guards independently check plan status, actual tool
 outcomes, outstanding failures and current file hashes. The explicit process
 check contract is documented in [harness](harness.md#coding-acceptance-and-continuous-work).
 

@@ -120,6 +120,11 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
 }
 
 impl RepairCycle {
+    pub fn check_failure(&self) -> bool {
+        self.browser_failure
+            .as_ref()
+            .is_some_and(|f| f["failure_origin"] == "check")
+    }
     pub fn focus_due(&self, run: &Run) -> bool {
         self.rounds.len() >= run.limits.max_repeated_calls.max(1)
     }
@@ -143,14 +148,18 @@ impl RepairCycle {
 
     pub fn observation(&self, run: &Run) -> Value {
         json!({"source_invocation":self.source_invocation,
-            "failed_command_excerpt":crate::completion::excerpt(&self.argv.to_string(), 1400),
-            "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
-            "decisions_without_resolution":self.rounds.len(),
-            "decision_limit":stop_limit(run),
-            "final_check_due":self.final_check_due(run),
-            "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
-            "browser_failure":self.browser_failure,
-            "next_action":"Diagnose whether the application or the check failed before editing application code. Finish one correction, then rerun the check; fix a broken check using verification.replaces=source_invocation and the same paths. Prefer verification.kind=behavior with real assertions; syntax and inspection are not behavioral evidence. A successful replacement must cover unchanged files. Edits and unrelated passing commands do not resolve the failure. Delegate independent diagnosis while continuing separate work when useful."})
+        "failed_command_excerpt":crate::completion::excerpt(&self.argv.to_string(), 1400),
+        "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
+        "decisions_without_resolution":self.rounds.len(),
+        "decision_limit":stop_limit(run),
+        "final_check_due":self.final_check_due(run),
+        "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
+        "browser_failure":self.browser_failure,
+        "next_action":if self.check_failure() {
+            "The check expression is invalid; this is not evidence of an application defect. Use failed_action and the recorded DOM to correct the predicate/selector. Rerun with verification.replaces=source_invocation and cover the same paths. Return boolean true/false from expect. Do not edit the application merely to satisfy this broken check."
+        } else {
+            "Diagnose whether the application or the check failed before editing application code. Finish one correction, then rerun the check; fix a broken check using verification.replaces=source_invocation and the same paths. Prefer verification.kind=behavior with real assertions; syntax and inspection are not behavioral evidence. A successful replacement must cover unchanged files. Edits and unrelated passing commands do not resolve the failure."
+        }})
     }
 }
 

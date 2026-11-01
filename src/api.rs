@@ -2111,7 +2111,11 @@ impl SessionHandle {
             } else {
                 None
             };
-            if let Some(detail) = unresolved.or(crate::completion::findings(
+            let missing_plan = (crate::failure_progress::enabled(&data, run)?
+                && crate::work_cycle::plan_required(&data, run)
+                && reviewed.invocations.iter().any(|i| matches!(i.call.name.as_str(), "files.write" | "files.edit" | "files.insert" | "process.run" | "process.start")))
+                .then(|| "Record task.plan with task-derived acceptance_criteria and verification_method for each step before claiming completion. The plan must describe the requested outcome and how it was checked.".to_owned());
+            if let Some(detail) = missing_plan.or(unresolved).or(crate::completion::findings(
                 &reviewed,
                 &state.verifications,
                 &self.runtime.workspace,
@@ -3230,14 +3234,10 @@ impl SessionHandle {
                 )
                 .await;
         };
-        if validate_arguments(&def.input_schema, &invocation.call.arguments).is_err() {
-            return self
-                .outcome(
-                    run_id,
-                    invocation_id,
-                    ToolResult::error(Outcome::ValidationError, "validation_error"),
-                )
-                .await;
+        if let Err(error) = validate_arguments(&def.input_schema, &invocation.call.arguments) {
+            let mut result = ToolResult::error(Outcome::ValidationError, "validation_error");
+            result.data = json!({"message":crate::completion::diagnostic_excerpt(&error.message, 2000),"executed":false});
+            return self.outcome(run_id, invocation_id, result).await;
         }
         if let Some(schema) = &invocation.request_input_schema
             && let Err(error) = validate_arguments(schema, &invocation.call.arguments)
@@ -3274,7 +3274,7 @@ impl SessionHandle {
                         .map(|limit| (*key, limit))
                 })
                 .collect();
-            result.data = json!({"message":format!("The offered tool schema rejected this call: {}. Argument lengths: {lengths:?}; allowed maxima: {limits:?}. No part executed. Correct the invalid argument; files.write creates new files only, existing files require files.edit with a current hash and exact unique anchor.", error.message),
+            result.data = json!({"message":format!("The offered tool schema rejected this call: {}. Argument lengths: {lengths:?}; allowed maxima: {limits:?}. No part executed. Correct the invalid arguments using the offered schema and tool description.", error.message),
                 "executed":false,"argument_characters":lengths,"argument_limits":limits});
             // A rejected call does not reduce the next call's size budget.
             // Otherwise even substantially smaller corrections chase a moving
@@ -3399,6 +3399,7 @@ impl SessionHandle {
                 Ok(v) => v,
                 Err(e) => {
                     let mut result = ToolResult::error(Outcome::ValidationError, &e.code);
+                    result.data = json!({"message":crate::completion::diagnostic_excerpt(&e.message, 2000),"executed":false});
                     if def.name.starts_with("browser.") {
                         result.data = json!({"message":e.message});
                     } else if (matches!(
@@ -3747,23 +3748,8 @@ impl SessionHandle {
                     },
                     &e.code,
                 );
-                if matches!(
-                    def.name.as_str(),
-                    "files.edit" | "files.write" | "files.insert"
-                ) && e.code == "write_conflict"
-                    || matches!(
-                        def.name.as_str(),
-                        "files.find"
-                            | "files.search"
-                            | "files.read_image"
-                            | "browser.check"
-                            | "process.wait"
-                            | "process.log"
-                    )
-                    || crate::browser_control::TOOLS.contains(&def.name.as_str())
-                {
-                    result.data = json!({"message": e.message});
-                }
+                result.data =
+                    json!({"message":crate::completion::diagnostic_excerpt(&e.message, 2000)});
                 result
             }
         };

@@ -6,6 +6,7 @@ mod browser;
 mod browser_control;
 pub mod browser_policy;
 mod browser_view;
+mod browser_workspace;
 mod completion;
 pub mod context;
 pub mod core;

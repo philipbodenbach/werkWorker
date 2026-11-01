@@ -225,6 +225,14 @@ unmet assertion; it does not establish whether the app or expectation is wrong.
 Real startup/event-handler exceptions remain application errors. Diagnostics
 include actual element IDs and prioritize named controls.
 
+Boolean predicates, including asynchronous ones, are polled until true or a
+three-second deadline. The checker awaits resolved values rather than treating
+a Promise as success; unresolved promises also time out. Internal verifier
+failures produce `verification_runtime_error`, without application verification
+evidence. The run reports that tool failure before applying the repair-cycle
+limit; earlier real test obligations remain unresolved. Editing the application
+is not a recovery path for a broken verifier.
+
 After the bounded diagnostic allowance for an invalid predicate, the runtime
 offers the browser recheck and clarification tools, rather than continuing to
 offer application edits and broad searches. A corrected check must explicitly

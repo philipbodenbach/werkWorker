@@ -8,7 +8,7 @@ import sys
 import threading
 from urllib.parse import quote, unquote, urlsplit
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
 args = json.loads(sys.argv[1])
 root = Path('/workspace').resolve()
@@ -36,21 +36,42 @@ class InvalidCheck(Exception):
     pass
 
 
-# Catch exceptions INSIDE the predicate so they never become uncaught page/CDP
-# errors. Return an error sentinel to stop polling without evaluating it again.
-PREDICATE = """async expression => {
-    try {
-        const candidate = (0, eval)('(' + expression + '\\n)');
-        const value = await (typeof candidate === 'function' ? candidate() : candidate);
-        if (typeof value !== 'boolean') {
-            return {check_error: 'Expected boolean true/false, received ' +
-                (value === null ? 'null' : typeof value) +
-                '. Use an explicit comparison or expect_text; a returned value is not an assertion.'};
+# Do our own bounded polling: wait_for_function treats a returned Promise as
+# truthy before it resolves, so an async callback there does NOT poll false.
+# Catch predicate errors inside the page; never re-evaluate for diagnostics.
+PREDICATE = """async ({expression, timeout_ms}) => {
+    let stopped = false, timer;
+    const timeout = {status: 'timeout'};
+    const poll = async () => {
+        while (!stopped) {
+            try {
+                const candidate = (0, eval)('(' + expression + '\\n)');
+                const value = await (typeof candidate === 'function' ? candidate() : candidate);
+                if (stopped) return timeout;
+                if (typeof value !== 'boolean') {
+                    return {status: 'check_error', message: 'Expected boolean true/false, received ' +
+                        (value === null ? 'null' : typeof value) +
+                        '. Use an explicit comparison or expect_text; a returned value is not an assertion.'};
+                }
+                if (value) return {status: 'passed'};
+            } catch (error) {
+                return {status: 'check_error', message: 'Predicate threw: ' + String(error).slice(0, 600) +
+                    '. Verify the expression and selectors against the observed DOM before changing application code.'};
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
-        return value;
-    } catch (error) {
-        return {check_error: 'Predicate threw: ' + String(error).slice(0, 600) +
-            '. Verify the expression and selectors against the observed DOM before changing application code.'};
+        return timeout;
+    };
+    try {
+        // Install the deadline before starting the expression. This also bounds
+        // unresolved async predicates; false results continue polling normally.
+        return await Promise.race([
+            new Promise(resolve => { timer = setTimeout(() => resolve(timeout), timeout_ms); }),
+            poll()
+        ]);
+    } finally {
+        stopped = true;
+        clearTimeout(timer);
     }
 }"""
 
@@ -136,6 +157,8 @@ try:
         try:
             response = page.goto(origin + '/' + quote(args['path'], safe='/'), wait_until='load', timeout=10000)
             if response is None or response.status >= 400:
+                result['failure_origin'] = 'application'
+                result['failure_phase'] = 'startup'
                 raise RuntimeError('Local page failed to load')
             if result['errors']:
                 result['failure_phase'] = 'startup'
@@ -160,13 +183,13 @@ try:
                     expect(page.locator(action['selector'])).to_contain_text(action['text'], timeout=3000)
                     result['assertions'] += 1
                 elif kind == 'expect':
-                    handle = page.wait_for_function(PREDICATE, arg=action['expression'], timeout=3000)
-                    try:
-                        value = handle.json_value()
-                    finally:
-                        handle.dispose()
-                    if value is not True:
-                        raise InvalidCheck(value['check_error'])
+                    value = page.evaluate(PREDICATE, {'expression': action['expression'], 'timeout_ms': 3000})
+                    if not isinstance(value, dict) or value.get('status') not in ('passed', 'timeout', 'check_error'):
+                        raise RuntimeError('Browser predicate evaluator returned an invalid result')
+                    if value['status'] == 'check_error':
+                        raise InvalidCheck(value['message'])
+                    if value['status'] == 'timeout':
+                        raise AssertionError('Browser expectation timed out after 3000ms: predicate did not resolve to boolean true')
                     result['assertions'] += 1
                 else:
                     raise ValueError(f'Unsupported browser action: {kind}')
@@ -184,11 +207,15 @@ try:
             if current_action is not None:
                 # An assertion exception is a check failure, unless the page
                 # independently emitted an application error during the action.
-                origin = 'application' if application_failed else ('check' if isinstance(error, InvalidCheck) else 'assertion_or_action')
+                origin = ('application' if application_failed else
+                          'check' if isinstance(error, InvalidCheck) else
+                          'assertion_or_action' if isinstance(error, (PlaywrightError, AssertionError)) else 'runtime')
                 result['failure_origin'] = origin
                 current_action['failure_origin'] = origin
                 if origin == 'check':
                     current_action['repair_hint'] = 'Correct this check using the observed element_ids and verification.replaces. This predicate error alone does not justify application edits.'
+                elif origin == 'runtime':
+                    current_action['repair_hint'] = 'The browser checker failed internally. This is not evidence that application code needs changing.'
                 result['failed_action'] = current_action
                 if last_interaction is not None:
                     result['failed_action']['last_interaction'] = last_interaction
@@ -197,6 +224,8 @@ try:
                         result['failed_action']['target'] = target_state(page, current_action['selector'])
                     except Exception as observation_error:
                         result['failed_action']['observation_error'] = str(observation_error)[:200]
+            else:
+                result.setdefault('failure_origin', 'runtime')
         # Preserve the failure state as well as the successful action prefix.
         # Never rerun a predicate/action for diagnostics: it may have side effects.
         try:
@@ -220,6 +249,7 @@ try:
         result['passed'] = result['passed'] and not result['errors']
 except Exception as error:
     result['passed'] = False
+    result['failure_origin'] = 'runtime'
     result['errors'].append(str(error)[:2000])
 finally:
     server.shutdown()

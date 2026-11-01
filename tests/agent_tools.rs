@@ -517,6 +517,16 @@ async fn browser_rejects_truthy_values_but_preserves_real_application_errors() {
     let false_check=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"false"}]})).await.unwrap();
     assert_eq!(false_check.data["passed"], false);
     assert_eq!(false_check.data["failure_origin"], "assertion_or_action");
+    assert!(
+        false_check.data["errors"].to_string().contains("timed out"),
+        "{}",
+        false_check.data
+    );
+    assert!(
+        !false_check.data["errors"]
+            .to_string()
+            .contains("subscriptable")
+    );
     let app_error=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#boom"},{"type":"expect","expression":"true"}]})).await.unwrap();
     assert_eq!(app_error.data["passed"], false, "{}", app_error.data);
     assert_eq!(app_error.data["failure_origin"], "application");
@@ -534,6 +544,59 @@ async fn browser_rejects_truthy_values_but_preserves_real_application_errors() {
     );
     assert_eq!(console_error.data["failure_origin"], "application");
     assert!(console_error.data.get("page_errors").is_none());
+}
+
+#[tokio::test]
+async fn browser_expect_waits_for_delayed_boolean_and_async_results() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<body><button id=next>Next</button><output id=state>Waiting</output><script>document.querySelector('#next').onclick=()=>setTimeout(()=>document.querySelector('#state').textContent='Ready',350);</script>").unwrap();
+    let ctx = context(dir.path()).await;
+    for expression in [
+        "document.querySelector('#state').textContent === 'Ready'",
+        "async () => { await new Promise(r => setTimeout(r, 20)); return document.querySelector('#state').textContent === 'Ready'; }",
+    ] {
+        let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"click","selector":"#next"},{"type":"expect","expression":expression}]})).await.unwrap();
+        assert_eq!(result.data["passed"], true, "{}", result.data);
+        assert_eq!(result.data["assertions"], 1);
+        assert!(result.data["page_errors"].is_null());
+    }
+    // An unresolved Promise also has a bounded assertion timeout, not a tool hang.
+    let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"() => new Promise(() => {})"}]})).await.unwrap();
+    assert_eq!(result.data["passed"], false);
+    assert_eq!(result.data["failure_origin"], "assertion_or_action");
+    assert!(
+        result.data["errors"].to_string().contains("timed out"),
+        "{}",
+        result.data
+    );
+}
+
+#[tokio::test]
+async fn browser_internal_failure_is_not_recorded_as_application_test_evidence() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // Fault injection: an invalid result crossing the JS/Python boundary must
+    // fail the verifier, never become a passed check or an application failure.
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<body>Fixture<script>Promise.race=()=>false;</script>",
+    )
+    .unwrap();
+    let ctx = context(dir.path()).await;
+    let result=call(&ctx,"browser.check",json!({"path":"index.html","screenshot":false,"actions":[{"type":"expect","expression":"true"}],"verification":{"criteria":["Fixture works"],"paths":["index.html"]}})).await.unwrap();
+    assert_eq!(result.status, Outcome::Failed, "{}", result.data);
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("verification_runtime_error")
+    );
+    assert_eq!(result.data["failure_origin"], "runtime");
+    assert!(result.data["verification"].is_null());
+    assert!(result.data["errors"].to_string().contains("invalid result"));
 }
 
 #[tokio::test]
@@ -558,6 +621,37 @@ async fn saved_page_wrong_check_can_be_corrected_without_application_edits() {
             {"type":"expect_visible","selector":"#panelExplain"}],
         "verification":{"replaces":"invocation_test","criteria":["Navigation and tab controls work"],"paths":["index.html"]}})).await.unwrap();
     assert_eq!(corrected.data["passed"], true, "{}", corrected.data);
+    assert_eq!(
+        std::fs::read(dir.path().join("index.html")).unwrap(),
+        source
+    );
+}
+
+#[tokio::test]
+#[ignore = "read-only replay of a supplied HTML file and browser action scenario"]
+async fn saved_browser_scenario_reports_actual_assertion_failure() {
+    let source = std::fs::read(std::env::var("WW_BROWSER_REPLAY_ENTRY").unwrap()).unwrap();
+    let mut args: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("WW_BROWSER_REPLAY_CHECK").unwrap()).unwrap(),
+    )
+    .unwrap();
+    args["path"] = json!("index.html");
+    args["screenshot"] = json!(false);
+    args.as_object_mut().unwrap().remove("verification");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), &source).unwrap();
+    let result = call(&context(dir.path()).await, "browser.check", args)
+        .await
+        .unwrap();
+    assert_eq!(result.status, Outcome::Succeeded);
+    assert_eq!(result.data["passed"], false);
+    assert_eq!(result.data["failure_origin"], "assertion_or_action");
+    assert!(result.data["errors"].to_string().contains("timed out"));
+    assert!(!result.data["errors"].to_string().contains("subscriptable"));
+    eprintln!(
+        "saved replay: {}",
+        json!({"failure":result.data["failed_action"],"errors":result.data["errors"],"controls":result.data["controls"]})
+    );
     assert_eq!(
         std::fs::read(dir.path().join("index.html")).unwrap(),
         source

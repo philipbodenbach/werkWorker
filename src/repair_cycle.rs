@@ -170,6 +170,22 @@ fn stop_limit(run: &Run) -> usize {
 }
 
 pub(crate) fn check(session: &SessionData, run: &Run) -> Result<()> {
+    // A broken verifier cannot establish an application defect. Report its own
+    // failure before considering exhausted repair rounds, preserving all prior
+    // real test obligations. Never send the model into application edits for it.
+    if let Some(result) = run.invocations.iter().rev().find_map(|i| {
+        i.result.as_ref().filter(|r| {
+            r.status == Outcome::Failed
+                && r.error_code.as_deref() == Some("verification_runtime_error")
+        })
+    }) {
+        return Err(WorkerError::new(
+            "verification_runtime_error",
+            result.data["message"].as_str().unwrap_or(
+                "Verification tool failed internally; application verification remains incomplete",
+            ),
+        ));
+    }
     if crate::failure_progress::enabled(session, run)? {
         let state = crate::harness::state(session, &run.id)?;
         if let Some(cycle) = latest(run, &state.verifications)

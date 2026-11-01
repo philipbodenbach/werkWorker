@@ -137,11 +137,22 @@ pub(crate) async fn execute(args: Value, ctx: &ToolContext) -> Result<ToolResult
     }
     data["exit_code"] = json!(if passed { 0 } else { 1 });
     data["path"] = json!(path);
-    if !before.is_empty() {
+    let runtime_failure = data["failure_origin"] == "runtime";
+    if !before.is_empty() && !runtime_failure {
         data["verification"] =
             json!({"criteria":args["verification"]["criteria"],"files":after,"passed":passed});
     }
-    let mut result = ToolResult::ok(data);
+    let mut result = if runtime_failure {
+        data["message"] = json!(format!(
+            "Browser verification failed inside the tool. Application changes are not justified by this error. {}",
+            crate::completion::diagnostic_excerpt(&data["errors"].to_string(), 1500)
+        ));
+        let mut result = ToolResult::error(Outcome::Failed, "verification_runtime_error");
+        result.data = data;
+        result
+    } else {
+        ToolResult::ok(data)
+    };
     if let Some(encoded) = encoded {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD

@@ -127,8 +127,14 @@ impl BrowserHost for Host {
                         "Enable browser mode first",
                     ));
                 }
-                let args = request["arguments"].clone();
+                let mut args = request["arguments"].clone();
                 let current = browsers.current(&data.id).await;
+                if let Some(url) = args["url"].as_str() {
+                    args["url"] = json!(crate::browser_workspace::navigation(
+                        url,
+                        current["workspace"] == true
+                    )?);
+                }
                 let url = args["url"]
                     .as_str()
                     .or_else(|| current["url"].as_str())

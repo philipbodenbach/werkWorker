@@ -137,6 +137,23 @@ Text and accessibility snapshots work without vision; `browser.observe` can
 add a screenshot for image-capable models. Model tool-calling quality still
 depends on the selected model and server configuration.
 
+For local static development, call `browser.open` with `{"path":"index.html"}`
+(relative to the workspace, or `/workspace/...`). The existing
+`{"url":"file:///workspace/index.html"}` form is also accepted. Worker serves
+the page and relative CSS, JavaScript modules, images and fonts directly through
+its browser broker; no development server or private-network exception is needed.
+The internal `http://workspace.invalid` origin is handled by Worker, never DNS.
+It is visible inside the agent browser; use `viewer_url` for the host preview.
+Reads stay beneath the pinned workspace, reject symlinks/traversal and allow
+only GET/HEAD. Files are read afresh with no cache; `browser.action` with
+`action: "reload"` shows edits. This is static serving: apps requiring a backend
+or build server still use that server's HTTP(S) URL and existing origin approval.
+
+Repeated `browser.open` calls navigate the existing session and retain its
+browser ID, cookies, other tabs and viewer URL. New origins still require the
+usual approval; switching browser engines requires `browser.close` first.
+Local entry files are hash-checked between preparation and execution.
+
 Install with `sh scripts/install-browser.sh` for Chromium, Firefox and WebKit,
 or name the engines to install. Playwright's platform libraries and OpenSSL
 must be available. Existing Linux Chrome, Edge, Brave, Opera and Vivaldi are
@@ -160,7 +177,7 @@ SDK hosts use `SessionHandle::set_browser_mode`, `browser_panel` and
 `set_browser_rule`; these are host APIs, never model tools.
 Enabling browser mode also exposes `browser.check` with Ask permission so coding
 tasks can test a local HTML entry directly. That isolated local check is separate
-from the persistent HTTP(S) browser panel; it supplies behavioral verification
+from the persistent browser panel; it supplies behavioral verification
 without requiring a host development server. Hard denies still apply.
 
 The loopback panel provides website rules for browsing, consequential actions,

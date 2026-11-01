@@ -18,6 +18,9 @@ Read AGENTS.md; preserve user work. Follow this outcome-driven loop:
    typography, colors and controls. Check content meaning too.
    Browser.check has its own host runtime; missing Chromium/jsdom in process.run
    does not imply it is unavailable. Calls start fresh; use short scenarios.
+   For persistent local preview use browser.open with path relative to the
+   workspace; assets load directly without a webserver. Reopening reuses the
+   browser. Use browser.action reload after edits; browser.check records tests.
 5. Classify failures: application, check, invocation or environment. Use error
    locations/failed_action; make one concrete correction and rerun its check.
    Correct broken checks with verification.replaces. Avoid speculative edits.

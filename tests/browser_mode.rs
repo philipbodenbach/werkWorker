@@ -266,6 +266,100 @@ async fn host_panel_rejects_cross_origin_control_and_pauses_before_inference() {
     assert!(client.get(panel).send().await.is_err());
 }
 #[tokio::test]
+async fn local_preview_reuses_browser_and_manual_navigation_respects_site_rules() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let (dir, engine, session, provider, client, panel) = setup().await;
+    std::fs::write(dir.path().join("index.html"), "<body>First</body>").unwrap();
+    std::fs::write(dir.path().join("next.html"), "<body>Second</body>").unwrap();
+    session.set_browser_mode(true, "enable").await.unwrap();
+    provider.call("browser.open", json!({"path":"index.html"}));
+    let run = session
+        .submit("Preview local file", "local-open", Limits::default(), None)
+        .await
+        .unwrap();
+    let request = approval(&client, &panel).await;
+    assert_eq!(
+        request["description"]["arguments"]["workspace_path"],
+        "index.html"
+    );
+    control(&client, &panel, json!({"op":"approval","run_id":run.id,"request_id":request["request_id"],"decision":"site"})).await;
+    finish(&run).await;
+    let browser_id = state(&client, &panel).await["browser"]["browser_id"].clone();
+    assert!(browser_id.is_string());
+    provider.call("browser.open", json!({"url":"file:///workspace/next.html"}));
+    let repeated = session
+        .submit("Preview next page", "local-next", Limits::default(), None)
+        .await
+        .unwrap();
+    finish(&repeated).await;
+    let result = repeated.status().await.unwrap().invocations[0]
+        .result
+        .clone()
+        .unwrap();
+    assert_eq!(result.status, Outcome::Succeeded, "{result:?}");
+    assert_eq!(result.data["browser_id"], browser_id);
+    assert_eq!(result.data["reused_session"], true);
+    // Reuse does not silently grant an additional website.
+    provider.call("browser.open", json!({"url":"https://unapproved.invalid"}));
+    let other = session
+        .submit(
+            "Request another site",
+            "other-site",
+            Limits::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let request = approval(&client, &panel).await;
+    control(&client, &panel, json!({"op":"approval","run_id":other.id,"request_id":request["request_id"],"decision":"deny"})).await;
+    finish(&other).await;
+    assert_eq!(
+        state(&client, &panel).await["browser"]["browser_id"],
+        browser_id
+    );
+    control(&client, &panel, json!({"op":"pause"})).await;
+    control(
+        &client,
+        &panel,
+        json!({"op":"manual","arguments":{"url":"file:///workspace/index.html"}}),
+    )
+    .await;
+    assert_eq!(
+        state(&client, &panel).await["browser"]["url"],
+        "http://workspace.invalid/index.html"
+    );
+    session
+        .set_browser_rule(
+            "http://workspace.invalid",
+            "browsing",
+            ToolPermission::Deny,
+            "deny-local",
+        )
+        .await
+        .unwrap();
+    let origin = reqwest::Url::parse(&panel)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    let denied = client
+        .post(format!("{panel}control"))
+        .header("origin", origin)
+        .header("x-werk-browser", "1")
+        .json(&json!({"op":"manual","arguments":{"url":"file:///workspace/next.html"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 409);
+    assert_eq!(
+        state(&client, &panel).await["browser"]["url"],
+        "http://workspace.invalid/index.html"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn browser_panel_approvals_manual_password_and_scripts_work_end_to_end() {
     if std::env::var_os("REQUIRE_BROWSER").is_none() {
         return;

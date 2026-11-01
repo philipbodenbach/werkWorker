@@ -45,6 +45,203 @@ fn assert_ok(result: &ToolResult) {
     assert!(result.data.get("error").is_none(), "{}", result.data);
 }
 
+#[tokio::test]
+async fn workspace_open_is_scoped_validated_and_bound_to_the_reviewed_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("index.html"), "<body>Before</body>").unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let tool = registry.get("browser.open").unwrap();
+    for args in [
+        json!({}),
+        json!({"path":"index.html","url":"https://example.com"}),
+    ] {
+        assert!(validate_arguments(&tool.definition().input_schema, &args).is_err());
+    }
+    let prepared = tool
+        .prepare(json!({"path":"index.html"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(prepared["url"], "http://workspace.invalid/index.html");
+    assert_eq!(prepared["private_origins"], json!([]));
+    assert_eq!(prepared["workspace_path"], "index.html");
+    let policy = HostPolicy {
+        browser: Some(Default::default()),
+        ..Default::default()
+    };
+    assert_eq!(
+        policy.evaluate(&tool.definition(), &prepared, &[]),
+        PolicyDecision::Ask
+    );
+    let mut denied = policy.clone();
+    denied
+        .browser
+        .as_mut()
+        .unwrap()
+        .set("http://workspace.invalid", "browsing", ToolPermission::Deny)
+        .unwrap();
+    assert_eq!(
+        denied.evaluate(&tool.definition(), &prepared, &[]),
+        PolicyDecision::Deny
+    );
+    std::fs::write(dir.path().join("index.html"), "<body>Changed</body>").unwrap();
+    assert_eq!(
+        tool.execute(prepared, &ctx).await.unwrap_err().code,
+        "write_conflict"
+    );
+    assert!(
+        tool.prepare(json!({"path":"missing.html"}), &ctx)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn real_workspace_browser_loads_assets_reuses_session_and_reloads_edits() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("site")).unwrap();
+    let html = r#"<!doctype html><title>Local</title><link rel="stylesheet" href="style.css"><body><button id="next">Next</button><output id="state">Waiting</output><img id="icon" src="icon.svg"><script type="module" src="app.js"></script></body>"#;
+    std::fs::write(dir.path().join("site/index.html"), html).unwrap();
+    std::fs::write(
+        dir.path().join("site/style.css"),
+        "#state { color: rgb(20, 40, 60) }",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("site/icon.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>"#).unwrap();
+    std::fs::write(
+        dir.path().join("site/value.js"),
+        "export const value = 'Ready';",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("site/app.js"), "import {value} from './value.js'; document.querySelector('#state').textContent=value; document.querySelector('#next').onclick=()=>document.querySelector('#state').textContent='Clicked';").unwrap();
+    std::fs::write(
+        dir.path().join("site/second.html"),
+        "<body>Second page</body>",
+    )
+    .unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"path":"site/index.html"}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&opened);
+    assert!(
+        opened.data["text"].as_str().unwrap().contains("Ready"),
+        "{}",
+        opened.data
+    );
+    assert_eq!(opened.data["reused_session"], false);
+    let browser_id = opened.data["browser_id"].clone();
+    let inspected = call(&registry, &ctx, "browser.evaluate", json!({"browser_id":browser_id,"script":"() => ({color:getComputedStyle(document.querySelector('#state')).color,image:document.querySelector('#icon').naturalWidth, value:document.querySelector('#state').textContent})"})).await.unwrap();
+    assert_ok(&inspected);
+    assert_eq!(
+        inspected.data["script_result"],
+        json!({"color":"rgb(20, 40, 60)","image":10,"value":"Ready"})
+    );
+    let clicked = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"click","target":{"selector":"#next"},"screenshot":true})).await.unwrap();
+    assert_ok(&clicked);
+    assert!(clicked.data["text"].as_str().unwrap().contains("Clicked"));
+    assert_eq!(clicked.images.len(), 1);
+    let frame = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!(
+            "{}frame",
+            opened.data["viewer_url"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert!(image::load_from_memory(&frame).is_ok());
+    std::fs::write(
+        dir.path().join("site/value.js"),
+        "export const value = 'Updated';",
+    )
+    .unwrap();
+    let reloaded = call(
+        &registry,
+        &ctx,
+        "browser.action",
+        json!({"browser_id":browser_id,"action":"reload"}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&reloaded);
+    assert!(reloaded.data["text"].as_str().unwrap().contains("Updated"));
+    // Repeated opens are navigation, including the formerly rejected file URL.
+    let reopened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"url":"file:///workspace/site/second.html"}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&reopened);
+    assert_eq!(reopened.data["browser_id"], browser_id);
+    assert_eq!(reopened.data["viewer_url"], opened.data["viewer_url"]);
+    assert_eq!(reopened.data["reused_session"], true);
+    assert!(
+        reopened.data["text"]
+            .as_str()
+            .unwrap()
+            .contains("Second page")
+    );
+    let returned = call(
+        &registry,
+        &ctx,
+        "browser.navigate",
+        json!({"browser_id":browser_id,"url":"file:///workspace/site/index.html"}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&returned);
+    assert!(returned.data["text"].as_str().unwrap().contains("Updated"));
+    // A fresh browser can also start from the file alias.
+    assert_ok(
+        &call(
+            &registry,
+            &ctx,
+            "browser.close",
+            json!({"browser_id":browser_id}),
+        )
+        .await
+        .unwrap(),
+    );
+    let fresh = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"url":"file:///workspace/site/index.html"}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&fresh);
+    assert_ne!(fresh.data["browser_id"], browser_id);
+    assert_ok(
+        &call(
+            &registry,
+            &ctx,
+            "browser.close",
+            json!({"browser_id":fresh.data["browser_id"]}),
+        )
+        .await
+        .unwrap(),
+    );
+}
+
 #[test]
 fn browser_tools_need_separate_external_permissions() {
     let registry = ToolRegistry::builtins().unwrap();

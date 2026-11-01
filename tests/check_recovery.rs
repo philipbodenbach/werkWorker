@@ -6,6 +6,100 @@ use std::sync::{
 };
 use werk_worker::{policy::*, profiles::AgentProfile, providers::*, *};
 
+struct BrokenVerifier;
+#[async_trait::async_trait]
+impl werk_worker::tools::Tool for BrokenVerifier {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "verification.fixture".into(),
+            version: "1".into(),
+            description: "Exercise verifier failure propagation".into(),
+            effect: Effect::Internal,
+            input_schema: json!({"type":"object","additionalProperties":false}),
+            timeout_ms: 1000,
+            output_limit: 1000,
+            concurrency_safe: true,
+        }
+    }
+    async fn execute(&self, _: Value, _: &werk_worker::tools::ToolContext) -> Result<ToolResult> {
+        let mut result = ToolResult::error(Outcome::Failed, "verification_runtime_error");
+        result.data =
+            json!({"failure_origin":"runtime","message":"Verifier fixture failed internally"});
+        Ok(result)
+    }
+}
+
+#[tokio::test]
+async fn verifier_runtime_error_stops_with_its_own_reason_before_more_model_repairs() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "Independent read").unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ScriptedTurn::calls(
+            "",
+            vec![
+                ToolCall {
+                    id: id("call"),
+                    name: "verification.fixture".into(),
+                    arguments: json!({}),
+                },
+                ToolCall {
+                    id: id("call"),
+                    name: "files.read".into(),
+                    arguments: json!({"path":"note.txt"}),
+                },
+            ],
+        ),
+        ScriptedTurn::text("Must not claim completion"),
+    ]));
+    let mut tools = werk_worker::tools::ToolRegistry::builtins().unwrap();
+    tools.register(Arc::new(BrokenVerifier)).unwrap();
+    let engine = WorkerEngine::builder(provider.clone())
+        .tools(tools)
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(
+            AgentProfile {
+                schema_version: 1,
+                name: "fixture".into(),
+                prompt: "Verify".into(),
+                tools: vec!["verification.fixture".into(), "files.read".into()],
+                skills: vec![],
+            },
+            dir.path(),
+            HostPolicy {
+                tool_permissions: [("files.read".into(), ToolPermission::Allow)].into(),
+                ..Default::default()
+            },
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("Verify", "start", Limits::default(), None)
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.status, RunStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "verification_runtime_error");
+    assert_eq!(provider.requests().len(), 1);
+    let state = run.status().await.unwrap();
+    assert!(state.final_text.is_none());
+    assert_eq!(
+        state
+            .invocations
+            .last()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .status,
+        Outcome::Succeeded
+    );
+    engine.close().await.unwrap();
+}
+
 const HTML: &str = r#"<!doctype html><body>
 <span id="stepTag">Step 01</span><button id="nextBtn">Next</button>
 <button id="tab-example" role="tab">Example</button><div id="panelExample" hidden>Example</div>

@@ -1133,6 +1133,154 @@ async fn downloads_keep_cookie_scope_and_produce_owned_artifacts() {
 }
 
 #[tokio::test]
+async fn module_heavy_pages_load_with_a_bounded_request_budget() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..300 {
+        std::fs::write(
+            dir.path().join(format!("part-{index}.js")),
+            "window.loaded=(window.loaded||0)+1;",
+        )
+        .unwrap();
+    }
+    for count in [128, 300] {
+        let scripts: String = (0..count)
+            .map(|i| format!("<script src='part-{i}.js'></script>"))
+            .collect();
+        std::fs::write(dir.path().join("index.html"), format!("<!doctype html><body>{scripts}<script>document.body.textContent='Modules loaded: '+window.loaded</script>")).unwrap();
+        let ctx = context(dir.path()).await;
+        let registry = ToolRegistry::builtins().unwrap();
+        let result = call(
+            &registry,
+            &ctx,
+            "browser.open",
+            json!({"path":"index.html","screenshot":true}),
+        )
+        .await
+        .unwrap();
+        call(
+            &registry,
+            &ctx,
+            "browser.close",
+            json!({"browser_id":result.data["browser_id"]}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&result);
+        assert!(!result.images.is_empty());
+        if count == 128 {
+            assert_eq!(result.data["text"], "Modules loaded: 128");
+            assert!(
+                result.data["network"]["blocked"]
+                    .as_object()
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            assert!(
+                result.data["network"]["blocked"]["browser_network_limit"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+            assert_ne!(result.data["text"], "Modules loaded: 300");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit live-site compatibility probe; no model decisions"]
+async fn live_jspaint_observations_remain_available() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"url":"https://jspaint.app/", "screenshot":true}),
+    )
+    .await
+    .unwrap();
+    let browser_id = opened.data["browser_id"].clone();
+    let mut results = vec![opened];
+    let editor_ready = |r: &ToolResult| {
+        r.data["visual_surface"] == true
+            && r.data["title"]
+                .as_str()
+                .is_some_and(|title| title.ends_with(" - Paint"))
+    };
+    for _ in 0..5 {
+        results.push(
+            call(
+                &registry,
+                &ctx,
+                "browser.observe",
+                json!({"browser_id":browser_id,"screenshot":true}),
+            )
+            .await
+            .unwrap(),
+        );
+        if results.len() >= 3 && results.iter().rev().take(2).all(editor_ready) {
+            break;
+        }
+    }
+    call(
+        &registry,
+        &ctx,
+        "browser.close",
+        json!({"browser_id":browser_id}),
+    )
+    .await
+    .unwrap();
+    if let Ok(path) = std::env::var("WW_JSPAINT_FRAME")
+        && let Some(image) = results.last().and_then(|r| r.images.last())
+    {
+        use base64::Engine;
+        std::fs::write(
+            path,
+            base64::engine::general_purpose::STANDARD
+                .decode(&image.data_base64)
+                .unwrap(),
+        )
+        .unwrap();
+    }
+    for result in &results {
+        println!(
+            "{}",
+            json!({"status":result.status,"error":result.data["error"],"errors":result.data["observation_errors"],"transport":result.data["transport_diagnostics"],"network":result.data["network"],"visual_surface":result.data["visual_surface"],"title":result.data["title"]})
+        );
+    }
+    for result in results.iter().rev().take(2) {
+        assert!(
+            editor_ready(result),
+            "Editor did not become usable: {}",
+            result.data
+        );
+    }
+    for (index, result) in results.into_iter().enumerate() {
+        // A remote navigation deadline can expire while the editor still loads.
+        // Only tolerate that first timeout if the subsequent observations prove
+        // the editor loaded and remained usable without reopening the page.
+        if index == 0 && result.status == Outcome::Failed {
+            assert!(
+                result.data["error"]
+                    .as_str()
+                    .is_some_and(|e| e.starts_with("Page.goto: Timeout")),
+                "{}",
+                result.data
+            );
+        } else {
+            assert_eq!(result.status, Outcome::Succeeded, "{}", result.data);
+        }
+        assert!(!result.images.is_empty(), "{}", result.data);
+        assert!(result.data["network"]["blocked"]["browser_network_limit"].is_null());
+    }
+}
+
+#[tokio::test]
 #[ignore = "explicit live-site compatibility probe; no model decisions"]
 async fn live_browser_compatibility_probe() {
     let dir = tempfile::tempdir().unwrap();
@@ -1174,7 +1322,8 @@ async fn host_browser_lifetime_idle_and_action_budgets_are_enforced() {
     if std::env::var_os("REQUIRE_BROWSER").is_none() {
         return;
     }
-    for (lifetime, idle, actions) in [(3, 30, 400), (30, 3, 400), (30, 30, 1)] {
+    // Leave startup headroom on hosts also running a local inference backend.
+    for (lifetime, idle, actions) in [(6, 0, 400), (0, 6, 400), (0, 0, 1), (0, 0, 400)] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("page.html"), "<body>Budget</body>").unwrap();
         let ctx = context(dir.path()).await;
@@ -1188,7 +1337,7 @@ async fn host_browser_lifetime_idle_and_action_budgets_are_enforced() {
         let opened = tool.execute(args, &ctx).await.unwrap();
         assert_ok(&opened);
         if actions > 1 {
-            tokio::time::sleep(Duration::from_secs(4)).await;
+            tokio::time::sleep(Duration::from_secs(7)).await;
         }
         let result = call(
             &registry,
@@ -1197,6 +1346,30 @@ async fn host_browser_lifetime_idle_and_action_budgets_are_enforced() {
             json!({"browser_id":opened.data["browser_id"]}),
         )
         .await;
+        if lifetime == 0 && idle == 0 && actions > 1 {
+            assert_ok(&result.unwrap());
+            assert_ok(
+                &call(
+                    &registry,
+                    &ctx,
+                    "browser.close",
+                    json!({"browser_id":opened.data["browser_id"]}),
+                )
+                .await
+                .unwrap(),
+            );
+            assert!(
+                call(
+                    &registry,
+                    &ctx,
+                    "browser.observe",
+                    json!({"browser_id":opened.data["browser_id"]})
+                )
+                .await
+                .is_err()
+            );
+            continue;
+        }
         let error = result.unwrap_err();
         assert!(
             matches!(
@@ -1205,6 +1378,20 @@ async fn host_browser_lifetime_idle_and_action_budgets_are_enforced() {
             ),
             "{error:?}"
         );
+        if actions == 1 {
+            // Reaching the action limit blocks further actions but leaves the
+            // browser available for explicit cleanup and manual control.
+            assert_ok(
+                &call(
+                    &registry,
+                    &ctx,
+                    "browser.close",
+                    json!({"browser_id":opened.data["browser_id"]}),
+                )
+                .await
+                .unwrap(),
+            );
+        }
     }
 }
 

@@ -176,7 +176,7 @@ scripts. Other systems can use Playwright's documented platform dependency setup
 
 Enter **`/browser on`** in the TUI to enable browser mode for the current
 session. `/browser` prints the panel URL; `/browser off` disables subsequent
-agent actions and rejects unresolved browser approvals. The panel's Stop button
+agent actions and rejects unresolved browser approvals. The panel's Stop & close browser button
 cancels the active run. Enabling this mode adds the browser tools to any profile;
 workspace/process grants alone do not authorize them. Hard denies still apply.
 SDK hosts use `SessionHandle::set_browser_mode`, `browser_panel` and
@@ -385,15 +385,25 @@ After restart open a new browser; old IDs are historical evidence only.
 
 ### Host-owned browser budgets
 
-`/browser limits 3600 1200 600` sets absolute seconds, idle seconds and action
-count for the **next** browser session. Close/reopen to apply new session budgets.
-Allowed ranges are 1–14400 s absolute, 1–3600 s idle and 1–2000 actions; defaults
-are 900/900/400. These are independent of, and cannot enlarge, the run budgets.
-Model arguments cannot change them. Perception applies to newly prepared actions;
-any host settings change invalidates outstanding preparation before dispatch.
-The panel shows expiry and cleanup; timed-out external actions are never retried
-automatically. Slow inference counts toward idle time; choose an appropriate
-host limit before opening a long local-model session.
+Browser sessions stay open by default until explicitly closed with `browser.close`,
+the panel's **Stop & close browser**, or worker shutdown. `/browser limits 0 0 400`
+disables both time limits for the **next** browser session. Existing saved positive
+limits remain explicit settings; close/reopen to apply changes.
+`/browser limits 3600 1200 600` optionally sets absolute seconds, idle seconds and
+an action count. Allowed ranges are 0–14400 s absolute, 0–3600 s idle and 1–2000
+actions; defaults are 0/0/400. Zero disables the corresponding time limit.
+Exhausting the action budget blocks further agent actions but retains the browser
+for manual control or explicit closure. Resource safeguards and each agent run's
+budgets remain enforced. Model arguments cannot change these host settings.
+Perception applies to newly prepared actions; settings changes invalidate
+outstanding preparation before dispatch. Timed-out external actions are never
+retried automatically. Slow inference counts toward an explicitly enabled idle limit.
+
+Each browser operation permits up to 256 HTTP requests within the existing
+response-size budget. `network.blocked` counts all rejection reasons even when
+the bounded `blocked_requests` detail list is full. A renderer crash is reported
+as `browser_page_crashed` with `browser_state: "crashed"`; close and reopen the
+session instead of observing or navigating the dead tab repeatedly.
 
 Natural-language examples after `/browser on` and granting the relevant sites:
 

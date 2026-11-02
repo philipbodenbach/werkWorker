@@ -127,7 +127,7 @@ impl BrowserView {
     }
     pub async fn update(&self, data: &Value, jpeg: Vec<u8>, revision: u64, action: &str) {
         *self.frame.lock().await = Frame {
-            metadata: json!({"revision":revision,"title":data["title"],"url":data["url"],"pointer":data["pointer"],"viewport":data["viewport"],"action":action,"tabs":data["tabs"],"controls":data["controls"],"perception":data["perception"],"readiness":data["readiness"],"vision_issue":data["vision_issue"],"observation_errors":data["observation_errors"],"has_frame":!jpeg.is_empty()}),
+            metadata: json!({"revision":revision,"title":data["title"],"url":data["url"],"pointer":data["pointer"],"viewport":data["viewport"],"action":action,"tabs":data["tabs"],"controls":data["controls"],"perception":data["perception"],"readiness":data["readiness"],"vision_issue":data["vision_issue"],"browser_state":data["browser_state"],"error":data["error"],"observation_errors":data["observation_errors"],"has_frame":!jpeg.is_empty()}),
             jpeg,
         };
     }

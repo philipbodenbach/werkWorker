@@ -126,7 +126,8 @@ permissions, or choose **Take over** for manual login and then continue the
 agent. Page scripts require approval every time. Standard tools cover navigation,
 page text, forms, tabs, screenshots, canvas drawing, session history and bounded
 download artifacts. `/browser perception auto|dom|vision` selects model feedback;
-`/browser limits` configures bounded session runtime. The bundled browser-use
+Browser sessions stay open until explicitly closed by default; `/browser limits`
+configures optional time limits and the session action budget. The bundled browser-use
 skill guides observation, action and result verification. No Qwen-specific browser extension is required.
 Install the isolated runtime with `sh scripts/install-browser.sh` for Chromium,
 Firefox and WebKit. Linux/WSL and the browser platform libraries are required;

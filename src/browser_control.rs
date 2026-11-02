@@ -420,14 +420,14 @@ impl Tool for BrowserTool {
             }
         };
         if session.actions >= session.settings.max_actions && self.name != "browser.close" {
-            session
-                .view
-                .stopped("Browser action budget exhausted")
-                .await;
-            session.stop().await;
+            self.sessions
+                .sessions
+                .lock()
+                .await
+                .insert(ctx.session_id.clone(), session);
             return Err(error(
                 "browser_action_limit",
-                "Host browser action budget exhausted; session closed. No action executed.",
+                "Host browser action budget exhausted. No action executed; browser remains open for manual control or browser.close.",
             ));
         }
         session.actions += 1;
@@ -519,11 +519,21 @@ impl Tool for BrowserTool {
         let encoded = data
             .as_object_mut()
             .and_then(|o| o.remove("screenshot_base64"));
+        let crashed = data["browser_state"] == "crashed";
         let mut result = if data["error"].is_string() {
-            let mut result = ToolResult::error(Outcome::Failed, "browser_action_failed");
-            data["retry_guidance"] = json!(
-                "Observe current state before retrying; remote side effects may have occurred."
+            let mut result = ToolResult::error(
+                Outcome::Failed,
+                if crashed {
+                    "browser_page_crashed"
+                } else {
+                    "browser_action_failed"
+                },
             );
+            data["retry_guidance"] = json!(if crashed {
+                "Close this browser session and open a new one. Do not repeat unknown remote side effects."
+            } else {
+                "Observe current state before retrying; remote side effects may have occurred."
+            });
             result.data = data;
             result
         } else {
@@ -552,7 +562,7 @@ impl Tool for BrowserTool {
                 .await;
         } else {
             crate::browser_progress::stamp(&mut result.data, None);
-            if screenshot {
+            if screenshot && !crashed {
                 result.data["vision_issue"] = json!(
                     "Action result retained, but no safe current screenshot is available. Observe again; do not repeat the action."
                 );
@@ -1039,12 +1049,12 @@ impl BrowserSession {
         let watchdog_view = view.clone();
         let watchdog = tokio::spawn(async move {
             let code = tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(lifetime)) => 1,
+                _ = tokio::time::sleep(Duration::from_secs(lifetime)), if lifetime != 0 => 1,
                 _ = crate::runtime::browser_memory_limit(pid, memory) => 2,
                 _ = async { loop {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     if activity.lock().await.elapsed() >= Duration::from_secs(idle) { break; }
-                }} => 3,
+                }}, if idle != 0 => 3,
             };
             reason.store(code, std::sync::atomic::Ordering::Release);
             watchdog_view
@@ -1104,6 +1114,8 @@ impl BrowserSession {
         let mut requests = 0;
         let mut transferred = 0usize;
         let mut blocked = Vec::new();
+        let mut blocked_counts = std::collections::BTreeMap::<String, usize>::new();
+        let mut clients = std::collections::BTreeMap::new();
         loop {
             let mut line = Vec::new();
             let count = (&mut self.output)
@@ -1128,6 +1140,7 @@ impl BrowserSession {
             if message["kind"] == "result" {
                 let mut data = message["data"].clone();
                 data["blocked_requests"] = json!(blocked);
+                data["network"] = json!({"requests":requests,"blocked":blocked_counts});
                 return Ok(data);
             }
             if message["kind"] != "http" {
@@ -1137,7 +1150,9 @@ impl BrowserSession {
                 ));
             }
             requests += 1;
-            let response = if requests <= 96 && transferred <= 24 * 1024 * 1024 {
+            // Module-heavy applications can exceed 96 requests on initial load.
+            // Keep both the request count and aggregate response budget bounded.
+            let response = if requests <= 256 && transferred <= 24 * 1024 * 1024 {
                 if web_url(message["url"].as_str().unwrap_or("")).is_ok_and(|u| {
                     u.origin().ascii_serialization() == crate::browser_workspace::ORIGIN
                 }) {
@@ -1156,7 +1171,7 @@ impl BrowserSession {
                         )),
                     }
                 } else {
-                    broker(&message, &self.origins, &self.private).await
+                    broker(&message, &self.origins, &self.private, &mut clients).await
                 }
             } else {
                 Err(error(
@@ -1170,6 +1185,7 @@ impl BrowserSession {
                     value
                 }
                 Err(e) => {
+                    *blocked_counts.entry(e.code.clone()).or_default() += 1;
                     if blocked.len() < 16 {
                         blocked.push(json!({"origin":message["url"].as_str().and_then(|u| web_url(u).ok()).map(|u|u.origin().ascii_serialization()),"reason":e.code}));
                     }
@@ -1181,7 +1197,12 @@ impl BrowserSession {
     }
 }
 
-async fn broker(message: &Value, origins: &[String], private: &[String]) -> Result<Value> {
+async fn broker(
+    message: &Value,
+    origins: &[String],
+    private: &[String],
+    clients: &mut std::collections::BTreeMap<String, reqwest::Client>,
+) -> Result<Value> {
     let mut url = web_url(message["url"].as_str().unwrap_or(""))?;
     url.set_fragment(None);
     let origin = url.origin().ascii_serialization();
@@ -1196,24 +1217,6 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
             "Agent traffic cannot reach browser host control panels",
         ));
     }
-    let host = url.host_str().unwrap().trim_matches(['[', ']']);
-    let addresses = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::net::lookup_host((host, url.port_or_known_default().unwrap())),
-    )
-    .await
-    .map_err(|_| error("network_timeout", "DNS timed out"))??
-    .collect::<Vec<_>>();
-    if addresses.is_empty()
-        || addresses.len() > 16
-        || (!private.contains(&origin)
-            && addresses.iter().any(|a| !crate::runtime::public_ip(a.ip())))
-    {
-        return Err(error(
-            "network_denied",
-            "Private/reserved addresses require explicit private_origins approval",
-        ));
-    }
     let method = message["method"].as_str().unwrap_or("");
     if !matches!(
         method,
@@ -1221,13 +1224,38 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
     ) {
         return Err(error("method_denied", "Unsupported browser request method"));
     }
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve_to_addrs(host, &addresses)
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|_| error("http_client", "Cannot build browser network broker"))?;
+    if !clients.contains_key(&origin) {
+        let host = url.host_str().unwrap().trim_matches(['[', ']']);
+        let addresses = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::net::lookup_host((host, url.port_or_known_default().unwrap())),
+        )
+        .await
+        .map_err(|_| error("network_timeout", "DNS timed out"))??
+        .collect::<Vec<_>>();
+        if addresses.is_empty()
+            || addresses.len() > 16
+            || (!private.contains(&origin)
+                && addresses.iter().any(|a| !crate::runtime::public_ip(a.ip())))
+        {
+            return Err(error(
+                "network_denied",
+                "Private/reserved addresses require explicit private_origins approval",
+            ));
+        }
+        // The cache lives for one exchange only. Every request still checks its
+        // origin/control port, and each client pins the validated DNS addresses.
+        // Reusing TLS connections avoids a fresh DNS lookup for every script.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(host, &addresses)
+            .timeout(Duration::from_secs(12))
+            .build()
+            .map_err(|_| error("http_client", "Cannot build browser network broker"))?;
+        clients.insert(origin.clone(), client);
+    }
+    let client = &clients[&origin];
     let mut request = client.request(
         reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
         url.clone(),
@@ -1401,6 +1429,7 @@ mod host_panel_tests {
                 &json!({"url":format!("{origin}/state"),"method":"GET"}),
                 std::slice::from_ref(&origin),
                 std::slice::from_ref(&origin),
+                &mut std::collections::BTreeMap::new(),
             )
             .await
             .unwrap_err();

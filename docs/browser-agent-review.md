@@ -248,3 +248,51 @@ WW_COMPAT_REPORT=/tmp/browser-compatibility.json cargo test --locked \
 
 Only Chromium was exercised for this task. Ignored/offline saved-session replays
 and browser tests without `REQUIRE_BROWSER=1` are not evidence of real browsers.
+
+## JSPaint loading and persistent sessions, 2026-11-02
+
+The reported real-model session reached JSPaint, lost screenshots, and later
+returned `Page.goto: Page crashed`. Subsequent observations incorrectly appeared
+successful with `masking_unavailable`. A renderer crash now produces
+`browser_page_crashed`, clears unusable observations, and directs the caller to
+close/reopen instead of repeatedly navigating the dead tab.
+
+Independent browser-only reproduction identified loading faults:
+
+- The former 96-request operation budget rejected 58 of 154 requests in one
+  initial load. The editor never became usable. The budget is now 256, with the
+  existing aggregate body and individual response limits retained.
+- Semantic observation cloned the body, causing failed images to reload even
+  off-DOM. A real Chromium regression measured four requests for one image after
+  three observations. Text traversal now reads without creating those requests.
+- A fresh DNS lookup and HTTP client for each asset intermittently timed out.
+  Clients now reuse validated, pinned connections within one operation only;
+  origin and control-port checks still run on every request.
+
+The final live probe loaded the editor with 110 requests, including 22 denied
+third-party resources. Both following observations made zero HTTP requests and
+returned screenshots, a visible canvas and the title `untitled - Paint`. This
+checks loading and observation; it is not a new model-driven house drawing.
+The original renderer's precise OS-level crash cause was not established.
+
+Validation: the final Chromium integration runs passed 13 browser-control and
+8 browser-mode tests; all 5 Python observation tests passed. Library checks
+passed 41 tests (10 opt-in tests ignored), formatting and all-target Clippy
+passed. The live JSPaint probe passed separately. Windows-to-WSL panel access
+and a new model-driven drawing were not verified by these checks.
+
+Sessions now default to no lifetime or idle expiry. `/browser limits 0 0 400`
+selects this explicitly for the next browser, including when old positive limits
+were saved. Reaching the action budget denies more agent actions while retaining
+the browser for manual control or explicit closure. Process resource safeguards
+remain enforced. The panel labels its existing stop/close action explicitly.
+
+Additional checks cover a page with 128 separate scripts, enforcement beyond
+the request budget, optional timeouts, explicit close after an action limit,
+real renderer crashes, and screenshot masking. Run the live probe with:
+
+```sh
+REQUIRE_BROWSER=1 WW_JSPAINT_FRAME=/tmp/ww-jspaint-final.jpg \
+  cargo test --locked --test browser_control \
+  live_jspaint_observations_remain_available -- --ignored --nocapture
+```

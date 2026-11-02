@@ -61,7 +61,9 @@ pub enum Perception {
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserSettings {
     pub perception: Perception,
+    /// Zero disables automatic expiry. Sessions otherwise live until closed.
     pub lifetime_seconds: u64,
+    /// Zero disables automatic idle expiry.
     pub idle_seconds: u64,
     pub max_actions: usize,
 }
@@ -69,8 +71,8 @@ impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
             perception: Perception::Auto,
-            lifetime_seconds: 900,
-            idle_seconds: 900,
+            lifetime_seconds: 0,
+            idle_seconds: 0,
             max_actions: 400,
         }
     }
@@ -80,13 +82,13 @@ impl BrowserSettings {
         serde_json::json!({"lifetime_seconds":self.lifetime_seconds,"idle_seconds":self.idle_seconds,"max_actions":self.max_actions})
     }
     pub fn validate(&self) -> Result<()> {
-        if !(1..=14400).contains(&self.lifetime_seconds)
-            || !(1..=3600).contains(&self.idle_seconds)
+        if self.lifetime_seconds > 14400
+            || self.idle_seconds > 3600
             || !(1..=2000).contains(&self.max_actions)
         {
             return Err(WorkerError::new(
                 "browser_settings",
-                "Browser lifetime must be 1..14400 seconds, idle limit 1..3600 seconds and action limit 1..2000",
+                "Browser lifetime must be 0..14400 seconds, idle limit 0..3600 seconds and action limit 1..2000; 0 disables the corresponding time limit",
             ));
         }
         Ok(())

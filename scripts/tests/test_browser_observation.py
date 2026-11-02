@@ -4,6 +4,7 @@ PLAYWRIGHT_BROWSERS_PATH. Explicit runs fail if that runtime is unavailable.
 """
 import importlib.util
 import os
+import signal
 from pathlib import Path
 import threading
 import unittest
@@ -31,11 +32,13 @@ class Observations(unittest.TestCase):
         self.page.context.set_offline(True)
         self.page.set_content('<input type="password" value="PrivateSecret"><button onclick="window.clicks=(window.clicks||0)+1">Count</button>')
         self.driver=module.Driver.__new__(module.Driver)
-        self.driver.page=FaultyPage(self.page);self.driver.pages={1:self.driver.page}
+        self.driver.page=self.page;self.driver.pages={};self.driver.next_page=1;self.driver.crashed_pages=set()
+        self.driver.add_page(self.page)
         self.driver.pointer=None;self.driver.references={};self.driver.ref_sequence=0
         self.driver.secrets=set();self.driver.transport_blocks=[];self.driver.lock=threading.Lock();self.driver.epoch=0;self.driver.active=False
     def tearDown(self): self.browser.close();self.pw.stop()
     def test_extraction_fault_preserves_masked_frame_and_single_action(self):
+        self.driver.page=FaultyPage(self.page);self.driver.pages={1:self.driver.page}
         result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click','target':{'selector':'button'},'browser_category':'actions'})
         self.assertTrue(result['action_executed'])
         self.assertNotIn('error',result)
@@ -52,6 +55,22 @@ class Observations(unittest.TestCase):
         self.assertNotIn('screenshot_base64',result)
         self.assertNotIn('text',result)
         self.assertEqual(result['observation_errors'][0]['reason'],'masking_unavailable')
+    def test_crashed_tab_is_failed_and_does_not_repeat_actions(self):
+        # Only terminate renderer children reported by this test's own browser.
+        # chrome://crash can leave headless Chromium waiting for a crash handler.
+        session=self.browser.new_browser_cdp_session()
+        renderers=[p['id'] for p in session.send('SystemInfo.getProcessInfo')['processInfo'] if p['type']=='renderer']
+        self.assertTrue(renderers)
+        with self.page.expect_event('crash',timeout=10000):
+            for pid in renderers: os.kill(pid,signal.SIGKILL)
+        for tool,args in [('browser.observe',{}),('browser.navigate',{'url':'https://example.com'})]:
+            result=self.driver.run(tool,args)
+            self.assertEqual(result['browser_state'],'crashed')
+            self.assertFalse(result['action_executed'])
+            self.assertIn('Close this browser session',result['error'])
+            self.assertNotIn('screenshot_base64',result)
+            self.assertNotIn('text',result)
+            self.assertNotIn('masking_unavailable',str(result))
     def test_keyboard_text_checks_focused_fields_including_frames(self):
         self.page.set_content('<input id="normal"><input id="secret" type="password"><iframe srcdoc="&lt;input type=password&gt;"></iframe>')
         self.page.locator('#normal').focus()
@@ -62,5 +81,16 @@ class Observations(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Protected'):
                 self.driver.action({'action':'type','text':'must-not-enter'})
             self.assertEqual(field.input_value(),'')
+    def test_semantic_observation_does_not_reload_failed_images(self):
+        requests=[]
+        def failed_image(route):
+            requests.append(route.request.url)
+            route.fulfill(status=404,body='missing')
+        self.page.route('https://assets.invalid/missing.png',failed_image)
+        self.page.set_content('<img src="https://assets.invalid/missing.png"><p>Stable editor</p><span aria-live="polite">Incidental</span>')
+        for _ in range(3):
+            self.assertEqual(self.driver.semantic(),'Stable editor')
+            self.page.wait_for_timeout(100)
+        self.assertEqual(len(requests),1,'Observing page text must not reload its images')
 
 if __name__=='__main__': unittest.main()

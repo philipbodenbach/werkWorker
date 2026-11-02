@@ -98,13 +98,16 @@ process grants do not cover it. The prepared invocation binds browser kind,
 origin allowlist, explicit private-origin exceptions, session revision and action.
 The browser runs in a fresh Bubblewrap namespace without the workspace, personal
 profiles or direct network. A private HTTP/TLS proxy communicates with a host
-broker over private stdio; each request checks its exact origin and pinned DNS
-addresses, rejects non-public addresses unless that origin was explicitly
-approved for private access, ignores inherited proxies, and validates upstream
+broker over private stdio; each request checks its exact origin. Within one
+operation, clients reuse connections pinned to DNS addresses validated for that
+origin; a new operation resolves again. Non-public addresses are rejected unless
+that origin was explicitly approved for private access. The broker ignores
+inherited proxies and validates upstream
 TLS. Browser-side TLS trust covers only the ephemeral proxy certificate inside
 that isolated namespace. Redirects receive fresh checks, never inherited access
-to a new origin. HTTP bodies, request count, tab count, session lifetime, process
-resources and concurrency are bounded. Background HTTP outside active actions,
+to a new origin. HTTP bodies, request count, tab count, process resources and
+concurrency are bounded. Session lifetime and idle expiry are optional host
+settings, disabled by default; explicit closure remains available. Background HTTP outside active actions,
 WebSockets, service workers and uploads are unavailable. Downloads are bounded
 artifacts; reviewed JavaScript executes in the isolated page. The loopback panel
 requires an unguessable path and same-origin JSON/custom-header POST for changes.

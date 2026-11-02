@@ -101,7 +101,7 @@ pub async fn browser_command(session: &SessionHandle, command: &str) -> Result<S
             Ok("Browser mode disabled for subsequent actions. Stop the active run to interrupt an action already in progress.".into())
         }
         "/browser" => Ok(format!(
-            "/browser on · /browser off · /browser perception auto|dom|vision · /browser limits <lifetime-seconds> <idle-seconds> <actions>\nBrowser panel: {}",
+            "/browser on · /browser off · /browser perception auto|dom|vision · /browser limits <lifetime-seconds> <idle-seconds> <actions> (0 disables a time limit)\nBrowser panel: {}",
             session.browser_panel().await?
         )),
         value if value.starts_with("/browser perception ") => {
@@ -149,8 +149,12 @@ pub async fn browser_command(session: &SessionHandle, command: &str) -> Result<S
                 .browser
                 .unwrap_or_default()
                 .settings;
-            let invalid =
-                |_| WorkerError::new("browser_command", "Limits must be positive integers");
+            let invalid = |_| {
+                WorkerError::new(
+                    "browser_command",
+                    "Limits must be nonnegative integers; actions must be positive",
+                )
+            };
             settings.lifetime_seconds = values[0].parse().map_err(invalid)?;
             settings.idle_seconds = values[1].parse().map_err(invalid)?;
             settings.max_actions = values[2].parse().map_err(invalid)?;

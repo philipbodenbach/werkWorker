@@ -133,6 +133,7 @@ class Driver:
         self.context = None
         self.page = None
         self.pages = {}
+        self.crashed_pages = set()
         self.next_page = 1
         self.active = False
         self.pointer = None
@@ -152,6 +153,7 @@ class Driver:
         self.next_page += 1
         page.set_default_timeout(5000)
         page.set_default_navigation_timeout(15000)
+        page.on("crash", lambda: self.crashed_pages.add(page))
         page.on("dialog", lambda dialog: dialog.dismiss())
         page.on("download", lambda download: download.cancel())
         page.on("filechooser", lambda chooser: chooser.set_files([]))
@@ -347,10 +349,17 @@ class Driver:
         # Exclude known incidental/live regions. Cursor, refs, time and pixel
         # animation are deliberately absent from semantic progress.
         return self.page.evaluate(r"""() => {
-          const root=document.body?.cloneNode(true);
-          if(!root) return '';
-          root.querySelectorAll('script,style,canvas,[aria-live],[role=timer],time').forEach(e=>e.remove());
-          return (root.textContent||'').replace(/\s+/g,' ').trim().slice(0,6000);
+          if(!document.body) return '';
+          // Cloning images can start new requests even off-DOM, especially for
+          // blocked resources. Observations must not reload page assets.
+          const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{
+            acceptNode:node=>node.parentElement?.closest('script,style,canvas,[aria-live],[role=timer],time')
+              ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+          });
+          let text='',node,count=0;
+          while(text.length<6000 && count++<10000 && (node=walker.nextNode()))
+            text+=(node.textContent||'').replace(/\s+/g,' ');
+          return text.replace(/\s+/g,' ').trim().slice(0,6000);
         }""")
 
     def settle(self):
@@ -367,6 +376,7 @@ class Driver:
 
     def snapshot(self, screenshot=False, stable_text=None):
         self.pages = {key: page for key, page in self.pages.items() if not page.is_closed()}
+        self.crashed_pages.intersection_update(self.pages.values())
         if self.page is None or self.page.is_closed():
             self.page = next(iter(self.pages.values()), None)
         result = {"url": self.page.url if self.page else "about:blank", "tabs": [],
@@ -379,6 +389,16 @@ class Driver:
             if page == self.page: result["tab_id"] = key
         self.references = {}
         if not self.page: return result
+        def crashed():
+            # No old frame or partial page text is evidence of the crashed tab's
+            # current state. In particular, do not misreport this as masking failure.
+            for key in ('screenshot_base64','text','accessibility','controls','semantic_state','title','visual_surface'):
+                result.pop(key, None)
+            result['browser_state'] = 'crashed'
+            result['readiness'] = {'state':'unavailable'}
+            result['error'] = 'Browser tab crashed. Close this browser session and open a new one; do not repeat actions in this tab.'
+            return result
+        if self.page in self.crashed_pages: return crashed()
         def part(name, operation):
             try:
                 result[name] = operation()
@@ -392,6 +412,7 @@ class Driver:
                 raise ValueError("Protected-value redaction capacity exceeded")
             self.secrets.update(secret_values)
         except Exception:
+            if self.page in self.crashed_pages: return crashed()
             result["observation_errors"].append({"part":"protection","reason":"masking_unavailable"})
             return result
         def controls():
@@ -430,13 +451,19 @@ class Driver:
         if screenshot:
             part("screenshot_base64", lambda: base64.b64encode(
                 self.page.screenshot(type="jpeg", quality=65, timeout=5000, mask=masks)).decode("ascii"))
+        if self.page in self.crashed_pages: return crashed()
         return result
 
     def run(self, tool, args):
         # Drain queued browser events with networking disabled before authorizing
         # this operation; there is never an ambient host network connection.
         if self.page and not self.page.is_closed():
-            self.page.wait_for_timeout(1)
+            try:
+                self.page.wait_for_timeout(1)
+            except Exception:
+                if self.page not in self.crashed_pages: raise
+        if self.page in self.crashed_pages:
+            return {"action_executed":False, **self.snapshot()}
         if tool not in ("browser.open", "browser.observe") and args.get("expected_url") != self.page.url:
             return {"url": self.page.url, "error": "Page changed since approval; observe before acting"}
         with self.lock:

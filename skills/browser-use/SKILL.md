@@ -27,6 +27,11 @@ After navigation, Continue, compaction, stale references or browser_changed,
 observe again before choosing an action. After restart historical IDs are not
 live sessions; open a new browser. If action_executed is true but observation
 fails, observe again instead of repeating the action. Inspect unknown effects.
+If browser_state is crashed or browser_page_crashed is reported, close that
+browser session and open a new one; observing or navigating the crashed tab
+cannot recover it. Do not repeat actions whose remote effects are unknown.
+Keep a healthy browser open for follow-up work. Close it explicitly when the
+user requests it or when the task calls for cleanup, rather than after every task.
 Honor site permissions, Ask/Deny, protected inputs and manual takeover. Do not
 replace visual interaction with scripts, internal game state or solution APIs.
 Report completion against observed criteria and state remaining uncertainty.

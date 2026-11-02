@@ -73,8 +73,10 @@ With a saved connection, ordinary startup instead offers **Continue previous**
 and **Connect new**. Continue checks the live server and its current context
 capacity with a cancellable 20-second timeout. Failure leaves the choices visible
 for retry or new setup; it does not erase previous chats or silently use a demo.
-It reuses the effective model and capability choices from the successful setup,
-even when the original project transport file contains incomplete defaults.
+It reuses the saved transport and verified capability choices, even when the
+original project transport file contains incomplete defaults. Current project
+model, profile, reasoning and token budgets override the remembered preferences;
+for example, switching the project's model takes effect on Continue previous.
 After connecting, choose a new or previous session. `/sessions` returns to that
 selection without reconnecting.
 

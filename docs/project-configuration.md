@@ -190,7 +190,9 @@ Interactive precedence: built-in defaults → global connection → local
 `.werkworker/werk-config.json` → project
 model/profile/reasoning/budgets → explicit `--werk-config` transport values and a non-default
 CLI `--profile` → choices made in the wizard. Project model/context/output/reasoning values
-are TUI defaults; headless `run` still uses its explicitly provided WerkConfig and
+also apply when choosing **Continue previous**, while the saved transport and
+verified capabilities are retained. These values are TUI defaults; headless `run`
+still uses its explicitly provided WerkConfig and
 default run limits. Both paths apply project rules, tool/skill selection and
 profile defaults. Recovery retains the original session's profile snapshot.
 

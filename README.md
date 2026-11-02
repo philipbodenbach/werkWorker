@@ -54,6 +54,22 @@ On subsequent starts, **Continue previous** reconnects to the remembered service
 to restore its history and continue. `/sessions` opens this list from chat.
 See [setup and authentication](docs/setup.md) and [terminal controls](docs/tui.md).
 
+Inspect temporary files and reclaim build/cache space without connecting to a model:
+
+```sh
+ww tmp list
+ww tmp purge --all --dry-run
+ww tmp purge --all
+ww cache list
+ww cache purge --all --kind build --dry-run
+ww cache purge --all --kind build
+```
+
+`ww tmp` also accepts `temp`. Temporary cleanup defaults to entries unchanged for
+24 hours. Cache cleanup uses the selected `--workspace` for Rust build directories;
+backups and shared package caches have separate selectors. See
+[cleanup scopes and examples](docs/cleanup.md) before purging backups or shared caches.
+
 Project rules use `.werkworker.md` / `WERKWORKER.md`, with `AGENTS.override.md`,
 `AGENTS.md` and `CLAUDE.md` as ordered alternatives. Named profiles, tool/skill
 selection and suggested test commands remain separate from permissions.

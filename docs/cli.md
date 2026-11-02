@@ -10,6 +10,8 @@ werkWorker general-purpose local agent engine
 Usage: werk-worker [OPTIONS] [COMMAND]
 
 Commands:
+  tmp       Inspect and remove old WerkWorker temporary files [alias: temp]
+  cache     Inspect and remove build files, backups and explicitly selected shared caches
   tui       Interactive agent UI (the default when no command is supplied)
   run
   resume
@@ -163,4 +165,104 @@ Usage: werk-worker rpc
 
 Options:
   -h, --help  Print help
+```
+
+## tmp
+
+```text
+Inspect and remove old WerkWorker temporary files
+
+Usage: werk-worker tmp <COMMAND>
+
+Commands:
+  list   List owned WerkWorker entries in the system temporary directory
+  purge  Remove one listed ID or all eligible WerkWorker temporary entries
+  path   Print the system temporary directory; only WerkWorker entries are managed
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+## tmp list
+
+```text
+List owned WerkWorker entries in the system temporary directory
+
+Usage: werk-worker tmp list [OPTIONS]
+
+Options:
+      --json
+
+      --older-than-hours <OLDER_THAN_HOURS>
+          Entries modified more recently remain protected (including descendants) [default: 24]
+  -h, --help
+          Print help
+```
+
+## tmp purge
+
+```text
+Remove one listed ID or all eligible WerkWorker temporary entries
+
+Usage: werk-worker tmp purge [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Exact ID printed by list; paths and wildcards are not accepted
+
+Options:
+      --all                                  Select all eligible entries in the requested scope
+      --dry-run                              Show what would be removed without deleting anything
+      --json
+      --older-than-hours <OLDER_THAN_HOURS>  [default: 24]
+  -h, --help                                 Print help
+```
+
+## cache
+
+```text
+Inspect and remove build files, backups and explicitly selected shared caches
+
+Usage: werk-worker cache <COMMAND>
+
+Commands:
+  list   List target directories in --workspace and saved program backups
+  purge  Remove one listed ID or all eligible entries in the selected scope
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+## cache list
+
+```text
+List target directories in --workspace and saved program backups
+
+Usage: werk-worker cache list [OPTIONS]
+
+Options:
+      --kind <KIND>  Restrict entries to build, backup or shared storage [possible values: build, backup, shared]
+      --shared       Include shared package/GPU caches used by other projects (no model weights)
+      --json
+  -h, --help         Print help
+```
+
+## cache purge
+
+```text
+Remove one listed ID or all eligible entries in the selected scope
+
+Usage: werk-worker cache purge [OPTIONS] [ID]
+
+Arguments:
+  [ID]  Exact ID printed by list; paths and wildcards are not accepted
+
+Options:
+      --all          Select all eligible entries in the requested scope
+      --dry-run      Show what would be removed without deleting anything
+      --json
+      --kind <KIND>  Restrict entries to build, backup or shared storage [possible values: build, backup, shared]
+      --shared       Include shared package/GPU caches used by other projects (no model weights)
+  -h, --help         Print help
 ```

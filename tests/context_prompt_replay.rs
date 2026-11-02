@@ -74,3 +74,65 @@ async fn saved_prompt_preparation_replay() {
         std::fs::write(path, serde_json::to_vec_pretty(&hashes).unwrap()).unwrap();
     }
 }
+
+/// Rebuild the request immediately before a saved browser question.
+/// No inference, credentials or browser actions are involved.
+#[tokio::test]
+#[ignore = "set WW_REPLAY_DATABASE/WW_REPLAY_SESSION to a saved browser question"]
+async fn saved_browser_capability_replay() {
+    use werk_worker::tools::ToolRegistry;
+    let connection = rusqlite::Connection::open_with_flags(
+        std::env::var("WW_REPLAY_DATABASE").expect("WW_REPLAY_DATABASE"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let text: String = connection
+        .query_row(
+            "SELECT data FROM sessions WHERE id = ?1",
+            [std::env::var("WW_REPLAY_SESSION").expect("WW_REPLAY_SESSION")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut session: SessionData = serde_json::from_str(&text).unwrap();
+    let run = session.runs.last_mut().unwrap();
+    let pending = run
+        .invocations
+        .iter()
+        .rposition(|i| i.call.name == "interaction.ask")
+        .expect("saved interaction.ask");
+    session
+        .messages
+        .truncate(run.invocations[pending].message_index);
+    run.invocations.truncate(pending);
+    run.status = RunStatus::Running;
+    run.contexts.clear();
+    let run = run.clone();
+    let registry = ToolRegistry::builtins().unwrap();
+    let tools: Vec<_> = session
+        .profile
+        .tools
+        .iter()
+        .map(|name| registry.get(name).unwrap().definition())
+        .filter(|def| session.policy.can_request(def))
+        .collect();
+    let (request, _) = DefaultContextBuilder
+        .build(&session, &run, tools)
+        .await
+        .unwrap();
+    for name in ["browser.open", "browser.observe", "browser.action"] {
+        assert!(
+            request.tools.iter().any(|t| t.name == name),
+            "{name} missing from offered tools"
+        );
+    }
+    eprintln!(
+        "browser replay: {} offered tools, {} image(s), {} messages; source database unchanged",
+        request.tools.len(),
+        request
+            .messages
+            .iter()
+            .map(|m| m.images.len())
+            .sum::<usize>(),
+        request.messages.len()
+    );
+}

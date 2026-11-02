@@ -102,6 +102,91 @@ async fn history(groups: usize) -> SessionData {
 }
 
 #[tokio::test]
+async fn coding_plan_updates_keep_authorized_browser_tools_available() {
+    use serde_json::json;
+    use werk_worker::policy::ToolPermission;
+    use werk_worker::tools::ToolRegistry;
+    let mut state = history(0).await;
+    state.profile.name = "coding-basic".into();
+    state.policy.workspace_writable = true;
+    state.policy.browser = Some(Default::default());
+    let registry = ToolRegistry::builtins().unwrap();
+    state.profile.tools = ["files.write", "task.plan", "interaction.ask"]
+        .into_iter()
+        .chain(werk_worker::browser_policy::TOOLS.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    for name in &state.profile.tools {
+        state
+            .policy
+            .tool_permissions
+            .insert(name.clone(), ToolPermission::Allow);
+    }
+    let definitions: Vec<_> = state
+        .profile
+        .tools
+        .iter()
+        .map(|name| registry.get(name).unwrap().definition())
+        .collect();
+    for detailed in [true, false] {
+        state.runs[0].plan = if detailed {
+            json!({"steps":[{"id":"draw","description":"Draw a house","status":"in_progress","acceptance_criteria":["Red roof visible"],"verification_method":"Inspect screenshot"}]})
+        } else {
+            // Reproduce the saved run: a later plan update omits coding-specific
+            // criteria while the browser remains authorized and open.
+            json!({"steps":[{"id":"draw","description":"Draw a red roof","status":"in_progress"}]})
+        };
+        let run = state.runs[0].clone();
+        state.metadata["_werkworker_harness"][&run.id]["config"]["mode"] = "adaptive".into();
+        for action_allowed in [true, false] {
+            state.policy.tool_permissions.insert(
+                "browser.action".into(),
+                if action_allowed {
+                    ToolPermission::Allow
+                } else {
+                    ToolPermission::Deny
+                },
+            );
+            let offered: Vec<_> = definitions
+                .iter()
+                .filter(|d| state.policy.can_request(d))
+                .cloned()
+                .collect();
+            let (request, _) = DefaultContextBuilder
+                .build_with_provider(&state, &run, offered, &Counter::default())
+                .await
+                .unwrap();
+            for name in werk_worker::browser_policy::TOOLS {
+                let actual = request.tools.iter().find(|t| t.name == *name);
+                assert_eq!(
+                    actual.is_some(),
+                    *name != "browser.action" || action_allowed,
+                    "{name}, detailed={detailed}"
+                );
+                if let Some(tool) = actual {
+                    assert_eq!(
+                        tool.input_schema,
+                        registry.get(name).unwrap().definition().input_schema
+                    );
+                }
+            }
+            assert_eq!(
+                request.tools.iter().any(|t| t.name == "files.write"),
+                detailed
+            );
+            if !detailed {
+                let plan = request
+                    .tools
+                    .iter()
+                    .find(|t| t.name == "task.plan")
+                    .unwrap();
+                assert_eq!(plan.input_schema["x-werk-work-cycle"], "plan");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn explicit_finite_review_limits_reserve_synthesis_but_continuous_reviews_do_not() {
     use werk_worker::{agents::ParentLink, tools::ToolRegistry};
     let mut state = history(0).await;

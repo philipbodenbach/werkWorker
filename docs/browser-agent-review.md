@@ -296,3 +296,23 @@ REQUIRE_BROWSER=1 WW_JSPAINT_FRAME=/tmp/ww-jspaint-final.jpg \
   cargo test --locked --test browser_control \
   live_jspaint_observations_remain_available -- --ignored --nocapture
 ```
+
+## Follow-up: browser tools during coding checkpoints, 2026-11-02
+
+A saved JSPaint run reproduced a tool-catalog defect, despite Allow permissions:
+after a successful `browser.open`, a later `task.plan` update omitted acceptance
+criteria. The coding plan checkpoint then removed all interactive browser tools
+from the next model request. The model's subsequent missing-tool question was
+consistent with that filtered request, not evidence of a permission denial.
+
+Coding plan, check and repair phases now preserve browser session tools already
+admitted by the host policy, without attaching coding-specific schema constraints
+to them. File-edit and verification checkpoints remain enforced; denied browser
+tools are not restored. Tests cover the shortened-plan transition, Allow/Deny,
+and interactive browser availability during a due coding check. The opt-in
+`saved_browser_capability_replay` reconstructs a recorded question read-only,
+without model calls or browser actions.
+
+Validation: 7 context-planning, 12 work-cycle and 8 browser-mode tests passed,
+along with the saved-session replay. A separate live-model replay ended with a
+backend connection failure; it did not verify a completed drawing.

@@ -966,6 +966,12 @@ async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
         .policy
         .hard_denied_tools
         .push("process.run".into());
+    checkpoint.policy.browser = Some(Default::default());
+    checkpoint.profile.tools.extend(
+        werk_worker::browser_policy::TOOLS
+            .iter()
+            .map(|name| (*name).into()),
+    );
     let (request, _) = DefaultContextBuilder
         .build(
             &checkpoint,
@@ -974,17 +980,23 @@ async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
                 .tools()
                 .into_iter()
                 .filter(|t| {
-                    matches!(
-                        t.name.as_str(),
-                        "browser.check" | "files.read" | "interaction.ask"
-                    )
+                    werk_worker::browser_policy::TOOLS.contains(&t.name.as_str())
+                        || matches!(
+                            t.name.as_str(),
+                            "browser.check" | "files.read" | "interaction.ask"
+                        )
                 })
+                .filter(|t| checkpoint.policy.can_request(t))
                 .collect(),
         )
         .await
         .unwrap();
     assert!(request.tools.iter().any(|t| t.name == "browser.check"));
     assert!(!request.tools.iter().any(|t| t.name == "files.read"));
+    for name in werk_worker::browser_policy::TOOLS {
+        let tool = request.tools.iter().find(|t| t.name == *name).unwrap();
+        assert!(tool.input_schema.get("x-werk-work-cycle").is_none());
+    }
     engine.close().await.unwrap();
 }
 

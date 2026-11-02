@@ -450,6 +450,96 @@ async fn reused_selection_does_not_duplicate_an_existing_model_summary() {
 }
 
 #[tokio::test]
+async fn browser_skill_is_present_once_before_and_after_compaction() {
+    use serde_json::json;
+    let skill = skills::Skill::parse(
+        "browser-use",
+        "fixture",
+        "---\nname: browser-use\ndescription: Browser instructions\n---\nUNIQUE_BROWSER_INSTRUCTIONS Use fresh observations and preserve the user's constraints.",
+    ).unwrap();
+    for mode in ["visible", "compacted", "unloaded", "truncated"] {
+        let mut state = history(0).await;
+        state.profile.tools = vec!["browser.open".into()];
+        state.profile.skills = vec![skill.name.clone()];
+        state
+            .skill_snapshots
+            .insert(skill.name.clone(), skill.clone());
+        let append = |state: &mut SessionData, call: ToolCall, result: ToolResult| {
+            let index = state.messages.len();
+            let mut assistant = Message::text(Role::Assistant, "");
+            assistant.tool_calls.push(call.clone());
+            state.messages.push(assistant);
+            state.messages.push(Message::tool(&call.id, &result));
+            state.runs[0].invocations.push(serde_json::from_value(json!({
+                "invocation_id":format!("inv{index}"),"step_id":format!("step{index}"),
+                "message_index":index,"call":call,"status":"finished","prepared":{},"result":result
+            })).unwrap());
+        };
+        if mode != "unloaded" {
+            let mut result = ToolResult::ok(serde_json::to_value(&skill).unwrap());
+            if mode == "truncated" {
+                result.truncated = true;
+                result.data["body"] = json!("Incomplete instructions");
+            }
+            append(
+                &mut state,
+                ToolCall {
+                    id: "skill".into(),
+                    name: "skills.load".into(),
+                    arguments: json!({"name":"browser-use"}),
+                },
+                result,
+            );
+        }
+        append(
+            &mut state,
+            ToolCall {
+                id: "browser".into(),
+                name: "browser.open".into(),
+                arguments: json!({"url":"https://example.com"}),
+            },
+            ToolResult::ok(json!({"url":"https://example.com"})),
+        );
+        if mode == "compacted" {
+            state.compactions.push(CompactionRecord {
+                id: "compact".into(),
+                run_id: state.runs[0].id.clone(),
+                attempt_id: "attempt".into(),
+                message_indices: vec![1, 2],
+                source_hash: "fixture".into(),
+                summary: "Skill loaded".into(),
+            });
+        }
+        let original = fingerprint(&state.messages);
+        let tools = vec![
+            tools::ToolRegistry::builtins()
+                .unwrap()
+                .get("browser.open")
+                .unwrap()
+                .definition(),
+        ];
+        let (request, _) = DefaultContextBuilder
+            .build_with_provider(&state, &state.runs[0], tools, &Counter::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&request.messages)
+                .unwrap()
+                .matches("UNIQUE_BROWSER_INSTRUCTIONS")
+                .count(),
+            1,
+            "{mode}"
+        );
+        assert_eq!(
+            fingerprint(&state.messages),
+            original,
+            "canonical history changed"
+        );
+        context::validate_messages(&request.messages).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn browser_frames_compact_without_losing_original_user_image_or_checkpoint() {
     let mut state = history(0).await;
     state.runs[0].limits.context_tokens = 24000;

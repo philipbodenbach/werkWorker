@@ -513,6 +513,23 @@ impl DefaultContextBuilder {
                 .iter()
                 .any(|i| crate::browser_policy::TOOLS.contains(&i.call.name.as_str()))
             && let Some(skill) = session.skill_snapshots.get("browser-use")
+            // A complete immutable load is already retained verbatim, or
+            // restored by CompactionFeedback when its group is compacted.
+            // Do not append a second full copy on every browser decision.
+            && !(session.profile.skills.contains(&skill.name)
+                && session.runs.iter().flat_map(|r| &r.invocations).any(|i| {
+                    i.call.name == "skills.load"
+                        && i.call.arguments["name"] == skill.name
+                        && i.result.as_ref().is_some_and(|r| {
+                            r.status == Outcome::Succeeded
+                                && !r.truncated
+                                && r.data["hash"] == skill.hash
+                                && r.data["body"] == skill.body
+                        })
+                        && session.messages.get(i.message_index + 1).is_some_and(|m| {
+                            m.role == Role::Tool && m.tool_call_id.as_ref() == Some(&i.call.id)
+                        })
+                }))
         {
             dynamic.push(crate::harness::feedback(
                 "active_skill",

@@ -305,6 +305,12 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         os.write(master,b' ')
         wait_for('› [ ] agents.cancel'.encode())
         os.write(master,b'\t')
+        # The bundled browser skill sorts before coding-basic. Select by the
+        # advertised skill name instead of assuming it is the first row.
+        skills=json.loads(subprocess.check_output([str(binary),'skills','list']))
+        coding_index=next(i for i,skill in enumerate(skills) if skill['name']=='coding-basic')
+        wait_for(b'[x] coding-basic')
+        os.write(master,b'\x1b[B'*coding_index)
         wait_for('› [x] coding-basic'.encode())
         os.write(master,b' ')
         wait_for('› [ ] coding-basic'.encode())
@@ -313,7 +319,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         config=json.loads((workspace/'.werkworker/config.json').read_text())
         assert config['profile']=='coding-basic'
         assert 'agents.cancel' not in config['tools']
-        assert config['skills']==['task-execution']
+        assert set(config['skills'])=={'browser-use','task-execution'}
         access_files=list((root/'config/werkworker/workspace-access').glob('*.json'))
         assert len(access_files)==1
         assert json.loads(access_files[0].read_text())['policy']['request_approvals']
@@ -330,7 +336,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         for state in saved:
             assert state['profile']['name']=='coding-basic'
             assert 'agents.cancel' not in state['profile']['tools']
-            assert state['profile']['skills']==['task-execution']
+            assert set(state['profile']['skills'])=={'browser-use','task-execution'}
             assert state['policy']['request_approvals']
         os.write(master,b'\x11')
         assert proc.wait(timeout=10)==0
@@ -342,7 +348,7 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         wait_for(b'Profile: coding-basic')
         with sqlite3.connect(root/'defaults.sqlite') as db:
             state=json.loads(db.execute('SELECT data FROM sessions').fetchone()[0])
-        assert state['profile']['skills']==['task-execution']
+        assert set(state['profile']['skills'])=={'browser-use','task-execution'}
         assert 'agents.cancel' not in state['profile']['tools']
         assert state['policy']['request_approvals']
         os.write(master,b'\x11')

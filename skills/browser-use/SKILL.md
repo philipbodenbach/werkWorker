@@ -6,6 +6,9 @@ description: Complete browser tasks by observing the current page, choosing acti
 Derive a goal and observable completion criteria from the user's request.
 For multiple steps record the subgoal, next step and uncertainties in task.plan;
 plans describe intent, while browser receipts establish observations.
+Open with exactly one target, for example browser.open {"url":"https://example.com"}
+or {"path":"index.html"}. Only a successful receipt supplies a live browser_id;
+validation errors and cancelled_before_start do not create a browser.
 Reuse the live browser_id. Observe, choose one useful action, then inspect its
 effect. Tool success alone is not task success.
 Use named DOM/accessibility controls and fresh target.ref values. References
@@ -13,6 +16,8 @@ expire on the next observation or state change; never reuse them across actions.
 For drawings, boards, charts or other visual work request visual:true in Auto
 mode, then use click_at, move and drag. Vision supplies frames automatically;
 screenshot:true requests a frame even in DOM mode, screenshot:false suppresses it.
+Use press for keys/chords and type for text into the current focus after clicking
+or tabbing there. These mouse/keyboard actions work without DOM targets.
 Multiply image coordinates by screenshot.scale_x/scale_y for viewport coordinates.
 If image input is unsupported or a frame is missing, name the specific visual
 limitation; do not pretend to see it or switch backend on your own.

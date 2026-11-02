@@ -52,7 +52,7 @@ impl Tool for BrowserTool {
         let id = text(128);
         let (description, mut schema) = match self.name.as_str() {
             "browser.open" => (
-                "Open HTTP(S) url OR workspace path. Reuse browser_id; close before changing engine. allowed_origins adds sites; private_origins requests private-network access. Isolated profile; host permissions apply.",
+                "Open with exactly one target: url (HTTP/S) OR path (workspace file). Reuses a live browser; returns browser_id. Close before changing engine. allowed_origins adds sites; private_origins requests private-network access. Host permissions apply.",
                 {
                     object(
                         json!({"url":text(4096),"path":text(4096),"browser":{"type":"string","enum":["chromium","firefox","webkit","chrome","msedge","brave","opera","vivaldi"]},"allowed_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)},"private_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)}}),
@@ -75,9 +75,9 @@ impl Tool for BrowserTool {
                 ),
             ),
             "browser.action" => (
-                "Act, then observe. target: fresh ref OR selector OR role+name OR label; optional frame. fill:text; select:value; press:key; scroll:x/y; tabs:tab_id; wait:ms. click_at/move:x/y; drag:path. Viewport:1024x768; multiply image coordinates by screenshot.scale_x/scale_y. Actions may submit data; inspect uncertain effects before retrying.",
+                "Act, then observe. target: fresh ref OR selector OR role+name OR label; optional frame. fill:text; type:text into current focus (no target); select:value; press:key/chord; scroll:x/y; tabs:tab_id; wait:ms. click_at/move:x/y; drag:path. Viewport:1024x768; multiply image coordinates by screenshot.scale_x/scale_y. Actions may submit data; inspect uncertain effects before retrying.",
                 object(
-                    json!({"browser_id":id,"action":{"type":"string","enum":["click","fill","press","select","hover","scroll","back","forward","reload","tab_new","tab_select","tab_close","wait","click_at","move","drag"]},"target":object(json!({"ref":text(128),"selector":text(1024),"role":text(128),"name":text(512),"label":text(512),"frame":text(1024)}), &[]),"text":{"type":"string","maxLength":16000},"key":text(128),"value":text(1024),"x":{"type":"integer","minimum":-10000,"maximum":10000},"y":{"type":"integer","minimum":-10000,"maximum":10000},"tab_id":{"type":"integer","minimum":1},"ms":{"type":"integer","minimum":0,"maximum":2000},"path":{"type":"array","minItems":2,"maxItems":64,"items":object(json!({"x":{"type":"integer","minimum":0,"maximum":1023},"y":{"type":"integer","minimum":0,"maximum":767}}), &["x","y"])},"button":{"type":"string","enum":["left","right","middle"]},"click_count":{"type":"integer","minimum":1,"maximum":2},"screenshot":{"type":"boolean"}}),
+                    json!({"browser_id":id,"action":{"type":"string","enum":["click","fill","type","press","select","hover","scroll","back","forward","reload","tab_new","tab_select","tab_close","wait","click_at","move","drag"]},"target":object(json!({"ref":text(128),"selector":text(1024),"role":text(128),"name":text(512),"label":text(512),"frame":text(1024)}), &[]),"text":{"type":"string","maxLength":16000},"key":text(128),"value":text(1024),"x":{"type":"integer","minimum":-10000,"maximum":10000},"y":{"type":"integer","minimum":-10000,"maximum":10000},"tab_id":{"type":"integer","minimum":1},"ms":{"type":"integer","minimum":0,"maximum":2000},"path":{"type":"array","minItems":2,"maxItems":64,"items":object(json!({"x":{"type":"integer","minimum":0,"maximum":1023},"y":{"type":"integer","minimum":0,"maximum":767}}), &["x","y"])},"button":{"type":"string","enum":["left","right","middle"]},"click_count":{"type":"integer","minimum":1,"maximum":2},"screenshot":{"type":"boolean"}}),
                     &["browser_id", "action"],
                 ),
             ),
@@ -113,10 +113,11 @@ impl Tool for BrowserTool {
                 json!({"type":"boolean","description":"Request image feedback in Auto mode."});
         }
         if self.name == "browser.open" {
-            // Native grammar builders may visit oneOf branches without merging
-            // their siblings. Each branch must therefore be a complete object,
-            // not just `required`/`not` constraints on root-level properties.
-            // Keep root properties too for templates that list parameters there.
+            // XML tool parsers enumerate parameters only for an object root.
+            // A top-level oneOf becomes a union and silently loses ALL arguments
+            // in llama.cpp's foreach_parameter, even with complete branches.
+            // Keep the flat object root; the host still enforces the exact-one
+            // constraint in allOf. Native grammars need not enforce this relation.
             let alternatives: Vec<_> = [("url", "path"), ("path", "url")]
                 .into_iter()
                 .map(|(required, excluded)| {
@@ -134,14 +135,14 @@ impl Tool for BrowserTool {
                     branch
                 })
                 .collect();
-            schema["oneOf"] = json!(alternatives);
+            schema["allOf"] = json!([{"oneOf":alternatives}]);
         }
         ToolDefinition {
             name: self.name.clone(),
-            version: if self.name == "browser.open" {
-                "4"
-            } else {
-                "3"
+            version: match self.name.as_str() {
+                "browser.open" => "5",
+                "browser.action" => "4",
+                _ => "3",
             }
             .into(),
             effect: Effect::ExternalWrite,
@@ -682,6 +683,7 @@ fn validate_action(args: &Value) -> Result<()> {
     let required: &[&str] = match kind {
         "click" | "hover" => &["target"],
         "fill" => &["target", "text"],
+        "type" => &["text"],
         "select" => &["target", "value"],
         "press" => &["key"],
         "scroll" | "click_at" | "move" => &["x", "y"],
@@ -694,6 +696,12 @@ fn validate_action(args: &Value) -> Result<()> {
         return Err(error(
             "invalid_browser_action",
             "Missing arguments required by this browser action",
+        ));
+    }
+    if kind == "type" && args.get("target").is_some() {
+        return Err(error(
+            "invalid_browser_target",
+            "type sends text to the current focus without target; use fill for a named field",
         ));
     }
     if let Some(target) = args.get("target")
@@ -818,17 +826,12 @@ impl BrowserSessions {
             )
         })?;
         args["browser_id"] = json!(session.id);
-        let mut validation = args.clone();
-        if validation["action"] == "type" {
-            validation["action"] = json!("fill");
-            validation["target"] = json!({"selector":":focus"});
-        }
         let definition = BrowserTool {
             name: tool.into(),
             sessions: self.clone(),
         }
         .definition();
-        if let Err(e) = crate::tools::validate_arguments(&definition.input_schema, &validation) {
+        if let Err(e) = crate::tools::validate_arguments(&definition.input_schema, &args) {
             self.sessions.lock().await.insert(id.into(), session);
             return Err(e);
         }
@@ -1306,7 +1309,7 @@ async fn broker(message: &Value, origins: &[String], private: &[String]) -> Resu
 mod host_panel_tests {
     use super::*;
     #[test]
-    fn open_alternatives_are_complete_native_schemas() {
+    fn open_keeps_object_parameters_and_strict_target_alternatives() {
         let schema = BrowserTool {
             name: "browser.open".into(),
             sessions: Arc::default(),
@@ -1319,7 +1322,10 @@ mod host_panel_tests {
         ] {
             assert!(crate::tools::validate_arguments(&schema, &invalid).is_err());
         }
-        for branch in schema["oneOf"].as_array().unwrap() {
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("anyOf").is_none());
+        for branch in schema["allOf"][0]["oneOf"].as_array().unwrap() {
             let key = branch["required"][0].as_str().unwrap();
             let value = if key == "url" {
                 "https://example.com"

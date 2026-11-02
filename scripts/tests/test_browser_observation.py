@@ -1,14 +1,18 @@
 """Real Chromium observation faults, with no external page/network access.
-Run with the installed WW browser runtime on PYTHONPATH/PLAYWRIGHT_BROWSERS_PATH.
+Run with REQUIRE_BROWSER=1 and the installed WW runtime on PYTHONPATH/
+PLAYWRIGHT_BROWSERS_PATH. Explicit runs fail if that runtime is unavailable.
 """
 import importlib.util
+import os
 from pathlib import Path
 import threading
 import unittest
-from playwright.sync_api import sync_playwright
 
-spec=importlib.util.spec_from_file_location('driver',Path(__file__).parents[1]/'browser_control.py')
-module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+REQUIRE_BROWSER = os.environ.get('REQUIRE_BROWSER') == '1'
+if REQUIRE_BROWSER:
+    from playwright.sync_api import sync_playwright
+    spec=importlib.util.spec_from_file_location('driver',Path(__file__).parents[1]/'browser_control.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 class FaultyBody:
     def inner_text(self, **kwargs): raise RuntimeError('isolated text failure')
@@ -18,6 +22,7 @@ class FaultyPage:
     def __getattr__(self,name): return getattr(self.page,name)
     def locator(self,selector): return FaultyBody() if selector=='body' else self.page.locator(selector)
 
+@unittest.skipUnless(REQUIRE_BROWSER, 'Set REQUIRE_BROWSER=1 with the installed browser runtime')
 class Observations(unittest.TestCase):
     def setUp(self):
         self.pw=sync_playwright().start()
@@ -47,5 +52,15 @@ class Observations(unittest.TestCase):
         self.assertNotIn('screenshot_base64',result)
         self.assertNotIn('text',result)
         self.assertEqual(result['observation_errors'][0]['reason'],'masking_unavailable')
+    def test_keyboard_text_checks_focused_fields_including_frames(self):
+        self.page.set_content('<input id="normal"><input id="secret" type="password"><iframe srcdoc="&lt;input type=password&gt;"></iframe>')
+        self.page.locator('#normal').focus()
+        self.driver.action({'action':'type','text':'Grüße 世界'})
+        self.assertEqual(self.page.locator('#normal').input_value(),'Grüße 世界')
+        for field in [self.page.locator('#secret'), self.page.frame_locator('iframe').locator('input')]:
+            field.focus()
+            with self.assertRaisesRegex(ValueError,'Protected'):
+                self.driver.action({'action':'type','text':'must-not-enter'})
+            self.assertEqual(field.input_value(),'')
 
 if __name__=='__main__': unittest.main()

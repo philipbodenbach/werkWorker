@@ -16,12 +16,26 @@ jobs:
       - name: Prepare real namespace backend
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y bubblewrap python3-pip python3-apt
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets -- --nocapture
       - run: python3 -m unittest discover -s scripts/tests
+      - name: Install isolated Chromium runtime
+        run: sh scripts/install-browser.sh --local-deps chromium
+      - name: Test real browser control and observation
+        env:
+          REQUIRE_BROWSER: "1"
+          WW_BROWSER_ENGINES: chromium
+        run: |
+          cargo test --locked --test browser_control --test browser_mode -- --test-threads=1
+          runtime="$HOME/.local/share/werk-worker/tools/browser"
+          multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          PYTHONPATH="$runtime/python" \
+          PLAYWRIGHT_BROWSERS_PATH="$runtime/browsers" \
+          LD_LIBRARY_PATH="$runtime/deps/usr/lib/$multiarch:$runtime/deps/lib/$multiarch${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            /usr/bin/python3 scripts/tests/test_browser_observation.py
       - run: python3 scripts/tests/tui_smoke.py target/debug/ww
       - run: python3 scripts/tests/selection_tui_smoke.py target/debug/ww
       - run: python3 scripts/tests/permissions_tui_smoke.py target/debug/ww

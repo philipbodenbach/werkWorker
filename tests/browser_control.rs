@@ -478,6 +478,19 @@ async fn invalid_scope_and_action_never_launch_a_browser() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "invalid_browser_action");
+    let err = action
+        .prepare(json!({"browser_id":"x","action":"type"}), &ctx)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "invalid_browser_action");
+    let err = action
+        .prepare(
+            json!({"browser_id":"x","action":"type","text":"hello","target":{"selector":"input"}}),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "invalid_browser_target");
     let err=action.prepare(json!({"browser_id":"x","action":"click","target":{"role":"button","name":"Save","selector":"#other"}}),&ctx).await.unwrap_err();
     assert_eq!(err.code, "invalid_browser_target");
     let prepared = open
@@ -604,9 +617,10 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
         let (status, body, headers) = match r.path.as_str() {
             "/save" => {
                 assert_eq!(r.method, "POST");
-                assert_eq!(r.body["name"], "Alice");
+                let name = r.body["name"].as_str().unwrap();
+                assert!(matches!(name, "Alice" | "Grüße 世界"));
                 assert!(r.raw.contains("fixture=session"));
-                (200, "Saved Alice".to_string(), vec![])
+                (200, format!("Saved {name}"), vec![])
             }
             "/redirect" => (
                 302,
@@ -663,6 +677,35 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
             save.data["text"].as_str().unwrap().contains("Saved Alice"),
             "{}",
             save.data
+        );
+        // Focus, replace text and submit entirely through mouse/keyboard input.
+        for args in [
+            json!({"action":"move","x":100,"y":18}),
+            json!({"action":"click_at","x":100,"y":18}),
+            json!({"action":"press","key":"Control+a"}),
+            json!({"action":"type","text":"Grüße 世界"}),
+            json!({"action":"press","key":"Tab"}),
+        ] {
+            let mut args = args;
+            args["browser_id"] = browser_id.clone();
+            assert_ok(&call(&registry, &ctx, "browser.action", args).await.unwrap());
+        }
+        let keyboard_save = call(
+            &registry,
+            &ctx,
+            "browser.action",
+            json!({"browser_id":browser_id,"action":"press","key":"Enter"}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&keyboard_save);
+        assert!(
+            keyboard_save.data["text"]
+                .as_str()
+                .unwrap()
+                .contains("Saved Grüße 世界"),
+            "{}",
+            keyboard_save.data
         );
         let pixel = call(
             &registry,
@@ -811,7 +854,12 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
         .await
         .unwrap();
         assert_ok(&back);
-        assert!(back.data["text"].as_str().unwrap().contains("Saved Alice"));
+        assert!(
+            back.data["text"]
+                .as_str()
+                .unwrap()
+                .contains("Saved Grüße 世界")
+        );
         let redirect = call(
             &registry,
             &ctx,
@@ -1174,7 +1222,8 @@ async fn browser_images_reach_the_actual_werk_backend_request_in_vision_and_dom_
             let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
             let open = request.body["tools"].as_array().unwrap().iter()
                 .find(|t|t["function"]["name"]=="browser.open").unwrap();
-            for branch in open["function"]["parameters"]["oneOf"].as_array().unwrap() {
+            assert!(open["function"]["parameters"].get("oneOf").is_none());
+            for branch in open["function"]["parameters"]["allOf"][0]["oneOf"].as_array().unwrap() {
                 let target=branch["required"][0].as_str().unwrap();
                 assert_eq!(branch["type"],"object");
                 assert_eq!(branch["properties"][target]["type"],"string");

@@ -137,6 +137,12 @@ Text and accessibility snapshots work without vision. Host-selected Auto, DOM
 and Vision perception modes control automatic model images (see below). Model tool-calling quality still
 depends on the selected model and server configuration.
 
+`browser.action` supports both DOM targets and direct input. `click_at`, `move`,
+`drag` and `scroll` use mouse coordinates; `press` sends keys or chords such as
+`Control+a`; `type` inserts `text` into the current focus without a DOM target.
+Click or Tab into the field first. Protected inputs still require manual takeover,
+including when focus is inside an iframe. `fill` remains available for named fields.
+
 For local static development, call `browser.open` with `{"path":"index.html"}`
 (relative to the workspace, or `/workspace/...`). The existing
 `{"url":"file:///workspace/index.html"}` form is also accepted. Worker serves

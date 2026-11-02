@@ -33,8 +33,8 @@ regressions retain their original budgets and assertions.
 - Bundled `browser-use` skill with immutable session snapshots, activation in
   browser-capable runs, profile integration and restoration into older sessions.
 - Host-owned Auto/DOM/Vision settings, generic `visual:true`, explicit screenshot
-  overrides and prepared-setting checks. `browser.open` is version 4 after the
-  native-schema correction below; the other browser controls remain version 3.
+  overrides and prepared-setting checks. `browser.open` is version 5 and
+  `browser.action` version 4 after the follow-up below; other controls remain v3.
 - Observation identity and a bounded browser checkpoint in Working State;
   at most two browser frames in planned requests, with user images retained.
 - Panel/TUI settings, observed activity, task status, vision problems and expiry.
@@ -154,6 +154,64 @@ Chromium runs passed 12 `browser_control` tests (2 opt-in tests ignored) and all
 Restart the rebuilt worker and choose a fresh session for the next model test;
 an already running worker keeps its previous tool definitions.
 
+### Second live-run failure: native XML parameter enumeration
+
+A fresh session with v4 still produced two `browser.open {}` calls, then
+`browser.navigate` with an invented `default` ID and finally `repetition_limit`.
+The earlier AST-only probe missed a second incompatibility: llama.cpp's
+`foreach_parameter` accepts only an object root. A root `oneOf` becomes an
+`anyOf` AST node, so the Qwen XML grammar contains **zero parameters** and
+rejects the desired URL argument even with complete alternative schemas.
+
+v5 retains root object properties and nests the exclusive target constraint
+inside `allOf`. Host validation still rejects missing or dual targets and
+invalid optional fields before any effect. Native XML grammars can now emit
+all seven parameters; cross-field exclusivity remains a host responsibility.
+The same installed library rejected a URL call before this change and accepted
+and parsed it afterward, without loading model weights or requesting inference.
+
+The opt-in regression exercises the exported WW tool definitions, native GBNF
+acceptance and native XML round-trip for URLs, workspace paths, optional fields,
+mouse clicks/drags and keyboard text/chords:
+
+```sh
+python3 scripts/tests/browser_native_schema.py target/debug/ww \
+  --runtime /path/to/installed/llama-generation \
+  --server http://127.0.0.1:LLAMA_PORT
+```
+
+This reads `/props` only and compiles its probe in a temporary directory. It does
+not generate model output or alter the running server. Browser action v4 also
+exposes focused keyboard text input to the agent; it previously existed only
+for manual control. Real Chromium tests verify coordinate focus, text/chord
+input, canvas pixels, and protected-field rejection including nested focus.
+
+### GitHub runner follow-up
+
+All seven failed checks on `679002b` stopped in Python unittest discovery with
+`ModuleNotFoundError: No module named 'playwright'`: the release-test job, all
+four native platform jobs, and both push/PR Linux sandbox jobs. The observation
+module now imports its optional runtime only with `REQUIRE_BROWSER=1`. Ordinary
+test discovery remains dependency-free; an explicitly requested browser test
+still fails if Playwright or Chromium is missing. The Linux workflow installs
+the isolated Chromium runtime and explicitly runs both Rust browser suites and
+the Python observation tests, so coverage is retained.
+
+Running the previously blocked downstream terminal checks also exposed stale
+assumptions in `tui_smoke.py`: `browser-use` now precedes `coding-basic` and remains
+enabled when the latter is toggled off. The test selects the intended skill by
+its advertised name and checks the remaining skills across save/new-session/
+restart. All eight terminal smoke scripts pass locally after this correction.
+
+Validation on `679002b` plus these changes: 410 Rust tests passed, 20 ignored;
+format and all-target Clippy passed. All 20 non-ignored Chromium integration
+tests passed, as did 3 Python Chromium tests and 6 native grammar/XML cases.
+General Python discovery passed 36 tests and explicitly skipped the 3 opt-in
+browser tests. The eval/coding/automation examples, package file list and
+canonical CLI reference check passed. Native Windows/macOS/ARM builds and new
+GitHub runs were not executed locally; an autonomous model drawing is still a
+separate acceptance test.
+
 ## Initial feature checks
 
 Completed on 2026-11-01 at `186463b` plus local final corrections:
@@ -181,7 +239,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 REQUIRE_BROWSER=1 WW_BROWSER_ENGINES=chromium cargo test --locked \
   --test browser_control --test browser_mode -- --test-threads=1
-PYTHONPATH="$HOME/.local/share/werk-worker/tools/browser/python" \
+REQUIRE_BROWSER=1 PYTHONPATH="$HOME/.local/share/werk-worker/tools/browser/python" \
 PLAYWRIGHT_BROWSERS_PATH="$HOME/.local/share/werk-worker/tools/browser/browsers" \
   /usr/bin/python3 scripts/tests/test_browser_observation.py
 WW_COMPAT_REPORT=/tmp/browser-compatibility.json cargo test --locked \

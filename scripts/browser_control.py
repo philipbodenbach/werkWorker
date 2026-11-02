@@ -270,11 +270,11 @@ class Driver:
         kind=args['action']; element=None
         if 'target' in args:
             element=self.target(args['target'])
-        elif kind=='press':
+        elif kind in ('press','type'):
             element=self.focused_element()
         if element:
             meta=self.info(element)
-            if meta['protected'] and (kind in ('fill','select') or kind=='press' and args['key'] not in ('Enter','Tab','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown')):
+            if meta['protected'] and (kind in ('fill','select','type') or kind=='press' and args['key'] not in ('Enter','Tab','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown')):
                 raise ValueError('Protected password, payment, OTP or file field: use Take over in the browser panel and enter it yourself')
             if args.get('browser_category')=='browsing' and kind in ('click','fill','select'):
                 safe = kind=='fill' and not meta['protected'] or kind=='click' and meta['tag']=='a' and meta['href'] and not meta['submits'] and not meta['consequential'] and not meta['download']
@@ -292,7 +292,7 @@ class Driver:
                 target.select_option(args["value"])
             else:
                 getattr(target, kind)()
-        elif kind == "type" and args.get("human"):
+        elif kind == "type":
             self.page.keyboard.insert_text(args["text"])
         elif kind == "press":
             target = self.target(args["target"]) if "target" in args else self.page.keyboard

@@ -12,6 +12,59 @@ struct Host {
     engine: Weak<EngineInner>,
     runtime: Weak<SessionRuntime>,
 }
+
+// Applying a host rule is itself a permission decision. Resolve matching pending
+// requests atomically instead of requiring the user to approve them a second time.
+pub(super) fn resolve_browser_approvals(data: &mut SessionData) {
+    let mut resolved = Vec::new();
+    for run in &mut data.runs {
+        if !matches!(
+            run.status,
+            RunStatus::WaitingApproval | RunStatus::Interrupted
+        ) {
+            continue;
+        }
+        for invocation in &mut run.invocations {
+            if !TOOLS.contains(&invocation.call.name.as_str()) {
+                continue;
+            }
+            let (Some(definition), Some(approval)) =
+                (&invocation.definition, &mut invocation.approval)
+            else {
+                continue;
+            };
+            if approval.decision.is_some()
+                || approval.expires_at_ms <= now_ms()
+                || approval.arguments_hash != approval_key(definition, &invocation.prepared)
+            {
+                continue;
+            }
+            let decision = if !data.profile.tools.contains(&definition.name) {
+                PolicyDecision::Deny
+            } else {
+                data.policy
+                    .evaluate(definition, &invocation.prepared, &run.similar_grants)
+            };
+            let decision = match decision {
+                PolicyDecision::Allow => ApprovalDecision::AllowOnce,
+                PolicyDecision::Deny => ApprovalDecision::Deny,
+                PolicyDecision::Ask => continue,
+            };
+            approval.decision = Some(decision.clone());
+            resolved.push((run.id.clone(), approval.request_id.clone(), decision));
+        }
+    }
+    for (run_id, request_id, decision) in resolved {
+        data.emit(
+            Some(&run_id),
+            EventKind::ApprovalResolved {
+                request_id,
+                decision,
+            },
+        );
+    }
+}
+
 impl Host {
     fn session(&self) -> Result<SessionHandle> {
         let engine = self
@@ -325,7 +378,9 @@ impl SessionHandle {
             let receipt=d.command(command_id,&json!({"method":"browser_rule","site":site,"category":category,"permission":permission}),None)?;
             if matches!(receipt.status,ReceiptStatus::Duplicate) {return Ok(receipt);}
             d.policy.browser.get_or_insert_with(||BrowserPolicy{enabled:false,..Default::default()}).set(site,category,permission)?;
-            d.emit(None,EventKind::Diagnostic{code:"browser_rule_changed".into()});Ok(receipt)
+            d.emit(None,EventKind::Diagnostic{code:"browser_rule_changed".into()});
+            resolve_browser_approvals(d);
+            Ok(receipt)
         }).await
     }
     pub(super) async fn wait_for_browser_operator(

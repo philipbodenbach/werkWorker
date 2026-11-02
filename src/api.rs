@@ -3619,6 +3619,8 @@ impl SessionHandle {
                     i.approval = Some(request.clone());
                     i.status = InvocationStatus::AwaitingApproval;
                     d.emit(Some(run_id), EventKind::ApprovalRequested { request });
+                    // A panel rule may have changed since the policy snapshot.
+                    browser_host::resolve_browser_approvals(d);
                     Ok(())
                 })
                 .await?;
@@ -3643,6 +3645,7 @@ impl SessionHandle {
                             },
                         );
                     }
+                    browser_host::resolve_browser_approvals(d);
                     Ok(())
                 })
                 .await?;

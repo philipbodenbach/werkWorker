@@ -114,12 +114,18 @@ pub fn origin(input: &str) -> Result<String> {
 }
 impl BrowserPolicy {
     pub fn set(&mut self, site: &str, category: &str, permission: ToolPermission) -> Result<()> {
+        // The panel offers one explicit choice for both ways of operating a page.
+        // Persist the existing categories so older hosts retain the same scope.
+        if category == "controls" {
+            self.set(site, "actions", permission)?;
+            return self.set(site, "unlabelled", permission);
+        }
         if !CATEGORIES.contains(&category)
             || category == "scripts" && permission == ToolPermission::Allow
         {
             return Err(WorkerError::new(
                 "browser_permission",
-                "Choose browsing/actions/unlabelled/downloads/history/scripts and ask/allow/deny; scripts always require approval",
+                "Choose browsing/controls/actions/unlabelled/downloads/history/scripts and ask/allow/deny; scripts always require approval",
             ));
         }
         if site == "*" {

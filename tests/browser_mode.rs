@@ -87,6 +87,58 @@ fn site_permissions_never_promote_scripts_or_protected_fields() {
     );
 }
 
+#[test]
+fn combined_controls_permission_keeps_website_and_category_scope() {
+    let mut browser = BrowserPolicy::default();
+    browser
+        .set("https://jspaint.app", "controls", ToolPermission::Allow)
+        .unwrap();
+    assert!(!browser.sites["https://jspaint.app"].contains_key("controls"));
+    for category in ["actions", "unlabelled"] {
+        let mut args = json!({"origin":"https://jspaint.app","browser_category":category});
+        assert_eq!(
+            browser.evaluate("browser.action", &args),
+            PolicyDecision::Allow
+        );
+        args["protected_field"] = json!(true);
+        assert_eq!(
+            browser.evaluate("browser.action", &args),
+            PolicyDecision::Deny
+        );
+        args["protected_field"] = json!(false);
+        args["new_origins"] = json!(["https://other.example"]);
+        assert_eq!(
+            browser.evaluate("browser.action", &args),
+            PolicyDecision::Ask
+        );
+        args["new_origins"] = json!([]);
+        args["new_private_origins"] = json!(["http://127.0.0.1:8137"]);
+        assert_eq!(
+            browser.evaluate("browser.action", &args),
+            PolicyDecision::Ask
+        );
+        assert_eq!(
+            browser.rule("https://other.example", category),
+            ToolPermission::Ask
+        );
+    }
+    for category in ["browsing", "downloads", "history", "scripts"] {
+        assert_eq!(
+            browser.rule("https://jspaint.app", category),
+            ToolPermission::Ask
+        );
+    }
+    browser
+        .set("https://jspaint.app", "controls", ToolPermission::Deny)
+        .unwrap();
+    for category in ["actions", "unlabelled"] {
+        assert_eq!(
+            browser.rule("https://jspaint.app", category),
+            ToolPermission::Deny
+        );
+    }
+}
+
 #[derive(Default)]
 struct QueueProvider {
     turns: Mutex<VecDeque<ScriptedTurn>>,
@@ -357,6 +409,169 @@ async fn local_preview_reuses_browser_and_manual_navigation_respects_site_rules(
     assert_eq!(
         state(&client, &panel).await["browser"]["url"],
         "http://workspace.invalid/index.html"
+    );
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn panel_rule_changes_resolve_pending_browser_approvals() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let (dir, engine, session, provider, client, panel) = setup().await;
+    std::fs::write(
+        dir.path().join("index.html"),
+        r#"<!doctype html><button id="mark" style="position:absolute;left:20px;top:20px;width:100px;height:40px" onclick="document.querySelector('#result').textContent='Marked'">Mark</button><p id="result">Ready</p><canvas style="position:absolute;left:150px;top:100px" width="300" height="200"></canvas>"#,
+    )
+    .unwrap();
+    session.set_browser_mode(true, "enable").await.unwrap();
+    session
+        .set_browser_rule(
+            "http://workspace.invalid",
+            "browsing",
+            ToolPermission::Allow,
+            "browse",
+        )
+        .await
+        .unwrap();
+    provider.call(
+        "browser.open",
+        json!({"path":"index.html","screenshot":false}),
+    );
+    let open = session
+        .submit("Open fixture", "open", Limits::default(), None)
+        .await
+        .unwrap();
+    finish(&open).await;
+    let open_status = open.status().await.unwrap();
+    assert_eq!(
+        open_status.status,
+        RunStatus::Completed,
+        "{:?}",
+        open_status.error
+    );
+    assert_eq!(
+        open_status.invocations[0].result.as_ref().unwrap().status,
+        Outcome::Succeeded,
+        "{open_status:?}"
+    );
+    let browser_id = state(&client, &panel).await["browser"]["browser_id"].clone();
+    provider.call("browser.action", json!({"browser_id":browser_id,"action":"click","screenshot":false,"target":{"selector":"#mark"}}));
+    let click = session
+        .submit("Mark fixture", "click", Limits::default(), None)
+        .await
+        .unwrap();
+    let request = approval(&client, &panel).await;
+    assert_eq!(
+        request["description"]["arguments"]["browser_category"],
+        "actions"
+    );
+    // An unrelated category must not approve the waiting click.
+    control(&client, &panel, json!({"op":"rule","site":"http://workspace.invalid","category":"unlabelled","permission":"allow"})).await;
+    assert_eq!(
+        state(&client, &panel).await["approvals"][0]["request_id"],
+        request["request_id"]
+    );
+    control(&client, &panel, json!({"op":"rule","site":"http://workspace.invalid","category":"actions","permission":"allow"})).await;
+    let resolved = tokio::time::timeout(Duration::from_secs(5), click.wait()).await;
+    if resolved.is_err() {
+        engine.close().await.unwrap();
+        panic!("Applying Allow in the panel left the matching approval waiting");
+    }
+    resolved.unwrap().unwrap();
+    assert_eq!(
+        click.status().await.unwrap().invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .status,
+        Outcome::Succeeded
+    );
+    assert!(
+        state(&client, &panel).await["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // One explicit panel choice covers coordinates, dragging and element targets.
+    control(&client, &panel, json!({"op":"rule","site":"http://workspace.invalid","category":"controls","permission":"ask"})).await;
+    for (n, args) in [
+        json!({"action":"click_at","x":40,"y":35}),
+        json!({"action":"click","target":{"selector":"#mark"}}),
+        json!({"action":"drag","path":[{"x":180,"y":120},{"x":250,"y":180}]}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut args = args;
+        args["browser_id"] = browser_id.clone();
+        args["screenshot"] = json!(false);
+        provider.call("browser.action", args);
+        let run = session
+            .submit(
+                "Operate fixture",
+                &format!("operate-{n}"),
+                Limits::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        if n == 0 {
+            let request = approval(&client, &panel).await;
+            assert_eq!(
+                request["description"]["arguments"]["browser_category"],
+                "unlabelled"
+            );
+            control(&client, &panel, json!({"op":"rule","site":"http://workspace.invalid","category":"controls","permission":"allow"})).await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), run.wait())
+            .await
+            .expect("Combined controls permission must not ask again")
+            .unwrap();
+        let run = run.status().await.unwrap();
+        assert_eq!(run.status, RunStatus::Completed, "{:?}", run.error);
+        assert_eq!(
+            run.invocations[0].result.as_ref().unwrap().status,
+            Outcome::Succeeded
+        );
+        if n > 0 {
+            assert!(run.invocations[0].approval.is_none());
+        }
+    }
+    // Changing controls must not resolve a script request, even while it waits.
+    provider.call(
+        "browser.evaluate",
+        json!({"browser_id":browser_id,"script":"() => 42"}),
+    );
+    let script = session
+        .submit("Script fixture", "script", Limits::default(), None)
+        .await
+        .unwrap();
+    let request = approval(&client, &panel).await;
+    control(&client, &panel, json!({"op":"rule","site":"http://workspace.invalid","category":"controls","permission":"allow"})).await;
+    assert_eq!(
+        state(&client, &panel).await["approvals"][0]["request_id"],
+        request["request_id"]
+    );
+    control(&client, &panel, json!({"op":"rule","site":"http://workspace.invalid","category":"scripts","permission":"deny"})).await;
+    tokio::time::timeout(Duration::from_secs(5), script.wait())
+        .await
+        .expect("Deny must also resolve the pending request")
+        .unwrap();
+    assert_eq!(
+        script.status().await.unwrap().invocations[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .status,
+        Outcome::Denied
+    );
+    assert!(
+        state(&client, &panel).await["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
     engine.close().await.unwrap();
 }
@@ -666,6 +881,10 @@ async fn main_agent_changed_pages_allow_repeated_actions_and_observations_with_v
         assert_eq!(r.images.len(), 1);
         assert!(r.data["observation_id"].is_string());
         assert_eq!(r.data["tab_id"], 1);
+        assert!(
+            !r.data["controls"].as_array().unwrap().is_empty(),
+            "canonical controls retained"
+        );
     }
     assert!(
         status
@@ -688,6 +907,20 @@ async fn main_agent_changed_pages_allow_repeated_actions_and_observations_with_v
                 .any(|r| r.messages.iter().any(|m| !m.images.is_empty()))
         );
         for request in requests.iter() {
+            let current_controls = request
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::Tool)
+                .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+                .filter(|result| {
+                    result["data"]["browser_id"] == browser_id
+                        && result["data"]["controls"].is_array()
+                })
+                .count();
+            assert!(
+                current_controls <= 1,
+                "only current references belong in a vision decision"
+            );
             assert!(
                 request
                     .messages

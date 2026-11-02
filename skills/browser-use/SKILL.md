@@ -18,6 +18,16 @@ mode, then use browser.action with action:click_at, move or drag. These are acti
 values, not separate tools; include the live browser_id and coordinates or a drag
 path chosen from the latest screenshot. Vision supplies frames automatically;
 screenshot:true requests a frame even in DOM mode, screenshot:false suppresses it.
+Viewport coordinates cover the whole page, not just a drawing canvas. Locate the
+intended surface in the screenshot and its controls[].bounds; keep drawing points
+inside that surface, excluding palettes, toolbars and gray workspace margins.
+drag holds one mouse button from the first path point until release at the last.
+Rectangle, ellipse and selection tools normally use two opposite corners; do not
+trace a closed outline with those tools, since returning to the start collapses
+the shape. Freehand strokes and separate line segments use different gestures.
+Keep screenshots enabled for visual actions and inspect the returned frame.
+An action already observes its result; request another observation only if the
+frame is missing, stale, still loading or an uncertain effect needs checking.
 Screenshots are already attached as images to browser tool results. Artifact IDs
 are not workspace file paths; do not pass them to files.read_image. For a fresh
 or still-loading page, use browser.observe with the live browser_id and screenshot:true.

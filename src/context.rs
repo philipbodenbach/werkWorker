@@ -647,6 +647,7 @@ impl DefaultContextBuilder {
                 head.push(crate::harness::continuation());
             }
             crate::browser_progress::select_images(&mut head, &browser_calls);
+            crate::browser_progress::prune_expired_controls(&mut head, &browser_calls);
             head
         };
         // Failed atomic file proposals are not working code. Keep their exact

@@ -1281,6 +1281,94 @@ async fn live_jspaint_observations_remain_available() {
 }
 
 #[tokio::test]
+#[ignore = "explicit JSPaint mouse-gesture probe; draws only through browser.action"]
+async fn live_jspaint_rectangle_uses_opposite_corner_drag() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"url":"https://jspaint.app/", "screenshot":true}),
+    )
+    .await
+    .unwrap();
+    let browser_id = opened.data["browser_id"].clone();
+    for _ in 0..3 {
+        let observed = call(
+            &registry,
+            &ctx,
+            "browser.observe",
+            json!({"browser_id":browser_id,"screenshot":true}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&observed);
+    }
+    let selected = call(
+        &registry,
+        &ctx,
+        "browser.action",
+        json!({"browser_id":browser_id,"action":"click_at","x":15,"y":181,"screenshot":true}),
+    )
+    .await
+    .unwrap();
+    let closed = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"drag","path":[{"x":200,"y":400},{"x":450,"y":400},{"x":450,"y":550},{"x":200,"y":550},{"x":200,"y":400}],"screenshot":true})).await.unwrap();
+    let closed_inside = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"drag","path":[{"x":200,"y":150},{"x":450,"y":150},{"x":450,"y":300},{"x":200,"y":300},{"x":200,"y":150}],"screenshot":true})).await.unwrap();
+    let diagonal = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"drag","path":[{"x":200,"y":150},{"x":450,"y":300}],"screenshot":true})).await.unwrap();
+    call(
+        &registry,
+        &ctx,
+        "browser.close",
+        json!({"browser_id":browser_id}),
+    )
+    .await
+    .unwrap();
+    for result in [&selected, &closed, &closed_inside, &diagonal] {
+        assert_ok(result);
+    }
+    let decode = |result: &ToolResult| {
+        let image = result.images.first().expect("current screenshot");
+        assert_eq!((image.width, image.height), (1024, 768));
+        base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .unwrap()
+    };
+    let dark_pixels = |result: &ToolResult| {
+        let pixels = image::load_from_memory(&decode(result)).unwrap().to_rgb8();
+        (145..306)
+            .flat_map(|y| (195..456).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixels.get_pixel(x, y).0.iter().any(|v| *v < 160))
+            .count()
+    };
+    let before = dark_pixels(&selected);
+    let closed_count = dark_pixels(&closed);
+    let closed_inside_count = dark_pixels(&closed_inside);
+    let diagonal_count = dark_pixels(&diagonal);
+    eprintln!(
+        "JSPaint canvas dark pixels: before={before}, original_path={closed_count}, closed_inside={closed_inside_count}, opposite_corners={diagonal_count}"
+    );
+    if let Ok(path) = std::env::var("WW_JSPAINT_FRAME") {
+        std::fs::write(path, decode(&diagonal)).unwrap();
+    }
+    assert!(before < 20, "canvas starts blank");
+    assert!(
+        closed_count < 80,
+        "original path does not draw inside the target area"
+    );
+    assert!(
+        closed_inside_count < 80,
+        "returning to the first corner collapses the shape"
+    );
+    assert!(
+        diagonal_count > 500,
+        "opposite corners must leave a visible rectangle"
+    );
+}
+
+#[tokio::test]
 #[ignore = "explicit live-site compatibility probe; no model decisions"]
 async fn live_browser_compatibility_probe() {
     let dir = tempfile::tempdir().unwrap();

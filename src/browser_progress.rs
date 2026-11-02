@@ -128,9 +128,154 @@ pub(crate) fn select_images(messages: &mut [Message], browser_calls: &BTreeSet<S
     }
 }
 
+/// Vision decisions need the current controls, not accumulated expired refs.
+/// Project only request-local copies; canonical receipts, page text, accessibility,
+/// action outcomes and errors remain intact. DOM research history is unchanged.
+pub(crate) fn prune_expired_controls(messages: &mut [Message], browser_calls: &BTreeSet<String>) {
+    let mut observed = BTreeSet::new();
+    for message in messages.iter_mut().rev() {
+        if message.role != Role::Tool
+            || !message
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|id| browser_calls.contains(id))
+        {
+            continue;
+        }
+        let Ok(mut result) = serde_json::from_str::<Value>(&message.content) else {
+            continue;
+        };
+        let succeeded = result["status"] == "succeeded";
+        let Some(data) = result["data"].as_object_mut() else {
+            continue;
+        };
+        if !data.get("observation_id").is_some_and(Value::is_string) {
+            continue;
+        }
+        let Some(browser) = data.get("browser_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let latest = observed.insert(browser.to_owned());
+        if latest || !succeeded || data.get("perception").and_then(Value::as_str) != Some("vision")
+        {
+            continue;
+        }
+        if let Some(Value::Array(controls)) = data.remove("controls") {
+            if !controls.is_empty() {
+                data.insert("controls_omitted".into(), json!({"count":controls.len(),"reason":"References expired after a newer observation; use the latest controls."}));
+            }
+            message.content = result.to_string();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vision_history_discards_only_expired_controls() {
+        let receipt = |id: &str, browser: &str, perception: &str| {
+            Message::tool(
+                id,
+                &ToolResult::ok(
+                    json!({"browser_id":browser,"observation_id":id,"perception":perception,
+                "controls":[{"ref":id,"bounds":{"x":10,"y":20,"width":100,"height":100}}],
+                "text":format!("Page text at {id}"),"accessibility":"Historical accessibility", "action_executed":true}),
+                ),
+            )
+        };
+        let original = vec![
+            receipt("old", "b1", "vision"),
+            receipt("other", "b2", "vision"),
+            receipt("dom", "b1", "dom"),
+            receipt("new", "b1", "vision"),
+            receipt("file", "b1", "vision"),
+        ];
+        let mut messages = original.clone();
+        let calls = ["old", "other", "dom", "new"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        prune_expired_controls(&mut messages, &calls);
+        let old: Value = serde_json::from_str(&messages[0].content).unwrap();
+        assert!(old["data"]["controls"].is_null());
+        assert_eq!(old["data"]["controls_omitted"]["count"], 1);
+        assert_eq!(old["data"]["text"], "Page text at old");
+        assert_eq!(old["data"]["accessibility"], "Historical accessibility");
+        assert_eq!(old["data"]["action_executed"], true);
+        for n in 1..messages.len() {
+            assert_eq!(messages[n].content, original[n].content);
+        }
+        // Projection is idempotent and does not rewrite the durable source.
+        let once = messages.clone();
+        prune_expired_controls(&mut messages, &calls);
+        assert_eq!(fingerprint(&messages), fingerprint(&once));
+        assert!(original[0].content.contains("\"controls\""));
+    }
+
+    #[test]
+    fn observation_failure_expires_old_refs_without_hiding_failure_evidence() {
+        let old = Message::tool(
+            "old",
+            &ToolResult::ok(
+                json!({"browser_id":"b","observation_id":"one","perception":"vision","controls":[{"ref":"e1"}]}),
+            ),
+        );
+        let mut error = ToolResult::error(Outcome::Failed, "browser_action_failed");
+        error.data = json!({"browser_id":"b","observation_id":"two","perception":"vision","action_executed":true,"observation_errors":[{"part":"protection","reason":"masking_unavailable"}]});
+        let failed = Message::tool("failed", &error);
+        let mut messages = vec![old, failed.clone()];
+        let calls = ["old", "failed"].into_iter().map(str::to_owned).collect();
+        prune_expired_controls(&mut messages, &calls);
+        assert!(
+            serde_json::from_str::<Value>(&messages[0].content).unwrap()["data"]["controls"]
+                .is_null()
+        );
+        assert_eq!(messages[1].content, failed.content);
+    }
+
+    #[test]
+    #[ignore = "read-only saved browser history: WW_REPLAY_DATABASE and WW_REPLAY_SESSION"]
+    fn saved_vision_controls_projection() {
+        let db = rusqlite::Connection::open_with_flags(
+            std::env::var("WW_REPLAY_DATABASE").unwrap(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let raw: String = db
+            .query_row(
+                "SELECT data FROM sessions WHERE id = ?1",
+                [std::env::var("WW_REPLAY_SESSION").unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let session: SessionData = serde_json::from_str(&raw).unwrap();
+        let calls = session
+            .runs
+            .iter()
+            .flat_map(|r| &r.invocations)
+            .filter(|i| crate::browser_policy::TOOLS.contains(&i.call.name.as_str()))
+            .map(|i| i.call.id.clone())
+            .collect();
+        let mut messages = session.messages.clone();
+        let before: usize = messages.iter().map(|m| m.content.len()).sum();
+        prune_expired_controls(&mut messages, &calls);
+        let after: usize = messages.iter().map(|m| m.content.len()).sum();
+        eprintln!(
+            "Saved vision history text: {before} -> {after} bytes ({} removed); original database untouched",
+            before.saturating_sub(after)
+        );
+        assert!(after < before);
+        assert_eq!(
+            messages.iter().map(|m| m.images.len()).sum::<usize>(),
+            session
+                .messages
+                .iter()
+                .map(|m| m.images.len())
+                .sum::<usize>()
+        );
+    }
     fn run() -> Run {
         serde_json::from_value(json!({"id":"r","status":"running","input":"Browse", "limits":Limits::default(),"started_at_ms":0,"deadline_ms":0,"history_start":0,"metrics":Metrics::default(),"attempts":[],"contexts":[],"invocations":[],"steering":[],"plan":null,"similar_grants":[],"repaired_output":false})).unwrap()
     }

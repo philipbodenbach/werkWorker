@@ -316,3 +316,59 @@ without model calls or browser actions.
 Validation: 7 context-planning, 12 work-cycle and 8 browser-mode tests passed,
 along with the saved-session replay. A separate live-model replay ended with a
 backend connection failure; it did not verify a completed drawing.
+
+## Follow-up: JSPaint gestures and vision context, 2026-11-02
+
+The next saved run requested a closed rectangle path from `(200,400)` through
+`(450,550)` and back to `(200,400)`, with the rectangle tool selected. Its actual
+canvas bounds were `(61,25,683,384)`: the path extended below the canvas, and the
+final corner equalled the starting corner. An isolated live-site UI probe
+reproduced no rectangle for that path or for a closed path entirely inside the
+canvas. A two-point drag from `(200,150)` to `(450,300)` produced 796 dark pixels
+in the previously blank test region. All drawing used `browser.action`; no
+canvas script or document mutation was used. This validates mouse delivery and
+the gesture correction, not an autonomous completed house drawing.
+
+The action description and browser skill now explain viewport versus canvas
+coordinates, opposite-corner shape drags, and inspection of the image already
+returned by an action. This addresses the observed model mistakes without
+silently changing requested mouse gestures or blocking valid freehand paths.
+
+Vision request history now omits superseded control-reference lists, keeping
+the latest controls per browser. Page text, accessibility, action outcomes,
+errors, DOM-mode history and canonical receipts remain available unchanged.
+One read-only replay reduced historical message text from 63,513 to 33,567 bytes;
+this is a payload measurement, not a measured inference speedup. Werk Protocol
+reported one 202.6-second call with 198.6 seconds until first output, confirming
+that prompt processing dominated that call.
+
+Validation: 45 library tests, 8 browser-mode tests with `REQUIRE_BROWSER=1`, and
+7 context-planning tests passed. The live JSPaint gesture probe and saved vision
+history projection were run separately and passed.
+
+## Follow-up: browser-panel permission requests, 2026-11-02
+
+The recorded JSPaint run requested `unlabelled` permission for a coordinate
+click, then `actions` permission when the model switched to an element reference.
+Both site rules were Allow after approval; these were separate categories, not
+evidence of repeated requests for an already allowed category.
+
+A separate host bug left an existing approval waiting when its matching site
+rule was changed to Allow in the panel. Rule changes now resolve pending browser
+approvals atomically against the full current policy, including Deny. Request
+creation and recovery also recheck the policy, closing the race with a concurrent
+panel update. Expired or changed prepared requests are not approved, and execution
+still checks revocation, browser revision and captured settings.
+
+The panel now offers an explicit combined clicking/typing/dragging permission for
+the selected site and shows the pending origin/category. It stores the existing
+`actions` and `unlabelled` rules together. Browsing, downloads, history, scripts,
+other sites and private-network exceptions retain their separate rules. Panel
+rules continue to apply to the current worker session.
+
+Validation: 10 browser-mode tests with real Chromium and 9 general permission
+tests passed. The new integration case applies a rule while a click is waiting,
+checks that unrelated rules leave it pending, alternates coordinate/element/drag
+actions without repeat approvals, and verifies that script requests stay pending
+until separately denied. A separate Chromium UI test exercises the combined
+button and rule selector with mocked panel responses.

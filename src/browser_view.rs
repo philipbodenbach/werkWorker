@@ -29,6 +29,24 @@ struct Frame {
     metadata: Value,
     jpeg: Vec<u8>,
 }
+// Loopback cookies are shared across ports and may belong to other local apps.
+// Bound their size without silently dropping ordinary browser requests.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+async fn respond(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    mime: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let header = format!(
+        "HTTP/1.1 {status} Response\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; img-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    socket.write_all(header.as_bytes()).await?;
+    socket.write_all(body).await?;
+    socket.shutdown().await
+}
 pub(crate) struct BrowserView {
     pub url: String,
     frame: Arc<Mutex<Frame>>,
@@ -72,8 +90,11 @@ impl BrowserView {
                         connections.spawn(async move {let _=tokio::time::timeout(Duration::from_secs(55),async {
                             let mut bytes=Vec::new();let mut buffer=[0;4096];
                             let header_end=loop {
-                                if let Some(pos)=bytes.windows(4).position(|b|b==b"\r\n\r\n"){break pos+4;}
-                                if bytes.len()>8192{return Ok::<(),std::io::Error>(());}
+                                if let Some(pos)=bytes.windows(4).position(|b|b==b"\r\n\r\n"){
+                                    if pos+4<=MAX_HEADER_BYTES{break pos+4;}
+                                    return respond(&mut socket,431,"text/plain; charset=utf-8",b"Request headers too large. Open the panel in a private window or clear cookies for 127.0.0.1.").await;
+                                }
+                                if bytes.len()>=MAX_HEADER_BYTES{return respond(&mut socket,431,"text/plain; charset=utf-8",b"Request headers too large. Open the panel in a private window or clear cookies for 127.0.0.1.").await;}
                                 let n=socket.read(&mut buffer).await?;if n==0{return Ok(());}bytes.extend_from_slice(&buffer[..n]);
                             };
                             let header=String::from_utf8_lossy(&bytes[..header_end]).to_string();
@@ -105,8 +126,7 @@ impl BrowserView {
                                 },
                                 _=>(404,"text/plain",b"Not found".to_vec()),
                             };
-                            let header=format!("HTTP/1.1 {status} Response\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; img-src 'self'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nConnection: close\r\n\r\n",body.len());
-                            socket.write_all(header.as_bytes()).await?;socket.write_all(&body).await?;socket.shutdown().await
+                            respond(&mut socket,status,mime,&body).await
                         }).await;});
                     },
                     _=connections.join_next(),if !connections.is_empty()=>{},
@@ -130,5 +150,70 @@ impl BrowserView {
             metadata: json!({"revision":revision,"title":data["title"],"url":data["url"],"pointer":data["pointer"],"viewport":data["viewport"],"action":action,"tabs":data["tabs"],"controls":data["controls"],"perception":data["perception"],"readiness":data["readiness"],"vision_issue":data["vision_issue"],"browser_state":data["browser_state"],"error":data["error"],"observation_errors":data["observation_errors"],"has_frame":!jpeg.is_empty()}),
             jpeg,
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn panel_accepts_large_loopback_cookies() {
+        let view = BrowserView::start().await.unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = client
+            .get(&view.url)
+            .header(
+                "Cookie",
+                format!("another_local_app={}", "x".repeat(24 * 1024)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(response.text().await.unwrap().contains("WERK / Browser"));
+        // Cookies never replace the unguessable panel URL.
+        let response = client
+            .get(format!("http://127.0.0.1:{}/wrong-token/", view.port))
+            .header(
+                "Cookie",
+                format!("another_local_app={}", "x".repeat(24 * 1024)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn panel_reports_oversized_headers_instead_of_silently_disconnect() {
+        let view = BrowserView::start().await.unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = client
+            .get(&view.url)
+            .header(
+                "Cookie",
+                format!("another_local_app={}", "x".repeat(MAX_HEADER_BYTES)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 431);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("Request headers too large")
+        );
+        assert_eq!(client.get(&view.url).send().await.unwrap().status(), 200);
     }
 }

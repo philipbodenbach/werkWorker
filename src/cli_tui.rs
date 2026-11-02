@@ -523,7 +523,10 @@ impl View {
     }
 
     fn image_details(&self) -> String {
-        let mut lines = vec![format!("Images · {} in session", self.session_images.len())];
+        let mut lines = vec![format!(
+            "User images · {} in session",
+            self.session_images.len()
+        )];
         lines.extend(
             self.session_images
                 .iter()

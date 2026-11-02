@@ -14,8 +14,13 @@ effect. Tool success alone is not task success.
 Use named DOM/accessibility controls and fresh target.ref values. References
 expire on the next observation or state change; never reuse them across actions.
 For drawings, boards, charts or other visual work request visual:true in Auto
-mode, then use click_at, move and drag. Vision supplies frames automatically;
+mode, then use browser.action with action:click_at, move or drag. These are action
+values, not separate tools; include the live browser_id and coordinates or a drag
+path chosen from the latest screenshot. Vision supplies frames automatically;
 screenshot:true requests a frame even in DOM mode, screenshot:false suppresses it.
+Screenshots are already attached as images to browser tool results. Artifact IDs
+are not workspace file paths; do not pass them to files.read_image. For a fresh
+or still-loading page, use browser.observe with the live browser_id and screenshot:true.
 Use press for keys/chords and type for text into the current focus after clicking
 or tabbing there. These mouse/keyboard actions work without DOM targets.
 Multiply image coordinates by screenshot.scale_x/scale_y for viewport coordinates.

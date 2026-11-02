@@ -1140,11 +1140,25 @@ async fn read_recovery_keeps_reads_when_no_edit_or_check_is_requestable() {
         ]
         .map(str::to_owned),
     );
+    // The runtime advertises only profile tools permitted by the current policy.
+    // Unrelated catalogue additions must not consume this read-only context.
+    let tools = engine
+        .tools()
+        .into_iter()
+        .filter(|t| saved.profile.tools.contains(&t.name) && saved.policy.can_request(t))
+        .collect();
     let (request, _) = DefaultContextBuilder
-        .build(&saved, saved.run(&run.id).unwrap(), engine.tools())
+        .build(&saved, saved.run(&run.id).unwrap(), tools)
         .await
         .unwrap();
-    assert!(request.tools.iter().any(|t| t.name == "files.read"));
+    assert_eq!(
+        request
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["files.list", "files.read", "files.search"]
+    );
     engine.close().await.unwrap();
 }
 

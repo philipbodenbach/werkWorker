@@ -150,6 +150,9 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         wait_for(b'fold_value_06')
         os.write(master, b'/collapse\r')
         wait_for(b'fold_value_06', present=False)
+        # PTY reads may split the redraw after erasing the expanded code but
+        # before writing the collapsed header needed for the mouse click.
+        wait_for('▶ python'.encode())
         # Click only Python's header; Rust's explicit collapsed choice stays put.
         y=next(i for i,row in enumerate(screen.rows) if '▶ python' in ''.join(row))
         x=''.join(screen.rows[y]).index('▶ python')

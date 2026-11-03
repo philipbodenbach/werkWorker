@@ -219,6 +219,8 @@ request only; refs, bounds, nonempty values, true flags and the checked state of
 checkboxes/radio buttons remain available.
 Canonical receipts and host permission checks are unchanged. Compaction alone
 does not require observing again when the current observation is still present.
+The separate browser checkpoint is only a fallback when that canonical group is
+unavailable; it does not repeat the retained observation and plan on every turn.
 
 Small setup/skill results, file reads (including their hashes and errors) and task
 plans receive bounded retention. Before discarding this evidence the builder can

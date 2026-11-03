@@ -658,7 +658,26 @@ impl DefaultContextBuilder {
             dynamic.push(feedback);
         }
         let project_messages = crate::project::context_messages(session)?;
-        if let Some(checkpoint) = crate::working_state::browser_checkpoint(session, run) {
+        // A validation error does not supersede the last page observation.
+        // Keep its complete call/result group, including a frame returned by a
+        // failed action, so compaction cannot turn recovery into blind actions.
+        let browser_group = crate::working_state::latest_browser_observation(session, run)
+            .and_then(|i| {
+                let start = i.message_index;
+                let message = session.messages.get(start)?;
+                let end = start + 1 + message.tool_calls.len();
+                (message.role == Role::Assistant
+                    && message.tool_calls.iter().any(|call| call.id == i.call.id)
+                    && end <= session.messages.len())
+                .then_some(start..end)
+            });
+        // The protected receipt already carries the current observation. A
+        // second assistant-role envelope repeats its metadata and the plan,
+        // crowding out the actual image/controls on small contexts. Use the
+        // historical checkpoint only when the canonical group is unavailable.
+        if browser_group.is_none()
+            && let Some(checkpoint) = crate::working_state::browser_checkpoint(session, run)
+        {
             dynamic.push(checkpoint);
         }
         let browser_calls = session
@@ -771,17 +790,6 @@ impl DefaultContextBuilder {
             .iter()
             .flat_map(|c| c.message_indices.iter().copied())
             .collect();
-        // A validation error does not supersede the last page observation.
-        // Keep its complete call/result group, including a frame returned by a
-        // failed action, so compaction cannot turn recovery into blind actions.
-        let browser_group = crate::working_state::latest_browser_observation(session, run)
-            .and_then(|i| {
-                let start = i.message_index;
-                let message = session.messages.get(start)?;
-                let end = start + 1 + message.tool_calls.len();
-                (message.role == Role::Assistant && end <= session.messages.len())
-                    .then_some(start..end)
-            });
         // A working selection is durable, but never a cached admission decision.
         // Reuse only an unchanged canonical prefix, including after resume and
         // follow-ups. Legacy snapshots take the bounded cold-planning path.

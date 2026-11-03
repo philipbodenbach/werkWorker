@@ -540,7 +540,7 @@ async fn browser_skill_is_present_once_before_and_after_compaction() {
 }
 
 #[tokio::test]
-async fn browser_frames_compact_without_losing_original_user_image_or_checkpoint() {
+async fn browser_frames_compact_without_losing_original_user_image_or_current_receipt() {
     let mut state = history(0).await;
     state.runs[0].limits.context_tokens = 24000;
     state.runs[0].limits.reserve_output_tokens = 1024;
@@ -593,7 +593,14 @@ async fn browser_frames_compact_without_losing_original_user_image_or_checkpoint
         request
             .messages
             .iter()
-            .any(|m| m.content.contains("browser_checkpoint") && m.content.contains("obs23"))
+            .any(|m| m.tool_call_id.as_deref() == Some("browser23") && m.content.contains("obs23"))
+    );
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|m| m.content.contains("browser_checkpoint")),
+        "Do not duplicate the protected full observation in an assistant envelope"
     );
     assert!(
         state.messages.iter().map(|m| m.images.len()).sum::<usize>() > 20,
@@ -683,4 +690,29 @@ async fn browser_observation_survives_validation_errors_and_saved_compaction() {
             state.runs[0].contexts.push(snapshot);
         }
     }
+}
+
+#[tokio::test]
+async fn browser_checkpoint_recovers_receipts_without_a_canonical_message_group() {
+    use serde_json::json;
+    let mut state = history(0).await;
+    state.runs[0].invocations.push(serde_json::from_value(json!({
+        "invocation_id":"saved", "step_id":"saved", "message_index":1,
+        "call":{"id":"saved", "name":"browser.observe", "arguments":{"browser_id":"previous"}},
+        "status":"finished", "prepared":{},
+        "result":ToolResult::ok(json!({"browser_id":"previous","observation_id":"previous:4","tab_id":1,"title":"Saved observation"}))
+    })).unwrap());
+    let (request, _) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+        .await
+        .unwrap();
+    let checkpoint = request
+        .messages
+        .iter()
+        .find(|m| m.content.contains("browser_checkpoint"))
+        .expect("durable receipt still supplies a historical checkpoint after transcript loss");
+    assert_eq!(checkpoint.role, Role::Assistant);
+    assert!(checkpoint.content.contains("previous:4"));
+    assert!(checkpoint.content.contains("Historical receipt"));
+    context::validate_messages(&request.messages).unwrap();
 }

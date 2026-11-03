@@ -418,7 +418,10 @@ class Driver:
         def controls():
             items=[]; size=0
             interactive='a,button,input,select,textarea,[role=button],[role=menuitem],[role=checkbox],[role=radio],[role=option],[tabindex],[title],[contenteditable=true]'
-            for element in self.page.query_selector_all(interactive+',canvas')[:100]:
+            # Hidden menu entries must not spend the candidate budget before
+            # visible toolbar controls and drawing surfaces are considered.
+            candidates=self.page.query_selector_all(':is('+interactive+',canvas):visible')
+            for element in candidates[:100]:
                 if not element.is_visible(): continue
                 # A toolbar/palette canvas often paints a clickable parent.
                 # Refer to that parent, whose overlay may intercept canvas clicks.

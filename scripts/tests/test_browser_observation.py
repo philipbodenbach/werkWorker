@@ -109,4 +109,18 @@ class Observations(unittest.TestCase):
         self.assertTrue(result['action_executed'])
         self.assertEqual(self.page.evaluate('window.selected'),'fill')
 
+    def test_hidden_menus_do_not_consume_visible_control_budget(self):
+        self.page.set_content('<div hidden>'+''.join(
+            f'<div role="menuitem">Hidden item {i}</div>' for i in range(150))+'</div>'+
+            '<button onclick="window.selected=\'pencil\'">Pencil</button>'+
+            '<canvas id="drawing" width="400" height="300"></canvas>')
+        result=self.driver.snapshot(True)
+        controls=result['controls']
+        pencil=next((c for c in controls if c['name']=='Pencil'),None)
+        self.assertIsNotNone(pencil,'Hidden menu items must not hide visible toolbar controls')
+        self.assertTrue(any(c['id']=='drawing' for c in controls))
+        self.assertFalse(any(c['name'].startswith('Hidden item') for c in controls))
+        self.driver.action({'action':'click','target':{'ref':pencil['ref']},'browser_category':'actions'})
+        self.assertEqual(self.page.evaluate('window.selected'),'pencil')
+
 if __name__=='__main__': unittest.main()

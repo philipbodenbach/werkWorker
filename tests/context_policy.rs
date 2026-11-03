@@ -14,6 +14,64 @@ fn profile(tools: &[&str]) -> AgentProfile {
         skills: vec![],
     }
 }
+
+#[tokio::test]
+async fn admission_lowering_live_context_is_checked_before_dispatch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct ShrinkingProvider(AtomicUsize);
+    #[async_trait::async_trait]
+    impl ModelProvider for ShrinkingProvider {
+        fn identity(&self) -> String {
+            "shrinking-context".into()
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities {
+                context_tokens: Some(if self.0.load(Ordering::SeqCst) < 2 {
+                    32768
+                } else {
+                    2048
+                }),
+                ..Default::default()
+            }
+        }
+        async fn count_input_tokens(&self, _: &ModelRequest) -> Result<Option<usize>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(3000))
+        }
+        async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+            panic!("A request over the newly reported limit must never reach inference")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ShrinkingProvider(AtomicUsize::new(0))))
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Keep this constraint",
+            "test",
+            Limits {
+                context_tokens: 32768,
+                reserve_output_tokens: 1024,
+                max_retries: 0,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(run.error.as_ref().unwrap().code, "context_overflow");
+    assert_eq!(session.snapshot().await.unwrap().runs[0].tree_model_requests, 0);
+    engine.close().await.unwrap();
+}
 fn read(path: &str) -> ScriptedTurn {
     ScriptedTurn::calls(
         "",

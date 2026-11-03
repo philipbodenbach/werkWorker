@@ -1381,6 +1381,50 @@ impl DefaultContextBuilder {
                 }
             }
         }
+        // Protect the latest call/receipt, not an unbounded narration attached
+        // to it. A model can spend its entire output allowance explaining one
+        // click; pinning that prose makes the next decision impossible even
+        // after every older group is gone. Project only completed tool groups
+        // in this request copy. Keep arguments, results, images and all user /
+        // system constraints verbatim; canonical history remains untouched.
+        // Two bounded alternatives avoid another history/tokenizer sweep.
+        for keep in [512, 0] {
+            if estimated <= available {
+                break;
+            }
+            let mut candidate = messages.clone();
+            for index in 0..candidate.len() {
+                let message = &candidate[index];
+                if message.role != Role::Assistant
+                    || message.tool_calls.is_empty()
+                    || message.content.chars().count() <= keep
+                {
+                    continue;
+                }
+                let complete = message.tool_calls.iter().enumerate().all(|(n, call)| {
+                    candidate.get(index + n + 1).is_some_and(|result| {
+                        result.role == Role::Tool && result.tool_call_id.as_ref() == Some(&call.id)
+                    })
+                });
+                if complete {
+                    candidate[index].content = if keep == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            "{}\n[Earlier tool-call narration shortened; complete text remains in session history.]",
+                            message.content.chars().take(keep).collect::<String>()
+                        )
+                    };
+                }
+            }
+            if candidate != messages {
+                let counted = estimate(&candidate, output_budget).await?;
+                if counted < estimated {
+                    messages = candidate;
+                    estimated = counted;
+                }
+            }
+        }
         // The configured output reserve is a maximum, not a reason to reject a
         // fitting request. After compaction, allow a smaller complete decision
         // down to 1024 tokens (or the configured smaller reserve), respecting
@@ -1395,9 +1439,9 @@ impl DefaultContextBuilder {
                 .limits
                 .context_tokens
                 .saturating_sub(estimated.saturating_add(512));
-            if remaining < minimum_output {
-                break;
-            }
+            // Tool schemas/guidance can shrink with output allowance. Even if
+            // the current count leaves less than the minimum, count the actual
+            // minimum-output request before declaring it impossible.
             let next = remaining.saturating_sub(64).max(minimum_output);
             if next >= output_budget {
                 break;
@@ -1428,7 +1472,7 @@ impl DefaultContextBuilder {
             return Err(WorkerError::new(
                 "context_overflow",
                 format!(
-                    "Context needs {estimated} input tokens (counted/estimated), but only {available} fit after reserving {} output tokens and 512 safety tokens within the {}-token limit. Current work and constraints were retained",
+                    "Context needs {estimated} input tokens (counted/estimated), but only {available} fit after reserving {} output tokens and 512 safety tokens within the {}-token limit (minimum output reserve: {minimum_output}). No generation was dispatched. Current work and constraints were retained",
                     output_budget, run.limits.context_tokens
                 ),
             ));

@@ -46,6 +46,10 @@ The input estimate, output reservation and 512-token safety margin must fit befo
 any provider dispatch. User/system constraints and tool pairs remain intact.
 A custom `ContextBuilder` cannot bypass admission. Zero output budgets and
 arithmetic-overflow-sized limits are rejected.
+The engine reads the live context ceiling after counting, since an admission
+response can lower the limit discovered at connection time. An impossible
+request stops before generation; compaction cannot guarantee that arbitrarily
+large mandatory instructions fit a finite context.
 
 The default context builder keeps a stable profile/host prefix, sorted tool
 schemas, available skill metadata, optional output schema, committed summaries
@@ -155,14 +159,23 @@ constraint are retained. Under pressure, a latest group consisting solely of
 successful file writes/edits may also be compacted if
 complete, bounded path/hash receipts are available. Its implementation already
 lives in the workspace and canonical history; the receipt summary instructs the
-model to reread code when needed. Any accompanying assistant text/images remain
-verbatim in the request. Failed writes and the latest reads/checks
+model to reread code when needed. Accompanying images remain intact. Failed writes and the latest reads/checks
 retain their ordinary protection. After a run finishes, its final answer becomes eligible
 for compaction on the next turn. A long code answer therefore does not permanently
 block follow-up messages in the same session. This trims the next request, not
 the saved conversation, and does not require a server restart or cache reset.
 Pending invocations finish or resolve their approvals before this step; no
 half tool-call/result group is compacted.
+
+Protection of a current tool group does not pin its entire preceding narration.
+If the request still exceeds its budget, the builder tries two bounded alternatives:
+shorten assistant prose attached to completed calls to 512 characters, then omit
+that prose. Tool arguments/results, current browser frames and user/system messages
+are preserved. The original prose stays in canonical session history. Each changed
+request is counted again. The minimum-output alternative is also counted even when
+the earlier request appears too large, because its tool schemas/guidance may shrink
+with the output allowance. If essential content still cannot fit, the error reports
+the minimum reserve and no generation is dispatched.
 
 For coding profiles with file-editing tools, each request ends with bounded
 `coding_task_state` evidence reconstructed from durable plan/check/file receipts.

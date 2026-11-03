@@ -2642,14 +2642,17 @@ impl SessionHandle {
         let draining = AtomicBool::new(false);
         let operation = async {
             let data = self.snapshot().await?;
-            let limits = crate::context::effective_limits(
-                &data.run(run_id)?.limits,
-                self.provider().capabilities().context_tokens,
-            )?;
             // Another session can evict an earlier planning count while this
             // run waits. Recount on a cache miss instead of falsely rejecting
             // a valid request using the conservative byte fallback.
             let input_tokens = self.provider().estimate_input_tokens(&request).await?;
+            // Admission can lower the live model limit. Read capabilities only
+            // after counting, including for custom providers, before charging
+            // or dispatching a request against a stale discovery value.
+            let limits = crate::context::effective_limits(
+                &data.run(run_id)?.limits,
+                self.provider().capabilities().context_tokens,
+            )?;
             if request.max_output_tokens == 0
                 || request.max_output_tokens
                     > crate::context::output_ceiling(&limits, self.provider().as_ref())

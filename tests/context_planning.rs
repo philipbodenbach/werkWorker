@@ -540,6 +540,106 @@ async fn browser_skill_is_present_once_before_and_after_compaction() {
 }
 
 #[tokio::test]
+async fn completed_tool_narration_cannot_pin_an_output_sized_context_block() {
+    use serde_json::json;
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let image = attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap();
+    for (name, outcome, frame) in [
+        ("browser.action", Outcome::Succeeded, true),
+        ("browser.action", Outcome::Failed, true),
+        ("browser.action", Outcome::Succeeded, false),
+        ("process.run", Outcome::Succeeded, false),
+    ] {
+        for size in [2_000, 20_000] {
+            let mut state = history(0).await;
+            state.runs[0].limits.context_tokens = 8192;
+            state.messages[0].images.push(image.clone());
+            let call = ToolCall {
+                id: "current".into(),
+                name: name.into(),
+                arguments: json!({"action":"click","target":{"ref":"e42"}}),
+            };
+            let mut message = Message::text(
+                Role::Assistant,
+                "长い説明 – paint the meadow. ".repeat(size),
+            );
+            message.tool_calls.push(call.clone());
+            state.messages.push(message.clone());
+            let mut result = ToolResult::ok(json!({"browser_id":"live","observation_id":"live:1",
+                "controls":[{"ref":"e43","name":"Pencil","bounds":{"x":5,"y":10}}],"text":"current evidence"}));
+            result.status = outcome.clone();
+            if frame {
+                result.images.push(image.clone());
+            }
+            let receipt = Message::tool(&call.id, &result);
+            state.messages.push(receipt.clone());
+            state.runs[0].invocations.push(
+                serde_json::from_value(json!({
+                    "invocation_id":"inv","step_id":"step","message_index":1,
+                    "call":call,"status":"finished","prepared":{},"result":result
+                }))
+                .unwrap(),
+            );
+            let canonical = fingerprint(&state);
+            let counter = Counter::default();
+            let (request, snapshot) = DefaultContextBuilder
+                .build_with_provider(&state, &state.runs[0], vec![], &counter)
+                .await
+                .unwrap();
+            assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 8192);
+            assert!(request.messages.contains(&state.messages[0]));
+            let retained = request
+                .messages
+                .iter()
+                .find(|m| m.tool_call_id == receipt.tool_call_id && m.role == Role::Tool)
+                .unwrap();
+            assert_eq!(retained.images, receipt.images);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&retained.content).unwrap(),
+                serde_json::from_str::<serde_json::Value>(&receipt.content).unwrap()
+            );
+            let projected = request
+                .messages
+                .iter()
+                .find(|m| m.tool_calls == message.tool_calls)
+                .unwrap();
+            assert!(projected.content.len() < message.content.len());
+            context::validate_messages(&request.messages).unwrap();
+            assert_eq!(
+                counter.count_input_tokens(&request).await.unwrap(),
+                Some(snapshot.estimated_tokens)
+            );
+            assert!(counter.calls.load(Ordering::Relaxed) <= 10);
+            assert_eq!(fingerprint(&state), canonical);
+            // Persisting a selection cannot undo the projection on resume.
+            state.runs[0].contexts.push(snapshot);
+            DefaultContextBuilder
+                .build_with_provider(&state, &state.runs[0], vec![], &counter)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn uncompressible_user_constraints_fail_before_generation() {
+    let mut state = history(0).await;
+    state.messages[0].content = "Mandatory user requirement. ".repeat(10_000);
+    let canonical = fingerprint(&state);
+    let error = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "context_overflow");
+    assert!(error.message.contains("minimum output reserve: 1024"));
+    assert!(error.message.contains("No generation was dispatched"));
+    assert_eq!(fingerprint(&state), canonical);
+}
+
+#[tokio::test]
 async fn browser_frames_compact_without_losing_original_user_image_or_current_receipt() {
     let mut state = history(0).await;
     state.runs[0].limits.context_tokens = 24000;

@@ -218,7 +218,7 @@ class Driver:
     @staticmethod
     def info(element):
         meta = element.evaluate("""e => ({tag:e.tagName.toLowerCase(),type:e.type||'',role:e.getAttribute('role')||({a:'link',button:'button',input:e.type==='checkbox'?'checkbox':'textbox',textarea:'textbox',select:'combobox'}[e.tagName.toLowerCase()]||''),
-          name:(e.getAttribute('aria-label') || (e.labels&&Array.from(e.labels).map(x=>x.innerText).join(' ')) || e.innerText || e.name || '').slice(0,160),
+          name:(e.getAttribute('aria-label') || (e.labels&&Array.from(e.labels).map(x=>x.innerText).join(' ')) || e.innerText || e.name || e.getAttribute('title') || '').slice(0,160),
           id:(e.id||'').slice(0,256),autocomplete:(e.autocomplete||'').slice(0,128),href:(e.href||'').slice(0,2048),download:e.hasAttribute('download'),
           submits:!!e.form && (e.type==='submit'||e.type==='image'),form_action:e.form?e.form.action.slice(0,2048):'',
           bounds:(()=>{let r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()})""")
@@ -417,8 +417,19 @@ class Driver:
             return result
         def controls():
             items=[]; size=0
-            for element in self.page.query_selector_all('a,button,input,select,textarea,[role=button],[contenteditable=true],canvas')[:100]:
+            interactive='a,button,input,select,textarea,[role=button],[role=menuitem],[role=checkbox],[role=radio],[role=option],[tabindex],[title],[contenteditable=true]'
+            for element in self.page.query_selector_all(interactive+',canvas')[:100]:
                 if not element.is_visible(): continue
+                # A toolbar/palette canvas often paints a clickable parent.
+                # Refer to that parent, whose overlay may intercept canvas clicks.
+                if element.evaluate("""(e, selector) => {
+                    if(e.tagName!=='CANVAS') return false;
+                    const parent=e.parentElement?.closest(selector), r=e.getBoundingClientRect();
+                    if(!parent || r.width>64 || r.height>64) return false;
+                    const p=parent.getBoundingClientRect();
+                    return p.width<=r.width+16 && p.height<=r.height+16;
+                }""", interactive):
+                    continue
                 meta=self.info(element)
                 meta.update(element.evaluate("e=>({disabled:!!e.disabled,checked:!!e.checked,value:e.tagName==='SELECT'?e.value:undefined})"))
                 size+=len(json.dumps(meta,ensure_ascii=True))

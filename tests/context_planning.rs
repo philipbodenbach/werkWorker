@@ -607,3 +607,80 @@ async fn browser_frames_compact_without_losing_original_user_image_or_checkpoint
         .unwrap();
     assert_eq!(snapshot.estimated_tokens, counted);
 }
+
+#[tokio::test]
+async fn browser_observation_survives_validation_errors_and_saved_compaction() {
+    use serde_json::json;
+    let mut state = history(12).await;
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let image = attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap();
+    let observation_index = state.messages.len();
+    for (id, name, arguments, mut result) in [
+        (
+            "frame",
+            "browser.action",
+            json!({"browser_id":"live","action":"click","target":{"label":"missing"}}),
+            {
+                // Failed actions can still return the freshest valid observation.
+                let mut result = ToolResult::error(Outcome::Failed, "browser_action_failed");
+                result.data = json!({"browser_id":"live","observation_id":"live:2","revision":2,
+                "error":"No matching label","controls":[{"ref":"e2","name":"Fill","bounds":{"x":10,"y":20}}]});
+                result.images.push(image.clone());
+                result
+            },
+        ),
+        (
+            "invalid",
+            "browser.action",
+            json!({"browser_id":"live","action":"click","x":40,"y":50}),
+            ToolResult::error(Outcome::ValidationError, "invalid_browser_action"),
+        ),
+    ] {
+        let call = ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        };
+        let index = state.messages.len();
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls.push(call.clone());
+        state.messages.push(assistant);
+        result.data["message"] = json!("Inspect the current frame and correct the arguments");
+        state.messages.push(Message::tool(id, &result));
+        state.runs[0].invocations.push(serde_json::from_value(json!({"invocation_id":id,"step_id":id,"message_index":index,"call":call,"status":"finished","prepared":{},"result":result})).unwrap());
+    }
+    let original = fingerprint(&state.messages);
+    for pass in 0..2 {
+        let (request, mut snapshot) = DefaultContextBuilder
+            .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+            .await
+            .unwrap();
+        assert!(!snapshot.omitted_messages.is_empty());
+        let frame = request
+            .messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("frame"))
+            .expect("fresh observation must survive a subsequent validation error");
+        assert_eq!(frame.images, vec![image.clone()]);
+        assert!(frame.content.contains("e2"));
+        assert!(!snapshot.omitted_messages.contains(&observation_index));
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|m| m.tool_call_id.as_deref() == Some("invalid"))
+        );
+        context::validate_messages(&request.messages).unwrap();
+        assert_eq!(fingerprint(&state.messages), original);
+        if pass == 0 {
+            // A persisted selection from an older CLI already lost this frame.
+            snapshot
+                .omitted_messages
+                .extend([observation_index, observation_index + 1]);
+            state.runs[0].contexts.push(snapshot);
+        }
+    }
+}

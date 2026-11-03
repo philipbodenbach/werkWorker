@@ -93,4 +93,20 @@ class Observations(unittest.TestCase):
             self.page.wait_for_timeout(100)
         self.assertEqual(len(requests),1,'Observing page text must not reload its images')
 
+    def test_icon_controls_have_clickable_named_refs_not_decorative_canvases(self):
+        self.page.set_content('''<style>.tool {position:relative;width:32px;height:32px}.overlay {position:absolute;inset:0}</style>
+            <div class="tool" title="Fill with Color" tabindex="0" onclick="window.selected='fill'">
+            <canvas width="32" height="32"></canvas><span class="overlay"></span></div>
+            <div tabindex="0"><canvas id="drawing" width="400" height="300"></canvas></div>''')
+        observation=self.driver.snapshot(True)
+        controls=observation['controls']
+        fill=next(c for c in controls if c['name']=='Fill with Color')
+        self.assertEqual(fill['tag'],'div')
+        self.assertEqual([c['id'] for c in controls if c['tag']=='canvas'],['drawing'])
+        result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
+            'target':{'ref':fill['ref']},'browser_category':'actions'})
+        self.assertNotIn('error',result)
+        self.assertTrue(result['action_executed'])
+        self.assertEqual(self.page.evaluate('window.selected'),'fill')
+
 if __name__=='__main__': unittest.main()

@@ -81,7 +81,7 @@ impl Tool for BrowserTool {
                 ),
             ),
             "browser.action" => (
-                "Act, then observe. target: fresh ref OR selector OR role+name OR label; optional frame. fill:text; type:text into current focus (no target); select:value; press:key/chord; scroll:x/y; tabs:tab_id; wait:ms. click_at/move:x/y; drag:path holds the button until release at the final point. Shape/selection tools use opposite corners, not a closed outline. Coordinates are for the whole 1024x768 viewport; locate the intended surface bounds and multiply image coordinates by screenshot.scale_x/scale_y. Inspect the returned observation before retrying.",
+                "Act, then observe. click/hover require target; for screenshot coordinates use click_at with x,y (no target). target must be exactly {ref}, {selector}, {role,name}, or {label}; optional frame. Use observed refs/labels, never guessed names. fill:target,text; type:text into current focus; select:target,value; press:key/chord; scroll:x/y; tabs:tab_id; wait:ms. move:x/y; drag:path holds the button until release at the final point. Shape/selection tools use opposite corners, not a closed outline. Coordinates cover the whole 1024x768 viewport; locate the surface bounds and multiply image coordinates by screenshot.scale_x/scale_y. Inspect the returned frame; a separate observation uses browser.observe, not an action value.",
                 object(
                     json!({"browser_id":id,"action":{"type":"string","enum":["click","fill","type","press","select","hover","scroll","back","forward","reload","tab_new","tab_select","tab_close","wait","click_at","move","drag"]},"target":object(json!({"ref":text(128),"selector":text(1024),"role":text(128),"name":text(512),"label":text(512),"frame":text(1024)}), &[]),"text":{"type":"string","maxLength":16000},"key":text(128),"value":text(1024),"x":{"type":"integer","minimum":-10000,"maximum":10000},"y":{"type":"integer","minimum":-10000,"maximum":10000},"tab_id":{"type":"integer","minimum":1},"ms":{"type":"integer","minimum":0,"maximum":2000},"path":{"type":"array","minItems":2,"maxItems":64,"items":object(json!({"x":{"type":"integer","minimum":0,"maximum":1023},"y":{"type":"integer","minimum":0,"maximum":767}}), &["x","y"])},"button":{"type":"string","enum":["left","right","middle"]},"click_count":{"type":"integer","minimum":1,"maximum":2},"screenshot":{"type":"boolean"}}),
                     &["browser_id", "action"],
@@ -147,7 +147,7 @@ impl Tool for BrowserTool {
             name: self.name.clone(),
             version: match self.name.as_str() {
                 "browser.open" => "5",
-                "browser.action" => "4",
+                "browser.action" => "5",
                 _ => "3",
             }
             .into(),
@@ -538,7 +538,7 @@ impl Tool for BrowserTool {
             data["retry_guidance"] = json!(if crashed {
                 "Close this browser session and open a new one. Do not repeat unknown remote side effects."
             } else {
-                "Observe current state before retrying; remote side effects may have occurred."
+                "Inspect the returned observation before retrying; use browser.observe only if it is missing or stale. Remote side effects may have occurred."
             });
             result.data = data;
             result
@@ -711,10 +711,23 @@ fn validate_action(args: &Value) -> Result<()> {
         "wait" => &["ms"],
         _ => &[],
     };
-    if required.iter().any(|key| args.get(key).is_none()) {
+    let missing: Vec<_> = required
+        .iter()
+        .filter(|key| args.get(**key).is_none())
+        .copied()
+        .collect();
+    if !missing.is_empty() {
+        let hint = if kind == "click" && (args.get("x").is_some() || args.get("y").is_some()) {
+            " For a screenshot coordinate click, use action:click_at with x and y, without target."
+        } else {
+            " See browser.action for the fields required by this action."
+        };
         return Err(error(
             "invalid_browser_action",
-            "Missing arguments required by this browser action",
+            &format!(
+                "Action {kind} requires {}.{hint} No action executed.",
+                missing.join(", ")
+            ),
         ));
     }
     if kind == "type" && args.get("target").is_some() {
@@ -733,7 +746,7 @@ fn validate_action(args: &Value) -> Result<()> {
     {
         return Err(error(
             "invalid_browser_target",
-            "Specify exactly ref, selector, label, or role plus name; optionally frame",
+            "target must be exactly {\"ref\":\"observed-ref\"}, {\"selector\":\"observed-selector\"}, {\"role\":\"button\",\"name\":\"observed-name\"}, or {\"label\":\"observed-label\"}; optionally frame. Do not mix ref/selector/label with name or role. For an unlabelled screenshot control use action:click_at with x,y and no target. No action executed.",
         ));
     }
     if matches!(kind, "click_at" | "move")
@@ -1345,6 +1358,23 @@ async fn broker(
 #[cfg(test)]
 mod host_panel_tests {
     use super::*;
+    #[test]
+    fn invalid_actions_explain_how_to_correct_coordinates_and_targets() {
+        let error = validate_action(&json!({"action":"click","x":14,"y":210})).unwrap_err();
+        assert_eq!(error.code, "invalid_browser_action");
+        assert!(error.message.contains("target"));
+        assert!(error.message.contains("click_at"));
+        for target in [
+            json!({"ref":"e12","name":"Fill"}),
+            json!({"role":"button","selector":".fill"}),
+        ] {
+            let error = validate_action(&json!({"action":"click","target":target})).unwrap_err();
+            assert_eq!(error.code, "invalid_browser_target");
+            assert!(error.message.contains("Do not mix"));
+        }
+        validate_action(&json!({"action":"click_at","x":14,"y":210})).unwrap();
+        validate_action(&json!({"action":"click","target":{"ref":"e12"}})).unwrap();
+    }
     #[test]
     fn origin_arguments_explain_the_field_and_require_absolute_urls() {
         let schema = BrowserTool {

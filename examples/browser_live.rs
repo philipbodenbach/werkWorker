@@ -22,6 +22,11 @@ struct Args {
     seconds: u64,
     #[arg(long, default_value_t = 60)]
     steps: u32,
+    /// Exercise a bundled profile's full tool/context overhead.
+    #[arg(long)]
+    profile: Option<String>,
+    #[arg(long)]
+    reserve_output_tokens: Option<usize>,
     /// Additional exact origins explicitly permitted by the host for this run.
     #[arg(long)]
     origin: Vec<String>,
@@ -73,6 +78,11 @@ async fn main() -> Result<()> {
             "Open https://jspaint.app and draw a house with a red roof, two windows and a tree. Inspect intermediate images and verify the finished drawing.",
             "Human must assess final frame: house, red roof, exactly two windows, tree",
         ),
+        "jspaint-house" => (
+            "https://jspaint.app",
+            "Open https://jspaint.app. Work alone using only the browser UI. Draw a simple house with a black rectangular body and a red filled triangular roof, on a green filled meadow under a blue filled sky. Add white clouds and a yellow filled sun. Choose each appropriate tool and color. Draw the house rectangle by dragging between opposite corners. Draw the roof outline with the pencil in one closed triangular drag path, then fill it red. Keep planning and progress messages brief. Inspect screenshots returned by actions; request extra observations only when needed. Correct visible mistakes and inspect the finished image. Leave the browser open and briefly report the result.",
+            "Human must assess final frame: house, filled red roof, green meadow, blue sky, white clouds, yellow sun; tool trace must show rectangle corners and closed pencil triangle",
+        ),
         "wordle" => (
             "https://www.nytimes.com",
             "Open https://www.nytimes.com/games/wordle/index.html and play a valid round using visible feedback. Report the observed outcome, including if you do not solve it.",
@@ -91,7 +101,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(WorkerError::new(
                 "eval_case",
-                "Choose visual-puzzle, form, jspaint, wordle, chess or pool",
+                "Choose visual-puzzle, form, jspaint, jspaint-house, wordle, chess or pool",
             ));
         }
     };
@@ -111,6 +121,9 @@ async fn main() -> Result<()> {
         max_model_requests: args.steps,
         max_wall_ms: args.seconds * 1000,
         context_tokens: config.capabilities.context_tokens.unwrap_or(32768),
+        reserve_output_tokens: args
+            .reserve_output_tokens
+            .unwrap_or(Limits::default().reserve_output_tokens),
         ..Limits::default()
     };
     let mut report = json!({"commit":commit,"dirty":dirty,"model":config.model,"quantization":"as configured in model ID; otherwise unknown","backend":config.base_url,"perception":perception,"budgets":settings,"run_limits":limits,"case":args.case,"target":target,"criterion":criterion,"status":"connecting","success":false});
@@ -146,7 +159,12 @@ async fn main() -> Result<()> {
             browser.set(&site, category, ToolPermission::Allow)?;
         }
     }
-    let profile=AgentProfile {schema_version:1,name:"browser-live".into(),prompt:"Complete the natural-language browser task, verify visible results and report limitations. Do not use scripts or internal state.".into(),tools:["browser.open","browser.navigate","browser.observe","browser.action","task.plan","skills.list","skills.load"].map(str::to_owned).into(),skills:vec!["browser-use".into()]};
+    let profile = if let Some(name) = &args.profile {
+        AgentProfile::bundled(name)?
+    } else {
+        AgentProfile {schema_version:1,name:"browser-live".into(),prompt:"Complete the natural-language browser task, verify visible results and report limitations. Do not use scripts or internal state.".into(),tools:["browser.open","browser.navigate","browser.observe","browser.action","task.plan","skills.list","skills.load"].map(str::to_owned).into(),skills:vec!["browser-use".into()]}
+    };
+    report["profile"] = json!(profile.name);
     let session = engine
         .create_session(
             profile,
@@ -204,6 +222,14 @@ async fn main() -> Result<()> {
             .filter_map(|r| r.error_code.as_ref())
             .collect::<Vec<_>>()
     );
+    report["attempt_errors"] = json!(
+        state
+            .attempts
+            .iter()
+            .filter_map(|a| a.error.as_ref().map(|e| &e.code))
+            .collect::<Vec<_>>()
+    );
+    report["actions"] = json!(state.invocations.iter().map(|i| json!({"tool":i.call.name,"arguments":i.call.arguments,"error":i.result.as_ref().and_then(|r|r.error_code.as_ref())})).collect::<Vec<_>>());
     report["transport_diagnostics"]=json!(receipts.iter().map(|r|json!({"blocked":r.data["blocked_requests"],"transport":r.data["transport_diagnostics"]})).filter(|v|v["blocked"].as_array().is_some_and(|a|!a.is_empty())||v["transport"].as_array().is_some_and(|a|!a.is_empty())).collect::<Vec<_>>());
     if let Some(image) = receipts.iter().rev().find_map(|r| r.images.last()) {
         let bytes = STANDARD

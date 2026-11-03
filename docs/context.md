@@ -210,6 +210,16 @@ tools. If the fixed excerpt allowance would crowd out current work, older
 excerpts are further removed to fit the available budget. Canonical messages,
 outcomes and approvals are never deleted.
 
+The latest browser observation keeps its complete call/result group and attached
+frame even when a later action fails argument validation. This also repairs a
+saved selection that omitted the observation. A failed action's returned frame
+can be the newest observation; a validation error without a frame cannot replace
+it. Visual control metadata omits empty labels/attributes and false flags in the
+request only; refs, bounds, nonempty values, true flags and the checked state of
+checkboxes/radio buttons remain available.
+Canonical receipts and host permission checks are unchanged. Compaction alone
+does not require observing again when the current observation is still present.
+
 Small setup/skill results, file reads (including their hashes and errors) and task
 plans receive bounded retention. Before discarding this evidence the builder can
 use the bounded output-reserve adjustment described above. A separate receipt summary

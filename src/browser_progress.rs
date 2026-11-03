@@ -128,6 +128,68 @@ pub(crate) fn select_images(messages: &mut [Message], browser_calls: &BTreeSet<S
     }
 }
 
+/// Visual receipts keep the same actionable controls with less default-value
+/// noise. Host policy and the browser panel always use the canonical receipt.
+pub(crate) fn compact_visual_controls(messages: &mut [Message], browser_calls: &BTreeSet<String>) {
+    for message in messages {
+        if message.role != Role::Tool
+            || message.images.is_empty()
+            || !message
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|id| browser_calls.contains(id))
+        {
+            continue;
+        }
+        let Ok(mut result) = serde_json::from_str::<Value>(&message.content) else {
+            continue;
+        };
+        let Some(controls) = result["data"]["controls"].as_array_mut() else {
+            continue;
+        };
+        for control in controls {
+            if let Some(fields) = control.as_object_mut() {
+                for field in [
+                    "id",
+                    "type",
+                    "role",
+                    "name",
+                    "autocomplete",
+                    "href",
+                    "form_action",
+                ] {
+                    if fields.get(field).is_some_and(|v| v == "") {
+                        fields.remove(field);
+                    }
+                }
+                for field in [
+                    "disabled",
+                    "checked",
+                    "download",
+                    "submits",
+                    "protected",
+                    "consequential",
+                ] {
+                    if field == "checked"
+                        && ["role", "type"].iter().any(|key| {
+                            fields
+                                .get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|kind| matches!(kind, "checkbox" | "radio" | "switch"))
+                        })
+                    {
+                        continue;
+                    }
+                    if fields.get(field).is_some_and(|v| v == false) {
+                        fields.remove(field);
+                    }
+                }
+            }
+        }
+        message.content = result.to_string();
+    }
+}
+
 /// Vision decisions need the current controls, not accumulated expired refs.
 /// Project only request-local copies; canonical receipts, page text, accessibility,
 /// action outcomes and errors remain intact. DOM research history is unchanged.
@@ -172,6 +234,35 @@ pub(crate) fn prune_expired_controls(messages: &mut [Message], browser_calls: &B
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visual_control_defaults_do_not_hide_names_bounds_or_policy_flags() {
+        let mut result = ToolResult::ok(json!({"controls":[
+            {"ref":"e1","tag":"canvas","name":"","href":"","protected":false,"bounds":{"x":0,"y":25}},
+            {"ref":"e2","name":"Password","protected":true,"consequential":true,"disabled":true,"checked":true},
+            {"ref":"e3","role":"checkbox","checked":false}
+        ],"error":"Click failed","action_outcome":"unknown"}));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        result
+            .images
+            .push(crate::attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap());
+        let original = Message::tool("browser", &result);
+        let mut messages = vec![original.clone()];
+        compact_visual_controls(&mut messages, &["browser".into()].into());
+        let projected: Value = serde_json::from_str(&messages[0].content).unwrap();
+        assert_eq!(
+            projected["data"]["controls"][0],
+            json!({"ref":"e1","tag":"canvas","bounds":{"x":0,"y":25}})
+        );
+        assert_eq!(projected["data"]["controls"][1], result.data["controls"][1]);
+        assert_eq!(projected["data"]["controls"][2], result.data["controls"][2]);
+        assert_eq!(projected["data"]["error"], result.data["error"]);
+        assert_eq!(messages[0].images, original.images);
+        assert!(original.content.contains("\"protected\":false"));
+    }
 
     #[test]
     fn vision_history_discards_only_expired_controls() {

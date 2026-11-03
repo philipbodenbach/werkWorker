@@ -37,21 +37,23 @@ pub(crate) fn call_key(call: &ToolCall) -> String {
     fingerprint(&(&call.name, args))
 }
 
-/// Browser receipts complement file evidence; plan text remains intent only.
-pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Message> {
-    let invocation = session
-        .runs
-        .iter()
-        .take_while(|r| r.id != run.id)
-        .chain(std::iter::once(run))
-        .flat_map(|r| &r.invocations)
-        .filter(|i| crate::browser_progress::is_browser(&i.call) || i.call.name == "browser.open")
+pub(crate) fn latest_browser_observation<'a>(
+    session: &'a SessionData,
+    run: &'a Run,
+) -> Option<&'a ToolInvocation> {
+    ordered(session, run)
+        .filter(|i| crate::browser_policy::TOOLS.contains(&i.call.name.as_str()))
         .filter(|i| {
             i.result.as_ref().is_some_and(|r| {
                 r.data["browser_id"].is_string() && r.data["observation_id"].is_string()
             })
         })
-        .last()?;
+        .last()
+}
+
+/// Browser receipts complement file evidence; plan text remains intent only.
+pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Message> {
+    let invocation = latest_browser_observation(session, run)?;
     let data = &invocation.result.as_ref()?.data;
     let observation: serde_json::Map<String, Value> = [
         "browser_id",
@@ -88,8 +90,8 @@ pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Mes
             "last_action":last_action.map(|i|json!({"tool":i.call.name,"action":i.call.arguments["action"]})),
             "observed_effect":{"title":data["title"],"text_excerpt":crate::completion::excerpt(data["text"].as_str().unwrap_or(""),768),"status":invocation.result.as_ref().map(|r|&r.status)},
             "observation":observation,
-            "uncertainty":"Historical receipt, not a live-session assertion. Observe before acting after compaction, takeover or browser_changed. After restart open a new browser if the session is missing.",
-            "next_step":"Compare a fresh observation with the user goal; only claim criteria actually observed."
+            "uncertainty":"Historical receipt, not a live-session assertion. Use the retained observation and attached frame. Observe if missing or stale, after takeover or browser_changed. After restart open a new browser if the session is missing.",
+            "next_step":"Compare the latest observation with the user goal; only claim criteria actually observed."
         }),
     ))
 }

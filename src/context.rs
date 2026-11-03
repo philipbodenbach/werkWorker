@@ -724,6 +724,7 @@ impl DefaultContextBuilder {
                 head.push(crate::harness::continuation());
             }
             crate::browser_progress::select_images(&mut head, &browser_calls);
+            crate::browser_progress::compact_visual_controls(&mut head, &browser_calls);
             crate::browser_progress::prune_expired_controls(&mut head, &browser_calls);
             head
         };
@@ -770,6 +771,17 @@ impl DefaultContextBuilder {
             .iter()
             .flat_map(|c| c.message_indices.iter().copied())
             .collect();
+        // A validation error does not supersede the last page observation.
+        // Keep its complete call/result group, including a frame returned by a
+        // failed action, so compaction cannot turn recovery into blind actions.
+        let browser_group = crate::working_state::latest_browser_observation(session, run)
+            .and_then(|i| {
+                let start = i.message_index;
+                let message = session.messages.get(start)?;
+                let end = start + 1 + message.tool_calls.len();
+                (message.role == Role::Assistant && end <= session.messages.len())
+                    .then_some(start..end)
+            });
         // A working selection is durable, but never a cached admission decision.
         // Reuse only an unchanged canonical prefix, including after resume and
         // follow-ups. Legacy snapshots take the bounded cold-planning path.
@@ -858,6 +870,10 @@ impl DefaultContextBuilder {
                 }
             }
             summary = "Work-cycle recovery: older investigation groups omitted. Continue from the retained task, checkpoint, current file pages and latest tool results.".into();
+        }
+        if let Some(group) = &browser_group {
+            // Restore observations lost by a previously persisted selection.
+            compacted.retain(|index| !group.contains(index));
         }
         let mut messages = compose(
             prefix(&compacted, &summary),
@@ -1068,6 +1084,9 @@ impl DefaultContextBuilder {
                 .find(|(index, message)| {
                     message.role == Role::Assistant
                         && !omitted.contains(index)
+                        && !browser_group
+                            .as_ref()
+                            .is_some_and(|group| group.contains(index))
                         && !(preserve_setup && retained.contains(index))
                         && index + 1 + message.tool_calls.len() <= protected
                 })
@@ -1090,6 +1109,9 @@ impl DefaultContextBuilder {
                 .filter(|(n, m)| {
                     m.role == Role::Assistant
                         && !omitted.contains(n)
+                        && !browser_group
+                            .as_ref()
+                            .is_some_and(|group| group.contains(n))
                         && !(preserve_setup && retained.contains(n))
                         && n + 1 + m.tool_calls.len() <= protected
                 })
@@ -1138,6 +1160,9 @@ impl DefaultContextBuilder {
             let message = &session.messages[i];
             if message.role != Role::Assistant
                 || omitted.contains(&i)
+                || browser_group
+                    .as_ref()
+                    .is_some_and(|group| group.contains(&i))
                 || (preserve_setup && retained.contains(&i))
             {
                 i += 1;

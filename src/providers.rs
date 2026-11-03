@@ -862,7 +862,7 @@ pub struct WerkProvider {
     pub reasoning_defaults: BTreeMap<String, ReasoningDefaults>,
     pub inference_concurrency: InferenceConcurrency,
     refreshed_concurrency: Mutex<InferenceConcurrency>,
-    capacity_refresh_at: std::sync::atomic::AtomicU64,
+    capacity_refresh_at: Mutex<tokio::time::Instant>,
     capacity_refresh_gate: tokio::sync::Mutex<()>,
     context_limit: std::sync::atomic::AtomicUsize,
     output_limit: Option<usize>,
@@ -1156,7 +1156,7 @@ impl WerkProvider {
             client,
             config,
             refreshed_concurrency: Mutex::new(inference_concurrency.clone()),
-            capacity_refresh_at: std::sync::atomic::AtomicU64::new(now_ms()),
+            capacity_refresh_at: Mutex::new(tokio::time::Instant::now()),
             capacity_refresh_gate: tokio::sync::Mutex::new(()),
             inference_concurrency,
             context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
@@ -1384,14 +1384,15 @@ impl ModelProvider for WerkProvider {
         self.refreshed_concurrency.lock().unwrap().clone()
     }
     async fn refresh_concurrency(&self) {
-        use std::sync::atomic::Ordering;
-        if now_ms().saturating_sub(self.capacity_refresh_at.load(Ordering::Relaxed)) < 5000 {
+        // A polling interval must use the same monotonic clock as async waits.
+        // Wall-clock corrections can otherwise suppress an already-due refresh.
+        if self.capacity_refresh_at.lock().unwrap().elapsed() < Duration::from_secs(5) {
             return;
         }
         let Ok(_gate) = self.capacity_refresh_gate.try_lock() else {
             return;
         };
-        if now_ms().saturating_sub(self.capacity_refresh_at.load(Ordering::Relaxed)) < 5000 {
+        if self.capacity_refresh_at.lock().unwrap().elapsed() < Duration::from_secs(5) {
             return;
         }
         let mut capacity = None;
@@ -1430,7 +1431,7 @@ impl ModelProvider for WerkProvider {
         } else if authoritative_unknown {
             *self.refreshed_concurrency.lock().unwrap() = InferenceConcurrency::default();
         }
-        self.capacity_refresh_at.store(now_ms(), Ordering::Relaxed);
+        *self.capacity_refresh_at.lock().unwrap() = tokio::time::Instant::now();
     }
     fn capabilities(&self) -> ModelCapabilities {
         let mut caps = self.config.capabilities.clone();

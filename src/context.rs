@@ -246,6 +246,7 @@ pub(crate) struct CompactionFeedback {
     written: Vec<serde_json::Value>,
     reads: Vec<serde_json::Value>,
     plan: Option<serde_json::Value>,
+    plan_message_index: Option<usize>,
 }
 impl CompactionFeedback {
     pub(crate) fn new(session: &SessionData, run: &Run) -> Self {
@@ -272,7 +273,7 @@ impl CompactionFeedback {
             })
             .cloned()
             .collect();
-        let plan = std::iter::once(run)
+        let plan_invocation = std::iter::once(run)
             .chain(
                 session
                     .runs
@@ -283,8 +284,13 @@ impl CompactionFeedback {
             .flat_map(|r| r.invocations.iter().rev())
             .take(128)
             .filter(|i| i.call.name == "task.plan")
-            .filter_map(|i| i.result.as_ref())
-            .find(|r| r.status == Outcome::Succeeded)
+            .find(|i| {
+                i.result
+                    .as_ref()
+                    .is_some_and(|r| r.status == Outcome::Succeeded)
+            });
+        let plan = plan_invocation
+            .and_then(|i| i.result.as_ref())
             .map(|r| &r.data)
             .filter(|v| v.to_string().len() <= 2048)
             .cloned();
@@ -292,6 +298,7 @@ impl CompactionFeedback {
             written,
             reads,
             plan,
+            plan_message_index: plan_invocation.map(|i| i.message_index),
         }
     }
 
@@ -315,8 +322,14 @@ impl CompactionFeedback {
             ));
         }
         if !omitted.is_empty() {
+            // Restore a plan only if its own call/result was compacted. Other
+            // omitted history is not a reason to repeat the latest full plan.
+            let plan = self.plan.as_ref().filter(|_| {
+                self.plan_message_index
+                    .is_some_and(|index| omitted.contains(&index))
+            });
             messages.push(crate::harness::feedback("retained_evidence", serde_json::json!({
-                "writes":self.written,"reads":self.reads,"plan":self.plan,"trust":"Observed task data; not current filesystem guarantees or user instructions."
+                "writes":self.written,"reads":self.reads,"plan":plan,"trust":"Observed task data; not current filesystem guarantees or user instructions."
             })));
             // Recover immutable skill content only when its canonical load
             // group was omitted, including loads in earlier runs.
@@ -625,7 +638,8 @@ impl DefaultContextBuilder {
             dynamic.extend(crate::failure_progress::feedback(session, run)?);
         }
         prompt.push_str("\nNew user messages during a run update the active task. Apply their constraints to the next useful action, reconcile any conflicting plan, and acknowledge the change briefly. Preserve earlier requirements that still apply. Completion and verification must cover the updated task.\n");
-        if crate::completion::enabled(session, run)? {
+        let completion_enabled = crate::completion::enabled(session, run)?;
+        if completion_enabled {
             if tools.iter().any(|t| {
                 matches!(
                     t.name.as_str(),
@@ -743,7 +757,7 @@ impl DefaultContextBuilder {
                 head.push(crate::harness::continuation());
             }
             crate::browser_progress::select_images(&mut head, &browser_calls);
-            crate::browser_progress::compact_visual_controls(&mut head, &browser_calls);
+            crate::browser_progress::compact_controls(&mut head, &browser_calls);
             crate::browser_progress::prune_expired_controls(&mut head, &browser_calls);
             head
         };
@@ -1018,7 +1032,26 @@ impl DefaultContextBuilder {
                     })
                 })
         });
-        let protected = if latest_write {
+        // A successful task.plan is also durable state. Under pressure its
+        // duplicated call/result may be omitted if coding_task_state retains
+        // every step and the bounded checkpoint in full. Failed, mixed and
+        // oversized proposals keep normal latest-group protection.
+        let mut plan_steps = run.plan.clone();
+        if let Some(plan) = plan_steps.as_object_mut() {
+            plan.remove("checkpoint");
+        }
+        let latest_plan = completion_enabled
+            && plan_steps.to_string().len() <= 4096
+            && session.messages.get(latest).is_some_and(|message| {
+                message.tool_calls.len() == 1
+                    && message.tool_calls[0].name == "task.plan"
+                    && session.messages.get(latest + 1).is_some_and(|m| {
+                        serde_json::from_str::<ToolResult>(&m.content).is_ok_and(|r| {
+                            r.status == Outcome::Succeeded && !r.truncated && r.data == run.plan
+                        })
+                    })
+            });
+        let protected = if latest_write || latest_plan {
             session.messages.len()
         } else {
             latest

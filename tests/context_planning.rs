@@ -716,3 +716,118 @@ async fn browser_checkpoint_recovers_receipts_without_a_canonical_message_group(
     assert!(checkpoint.content.contains("Historical receipt"));
     context::validate_messages(&request.messages).unwrap();
 }
+
+#[tokio::test]
+async fn successful_plan_can_compact_without_losing_steps_or_checkpoint() {
+    use serde_json::{Value, json};
+    let mut state = history(12).await;
+    state.profile.name = "coding-basic".into();
+    state.runs[0].limits.context_tokens = 5200;
+    state.runs[0].limits.reserve_output_tokens = 1024;
+    let criteria: Vec<_> = (0..8)
+        .map(|index| {
+            format!(
+                "Criterion {index}: {}",
+                "The sky and meadow are filled. ".repeat(12)
+            )
+        })
+        .collect();
+    let steps = json!([{"id":"draw","description":"Draw the requested scene", "status":"in_progress",
+        "acceptance_criteria":criteria,"verification_method":"Inspect the returned frame"}]);
+    let plan = json!({"steps":steps,"checkpoint":{"next_action":"Select the blue swatch","decisions":["Keep the drawing inside the observed canvas"]}});
+    assert!(plan.to_string().len() > 2048);
+    let registry = werk_worker::tools::ToolRegistry::builtins().unwrap();
+    werk_worker::tools::validate_arguments(
+        &registry.get("task.plan").unwrap().definition().input_schema,
+        &plan,
+    )
+    .unwrap();
+    let call = ToolCall {
+        id: "plan".into(),
+        name: "task.plan".into(),
+        arguments: plan.clone(),
+    };
+    let index = state.messages.len();
+    let mut assistant = Message::text(Role::Assistant, "");
+    assistant.tool_calls.push(call.clone());
+    state.messages.push(assistant);
+    let result = ToolResult::ok(plan.clone());
+    state.messages.push(Message::tool(&call.id, &result));
+    state.runs[0].plan = plan.clone();
+    state.runs[0].invocations.push(serde_json::from_value(json!({"invocation_id":"plan","step_id":"plan","message_index":index,"call":call,"status":"finished","prepared":{},"result":result})).unwrap());
+    let original = fingerprint(&state);
+    let (request, snapshot) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+        .await
+        .unwrap();
+    assert!(snapshot.omitted_messages.contains(&index));
+    assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 5200);
+    let task: Value = request
+        .messages
+        .iter()
+        .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+        .find(|m| m["event"] == "coding_task_state")
+        .unwrap();
+    let retained: Value =
+        serde_json::from_str(task["data"]["plan_excerpt"].as_str().unwrap()).unwrap();
+    assert_eq!(retained["steps"], steps);
+    assert_eq!(task["data"]["work_cycle"]["checkpoint"], plan["checkpoint"]);
+    assert_eq!(fingerprint(&state), original);
+    context::validate_messages(&request.messages).unwrap();
+}
+
+#[tokio::test]
+async fn plan_is_restored_only_when_its_own_group_is_omitted() {
+    use serde_json::{Value, json};
+    let mut state = history(12).await;
+    let plan = json!({"steps":[{"id":"draw","description":"Draw the house","status":"in_progress"}],"checkpoint":{"next_action":"Select blue"}});
+    let index = state.messages.len();
+    let call = ToolCall {
+        id: "plan".into(),
+        name: "task.plan".into(),
+        arguments: plan.clone(),
+    };
+    let mut assistant = Message::text(Role::Assistant, "");
+    assistant.tool_calls.push(call.clone());
+    state.messages.push(assistant);
+    let result = ToolResult::ok(plan.clone());
+    state.messages.push(Message::tool(&call.id, &result));
+    state.runs[0].plan = plan.clone();
+    state.runs[0].invocations.push(serde_json::from_value(json!({"invocation_id":"plan","step_id":"plan","message_index":index,"call":call,"status":"finished","prepared":{},"result":result})).unwrap());
+    let (request, mut snapshot) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+        .await
+        .unwrap();
+    assert!(!snapshot.omitted_messages.is_empty());
+    assert!(!snapshot.omitted_messages.contains(&index));
+    let evidence = |request: &ModelRequest| -> Value {
+        request
+            .messages
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+            .find(|m| m["event"] == "retained_evidence")
+            .unwrap()["data"]
+            .clone()
+    };
+    assert!(evidence(&request)["plan"].is_null());
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.tool_call_id.as_deref() == Some("plan"))
+    );
+    // Reopen a saved selection where the older plan group was compacted.
+    snapshot.omitted_messages.extend([index, index + 1]);
+    state.runs[0].contexts.push(snapshot);
+    state.messages.push(Message::text(
+        Role::Assistant,
+        "Continue from the saved plan",
+    ));
+    let (request, snapshot) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+        .await
+        .unwrap();
+    assert!(snapshot.omitted_messages.contains(&index));
+    assert_eq!(evidence(&request)["plan"], plan);
+    context::validate_messages(&request.messages).unwrap();
+}

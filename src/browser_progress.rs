@@ -128,12 +128,11 @@ pub(crate) fn select_images(messages: &mut [Message], browser_calls: &BTreeSet<S
     }
 }
 
-/// Visual receipts keep the same actionable controls with less default-value
+/// Browser receipts keep the same actionable controls with less default-value
 /// noise. Host policy and the browser panel always use the canonical receipt.
-pub(crate) fn compact_visual_controls(messages: &mut [Message], browser_calls: &BTreeSet<String>) {
+pub(crate) fn compact_controls(messages: &mut [Message], browser_calls: &BTreeSet<String>) {
     for message in messages {
         if message.role != Role::Tool
-            || message.images.is_empty()
             || !message
                 .tool_call_id
                 .as_ref()
@@ -236,7 +235,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn visual_control_defaults_do_not_hide_names_bounds_or_policy_flags() {
+    fn control_defaults_do_not_hide_names_bounds_or_policy_flags() {
         let mut result = ToolResult::ok(json!({"controls":[
             {"ref":"e1","tag":"canvas","name":"","href":"","protected":false,"bounds":{"x":0,"y":25}},
             {"ref":"e2","name":"Password","protected":true,"consequential":true,"disabled":true,"checked":true},
@@ -251,7 +250,7 @@ mod tests {
             .push(crate::attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap());
         let original = Message::tool("browser", &result);
         let mut messages = vec![original.clone()];
-        compact_visual_controls(&mut messages, &["browser".into()].into());
+        compact_controls(&mut messages, &["browser".into()].into());
         let projected: Value = serde_json::from_str(&messages[0].content).unwrap();
         assert_eq!(
             projected["data"]["controls"][0],
@@ -262,6 +261,16 @@ mod tests {
         assert_eq!(projected["data"]["error"], result.data["error"]);
         assert_eq!(messages[0].images, original.images);
         assert!(original.content.contains("\"protected\":false"));
+        // screenshot:false and DOM-only observations need the same projection.
+        let mut without_image = original.clone();
+        without_image.images.clear();
+        let mut text_only = vec![without_image];
+        compact_controls(&mut text_only, &["browser".into()].into());
+        assert_eq!(text_only[0].content, messages[0].content);
+        assert!(text_only[0].images.is_empty());
+        let projected = text_only.clone();
+        compact_controls(&mut text_only, &["browser".into()].into());
+        assert_eq!(text_only, projected);
     }
 
     #[test]

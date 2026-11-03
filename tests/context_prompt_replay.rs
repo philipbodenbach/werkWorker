@@ -67,19 +67,43 @@ async fn saved_browser_admission_replay() {
     assert!(
         snapshot.estimated_tokens + request.max_output_tokens + 512 <= run.limits.context_tokens
     );
-    let current_frame = session
+    let current_observation = session
+        .runs
+        .iter()
+        .flat_map(|r| &r.invocations)
+        .rev()
+        .find(|i| {
+            browser_policy::TOOLS.contains(&i.call.name.as_str())
+                && i.result
+                    .as_ref()
+                    .is_some_and(|r| r.data["observation_id"].is_string())
+        })
+        .unwrap();
+    let receipt = current_observation.result.as_ref().unwrap();
+    let retained = request
         .messages
         .iter()
-        .rev()
-        .find(|m| m.role == Role::Tool && !m.images.is_empty())
-        .unwrap();
-    assert!(
-        request
-            .messages
-            .iter()
-            .any(|m| m.tool_call_id == current_frame.tool_call_id
-                && m.images == current_frame.images)
+        .find(|m| m.tool_call_id.as_deref() == Some(&current_observation.call.id))
+        .expect("latest observation remains present, including after screenshot:false");
+    assert_eq!(retained.images, receipt.images);
+    let data: serde_json::Value = serde_json::from_str(&retained.content).unwrap();
+    assert_eq!(
+        data["data"]["observation_id"],
+        receipt.data["observation_id"]
     );
+    if let Some(controls) = receipt.data["controls"].as_array() {
+        let actual = data["data"]["controls"].as_array().unwrap();
+        for control in controls {
+            let retained = actual.iter().find(|c| c["ref"] == control["ref"]).unwrap();
+            assert_eq!(retained["bounds"], control["bounds"]);
+            if control["name"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty())
+            {
+                assert_eq!(retained["name"], control["name"]);
+            }
+        }
+    }
     for constraint in session
         .messages
         .iter()

@@ -214,13 +214,19 @@ The latest browser observation keeps its complete call/result group and attached
 frame even when a later action fails argument validation. This also repairs a
 saved selection that omitted the observation. A failed action's returned frame
 can be the newest observation; a validation error without a frame cannot replace
-it. Visual control metadata omits empty labels/attributes and false flags in the
+it. Browser control metadata omits empty labels/attributes and false flags in the
 request only; refs, bounds, nonempty values, true flags and the checked state of
-checkboxes/radio buttons remain available.
+checkboxes/radio buttons remain available. This applies with or without an image,
+including `screenshot:false` and DOM-only observations.
 Canonical receipts and host permission checks are unchanged. Compaction alone
 does not require observing again when the current observation is still present.
 The separate browser checkpoint is only a fallback when that canonical group is
 unavailable; it does not repeat the retained observation and plan on every turn.
+
+Compaction feedback restores a saved plan only when that plan's own message group
+was omitted. A successful latest `task.plan` group can itself be compacted under
+pressure when the coding task state retains all steps (at most 4 KiB) and its
+checkpoint. Failed proposals, mixed tool groups and larger plans remain protected.
 
 Small setup/skill results, file reads (including their hashes and errors) and task
 plans receive bounded retention. Before discarding this evidence the builder can

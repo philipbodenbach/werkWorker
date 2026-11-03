@@ -69,7 +69,10 @@ async fn admission_lowering_live_context_is_checked_before_dispatch() {
         .await
         .unwrap();
     assert_eq!(run.error.as_ref().unwrap().code, "context_overflow");
-    assert_eq!(session.snapshot().await.unwrap().runs[0].tree_model_requests, 0);
+    assert_eq!(
+        session.snapshot().await.unwrap().runs[0].tree_model_requests,
+        0
+    );
     engine.close().await.unwrap();
 }
 fn read(path: &str) -> ScriptedTurn {

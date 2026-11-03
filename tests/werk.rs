@@ -1834,13 +1834,17 @@ async fn coding_image_budget_uses_native_text_without_repeating_unsupported_coun
                     .iter()
                     .any(|m| m["content"].is_array()))
                 .count(),
-            1
+            1 + usize::from(native_images.is_some() && expected_status == RunStatus::Failed)
         );
         assert_eq!(
             counts.len(),
-            if native_images.is_some() { 1 } else { 2 },
-            "only one unsupported image count and one cached text/tool count"
+            if native_images.is_some() { 1 } else { 2 }
+                + usize::from(expected_status == RunStatus::Failed),
+            "unsupported image counting is tried once; a minimum-output alternative needs its own supported count"
         );
+        if expected_status == RunStatus::Failed {
+            assert_eq!(counts.last().unwrap().body["max_completion_tokens"], 1024);
+        }
         let generations: Vec<_> = requests
             .iter()
             .filter(|r| r.path == "/v1/chat/completions")

@@ -2780,7 +2780,7 @@ impl SessionHandle {
                     crate::harness::is_feedback_echo(&data, data.run(run_id)?, &request, &result.0)?
                         .then_some((
                             "model_feedback_echo",
-                            "Model echoed runtime feedback without a new answer or tool call",
+                            "Model returned a runtime feedback envelope without a new answer or tool call",
                         ))
                 };
                 if let Some((code, message)) = rejection {

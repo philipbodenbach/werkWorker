@@ -28,6 +28,12 @@ const MESSAGE_LIMIT: u64 = 6 * 1024 * 1024;
 fn text(max: usize) -> Value {
     json!({"type":"string","minLength":1,"maxLength":max})
 }
+fn origin_schema() -> Value {
+    // Native grammar builders require both anchors; a prefix-only regex is
+    // valid JSON Schema but rejected by llama.cpp during tool generation.
+    json!({"type":"array","maxItems":16,"uniqueItems":true,
+        "items":{"type":"string","minLength":1,"maxLength":512,"pattern":"^[Hh][Tt][Tt][Pp][Ss]?://.+$"}})
+}
 fn object(properties: Value, required: &[&str]) -> Value {
     json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
 }
@@ -52,10 +58,10 @@ impl Tool for BrowserTool {
         let id = text(128);
         let (description, mut schema) = match self.name.as_str() {
             "browser.open" => (
-                "Open with exactly one target: url (HTTP/S) OR path (workspace file). Reuses a live browser; returns browser_id. Close before changing engine. allowed_origins adds sites; private_origins requests private-network access. Host permissions apply.",
+                "Open with exactly one target: url (HTTP/S) OR path (workspace file). Reuses a live browser; returns browser_id. Close before changing engine. The target origin is included automatically. allowed_origins adds other sites; private_origins requests private-network access. Origins must be absolute, e.g. https://example.com, without paths. Host permissions apply.",
                 {
                     object(
-                        json!({"url":text(4096),"path":text(4096),"browser":{"type":"string","enum":["chromium","firefox","webkit","chrome","msedge","brave","opera","vivaldi"]},"allowed_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)},"private_origins":{"type":"array","maxItems":16,"uniqueItems":true,"items":text(512)}}),
+                        json!({"url":text(4096),"path":text(4096),"browser":{"type":"string","enum":["chromium","firefox","webkit","chrome","msedge","brave","opera","vivaldi"]},"allowed_origins":origin_schema(),"private_origins":origin_schema()}),
                         &[],
                     )
                 },
@@ -681,7 +687,10 @@ fn web_url(value: &str) -> Result<reqwest::Url> {
 }
 fn origins(args: &Value, key: &str) -> Result<Vec<String>> {
     args[key].as_array().into_iter().flatten().map(|value| {
-        let url = web_url(value.as_str().unwrap_or(""))?;
+        let url = web_url(value.as_str().unwrap_or("")).map_err(|mut issue| {
+            issue.message = format!("{key}: {}. Use an absolute origin such as https://example.com. The target URL's origin is included automatically.", issue.message);
+            issue
+        })?;
         if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
             return Err(error("browser_scope", "Use exact origins (scheme, host, optional port), without paths, query or fragment"));
         }
@@ -1336,6 +1345,50 @@ async fn broker(
 #[cfg(test)]
 mod host_panel_tests {
     use super::*;
+    #[test]
+    fn origin_arguments_explain_the_field_and_require_absolute_urls() {
+        let schema = BrowserTool {
+            name: "browser.open".into(),
+            sessions: Arc::default(),
+        }
+        .definition()
+        .input_schema;
+        for key in ["allowed_origins", "private_origins"] {
+            let pattern = schema["properties"][key]["items"]["pattern"]
+                .as_str()
+                .unwrap();
+            assert!(pattern.starts_with('^') && pattern.ends_with('$'));
+            for valid in [
+                "https://example.com",
+                "HTTPS://example.com",
+                "http://localhost:8080",
+            ] {
+                crate::tools::validate_arguments(
+                    &schema,
+                    &json!({"url":"https://example.com",key:[valid]}),
+                )
+                .unwrap();
+            }
+            let args = json!({"url":"https://example.com", key:["example.com"]});
+            assert!(crate::tools::validate_arguments(&schema, &args).is_err());
+            let error = origins(&args, key).unwrap_err();
+            assert_eq!(error.code, "invalid_url");
+            assert!(error.message.contains(key));
+            assert!(error.message.contains("https://"));
+            for invalid in [
+                "https://example.com/path",
+                "https://example.com?query=1",
+                "https://example.com#fragment",
+                "https://user:pass@example.com",
+            ] {
+                assert!(origins(&json!({key:[invalid]}), key).is_err());
+            }
+            assert_eq!(
+                origins(&json!({key:["https://example.com"]}), key).unwrap(),
+                vec!["https://example.com"]
+            );
+        }
+    }
     #[test]
     fn open_keeps_object_parameters_and_strict_target_alternatives() {
         let schema = BrowserTool {

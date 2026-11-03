@@ -360,6 +360,25 @@ pub(crate) fn is_feedback_echo(
         owned.push(boundary);
     }
     let value = serde_json::from_str::<Value>(&message.content).ok();
+    // During an owned recovery turn a model can invent a new event instead of
+    // copying one literally (e.g. continuation_missing_result). It is still
+    // model output, never runtime evidence. Reject only a standalone envelope
+    // in this recovery context; preserve requested JSON and user quotations.
+    let invented_notice = !owned.is_empty()
+        && request.output_schema.is_none()
+        && value.as_ref().is_some_and(|value| {
+            value.as_object().is_some_and(|object| object.len() == 3)
+                && value["source"] == "werk_worker.harness"
+                && value["event"].is_string()
+                && value["data"].is_object()
+        })
+        && !session
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("werk_worker.harness"));
+    if invented_notice {
+        return Ok(true);
+    }
     Ok(owned.iter().any(|observation| {
         message.content.trim() == observation.content.trim()
             || value.as_ref().is_some_and(|value| {

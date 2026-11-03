@@ -47,6 +47,66 @@ pub fn effective_limits(limits: &Limits, provider_context: Option<usize>) -> Res
     Ok(effective)
 }
 
+/// A desired output reserve must not prevent a smaller complete decision.
+/// Explicit reasoning settings still need their advertised minimum; opaque
+/// native effort or failed discovery cannot safely be reduced here.
+async fn minimum_output_reserve(
+    session: &SessionData,
+    provider: Option<&dyn ModelProvider>,
+    file_budget: Option<&crate::file_io::FileIoBudget<'_>>,
+    configured: usize,
+) -> usize {
+    let floor = configured.min(1024);
+    let selected = crate::reasoning::selected(session);
+    let Some(provider) = provider else {
+        return if selected.as_deref().is_some_and(|tier| tier != "default") {
+            configured
+        } else {
+            floor
+        };
+    };
+    let options = if let Some(budget) = file_budget {
+        budget.reasoning_options(configured).await
+    } else {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            provider.reasoning_options(configured),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(WorkerError::new(
+                "reasoning_timeout",
+                "Reasoning profile timed out",
+            ))
+        })
+    };
+    let Ok(options) = options else {
+        return configured;
+    };
+    let Some(options) = options else {
+        return if selected.as_deref().is_some_and(|tier| tier != "default") {
+            configured
+        } else {
+            floor
+        };
+    };
+    if selected.is_none() && options.native_effort.is_some() {
+        return configured;
+    }
+    let tier = selected.as_deref().unwrap_or(&options.requested);
+    // Server-default effort may adapt to each admitted output allowance.
+    if tier == "default" {
+        return floor;
+    }
+    options
+        .profile
+        .as_ref()
+        .filter(|p| p.supported)
+        .and_then(|p| p.tiers.iter().find(|t| t.id == tier && t.available))
+        .and_then(|t| usize::try_from(t.minimum_output_tokens).ok())
+        .map_or(configured, |minimum| minimum.max(floor).min(configured))
+}
+
 /// Initial generation reserve and hard output ceiling are separate. An unknown
 /// provider is never assumed to accept a larger output than the configured one.
 pub(crate) fn output_ceiling(limits: &Limits, provider: &dyn ModelProvider) -> usize {
@@ -841,14 +901,6 @@ impl DefaultContextBuilder {
             .initial_output_tokens
             .unwrap_or(output_budget)
             .min(output_budget);
-        let minimum_output = minimum_base
-            .saturating_sub(minimum_base / 4)
-            .max(2048)
-            .min(output_budget);
-        let retention_available = run
-            .limits
-            .context_tokens
-            .saturating_sub(minimum_output + 512);
         // The stable prefix and image reserve cannot be compacted. Taking 80%
         // of the whole budget can make the target smaller than that prefix and
         // erase every useful tool result on every turn. Apply headroom only to
@@ -886,6 +938,15 @@ impl DefaultContextBuilder {
             .cloned()
             .collect();
         let needs_compaction = initial_tokens > available;
+        let minimum_output = if needs_compaction {
+            minimum_output_reserve(session, provider, file_budget.as_ref(), minimum_base).await
+        } else {
+            minimum_base.min(1024)
+        };
+        let retention_available = run
+            .limits
+            .context_tokens
+            .saturating_sub(minimum_output + 512);
         // Normal turns need only the complete request count. The stable-prefix
         // measurement is useful only when selecting a compaction target.
         let base = if needs_compaction {
@@ -1255,9 +1316,11 @@ impl DefaultContextBuilder {
             }
         }
         // The configured output reserve is a maximum, not a reason to reject a
-        // nearly fitting request. After compaction, lend at most one quarter to
-        // input (never reduce below 2048 unless configured smaller). Recount the
-        // actual guidance/budget and keep the ordinary 512-token safety margin.
+        // fitting request. After compaction, allow a smaller complete decision
+        // down to 1024 tokens (or the configured smaller reserve), respecting
+        // explicit reasoning minima. Recount actual guidance/tool budgets and
+        // keep the ordinary 512-token safety margin. This is request-local;
+        // the next turn can use the full configured reserve again.
         for _ in 0..3 {
             if estimated <= available {
                 break;

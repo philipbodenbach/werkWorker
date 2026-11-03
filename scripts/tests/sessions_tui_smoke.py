@@ -39,12 +39,17 @@ with tempfile.TemporaryDirectory(prefix='ww-sessions-') as tmp:
     try:
         wait('Session management')
         wait('Latest conversation')
+        # Select the intended fixture by title, not by wall-clock ordering of
+        # two quickly created sessions (timestamps can tie or move backwards).
+        os.write(master,b'/Latest conversation\r')
+        wait('1 shown')
+        wait('Older conversation',False)
         os.write(master,b'\x1b[Br')
         wait('Rename session')
         os.write(master,b'\x15Renamed reference\r')
         wait('Session renamed.')
         assert next(s for s in sessions() if s['id']==latest_id)['title'] == 'Renamed reference'
-        os.write(master,b'/Renamed\r')
+        os.write(master,b'/\x15Renamed\r')
         wait('1 shown')
         wait('Older conversation',False)
         os.write(master,b'\x1b[Bd')

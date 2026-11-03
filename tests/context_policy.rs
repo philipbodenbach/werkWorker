@@ -736,6 +736,7 @@ async fn small_context_overflow_borrows_output_reserve_without_losing_constraint
     struct Counted {
         inner: Arc<ScriptedProvider>,
         input: usize,
+        effort: Option<&'static str>,
     }
     #[async_trait::async_trait]
     impl ModelProvider for Counted {
@@ -751,16 +752,45 @@ async fn small_context_overflow_borrows_output_reserve_without_losing_constraint
         async fn count_input_tokens(&self, _: &ModelRequest) -> Result<Option<usize>> {
             Ok(Some(self.input))
         }
+        async fn reasoning_options(&self, output: usize) -> Result<Option<ReasoningOptions>> {
+            let Some(effort) = self.effort else {
+                return Ok(None);
+            };
+            if effort == "unavailable" {
+                return Err(WorkerError::new("reasoning_unavailable", "fixture"));
+            }
+            Ok(Some(serde_json::from_value(json!({
+                "model":"fixture", "requested": if effort == "native" { "default" } else { effort },
+                "native_effort": if effort == "native" { json!("high") } else { Value::Null },
+                "profile":{"schema_version":1,"model":"fixture","supported":true,
+                    "default_tier":"high","default_adjusted_to_limits":false,
+                    "limits":{"context_tokens":16384,"output_tokens":output,"reasoning_tokens":1536,"answer_reserve_tokens":512},
+                    "tiers":[{"id":"high","label":"High","available":true,"reasoning_tokens":1536,"minimum_output_tokens":2048}]}
+            })).unwrap()))
+        }
         async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
             assert!(self.input + request.max_output_tokens + 512 <= 16384);
             self.inner.stream(request).await
         }
     }
-    for (input, output) in [(11776, Some(4096)), (11866, Some(3942)), (13000, None)] {
+    for (input, output, effort) in [
+        (11776, Some(4096), None),
+        (11866, Some(3942), None),
+        (13000, Some(2808), None),
+        (14265, Some(1543), None),
+        (14848, Some(1024), None),
+        (14849, None, None),
+        (13000, Some(2808), Some("high")),
+        (13824, Some(2048), Some("high")),
+        (14265, None, Some("high")),
+        (11866, None, Some("native")),
+        (11866, None, Some("unavailable")),
+    ] {
         let scripted = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("done")]));
         let engine = WorkerEngine::builder(Arc::new(Counted {
             inner: scripted.clone(),
             input,
+            effort,
         }))
         .build()
         .await

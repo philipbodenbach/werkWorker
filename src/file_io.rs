@@ -11,7 +11,8 @@ pub(crate) struct FileIoBudget<'a> {
     context: usize,
     output_ceiling: usize,
     provider: &'a dyn ModelProvider,
-    options: tokio::sync::Mutex<std::collections::BTreeMap<usize, Option<ReasoningOptions>>>,
+    options:
+        tokio::sync::Mutex<std::collections::BTreeMap<usize, Result<Option<ReasoningOptions>>>>,
     selected: Option<String>,
 }
 
@@ -59,12 +60,10 @@ impl<'a> FileIoBudget<'a> {
             .reasoning_tokens
     }
 
-    pub(crate) async fn tools(
+    pub(crate) async fn reasoning_options(
         &self,
-        original: &[ToolDefinition],
         output: usize,
-    ) -> Vec<ToolDefinition> {
-        let output = output.min(self.output_ceiling);
+    ) -> Result<Option<ReasoningOptions>> {
         // Keep counting and dispatch identical, but resolve the profile again
         // when context planning changes the output allowance. Cache failures too
         // so a planning sweep does not repeatedly poll an unavailable endpoint.
@@ -75,13 +74,25 @@ impl<'a> FileIoBudget<'a> {
                 self.provider.reasoning_options(output),
             )
             .await
-            .ok()
-            .and_then(std::result::Result::ok)
-            .flatten();
+            .unwrap_or_else(|_| {
+                Err(WorkerError::new(
+                    "reasoning_timeout",
+                    "Reasoning profile timed out",
+                ))
+            });
             entry.insert(options);
         }
-        let reasoning = self.reasoning(cache.get(&output).and_then(Option::as_ref));
-        drop(cache);
+        cache[&output].clone()
+    }
+
+    pub(crate) async fn tools(
+        &self,
+        original: &[ToolDefinition],
+        output: usize,
+    ) -> Vec<ToolDefinition> {
+        let output = output.min(self.output_ceiling);
+        let options = self.reasoning_options(output).await.ok().flatten();
+        let reasoning = self.reasoning(options.as_ref());
         // Token-to-character conversion is guidance, not a tokenizer claim or
         // an execution gate. Only the server's token ceiling is authoritative.
         let usable = output

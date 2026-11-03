@@ -37,8 +37,11 @@ After a truncated generation, the next desired reservation doubles within that
 ceiling. Recovery state is persisted and the larger budget remains available on
 subsequent turns. Compaction first frees eligible history. If the larger reserve
 cannot fit, the builder reduces it using the actual input count; its minimum is
-based on the original reserve (up to one quarter can be lent to input), rather
-than making a larger recovery target cause an avoidable context overflow.
+1024 tokens (or the configured smaller reserve), bounded by the advertised minimum
+of an explicitly selected reasoning tier. Opaque native effort and failed reasoning
+discovery keep the original reserve. This also applies when a new screenshot pushes
+the current request over budget. The next turn starts from the configured reserve
+again; the planner recounts the changed tool guidance before dispatch.
 The input estimate, output reservation and 512-token safety margin must fit before
 any provider dispatch. User/system constraints and tool pairs remain intact.
 A custom `ContextBuilder` cannot bypass admission. Zero output budgets and

@@ -1625,37 +1625,13 @@ impl SessionHandle {
             if run.limits.steps_exhausted(run.metrics.steps) {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
             }
-            let mut defs: Vec<_> = data
-                .profile
-                .tools
-                .iter()
-                .map(|name| self.engine.inner.tools.get(name).map(|t| t.definition()))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .filter(|def| data.policy.can_request(def))
-                .filter(|def| {
-                    def.name != "files.read_image"
-                        || self.provider().capabilities().images
-                            != crate::providers::Support::Unsupported
-                })
-                .filter(|def| {
-                    def.name != "browser.check" || crate::browser::runtime_path().is_some()
-                })
-                .collect();
-            let fixed_file_bounds =
-                !crate::file_io::FileIoBudget::supported(self.provider().as_ref());
-            crate::parallel::describe_delegation(
-                &mut defs,
+            let mut defs = crate::context::request_tools(
+                &data,
+                run,
+                &self.engine.inner.tools,
+                self.provider().as_ref(),
                 &self.engine.inner.execution,
-                &self.provider().concurrency(),
-                data.parent.as_ref().map_or(0, |parent| parent.depth),
-                crate::parallel::DelegationLevel::from_metadata(&data.metadata)?,
-            );
-            crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
-            if crate::completion::enabled(&data, run)? {
-                crate::completion::bound_tools(&mut defs, fixed_file_bounds);
-            }
-            crate::working_state::bound_repairs(&data, run, &mut defs);
+            )?;
             if reporting {
                 defs.clear();
             }

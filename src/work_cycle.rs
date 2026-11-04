@@ -459,11 +459,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "objective_excerpt": crate::completion::excerpt(&run.input, 1200),
         "latest_user_update_excerpt": run.steering.last().map(|s| crate::completion::excerpt(s, 600)),
         "current_milestone": current.map(|s| crate::completion::excerpt(s["description"].as_str().unwrap_or(""), 384)),
-        "checkpoint": run.plan.get("checkpoint").map(|c| json!({
-            "next_action": crate::completion::excerpt(c["next_action"].as_str().unwrap_or(""), 512),
-            "decisions": c["decisions"].as_array().into_iter().flatten().take(6)
-                .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
-        })),
+        "checkpoint": checkpoint(run),
         "suggested_phase": phase,
         "check_repair_due": check_repair_due,
         "unresolved_check": repair.as_ref().map(|c| c.observation(run)),
@@ -491,6 +487,14 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "refocus": investigation >= REFOCUS_AFTER,
         "trust": "Observed work plus user/plan excerpts; phase directs workflow, not verified completion. Full user messages and newer steering govern scope."
     })
+}
+
+pub(crate) fn checkpoint(run: &Run) -> Option<Value> {
+    run.plan.get("checkpoint").map(|c| json!({
+        "next_action": crate::completion::excerpt(c["next_action"].as_str().unwrap_or(""), 512),
+        "decisions": c["decisions"].as_array().into_iter().flatten().take(6)
+            .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
+    }))
 }
 
 #[cfg(test)]

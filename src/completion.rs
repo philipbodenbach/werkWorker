@@ -162,12 +162,52 @@ pub(crate) fn enabled(session: &SessionData, run: &Run) -> Result<bool> {
     Ok(coding(session) && crate::harness::config(session, run)?.coding_checks)
 }
 
+/// Suppress implementation coaching only when all observed work is browser
+/// interaction or its setup. Any file/process/check/unknown activity restores
+/// the ordinary coding feedback. This changes guidance, never tools or gates.
+pub(crate) fn browser_observations_only(session: &SessionData, run: &Run) -> bool {
+    let mut observed = false;
+    for invocation in std::iter::once(run)
+        .chain(session.runs.iter().filter(|r| r.id != run.id))
+        .flat_map(|r| &r.invocations)
+    {
+        if crate::browser_policy::TOOLS.contains(&invocation.call.name.as_str()) {
+            observed |= invocation
+                .result
+                .as_ref()
+                .is_some_and(|r| r.data["observation_id"].is_string());
+        } else if !matches!(
+            invocation.call.name.as_str(),
+            "skills.load" | "skills.list" | "task.plan" | "interaction.ask"
+        ) {
+            return false;
+        }
+    }
+    observed
+}
+
 pub(crate) fn excerpt(text: &str, bytes: usize) -> &str {
     let mut end = bytes.min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     &text[..end]
+}
+
+/// Whether the decision-point observation already retains this complete plan.
+/// Do not suppress an older run's plan or a checkpoint/step list that was cut.
+pub(crate) fn retains_plan(session: &SessionData, run: &Run, plan: &Value) -> bool {
+    if !enabled(session, run).unwrap_or(false) || plan != &run.plan {
+        return false;
+    }
+    let mut steps = plan.clone();
+    if let Some(fields) = steps.as_object_mut() {
+        fields.remove("checkpoint");
+    }
+    steps.to_string().len() <= 4096
+        && plan
+            .get("checkpoint")
+            .is_none_or(|value| crate::work_cycle::checkpoint(run).as_ref() == Some(value))
 }
 
 /// Keep the end of diagnostics as well as their beginning. Interpreters often
@@ -262,16 +302,50 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
     if let Some(plan) = plan.as_object_mut() {
         plan.remove("checkpoint");
     }
+    let mut cycle = if browser_observations_only(session, run) {
+        json!({
+            "checkpoint":crate::work_cycle::checkpoint(run),
+            "next_action":"Continue the current milestone using the latest browser observation. Verify the requested result before completing the plan."
+        })
+    } else {
+        crate::work_cycle::observation(run, &state.verifications)
+    };
+    // Canonical user messages are mandatory in every context projection. Do
+    // not spend the small-context budget repeating their text in derived data.
+    for (field, text) in [
+        ("objective_excerpt", Some(run.input.as_str())),
+        (
+            "latest_user_update_excerpt",
+            run.steering.last().map(String::as_str),
+        ),
+    ] {
+        if text.is_some_and(|text| {
+            session
+                .messages
+                .iter()
+                .any(|m| m.role == Role::User && m.content == text)
+        }) {
+            cycle.as_object_mut().unwrap().remove(field);
+        }
+    }
+    let mut detail =
+        "Current run plan and verification. Finish and verify remaining work.".to_owned();
+    if !files.is_empty() {
+        detail.push_str(" Latest observations per normalized path supersede older receipts, including not_found and missing directory entries. A missing file has no valid edit hash or anchor. Compaction does not change files.");
+    }
+    if !repairs.is_empty() {
+        detail.push_str(" Repair a rejected edit with an exact observed anchor; never delete and rebuild to bypass it. Pending repairs keep shell workspace read-only until a corrected file change succeeds.");
+    }
     Ok(Some(crate::harness::feedback(
         "coding_task_state",
         json!({
             "plan_excerpt": excerpt(&plan.to_string(), 4096),
-            "work_cycle": crate::work_cycle::observation(run, &state.verifications),
+            "work_cycle": cycle,
             "verification_excerpt": excerpt(&serde_json::to_string(&observed)?, 3072),
             "files": files,
             "pending_repairs": repairs,
             "repeated_calls": repeated.into_values().collect::<Vec<_>>(),
-            "detail":"Current run plan and verification. Latest observations per normalized path supersede older receipts, including not_found and missing directory entries. A missing file has no valid edit hash or anchor. Compaction does not change files. Repair a rejected edit with an exact observed anchor; never delete and rebuild to bypass it. Pending repairs keep shell workspace read-only until a corrected file change succeeds. Finish and verify remaining work."
+            "detail":detail
         }),
     )))
 }

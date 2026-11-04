@@ -1,7 +1,8 @@
 //! Opt-in diagnostics on the same saved history; the database stays read-only.
 //! Offline preparation tests use no credentials or network. The admission replay
 //! explicitly uses the local Werk counter (optional WW_REPLAY_API_KEY), never
-//! generation or browser actions.
+//! generation or browser actions. The separate target-decision probe performs
+//! one inference against a captured request and never executes returned tools.
 //! Use WW_REPLAY_SNAPSHOT, or WW_REPLAY_DATABASE plus WW_REPLAY_SESSION.
 //! Capture hashes before a change with WW_PROMPT_CAPTURE; compare afterwards
 //! with WW_PROMPT_BASELINE on the same frozen input. Timing includes request
@@ -13,44 +14,200 @@ use werk_worker::{
     *,
 };
 
+#[path = "support/browser_controls.rs"]
+mod browser_controls;
+use browser_controls::expanded_controls;
+
+struct AdmissionCapture {
+    provider: werk_worker::providers::WerkProvider,
+    best: std::sync::Mutex<Option<(usize, werk_worker::providers::ModelRequest, String)>>,
+}
+
+#[tokio::test]
+#[ignore = "one local inference; WW_REPLAY_REQUEST, WW_REPLAY_CONFIG, WW_REPLAY_TARGET; never executes tools"]
+async fn saved_browser_target_decision() {
+    use futures_util::StreamExt;
+    use werk_worker::providers::*;
+    let mut request: ModelRequest = serde_json::from_slice(
+        &std::fs::read(std::env::var("WW_REPLAY_REQUEST").expect("WW_REPLAY_REQUEST")).unwrap(),
+    )
+    .unwrap();
+    let observation = request
+        .messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| serde_json::from_str::<serde_json::Value>(&m.content).ok())
+        .find(|v| v["data"]["controls"].is_object())
+        .expect("projected control table");
+    let label = std::env::var("WW_REPLAY_TARGET").expect("WW_REPLAY_TARGET");
+    let controls = expanded_controls(&observation["data"]["controls"]);
+    let targets: Vec<_> = controls.iter().filter(|c| c["name"] == label).collect();
+    assert_eq!(targets.len(), 1, "probe requires a unique visible name");
+    let reference = targets[0]["ref"].clone();
+    let last = request.messages.last_mut().unwrap();
+    assert_eq!(last.role, Role::User);
+    last.content = format!(
+        "For this diagnostic decision, select the visible {label:?} control. Return one browser.action click with its current target.ref and browser_id, using the observation. Keep narration brief."
+    );
+    request.max_output_tokens = 1024;
+    let config: WerkConfig = serde_json::from_slice(
+        &std::fs::read(
+            std::env::var("WW_REPLAY_CONFIG")
+                .expect("WW_REPLAY_CONFIG with confirmed tool capabilities"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let provider = WerkProvider::connect(config, std::env::var("WW_REPLAY_API_KEY").ok())
+        .await
+        .unwrap();
+    let counted = provider.estimate_input_tokens(&request).await.unwrap();
+    assert!(
+        counted + request.max_output_tokens + 512
+            <= provider.capabilities().context_tokens.unwrap()
+    );
+    let action_schema = request
+        .tools
+        .iter()
+        .find(|t| t.name == "browser.action")
+        .unwrap()
+        .input_schema
+        .clone();
+    let mut stream = provider.stream(request).await.unwrap();
+    let mut assembler = ResponseAssembler::default();
+    while let Some(delta) = tokio::time::timeout(std::time::Duration::from_secs(180), stream.next())
+        .await
+        .unwrap()
+    {
+        assembler.push(&delta.unwrap(), 1_048_576).unwrap();
+    }
+    let (message, usage, _) = assembler.finish().unwrap();
+    eprintln!(
+        "target decision: calls={:?}, usage={usage:?}",
+        message.tool_calls
+    );
+    assert_eq!(message.tool_calls.len(), 1);
+    let call = &message.tool_calls[0];
+    assert_eq!(call.name, "browser.action");
+    tools::validate_arguments(&action_schema, &call.arguments).unwrap();
+    assert_eq!(call.arguments["action"], "click");
+    assert_eq!(
+        call.arguments["browser_id"],
+        observation["data"]["browser_id"]
+    );
+    assert_eq!(call.arguments["target"]["ref"], reference);
+}
+
+#[async_trait::async_trait]
+impl werk_worker::providers::ModelProvider for AdmissionCapture {
+    fn capabilities(&self) -> werk_worker::providers::ModelCapabilities {
+        self.provider.capabilities()
+    }
+    fn identity(&self) -> String {
+        self.provider.identity()
+    }
+    fn max_output_tokens(&self) -> Option<usize> {
+        self.provider.max_output_tokens()
+    }
+    async fn reasoning_options(
+        &self,
+        output: usize,
+    ) -> Result<Option<werk_worker::providers::ReasoningOptions>> {
+        self.provider.reasoning_options(output).await
+    }
+    async fn estimate_input_tokens(
+        &self,
+        request: &werk_worker::providers::ModelRequest,
+    ) -> Result<usize> {
+        let count = self.provider.estimate_input_tokens(request).await?;
+        if request.messages.iter().any(|m| !m.images.is_empty()) {
+            let mut best = self.best.lock().unwrap();
+            if best.as_ref().is_none_or(|(old, _, _)| count < *old) {
+                *best = Some((
+                    count,
+                    request.clone(),
+                    self.provider.input_token_source(request).into(),
+                ));
+            }
+        }
+        Ok(count)
+    }
+    async fn stream(
+        &self,
+        _: werk_worker::providers::ModelRequest,
+    ) -> Result<werk_worker::providers::ModelStream> {
+        panic!("admission replay never generates")
+    }
+}
+
 /// Uses only the local admission/token-count API, never generation or tools.
 #[tokio::test]
 #[ignore = "set WW_REPLAY_DATABASE/WW_REPLAY_SESSION/WW_REPLAY_MODEL; requires local Werk token counter"]
 async fn saved_browser_admission_replay() {
     use werk_worker::{providers::*, tools::ToolRegistry};
-    let connection = rusqlite::Connection::open_with_flags(
-        std::env::var("WW_REPLAY_DATABASE").expect("WW_REPLAY_DATABASE"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let text: String = connection
-        .query_row(
-            "SELECT data FROM sessions WHERE id = ?1",
-            [std::env::var("WW_REPLAY_SESSION").expect("WW_REPLAY_SESSION")],
-            |row| row.get(0),
+    let text = if let Ok(path) = std::env::var("WW_REPLAY_SNAPSHOT") {
+        std::fs::read_to_string(path).unwrap()
+    } else {
+        let connection = rusqlite::Connection::open_with_flags(
+            std::env::var("WW_REPLAY_DATABASE").expect("WW_REPLAY_DATABASE"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
+        connection
+            .query_row(
+                "SELECT data FROM sessions WHERE id = ?1",
+                [std::env::var("WW_REPLAY_SESSION").expect("WW_REPLAY_SESSION")],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
     let session: SessionData = serde_json::from_str(&text).unwrap();
     let original = fingerprint(&session);
     let run = session.runs.last().unwrap();
     let registry = ToolRegistry::builtins().unwrap();
-    let tools = session
-        .profile
-        .tools
-        .iter()
-        .map(|name| registry.get(name).unwrap().definition())
-        .filter(|def| session.policy.can_request(def))
-        .collect();
     let provider = WerkProvider::connect(
         WerkConfig::local(std::env::var("WW_REPLAY_MODEL").expect("WW_REPLAY_MODEL")),
         std::env::var("WW_REPLAY_API_KEY").ok(),
     )
     .await
     .unwrap();
-    let (request, snapshot) = DefaultContextBuilder
+    let tools = context::request_tools(
+        &session,
+        run,
+        &registry,
+        &provider,
+        &parallel::ExecutionConfig::default(),
+    )
+    .unwrap();
+    let provider = AdmissionCapture {
+        provider,
+        best: Default::default(),
+    };
+    let built = DefaultContextBuilder
         .build_with_provider(&session, run, tools, &provider)
-        .await
-        .unwrap();
+        .await;
+    if let Some((count, request, source)) = provider.best.lock().unwrap().as_ref() {
+        eprintln!(
+            "lowest visual candidate: input={count}, output={}, source={source}, tool_bytes={}, message_bytes={:?}",
+            request.max_output_tokens,
+            serde_json::to_vec(&request.tools).unwrap().len(),
+            request
+                .messages
+                .iter()
+                .map(|m| (m.role.clone(), m.content.len()))
+                .collect::<Vec<_>>()
+        );
+        if let Ok(path) = std::env::var("WW_REPLAY_CAPTURE") {
+            std::fs::write(path, serde_json::to_vec(request).unwrap()).unwrap();
+        }
+    }
+    let (request, snapshot) = built.unwrap();
+    if let Ok(path) = std::env::var("WW_REPLAY_CAPTURE") {
+        // On success capture the actual admitted output allowance, not an
+        // earlier candidate with the same input count and a larger reserve.
+        std::fs::write(path, serde_json::to_vec(&request).unwrap()).unwrap();
+    }
     eprintln!(
         "saved browser admission: input={}, output={}, tools={}, messages={}, images={}, counts={}",
         snapshot.estimated_tokens,
@@ -92,7 +249,7 @@ async fn saved_browser_admission_replay() {
         receipt.data["observation_id"]
     );
     if let Some(controls) = receipt.data["controls"].as_array() {
-        let actual = data["data"]["controls"].as_array().unwrap();
+        let actual = expanded_controls(&data["data"]["controls"]);
         for control in controls {
             let retained = actual.iter().find(|c| c["ref"] == control["ref"]).unwrap();
             assert_eq!(retained["bounds"], control["bounds"]);

@@ -51,6 +51,29 @@ response can lower the limit discovered at connection time. An impossible
 request stops before generation; compaction cannot guarantee that arbitrarily
 large mandatory instructions fit a finite context.
 
+Derived task feedback does not repeat a canonical user message. A compacted
+plan is restored only once when the decision-point task state already contains
+its complete steps and checkpoint; older or truncated plans still retain their
+fallback evidence. Empty retained-evidence envelopes and irrelevant file-repair
+guidance are omitted.
+When observed work consists exclusively of browser interaction and its setup,
+feedback follows the browser milestone rather than adding implementation-cycle
+coaching just because the coding catalog is enabled. Any file/process/check or
+unknown tool activity restores ordinary coding guidance. Completion gates and
+tool permissions are unaffected.
+
+A dense current browser observation can overflow even a short conversation.
+After ordinary history compaction, the planner can represent its controls as a
+table with explicit `columns`, `bounds_columns` and `rows`. This preserves every
+control, exact coordinate, name, state and extra attribute, along with the image
+and other receipt data. Canonical receipts and action validation keep their
+original representation. The complete projected request is counted again and
+used only if it is smaller; tools, rules, context ceilings and safety margins are
+unchanged. The offline dense-catalog regression covers 34 tools, four skills and
+64 controls at 16K. `saved_browser_admission_replay` additionally checks a frozen
+session through the local Werk admission counter without generation or actions;
+set `WW_REPLAY_SNAPSHOT`, `WW_REPLAY_MODEL` and optionally `WW_REPLAY_API_KEY`.
+
 The default context builder keeps a stable profile/host prefix, sorted tool
 schemas, available skill metadata, optional output schema, committed summaries
 and canonical history. Skill content enters only through `skills.load`. New CLI
@@ -69,7 +92,12 @@ Observations retain their assistant role; the remaining conversation keeps its
 order. A later image can still move when earlier history is compacted, and then
 the normal conservative image estimate applies. No image-key or margin is relaxed.
 
-When werkProtocol advertises `api.chat.token_count`, sizing uses the exact native
+When werkProtocol advertises `api.chat.admission`, the planner first uses the
+server's admission count for the complete request. Its provenance distinguishes
+`native_exact` from `server_admission_estimate`; an estimated visual contribution
+is not presented as an exact native count. The provider and server still check
+admission before generation. Otherwise, when the protocol advertises
+`api.chat.token_count`, sizing uses the exact native
 chat count from `/werk/v1/chat/count_tokens`, including tool schemas/history and
 template options. Identical requests reuse a bounded cache; eviction triggers
 recounting before admission. Protocol errors and model identity are validated.

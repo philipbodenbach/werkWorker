@@ -410,11 +410,10 @@ async fn checkpoint_and_goal_survive_missing_transcript_and_new_user_steering() 
         .unwrap();
     validate_messages(&request.messages).unwrap();
     let progress = cycle(&request).unwrap();
-    assert_eq!(progress["objective_excerpt"], "Build a public counter API");
-    assert_eq!(
-        progress["latest_user_update_excerpt"],
-        "Also handle negative input"
-    );
+    assert!(request.messages.contains(&restored.messages[0]));
+    assert!(request.messages.contains(&restored.messages[1]));
+    assert!(progress.get("objective_excerpt").is_none());
+    assert!(progress.get("latest_user_update_excerpt").is_none());
     assert_eq!(
         progress["current_milestone"],
         "Runnable counter with a verified increment"
@@ -432,6 +431,18 @@ async fn checkpoint_and_goal_survive_missing_transcript_and_new_user_steering() 
     );
     assert!(evidence.content.contains("counter.sh defines increment"));
     assert_eq!(evidence.role, Role::Assistant); // Checkpoint data gains no system authority.
+    // Truly missing user turns still need their durable fallback excerpts.
+    restored.messages.clear();
+    let (request, _) = DefaultContextBuilder
+        .build(&restored, restored.runs.last().unwrap(), vec![])
+        .await
+        .unwrap();
+    let progress = cycle(&request).unwrap();
+    assert_eq!(progress["objective_excerpt"], "Build a public counter API");
+    assert_eq!(
+        progress["latest_user_update_excerpt"],
+        "Also handle negative input"
+    );
     engine.close().await.unwrap();
 }
 

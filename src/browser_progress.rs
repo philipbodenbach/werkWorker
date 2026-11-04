@@ -256,6 +256,100 @@ pub(crate) fn compact_controls(messages: &mut [Message], browser_calls: &BTreeSe
     }
 }
 
+/// Lossless, request-only alternative for dense interfaces on small contexts.
+/// Named columns retain the same targeting/visual evidence without repeating
+/// the keys of every rectangle. Unknown attributes stay in the last column.
+pub(crate) fn tabulate_controls(
+    messages: &mut [Message],
+    browser_calls: &BTreeSet<String>,
+) -> bool {
+    let mut changed = false;
+    for message in messages {
+        if message.role != Role::Tool
+            || !message
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|id| browser_calls.contains(id))
+        {
+            continue;
+        }
+        let Ok(mut result) = serde_json::from_str::<Value>(&message.content) else {
+            continue;
+        };
+        let Some(controls) = result["data"]["controls"].as_array() else {
+            continue;
+        };
+        // Unrecognized layouts keep their original representation. Never lose
+        // a new field inside bounds when the browser receipt evolves.
+        if controls.is_empty()
+            || !controls.iter().all(|c| {
+                c.is_object()
+                    && c["bounds"].as_object().is_some_and(|b| {
+                        b.len() == 4
+                            && ["x", "y", "width", "height"]
+                                .iter()
+                                .all(|key| b.get(*key).is_some_and(Value::is_number))
+                    })
+            })
+        {
+            continue;
+        }
+        let mut tags = BTreeMap::<&str, usize>::new();
+        let tagged = controls.iter().all(|control| {
+            if let Some(tag) = control["tag"].as_str() {
+                *tags.entry(tag).or_default() += 1;
+                true
+            } else {
+                false
+            }
+        });
+        let default_tag =
+            tagged.then(|| tags.into_iter().max_by_key(|(_, count)| *count).unwrap().0);
+        let rows: Vec<_> = controls
+            .iter()
+            .map(|control| {
+                let mut attributes = control.as_object().unwrap().clone();
+                let mut row = Vec::new();
+                if default_tag
+                    .is_some_and(|tag| attributes.get("tag").and_then(Value::as_str) == Some(tag))
+                {
+                    attributes.remove("tag");
+                }
+                for key in ["ref", "name", "role"] {
+                    // Null denotes an absent string column. Non-string extensions
+                    // (including explicit null) remain verbatim in attributes.
+                    row.push(if attributes.get(key).is_some_and(Value::is_string) {
+                        attributes.remove(key).unwrap()
+                    } else {
+                        Value::Null
+                    });
+                }
+                let bounds = attributes.remove("bounds").unwrap();
+                row.push(json!([
+                    bounds["x"],
+                    bounds["y"],
+                    bounds["width"],
+                    bounds["height"]
+                ]));
+                row.push(Value::Object(attributes));
+                Value::Array(row)
+            })
+            .collect();
+        result["data"]["controls"] = json!({
+            "columns":["ref","name","role","bounds","other_attributes"],
+            "bounds_columns":["x","y","width","height"],
+            "defaults":default_tag.map(|tag| json!({"tag":tag})).unwrap_or_else(|| json!({})),
+            "rows":rows
+        });
+        let content = result.to_string();
+        if content.len() < message.content.len() {
+            message.content = content;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Vision decisions need the current controls, not accumulated expired refs.
 /// Project only request-local copies; canonical receipts, page text, accessibility,
 /// action outcomes and errors remain intact. DOM research history is unchanged.
@@ -300,6 +394,87 @@ pub(crate) fn prune_expired_controls(messages: &mut [Message], browser_calls: &B
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dense_control_table_preserves_all_evidence_and_only_projects_browser_receipts() {
+        let controls: Vec<_> = (0..64)
+            .map(|n| {
+                json!({
+                    "ref":format!("e{n}"),"tag":"button","name":format!("Öffnen {n} 🚀"),
+                    "role":"menuitemcheckbox","checked":false,"selected":true,
+                    "protected":true,"consequential":true,"disabled":false,
+                    "bounds":{"x":12.125,"y":n * 9,"width":20.25,"height":8},
+                    "custom":{"value":null,"array":[false,"mixed"]}
+                })
+            })
+            .collect();
+        let mut controls = controls;
+        controls[0].as_object_mut().unwrap().remove("name");
+        controls[1]["name"] = Value::Null;
+        controls[2]["role"] = json!({"extension":true});
+        controls[3]["tag"] = json!("canvas");
+        let result = ToolResult::ok(json!({"controls":controls,"observation_id":"current",
+            "error":"Action failed", "text":"Keep this evidence", "action_executed":false}));
+        let original = Message::tool("browser", &result);
+        let mut messages = vec![
+            original.clone(),
+            Message::tool("unrelated", &result),
+            Message::text(Role::User, original.content.clone()),
+        ];
+        let source = messages.clone();
+        assert!(tabulate_controls(&mut messages, &["browser".into()].into()));
+        assert_eq!(messages[1..], source[1..]);
+        let mut projected: Value = serde_json::from_str(&messages[0].content).unwrap();
+        let table = &projected["data"]["controls"];
+        assert_eq!(table["rows"].as_array().unwrap().len(), controls.len());
+        let restored: Vec<_> = table["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                let mut control = table["defaults"].clone();
+                control
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(row[4].as_object().unwrap().clone());
+                for (column, key) in ["ref", "name", "role"].iter().enumerate() {
+                    if row[column].is_string() {
+                        control[key] = row[column].clone();
+                    }
+                }
+                control["bounds"] =
+                    json!({"x":row[3][0],"y":row[3][1],"width":row[3][2],"height":row[3][3]});
+                control
+            })
+            .collect();
+        assert_eq!(restored, controls);
+        projected["data"]["controls"] = json!(restored);
+        assert_eq!(
+            projected,
+            serde_json::from_str::<Value>(&original.content).unwrap()
+        );
+        let once = messages.clone();
+        assert!(!tabulate_controls(
+            &mut messages,
+            &["browser".into()].into()
+        ));
+        assert_eq!(messages, once);
+        // Future or malformed bounds must never be partially projected.
+        for bounds in [
+            json!({"x":1,"y":2}),
+            json!({"x":1,"y":2,"width":3,"height":4,"zoom":2}),
+        ] {
+            let mut unknown = result.clone();
+            unknown.data["controls"][0]["bounds"] = bounds;
+            let mut messages = vec![Message::tool("browser", &unknown)];
+            let original = messages.clone();
+            assert!(!tabulate_controls(
+                &mut messages,
+                &["browser".into()].into()
+            ));
+            assert_eq!(messages, original);
+        }
+    }
 
     #[test]
     fn control_defaults_do_not_hide_names_bounds_or_policy_flags() {

@@ -12,6 +12,240 @@ use werk_worker::{
     *,
 };
 
+#[path = "support/browser_controls.rs"]
+mod browser_controls;
+
+/// Higher JSON/tool overhead than the lightweight history fixtures. This is
+/// deterministic CI pressure, not a claim of native tokenizer accuracy; the
+/// opt-in saved admission replay also checks the real Werk counter.
+struct DenseCounter;
+#[async_trait]
+impl ModelProvider for DenseCounter {
+    fn identity(&self) -> String {
+        "dense-ui-budget-fixture".into()
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+    async fn count_input_tokens(&self, request: &ModelRequest) -> Result<Option<usize>> {
+        let mut text = request.clone();
+        let images: usize = text
+            .messages
+            .iter_mut()
+            .map(|m| {
+                let count = m.images.len();
+                m.images.clear();
+                count
+            })
+            .sum();
+        Ok(Some(
+            serde_json::to_vec(&text)?.len() * 2 / 7 + 256 + 1024 * images,
+        ))
+    }
+    async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+        panic!("admission tests never generate")
+    }
+}
+
+#[tokio::test]
+async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls() {
+    use serde_json::{Value, json};
+    let mut state = history(0).await;
+    state.profile = AgentProfile::bundled("coding-basic").unwrap();
+    state.profile.tools.extend(
+        [
+            "browser.history",
+            "browser.download",
+            "browser.evaluate",
+            "http.fetch",
+        ]
+        .map(str::to_owned),
+    );
+    state.profile.skills.push("document-analysis".into());
+    assert_eq!(state.profile.tools.len(), 34);
+    let skills = skills::SkillRegistry::bundled().unwrap();
+    for name in &state.profile.skills {
+        state
+            .skill_snapshots
+            .insert(name.clone(), skills.get(name).unwrap().clone());
+    }
+    let run_id = state.runs[0].id.clone();
+    state.metadata["_werkworker_harness"][&run_id]["config"]["mode"] = "adaptive".into();
+    let input =
+        "Inspect the dashboard in the browser. Preserve all data and work alone. ".repeat(10);
+    state.messages[0].content = input.clone();
+    state.runs[0].input = input;
+    let append =
+        |state: &mut SessionData, name: &str, arguments: Value, result: ToolResult| {
+            let index = state.messages.len();
+            let call = ToolCall {
+                id: format!("call{index}"),
+                name: name.into(),
+                arguments,
+            };
+            let mut message = Message::text(Role::Assistant, "");
+            message.tool_calls.push(call.clone());
+            state.messages.push(message);
+            state.messages.push(Message::tool(&call.id, &result));
+            state.runs[0].invocations.push(serde_json::from_value(json!({
+            "invocation_id":format!("inv{index}"),"step_id":format!("step{index}"),
+            "message_index":index,"call":call,"status":"finished","prepared":{},"result":result
+        })).unwrap());
+        };
+    let skill = skills.get("browser-use").unwrap();
+    append(
+        &mut state,
+        "skills.load",
+        json!({"name":"browser-use"}),
+        ToolResult::ok(serde_json::to_value(skill).unwrap()),
+    );
+    let steps: Vec<_> = (0..5).map(|n| json!({
+        "id":format!("step{n}"),"description":format!("Review dashboard section {n}"),
+        "status":"in_progress","acceptance_criteria":[format!("Requirement {n}: confirm the observed labels, enabled states, and visible information without changing any data")],
+        "verification_method":"Inspect the returned screenshot and accessibility evidence"
+    })).collect();
+    let plan = json!({"steps":steps});
+    state.runs[0].plan = plan.clone();
+    append(
+        &mut state,
+        "task.plan",
+        plan.clone(),
+        ToolResult::ok(plan.clone()),
+    );
+    let controls: Vec<_> = (0..64)
+        .map(|n| {
+            json!({
+                "ref":format!("e{n}"),"tag":"button","name":format!("Dashboard action {n}"),
+                "role":"button","selected":n == 3,"disabled":n == 5,
+                "bounds":{"x":12.125,"y":n*9,"width":120.25,"height":8}
+            })
+        })
+        .collect();
+    let mut frame = ToolResult::ok(
+        json!({"browser_id":"live","observation_id":"live:1","revision":1,
+        "controls":controls,"perception":"auto","text":"Dashboard ready","action_executed":true,
+        "screenshot":{"width":1024,"height":768,"scale_x":1,"scale_y":1}}),
+    );
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    frame
+        .images
+        .push(attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap());
+    append(
+        &mut state,
+        "browser.open",
+        json!({"url":"https://example.com"}),
+        frame.clone(),
+    );
+    let tools = tools::ToolRegistry::builtins().unwrap();
+    let definitions: Vec<_> = state
+        .profile
+        .tools
+        .iter()
+        .map(|name| tools.get(name).unwrap().definition())
+        .collect();
+    for _ in 0..2 {
+        let original = fingerprint(&state);
+        let (request, snapshot) = DefaultContextBuilder
+            .build_with_provider(&state, &state.runs[0], definitions.clone(), &DenseCounter)
+            .await
+            .unwrap();
+        assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16384);
+        assert_eq!(request.tools.len(), 34);
+        assert_eq!(
+            DenseCounter.count_input_tokens(&request).await.unwrap(),
+            Some(snapshot.estimated_tokens)
+        );
+        assert!(request.messages.contains(&state.messages[0]));
+        let current = request
+            .messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("call5"))
+            .unwrap();
+        assert_eq!(current.images, frame.images);
+        let data: Value = serde_json::from_str(&current.content).unwrap();
+        assert!(
+            data["data"]["controls"].is_object(),
+            "dense controls should use the bounded table projection"
+        );
+        let expanded = browser_controls::expanded_controls(&data["data"]["controls"]);
+        assert_eq!(expanded.len(), controls.len());
+        for (actual, expected) in expanded.iter().zip(&controls) {
+            for field in ["ref", "tag", "name", "role", "selected", "bounds"] {
+                assert_eq!(actual[field], expected[field]);
+            }
+            assert_eq!(
+                actual["disabled"].as_bool().unwrap_or(false),
+                expected["disabled"]
+            );
+        }
+        let observations: Vec<Value> = request
+            .messages
+            .iter()
+            .filter_map(|m| serde_json::from_str(&m.content).ok())
+            .collect();
+        let task = observations
+            .iter()
+            .find(|m| m["event"] == "coding_task_state")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(task["data"]["plan_excerpt"].as_str().unwrap()).unwrap(),
+            plan
+        );
+        assert!(
+            task["data"]["work_cycle"]
+                .get("objective_excerpt")
+                .is_none()
+        );
+        assert!(
+            task["data"]["work_cycle"]["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("browser observation")
+        );
+        assert!(
+            !request.messages[0]
+                .content
+                .contains("orient briefly, build a minimal")
+        );
+        assert!(
+            !observations
+                .iter()
+                .any(|m| m["event"] == "retained_evidence" && !m["data"]["plan"].is_null())
+        );
+        context::validate_messages(&request.messages).unwrap();
+        assert_eq!(fingerprint(&state), original);
+        state.runs[0].contexts.push(snapshot);
+    }
+    // Merely using a browser must not disable coding guidance for mixed work.
+    // Give this representation check room to keep the additional file receipt.
+    state.runs[0].limits.context_tokens = 32768;
+    append(
+        &mut state,
+        "files.read",
+        json!({"path":"app.js"}),
+        ToolResult::ok(json!({"path":"app.js","text":"export const value = 1;"})),
+    );
+    let (request, _) = DefaultContextBuilder
+        .build_with_provider(&state, &state.runs[0], definitions, &DenseCounter)
+        .await
+        .unwrap();
+    assert!(
+        request.messages[0]
+            .content
+            .contains("orient briefly, build a minimal")
+    );
+    let task: Value = request
+        .messages
+        .iter()
+        .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+        .find(|m| m["event"] == "coding_task_state")
+        .unwrap();
+    assert!(task["data"]["work_cycle"].get("suggested_phase").is_some());
+}
+
 #[derive(Default)]
 struct Counter {
     calls: AtomicUsize,
@@ -822,7 +1056,8 @@ async fn successful_plan_can_compact_without_losing_steps_or_checkpoint() {
     use serde_json::{Value, json};
     let mut state = history(12).await;
     state.profile.name = "coding-basic".into();
-    state.runs[0].limits.context_tokens = 5200;
+    // Keep this a forced-compaction case after redundant runtime text is removed.
+    state.runs[0].limits.context_tokens = 4200;
     state.runs[0].limits.reserve_output_tokens = 1024;
     let criteria: Vec<_> = (0..8)
         .map(|index| {
@@ -861,7 +1096,7 @@ async fn successful_plan_can_compact_without_losing_steps_or_checkpoint() {
         .await
         .unwrap();
     assert!(snapshot.omitted_messages.contains(&index));
-    assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 5200);
+    assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 4200);
     let task: Value = request
         .messages
         .iter()
@@ -906,7 +1141,7 @@ async fn plan_is_restored_only_when_its_own_group_is_omitted() {
             .iter()
             .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
             .find(|m| m["event"] == "retained_evidence")
-            .unwrap()["data"]
+            .unwrap_or(Value::Null)["data"]
             .clone()
     };
     assert!(evidence(&request)["plan"].is_null());

@@ -227,11 +227,11 @@ The latest browser observation keeps its complete call/result group and attached
 frame even when a later action fails argument validation. This also repairs a
 saved selection that omitted the observation. A failed action's returned frame
 can be the newest observation; a validation error without a frame cannot replace
-it. Browser control metadata omits empty labels/attributes and false flags in the
-request only; refs, bounds, nonempty values, true flags and the checked state of
-checkboxes/radio buttons remain available. This applies with or without an image,
-including `screenshot:false` and DOM-only observations.
-Canonical receipts and host permission checks are unchanged. Compaction alone
+it. The driver omits empty control attributes and safe default flags before its
+bounded metadata budget is spent. Refs, bounds, nonempty values, true flags,
+checkbox/radio checked state and explicit link permission flags remain available.
+Request projection also compacts legacy receipts, with or without an image;
+it never rewrites stored receipts or changes host permission checks. Compaction alone
 does not require observing again when the current observation is still present.
 The separate browser checkpoint is only a fallback when that canonical group is
 unavailable; it does not repeat the retained observation and plan on every turn.

@@ -13,11 +13,18 @@ Reuse the live browser_id. Observe, choose one useful action, then inspect its
 effect. Tool success alone is not task success.
 Use named DOM/accessibility controls and fresh target.ref values. References
 expire on the next observation or state change; never reuse them across actions.
+Click an observed control with target:{"ref":"e123"}; an optional name is explanatory
+metadata and never replaces the ref. Reported color and selected fields describe
+the current controls. Choose palette colors from those observations or the screenshot;
+do not invent CSS selectors or repeatedly select an already selected drawing tool.
+action_target records the element actually acted on before references expired.
+Selecting a color/tool does not paint the drawing surface; verify the visible effect.
 For drawings, boards, charts or other visual work request visual:true in Auto
 mode, then use browser.action with action:click_at, move or drag. These are action
 values, not separate tools; include the live browser_id and coordinates or a drag
-path chosen from the latest screenshot. Vision supplies frames automatically;
-screenshot:true requests a frame even in DOM mode, screenshot:false suppresses it.
+path chosen from the latest screenshot. Vision and detected Auto visual surfaces
+always supply frames when image input is available; screenshot:false cannot turn
+off this feedback. screenshot:true also requests a frame in DOM mode.
 Viewport coordinates cover the whole page, not just a drawing canvas. Locate the
 intended surface in the screenshot and its controls[].bounds; keep drawing points
 inside that surface, excluding palettes, toolbars and gray workspace margins.
@@ -38,8 +45,9 @@ If image input is unsupported or a frame is missing, name the specific visual
 limitation; do not pretend to see it or switch backend on your own.
 Wait in bounded intervals for animations, opponent turns and delayed UI changes.
 Read readiness and observation_errors; readiness cannot predict future updates.
-After navigation, Continue, compaction, stale references or browser_changed,
-observe again before choosing an action. After restart historical IDs are not
+After compaction reuse the retained current observation; compaction itself does
+not reload or clear the page. After navigation, Continue, stale references or
+browser_changed, obtain a current observation before acting. After restart historical IDs are not
 live sessions; open a new browser. If action_executed is true but observation
 fails, observe again instead of repeating the action. Inspect unknown effects.
 If browser_state is crashed or browser_page_crashed is reported, close that

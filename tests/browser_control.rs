@@ -1649,7 +1649,12 @@ async fn scaled_canvas_coordinates_and_explicit_perception_overrides() {
     .await
     .unwrap();
     assert_ok(&clicked);
-    assert!(clicked.images.is_empty());
+    assert_eq!(
+        clicked.images.len(),
+        1,
+        "Auto must retain feedback on a detected drawing surface even if the model requests screenshot:false"
+    );
+    assert_eq!(clicked.data["action_target"]["tag"], "canvas");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let bytes = client
         .get(format!(
@@ -1669,14 +1674,32 @@ async fn scaled_canvas_coordinates_and_explicit_perception_overrides() {
         "{pixel:?}"
     );
     let tool = registry.get("browser.observe").unwrap();
+    for (perception, screenshot, frames) in
+        [("dom", true, 1), ("dom", false, 0), ("vision", false, 1)]
+    {
+        let mut args = tool
+            .prepare(
+                json!({"browser_id":browser_id,"screenshot":screenshot}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        args["_browser_settings"] = json!({"perception":perception});
+        assert_eq!(
+            tool.execute(args, &ctx).await.unwrap().images.len(),
+            frames,
+            "{perception} with screenshot:{screenshot} must retain the host's image policy"
+        );
+    }
     let mut args = tool
-        .prepare(json!({"browser_id":browser_id,"screenshot":true}), &ctx)
+        .prepare(json!({"browser_id":browser_id,"screenshot":false}), &ctx)
         .await
         .unwrap();
-    args["_browser_settings"] = json!({"perception":"dom"});
+    args["_browser_settings"] = json!({"perception":"vision"});
+    args["_images_supported"] = json!(false);
     assert_eq!(
-        tool.execute(args.clone(), &ctx).await.unwrap().images.len(),
-        1
+        tool.execute(args, &ctx).await.unwrap_err().code,
+        "images_unsupported"
     );
     let mut denied = tool
         .prepare(json!({"browser_id":browser_id,"screenshot":true}), &ctx)

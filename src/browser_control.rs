@@ -81,7 +81,7 @@ impl Tool for BrowserTool {
                 ),
             ),
             "browser.action" => (
-                "Act, then observe. click/hover require target; for screenshot coordinates use click_at with x,y (no target). target must be exactly {ref}, {selector}, {role,name}, or {label}; optional frame. Use observed refs/labels, never guessed names. fill:target,text; type:text into current focus; select:target,value; press:key/chord; scroll:x/y; tabs:tab_id; wait:ms. move:x/y; drag:path holds the button until release at the final point. Shape/selection tools use opposite corners, not a closed outline. Coordinates cover the whole 1024x768 viewport; locate the surface bounds and multiply image coordinates by screenshot.scale_x/scale_y. Inspect the returned frame; a separate observation uses browser.observe, not an action value.",
+                "Act, then observe. click/hover require target; for screenshot coordinates use click_at with x,y (no target). target selects by {ref}, {selector}, {role,name}, or {label}; optional frame. A ref may include an explanatory name, but only the ref selects the element. Use observed refs/labels, never guessed names. fill:target,text; type:text into current focus; select:target,value; press:key/chord; scroll:x/y; tabs:tab_id; wait:ms. move:x/y; drag:path holds the button until release at the final point. Shape/selection tools use opposite corners, not a closed outline. Coordinates cover the whole 1024x768 viewport; locate the surface bounds and multiply image coordinates by screenshot.scale_x/scale_y. Inspect the returned frame; a separate observation uses browser.observe, not an action value.",
                 object(
                     json!({"browser_id":id,"action":{"type":"string","enum":["click","fill","type","press","select","hover","scroll","back","forward","reload","tab_new","tab_select","tab_close","wait","click_at","move","drag"]},"target":object(json!({"ref":text(128),"selector":text(1024),"role":text(128),"name":text(512),"label":text(512),"frame":text(1024)}), &[]),"text":{"type":"string","maxLength":16000},"key":text(128),"value":text(1024),"x":{"type":"integer","minimum":-10000,"maximum":10000},"y":{"type":"integer","minimum":-10000,"maximum":10000},"tab_id":{"type":"integer","minimum":1},"ms":{"type":"integer","minimum":0,"maximum":2000},"path":{"type":"array","minItems":2,"maxItems":64,"items":object(json!({"x":{"type":"integer","minimum":0,"maximum":1023},"y":{"type":"integer","minimum":0,"maximum":767}}), &["x","y"])},"button":{"type":"string","enum":["left","right","middle"]},"click_count":{"type":"integer","minimum":1,"maximum":2},"screenshot":{"type":"boolean"}}),
                     &["browser_id", "action"],
@@ -114,7 +114,7 @@ impl Tool for BrowserTool {
             self.name.as_str(),
             "browser.open" | "browser.navigate" | "browser.observe" | "browser.action"
         ) {
-            schema["properties"]["screenshot"] = json!({"type":"boolean","description":"Image override: true requests, false suppresses."});
+            schema["properties"]["screenshot"] = json!({"type":"boolean","description":"true requests an image; false suppresses optional images. Vision mode and Auto visual surfaces always retain image feedback."});
             schema["properties"]["visual"] =
                 json!({"type":"boolean","description":"Request image feedback in Auto mode."});
         }
@@ -349,10 +349,9 @@ impl Tool for BrowserTool {
                 | "browser.evaluate"
         );
         let explicitly_visual = perceptual
-            && (args["screenshot"] == true
-                || (args["screenshot"] != false
-                    && (settings.perception == crate::browser_policy::Perception::Vision
-                        || args["visual"] == true)));
+            && (settings.perception == crate::browser_policy::Perception::Vision
+                || args["screenshot"] == true
+                || (args["screenshot"] != false && args["visual"] == true));
         if explicitly_visual && !images_supported {
             return Err(error(
                 "images_unsupported",
@@ -501,13 +500,14 @@ impl Tool for BrowserTool {
         data["perception"] = json!(settings.perception);
         data["budgets"] = json!({"lifetime_seconds":session.settings.lifetime_seconds,"idle_seconds":session.settings.idle_seconds,"max_actions":session.settings.max_actions,"actions_used":session.actions});
         let screenshot = images_supported
-            && screenshot_override.unwrap_or(match settings.perception {
+            && match settings.perception {
                 crate::browser_policy::Perception::Vision => true,
-                crate::browser_policy::Perception::Dom => false,
+                crate::browser_policy::Perception::Dom => screenshot_override.unwrap_or(false),
                 crate::browser_policy::Perception::Auto => {
-                    visual_requested || data["visual_surface"] == true
+                    data["visual_surface"] == true
+                        || screenshot_override.unwrap_or(visual_requested)
                 }
-            });
+            };
         if !images_supported && data["visual_surface"] == true {
             data["vision_issue"] = json!(
                 "Image input is disabled; visual content cannot be inspected. DOM observations remain available."
@@ -742,11 +742,12 @@ fn validate_action(args: &Value) -> Result<()> {
             .filter(|key| target.get(key).is_some())
             .count()
             != 1
-            || target.get("role").is_some() != target.get("name").is_some())
+            || (target.get("ref").is_none()
+                && target.get("role").is_some() != target.get("name").is_some()))
     {
         return Err(error(
             "invalid_browser_target",
-            "target must be exactly {\"ref\":\"observed-ref\"}, {\"selector\":\"observed-selector\"}, {\"role\":\"button\",\"name\":\"observed-name\"}, or {\"label\":\"observed-label\"}; optionally frame. Do not mix ref/selector/label with name or role. For an unlabelled screenshot control use action:click_at with x,y and no target. No action executed.",
+            "target must select by {\"ref\":\"observed-ref\"}, {\"selector\":\"observed-selector\"}, {\"role\":\"button\",\"name\":\"observed-name\"}, or {\"label\":\"observed-label\"}; optionally frame. A ref may include an explanatory name. Do not mix different selectors. For an unlabelled screenshot control use action:click_at with x,y and no target. No action executed.",
         ));
     }
     if matches!(kind, "click_at" | "move")
@@ -1365,7 +1366,8 @@ mod host_panel_tests {
         assert!(error.message.contains("target"));
         assert!(error.message.contains("click_at"));
         for target in [
-            json!({"ref":"e12","name":"Fill"}),
+            json!({"name":"Fill"}),
+            json!({"ref":"e12","role":"button","name":"Fill"}),
             json!({"role":"button","selector":".fill"}),
         ] {
             let error = validate_action(&json!({"action":"click","target":target})).unwrap_err();
@@ -1374,6 +1376,7 @@ mod host_panel_tests {
         }
         validate_action(&json!({"action":"click_at","x":14,"y":210})).unwrap();
         validate_action(&json!({"action":"click","target":{"ref":"e12"}})).unwrap();
+        validate_action(&json!({"action":"click","target":{"ref":"e12","name":"Fill"}})).unwrap();
     }
     #[test]
     fn origin_arguments_explain_the_field_and_require_absolute_urls() {

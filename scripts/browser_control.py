@@ -19,6 +19,18 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+# Follow open web components at a viewport point without exposing page scripts
+# or treating the outer host as the actual button. Bound nesting defensively.
+POINT_TARGET = """p=>{
+    let hit=document.elementFromPoint(p.x,p.y);
+    for(let depth=0;depth<16 && hit?.shadowRoot;depth++){
+        const inner=hit.shadowRoot.elementFromPoint(p.x,p.y);
+        if(!inner||inner===hit)break;
+        hit=inner;
+    }
+    return hit;
+}"""
+
 
 def emit(value):
     print(json.dumps(value, ensure_ascii=True), flush=True)
@@ -217,11 +229,22 @@ class Driver:
 
     @staticmethod
     def info(element):
-        meta = element.evaluate("""e => ({tag:e.tagName.toLowerCase(),type:e.type||'',role:e.getAttribute('role')||({a:'link',button:'button',input:e.type==='checkbox'?'checkbox':'textbox',textarea:'textbox',select:'combobox'}[e.tagName.toLowerCase()]||''),
-          name:(e.getAttribute('aria-label') || (e.labels&&Array.from(e.labels).map(x=>x.innerText).join(' ')) || e.innerText || e.name || e.getAttribute('title') || '').slice(0,160),
+        meta = element.evaluate("""e => ({tag:e.tagName.toLowerCase(),type:e.type||'',role:e.getAttribute('role')||({a:'link',button:'button',summary:'button',input:({checkbox:'checkbox',radio:'radio',range:'slider',number:'spinbutton',button:'button',submit:'button',reset:'button'}[e.type]||'textbox'),textarea:'textbox',select:'combobox'}[e.tagName.toLowerCase()]||''),
+          name:(()=>{
+            // Bounded DOM naming hints complement the browser's accessibility
+            // snapshot and image; this is not a replacement for AccName.
+            const labelled=(e.getAttribute('aria-labelledby')||'').slice(0,1024).split(/\\s+/).slice(0,16)
+              .map(id=>(e.getRootNode().getElementById?.(id)?.textContent||'').slice(0,160)).join(' ').trim();
+            const icon=e.querySelector('img[alt],svg title');
+            return (labelled || e.getAttribute('aria-label') || (e.labels&&Array.from(e.labels).map(x=>x.innerText).join(' ')) ||
+              e.innerText || e.getAttribute('alt') || icon?.getAttribute('alt') || icon?.textContent ||
+              (['button','submit','reset'].includes(e.type)?e.value:'') || e.getAttribute('title') || e.name || '').slice(0,160);
+          })(),
           id:(e.id||'').slice(0,256),autocomplete:(e.autocomplete||'').slice(0,128),href:(e.href||'').slice(0,2048),download:e.hasAttribute('download'),
           submits:!!e.form && (e.type==='submit'||e.type==='image'),form_action:e.form?e.form.action.slice(0,2048):'',
-          bounds:(()=>{let r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()})""")
+          bounds:(()=>{let r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})(),
+          color:(()=>{const c=e.getAttribute('data-color');return c && c.length<=64 && CSS.supports('color',c)?c:undefined})(),
+          selected:e.getAttribute('aria-selected')==='true'||e.getAttribute('aria-pressed')==='true'||e.classList.contains('selected')})""")
         description = ' '.join(str(meta.get(k,'')) for k in ('name','id','autocomplete','type'))
         meta['protected'] = (meta['type'] in ('password','file') or bool(re.search(
             r'password|passwort|passcode|one.time.code|einmalcode|current-password|new-password|cc-[a-z]+|card.?number|cardholder|expiration|expiry|kreditkarte|cvc|cvv|security.?code|verification.?code|auth.?code|\botp\b|\bpin\b',description,re.I)))
@@ -286,6 +309,16 @@ class Driver:
     def action(self, args):
         kind = args["action"]
         self.review_action(args)
+        # References expire in the following snapshot. Retain what the action
+        # actually targeted, so a palette/tool selection cannot be mistaken for
+        # painting the canvas after older observations have been compacted.
+        observed=None
+        if 'target' in args:
+            observed=self.info(self.target(args['target']))
+        elif kind in ('click_at','move','drag'):
+            point=args['path'][0] if kind=='drag' else args
+            hit=self.page.evaluate_handle(POINT_TARGET,{'x':point['x'],'y':point['y']}).as_element()
+            if hit is not None: observed=self.info(hit)
         if kind in ("click", "fill", "select", "hover"):
             target = self.target(args["target"])
             if kind == "fill":
@@ -339,6 +372,15 @@ class Driver:
                     self.page = next((p for p in self.context.pages if not p.is_closed()), None)
                     if self.page is None:
                         self.page = self.context.new_page()
+        if observed:
+            return {k:v for k,v in observed.items() if k in ('tag','name','role','color','bounds') and v}
+
+    def redact(self, value):
+        if isinstance(value,str):
+            for secret in self.secrets: value=value.replace(secret,'[private]')
+        elif isinstance(value,list): value=[self.redact(item) for item in value]
+        elif isinstance(value,dict): value={k:self.redact(v) for k,v in value.items()}
+        return value
 
     def block_transport(self, reason):
         # No URL, credentials or page payload in transport diagnostics.
@@ -416,52 +458,84 @@ class Driver:
             result["observation_errors"].append({"part":"protection","reason":"masking_unavailable"})
             return result
         def controls():
-            items=[]; size=0
-            interactive='a,button,input,select,textarea,[role=button],[role=menuitem],[role=checkbox],[role=radio],[role=option],[tabindex],[title],[contenteditable=true]'
+            items=[]; size=0; seen=self.page.evaluate_handle('()=>new Set()')
+            interactive='a,button,input,select,textarea,summary,[onclick]:not(body):not(html),[tabindex],[title],[contenteditable=true],'+','.join(
+                '[role='+role+']' for role in ('button','link','menuitem','menuitemcheckbox','menuitemradio','checkbox','radio','switch','tab','option','combobox','slider','spinbutton','textbox','treeitem'))
             # Hidden menu entries must not spend the candidate budget before
             # visible toolbar controls and drawing surfaces are considered.
             candidates=self.page.query_selector_all(':is('+interactive+',canvas):visible')
             for element in candidates[:100]:
                 if not element.is_visible(): continue
-                # A toolbar/palette canvas often paints a clickable parent.
-                # Refer to that parent, whose overlay may intercept canvas clicks.
-                if element.evaluate("""(e, selector) => {
-                    if(e.tagName!=='CANVAS') return false;
-                    const parent=e.parentElement?.closest(selector), r=e.getBoundingClientRect();
-                    if(!parent || r.width>64 || r.height>64) return false;
+                # Small pointer-transparent canvases paint custom controls that
+                # need not have a role/title/tabindex. Return the actual parent
+                # receiving pointer events, never a decorative child that will
+                # time out under its parent's overlay. Large transparent helper
+                # layers are not drawing surfaces. No site-specific selectors.
+                element=element.evaluate_handle("""(e, selector) => {
+                    if(e.tagName!=='CANVAS') return e;
+                    const r=e.getBoundingClientRect(), transparent=getComputedStyle(e).pointerEvents==='none';
+                    if(r.width>64 || r.height>64) return transparent?null:e;
+                    const parent=e.parentElement?.closest(selector)||e.parentElement;
+                    if(!parent) return transparent?null:e;
                     const p=parent.getBoundingClientRect();
-                    return p.width<=r.width+16 && p.height<=r.height+16;
-                }""", interactive):
-                    continue
+                    return p.width<=r.width+16 && p.height<=r.height+16 &&
+                        (transparent || parent.matches(selector))?parent:(transparent?null:e);
+                }""", interactive).as_element()
+                if element is None or element.evaluate('(e,seen)=>{if(seen.has(e))return true;seen.add(e);return false}',seen): continue
+                # Playwright clicks the element's center. Do not advertise a
+                # ref whose center is covered by an unrelated control (e.g. an
+                # overlapping foreground/background preview or a modal).
+                # Offscreen elements may still be scrolled into view normally.
+                if not element.evaluate("""e=>{
+                    const hitTest="""+POINT_TARGET+""";
+                    const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+                    if(x<0||y<0||x>=innerWidth||y>=innerHeight)return true;
+                    let hit=hitTest({x,y});
+                    if(!hit)return true;
+                    for(let depth=0;hit && depth<16;depth++,hit=hit.getRootNode().host){
+                        if(e.contains(hit))return true;
+                    }
+                    return false;
+                }"""): continue
                 meta=self.info(element)
-                meta.update(element.evaluate("e=>({disabled:!!e.disabled,checked:!!e.checked,value:e.tagName==='SELECT'?e.value:undefined})"))
+                meta.update(element.evaluate("""e=>({disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',
+                    checked:e.getAttribute('aria-checked')==='mixed'?'mixed':(e.getAttribute('aria-checked')==='true'||!!e.checked),
+                    value:e.tagName==='SELECT'?e.value:undefined})"""))
+                # Default fields must not crowd later palette/toolbar controls
+                # out of the bounded observation. Action review still obtains
+                # the complete fresh metadata with info(), including protection.
+                for key in list(meta):
+                    if meta[key] in ('',False,None) and key not in ('bounds',):
+                        if key=='checked' and (meta.get('role') in ('checkbox','radio','switch','menuitemcheckbox','menuitemradio') or meta.get('type') in ('checkbox','radio')): continue
+                        if meta.get('tag')=='a' and key in ('download','consequential'): continue
+                        del meta[key]
                 size+=len(json.dumps(meta,ensure_ascii=True))
                 if size>10000: break
                 self.ref_sequence+=1
                 ref=f'e{self.ref_sequence}'
                 self.references[ref]=element; meta['ref']=ref; items.append(meta)
-                if len(items)>=40: break
+                if len(items)>=64: break
+            seen.dispose()
             return items
         part("controls", controls)
         part("title", lambda: self.page.title()[:512])
         body=self.page.locator("body")
         part("text", lambda: body.inner_text(timeout=2000)[:6000])
         part("accessibility", lambda: body.aria_snapshot(timeout=2000)[:8000])
-        part("visual_surface", lambda: self.page.locator('canvas,svg,[role=img],img').evaluate_all("""els => els.some(e => {
+        # Unlabelled icon/custom controls need visual context even on ordinary
+        # HTML pages without a large canvas or image. Labelled form fields keep
+        # the usual DOM path; the host still decides whether images are allowed.
+        unlabelled_controls=any(not c.get('name') and c.get('tag') not in ('input','select','textarea')
+            for c in result.get('controls',[]))
+        part("visual_surface", lambda: unlabelled_controls or self.page.locator('canvas,svg,[role=img],img').evaluate_all("""els => els.some(e => {
             const r=e.getBoundingClientRect(),s=getComputedStyle(e);
             return r.width*r.height>=16384 && r.bottom>0 && r.right>0 && r.top<768 && r.left<1024 && s.display!=='none' && s.visibility!=='hidden';
         })"""))
         if stable_text is not None:
             result["semantic_state"]={"url":result["url"],"text":stable_text,
-                "controls":[{k:v for k,v in meta.items() if k in ('tag','role','name','disabled','checked','value')}
+                "controls":[{k:v for k,v in meta.items() if k in ('tag','role','name','disabled','checked','value','color','selected')}
                             for meta in result.get("controls",[]) if meta.get('tag')!='canvas']}
-        def redact(value):
-            if isinstance(value,str):
-                for secret in self.secrets: value=value.replace(secret,'[private]')
-            elif isinstance(value,list): value=[redact(item) for item in value]
-            elif isinstance(value,dict): value={k:redact(v) for k,v in value.items()}
-            return value
-        result=redact(result)
+        result=self.redact(result)
         if screenshot:
             part("screenshot_base64", lambda: base64.b64encode(
                 self.page.screenshot(type="jpeg", quality=65, timeout=5000, mask=masks)).decode("ascii"))
@@ -491,7 +565,8 @@ class Driver:
             elif tool == "browser.navigate":
                 self.page.goto(args["url"], wait_until="domcontentloaded")
             elif tool == "browser.action":
-                self.action(args)
+                target=self.action(args)
+                if target: result['action_target']=target
             elif tool == "browser.evaluate":
                 value=self.page.evaluate(args['script'])
                 encoded=json.dumps(value,ensure_ascii=True)
@@ -526,6 +601,8 @@ class Driver:
                 self.active = False
         if args.get('human') and args.get('text') and 'error' in result:
             result['error']=result['error'].replace(args['text'],'[private]')
+        if 'action_target' in result:
+            result['action_target']=self.redact(result['action_target'])
         return result
 
 

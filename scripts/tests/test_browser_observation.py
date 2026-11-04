@@ -55,6 +55,15 @@ class Observations(unittest.TestCase):
         self.assertNotIn('screenshot_base64',result)
         self.assertNotIn('text',result)
         self.assertEqual(result['observation_errors'][0]['reason'],'masking_unavailable')
+    def test_action_target_is_redacted_without_modifying_image_bytes(self):
+        self.page.set_content('<input type="password" value="a"><button title="a">a</button>')
+        self.driver.snapshot()
+        result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
+            'target':{'selector':'button'},'browser_category':'actions'})
+        self.assertNotIn('error',result)
+        self.assertEqual(result['action_target']['name'],'[private]')
+        self.assertNotIn('[private]',result['screenshot_base64'])
+        self.assertTrue(module.base64.b64decode(result['screenshot_base64'],validate=True).startswith(b'\xff\xd8'))
     def test_crashed_tab_is_failed_and_does_not_repeat_actions(self):
         # Only terminate renderer children reported by this test's own browser.
         # chrome://crash can leave headless Chromium waiting for a crash handler.
@@ -100,13 +109,14 @@ class Observations(unittest.TestCase):
             <div tabindex="0"><canvas id="drawing" width="400" height="300"></canvas></div>''')
         observation=self.driver.snapshot(True)
         controls=observation['controls']
-        fill=next(c for c in controls if c['name']=='Fill with Color')
+        fill=next(c for c in controls if c.get('name')=='Fill with Color')
         self.assertEqual(fill['tag'],'div')
-        self.assertEqual([c['id'] for c in controls if c['tag']=='canvas'],['drawing'])
+        self.assertEqual([c.get('id') for c in controls if c['tag']=='canvas'],['drawing'])
         result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
-            'target':{'ref':fill['ref']},'browser_category':'actions'})
+            'target':{'ref':fill['ref'],'name':'Informational name only'},'browser_category':'actions'})
         self.assertNotIn('error',result)
         self.assertTrue(result['action_executed'])
+        self.assertEqual(result['action_target']['name'],'Fill with Color')
         self.assertEqual(self.page.evaluate('window.selected'),'fill')
 
     def test_hidden_menus_do_not_consume_visible_control_budget(self):
@@ -116,11 +126,115 @@ class Observations(unittest.TestCase):
             '<canvas id="drawing" width="400" height="300"></canvas>')
         result=self.driver.snapshot(True)
         controls=result['controls']
-        pencil=next((c for c in controls if c['name']=='Pencil'),None)
+        pencil=next((c for c in controls if c.get('name')=='Pencil'),None)
         self.assertIsNotNone(pencil,'Hidden menu items must not hide visible toolbar controls')
-        self.assertTrue(any(c['id']=='drawing' for c in controls))
-        self.assertFalse(any(c['name'].startswith('Hidden item') for c in controls))
+        self.assertTrue(any(c.get('id')=='drawing' for c in controls))
+        self.assertFalse(any(c.get('name','').startswith('Hidden item') for c in controls))
         self.driver.action({'action':'click','target':{'ref':pencil['ref']},'browser_category':'actions'})
         self.assertEqual(self.page.evaluate('window.selected'),'pencil')
+
+    def test_custom_palette_reports_clickable_colors_and_selected_tools_within_budget(self):
+        self.page.set_content('''<style>.swatch{display:inline-block;width:13px;height:13px}.swatch canvas{pointer-events:none}</style>'''+
+            ''.join(f'<button>Tool {i}</button>' for i in range(23))+
+            '<div title="Pencil" class="selected">Pencil</div><canvas id="drawing" width="400" height="300"></canvas>'+
+            '<canvas id="helper" width="400" height="300" style="pointer-events:none"></canvas>'+
+            ''.join(f'<div class="swatch" data-color="rgb({i},0,255)" onclick="window.chosen=this.dataset.color"><canvas width="13" height="13"></canvas></div>' for i in range(28)))
+        observation=self.driver.snapshot(True,stable_text=self.driver.semantic())
+        colors=[c for c in observation['controls'] if c.get('color')]
+        self.assertEqual(len(colors),28,'The palette must survive the bounded control budget')
+        self.assertTrue(all(c['tag']=='div' for c in colors))
+        self.assertTrue(any(c.get('id')=='drawing' for c in observation['controls']))
+        self.assertFalse(any(c.get('id')=='helper' for c in observation['controls']))
+        self.assertTrue(next(c for c in observation['controls'] if c.get('name')=='Pencil')['selected'])
+        self.assertTrue(any(c.get('color')=='rgb(27,0,255)' for c in observation['semantic_state']['controls']))
+        result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
+            'target':{'ref':colors[-1]['ref']},'browser_category':'actions'})
+        self.assertNotIn('error',result)
+        self.assertEqual(self.page.evaluate('window.chosen'),'rgb(27,0,255)')
+        self.assertEqual(result['action_target']['color'],'rgb(27,0,255)')
+        self.assertEqual(result['action_target']['tag'],'div')
+
+    def test_overlapping_palette_preview_does_not_advertise_an_intercepted_ref(self):
+        self.page.set_content('''<style>.swatch{position:absolute;width:16px;height:16px;top:10px}
+            .swatch canvas{pointer-events:none}</style>
+            <div class="swatch" style="left:18px" data-color="white"><canvas width="16" height="16"></canvas></div>
+            <div class="swatch" style="left:11px" data-color="blue" onclick="window.chosen='blue'"><canvas width="16" height="16"></canvas></div>''')
+        observed=self.driver.snapshot(True)
+        colors=[c for c in observed['controls'] if c.get('color')]
+        self.assertEqual([c['color'] for c in colors],['blue'])
+        result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
+            'target':{'ref':colors[0]['ref']},'browser_category':'actions'})
+        self.assertNotIn('error',result)
+        self.assertEqual(self.page.evaluate('window.chosen'),'blue')
+
+    def test_compact_link_metadata_preserves_explicit_permission_classification(self):
+        self.page.set_content('<a href="https://example.com">Documentation</a><a href="https://example.com" download>Export</a>')
+        links=[c for c in self.driver.snapshot()['controls'] if c.get('tag')=='a']
+        self.assertEqual(len(links),2)
+        self.assertIs(links[0]['consequential'],False)
+        self.assertIs(links[0]['download'],False)
+        self.assertIs(links[1]['download'],True)
+
+    def test_general_controls_combine_labels_icon_hints_roles_and_states(self):
+        self.page.set_content('''<span id="report-label" hidden>Open report</span>
+            <button aria-labelledby="report-label" aria-label="Ignored fallback" onclick="window.clicked='report'"><svg width="24" height="24"><title>Document icon</title></svg></button>
+            <button onclick="window.clicked='refresh'"><img alt="Refresh results" width="24" height="24"></button>
+            <button onclick="window.clicked='expand'"><svg width="24" height="24"><title>Expand details</title></svg></button>
+            <input type="button" value="Run report" onclick="window.clicked='run'">
+            <div onclick="window.clicked='custom'">Custom control</div>
+            <div role="switch" aria-label="Notifications" aria-checked="true">Enabled</div>
+            <div role="tab" aria-selected="true">Overview</div>
+            <div role="menuitemcheckbox" aria-checked="false">Optional column</div>
+            <div role="checkbox" aria-checked="mixed">All rows</div>
+            <div role="button" aria-disabled="true">Unavailable action</div>
+            <button style="width:24px;height:24px;background:blue" onclick="window.clicked='unlabelled'"></button>''')
+        observed=self.driver.snapshot(True)
+        self.assertTrue(observed['visual_surface'],'Auto needs an image for unlabelled controls on ordinary HTML pages too')
+        by_name={c.get('name'):c for c in observed['controls']}
+        self.assertIs(by_name['Notifications']['checked'],True)
+        self.assertIs(by_name['Overview']['selected'],True)
+        self.assertIs(by_name['Optional column']['checked'],False)
+        self.assertEqual(by_name['All rows']['checked'],'mixed')
+        self.assertIs(by_name['Unavailable action']['disabled'],True)
+        self.assertEqual(by_name['Run report']['role'],'button')
+        for name,event in [('Open report','report'),('Refresh results','refresh'),('Expand details','expand'),('Run report','run'),('Custom control','custom')]:
+            target=next(c for c in observed['controls'] if c.get('name')==name)
+            observed=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
+                'target':{'ref':target['ref']},'browser_category':'actions'})
+            self.assertNotIn('error',observed)
+            self.assertEqual(observed['action_target']['name'],name)
+            self.assertEqual(self.page.evaluate('window.clicked'),event)
+
+    def test_modal_overlay_exposes_the_receiving_button(self):
+        self.page.set_content('''<button id="behind" style="position:absolute;left:10px;top:10px;width:120px;height:40px" onclick="window.clicked='behind'">Behind modal</button>
+            <div role="dialog" style="position:absolute;left:10px;top:10px;z-index:2;background:white">
+            <button style="width:120px;height:40px" onclick="window.clicked='confirm'">Confirm choice</button></div>''')
+        observed=self.driver.snapshot(True)
+        self.assertFalse(any(c.get('id')=='behind' for c in observed['controls']))
+        target=next(c for c in observed['controls'] if c.get('name')=='Confirm choice')
+        result=self.driver.run('browser.action',{'expected_url':'about:blank','action':'click',
+            'target':{'ref':target['ref']},'browser_category':'actions'})
+        self.assertNotIn('error',result)
+        self.assertEqual(self.page.evaluate('window.clicked'),'confirm')
+
+    def test_nested_web_components_keep_actionable_labels_and_hit_targets(self):
+        self.page.set_content('<div id="host"></div>')
+        self.page.evaluate('''()=>{
+            const outer=document.querySelector('#host').attachShadow({mode:'open'});
+            outer.innerHTML='<div id="inner"></div>';
+            const inner=outer.querySelector('#inner').attachShadow({mode:'open'});
+            inner.innerHTML='<span id="label" hidden>Open settings</span><button aria-labelledby="label" onclick="window.clicks=(window.clicks||0)+1">⚙</button>';
+        }''')
+        observed=self.driver.snapshot(True)
+        target=next(c for c in observed['controls'] if c.get('name')=='Open settings')
+        for action in [
+            {'action':'click','target':{'ref':target['ref']}},
+            {'action':'click_at','x':round(target['bounds']['x']+target['bounds']['width']/2),
+                'y':round(target['bounds']['y']+target['bounds']['height']/2)}
+        ]:
+            result=self.driver.run('browser.action',{'expected_url':'about:blank','browser_category':'actions',**action})
+            self.assertNotIn('error',result)
+            self.assertEqual(result['action_target']['name'],'Open settings')
+        self.assertEqual(self.page.evaluate('window.clicks'),2)
 
 if __name__=='__main__': unittest.main()

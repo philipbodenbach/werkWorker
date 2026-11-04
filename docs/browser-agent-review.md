@@ -33,10 +33,22 @@ regressions retain their original budgets and assertions.
 - Bundled `browser-use` skill with immutable session snapshots, activation in
   browser-capable runs, profile integration and restoration into older sessions.
 - Host-owned Auto/DOM/Vision settings, generic `visual:true`, explicit screenshot
-  overrides and prepared-setting checks. `browser.open` is version 5 and
+  overrides for optional images and prepared-setting checks. Vision always retains
+  image feedback when supported; Auto also retains it on detected visual surfaces,
+  even if the model requests `screenshot:false`. DOM mode keeps explicit overrides.
+  `browser.open` is version 5 and
   `browser.action` version 4 after the follow-up below; other controls remain v3.
 - Observation identity and a bounded browser checkpoint in Working State;
   at most two browser frames in planned requests, with user images retained.
+- Custom palette canvases expose the clickable parent, color and selected state.
+  General controls also combine ARIA labels, native labels, icon/image names,
+  interactive roles and explicit click handlers, with disabled/checked states.
+  Controls covered at their click point by unrelated elements are not advertised.
+  Action receipts retain `action_target` before references expire. Repetition
+  counting resolves each reference against its preceding observation: distinct
+  controls stay distinct, while fresh references to the same control still count.
+  An optional explanatory name alongside a ref neither selects another element
+  nor changes its repetition identity.
 - Panel/TUI settings, observed activity, task status, vision problems and expiry.
   Continue and compaction of the latest observation require a fresh observation.
   An independent refresh marker also blocks reused `browser.open` when Continue

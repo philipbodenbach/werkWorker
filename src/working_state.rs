@@ -20,13 +20,15 @@ pub(crate) fn path(value: &str) -> Result<String> {
 
 pub(crate) fn call_key(call: &ToolCall) -> String {
     let mut args = call.arguments.clone();
-    if crate::browser_progress::is_browser(call) {
-        if let Some(args) = args.as_object_mut() {
-            args.remove("screenshot");
-            args.remove("visual");
-        }
-        if args["target"]["ref"].is_string() {
-            args["target"]["ref"] = json!("ephemeral_ref");
+    if crate::browser_progress::is_browser(call)
+        && let Some(args) = args.as_object_mut()
+    {
+        args.remove("screenshot");
+        args.remove("visual");
+        if let Some(target) = args.get_mut("target").and_then(Value::as_object_mut)
+            && target.get("ref").is_some_and(Value::is_string)
+        {
+            target.remove("name");
         }
     }
     for field in ["path", "cwd"] {

@@ -419,6 +419,18 @@ async fn panel_rule_changes_resolve_pending_browser_approvals() {
         return;
     }
     let (dir, engine, session, provider, client, panel) = setup().await;
+    // This exercises approval rules, not image inference. Auto now correctly
+    // retains canvas frames even when the scripted calls request no screenshot.
+    session
+        .set_browser_settings(
+            browser_policy::BrowserSettings {
+                perception: browser_policy::Perception::Dom,
+                ..Default::default()
+            },
+            "permission-test-dom",
+        )
+        .await
+        .unwrap();
     std::fs::write(
         dir.path().join("index.html"),
         r#"<!doctype html><button id="mark" style="position:absolute;left:20px;top:20px;width:100px;height:40px" onclick="document.querySelector('#result').textContent='Marked'">Mark</button><p id="result">Ready</p><canvas style="position:absolute;left:150px;top:100px" width="300" height="200"></canvas>"#,

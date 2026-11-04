@@ -349,17 +349,31 @@ host API `set_browser_settings(BrowserSettings, command_id)`:
 | Vision | Automatic images on opening, navigation, observations and actions |
 
 All four tools accept `screenshot`: explicit `true` requests an image even in
-DOM mode, explicit `false` suppresses automatic images. The explicit flag wins;
-then Vision/DOM; then Auto's visual need. `images=unknown` permits image input;
+DOM mode. Explicit `false` suppresses optional images, but cannot disable the
+host's Vision mode or Auto feedback on a detected visual surface.
+`images=unknown` permits image input;
 `images=unsupported` rejects an explicit visual request before acting. Auto can
 continue in DOM and reports that visual content cannot be inspected. Backend
 rejection names missing vision/projector support when the server supplies a
 recognized diagnostic. Worker never chooses a cloud backend or downloads models.
 A missing screenshot is an observation problem, not evidence an action failed.
 
+Control discovery is site-independent. Native elements, interactive ARIA roles
+and explicit click handlers supply candidates; bounded naming hints include
+`aria-labelledby`, `aria-label`, associated labels, visible text, icon titles,
+image alternatives and tooltips. The browser's accessibility snapshot and current
+image remain complementary evidence, not substitutes for action verification.
+Auto also requests an image for unlabelled icon/custom controls on ordinary HTML
+pages. Open shadow roots are followed when resolving the actual click target.
+Selected, checked and disabled states are retained. A hit test omits controls
+whose click point is covered by an unrelated element; decorative canvas icons
+resolve to the control that receives their pointer events.
+
 Receipts associate browser/tab, URL, viewport, revision, observation ID, timestamp,
 image dimensions and scale. `action_executed`, `readiness`, `observation_errors`
 and `vision_issue` distinguish action effects from partial observation failure.
+`action_target` retains the actual control's name, color and bounds before its
+reference expires. Selecting a palette color is not evidence of painting.
 The driver samples DOM stability for 400–1200 ms, without `networkidle`; future
 delayed updates can still require bounded `wait` and another observation. Text,
 accessibility and screenshot extraction are independent after a successful

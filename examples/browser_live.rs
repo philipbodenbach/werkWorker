@@ -27,6 +27,9 @@ struct Args {
     profile: Option<String>,
     #[arg(long)]
     reserve_output_tokens: Option<usize>,
+    /// Replay an exact user task instead of the case's default prompt.
+    #[arg(long)]
+    prompt_file: Option<PathBuf>,
     /// Additional exact origins explicitly permitted by the host for this run.
     #[arg(long)]
     origin: Vec<String>,
@@ -105,6 +108,12 @@ async fn main() -> Result<()> {
             ));
         }
     };
+    let prompt_override = args
+        .prompt_file
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let prompt = prompt_override.as_deref().unwrap_or(prompt);
     let commit = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
@@ -185,8 +194,40 @@ async fn main() -> Result<()> {
         .await?;
     let run = session.submit(prompt, "live-browser", limits, None).await?;
     let mut events = run.events(0);
+    let mut trace = Vec::new();
     while let Some(event) = events.next().await {
-        if let EventKind::ApprovalRequested { request } = event?.event {
+        let event = event?.event;
+        if let EventKind::ToolCompleted {
+            invocation_id,
+            result,
+        } = &event
+        {
+            let saved = session.snapshot().await?;
+            if let Some(invocation) = saved
+                .runs
+                .iter()
+                .flat_map(|r| &r.invocations)
+                .find(|i| &i.invocation_id == invocation_id)
+            {
+                eprintln!(
+                    "tool {}: {:?} {:?}",
+                    invocation.call.name, result.status, result.error_code
+                );
+                trace.push(json!({"call":invocation.call,"status":result.status,"error":result.error_code,
+                    "data":result.data,"assistant":saved.messages.get(invocation.message_index).map(|m|&m.content)}));
+                std::fs::write(
+                    args.output.join("trace.json"),
+                    serde_json::to_vec_pretty(&trace)?,
+                )?;
+            }
+            if let Some(image) = result.images.last() {
+                let bytes = STANDARD
+                    .decode(&image.data_base64)
+                    .map_err(|_| WorkerError::new("eval_image", "Invalid action frame"))?;
+                std::fs::write(args.output.join("latest.jpg"), bytes)?;
+            }
+        }
+        if let EventKind::ApprovalRequested { request } = event {
             // No blanket grant for redirects/CDNs or a newly requested site.
             run.respond_to_approval(
                 &request.request_id,
@@ -197,6 +238,10 @@ async fn main() -> Result<()> {
         }
     }
     let result = run.wait().await?;
+    std::fs::write(
+        args.output.join("session.json"),
+        serde_json::to_vec(&session.snapshot().await?)?,
+    )?;
     let state = run.status().await?;
     let receipts: Vec<_> = state
         .invocations

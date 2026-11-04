@@ -17,10 +17,73 @@ fn scope(data: &Value) -> Option<(String, u64)> {
     ))
 }
 
+// Resolve ephemeral refs against the observation available BEFORE each call.
+// New refs for the same observed control still count as repetitions; different
+// controls must not collapse into one generic "ref click". Unknown refs share
+// a bounded fallback so invented/stale refs cannot evade the guard.
+fn resolved_key(call: &ToolCall, observation: Option<&Value>) -> String {
+    let Some(reference) = call.arguments["target"]["ref"].as_str() else {
+        return crate::working_state::call_key(call);
+    };
+    let mut resolved = call.clone();
+    let controls = observation.and_then(|v| v["controls"].as_array());
+    let identity = |control: &Value| {
+        json!({
+            "tag":control["tag"],"role":control["role"],"name":control["name"],
+            "type":control["type"],"href":control["href"],"color":control["color"]
+        })
+    };
+    let target = controls.and_then(|controls| {
+        let control = controls.iter().find(|c| c["ref"] == reference)?;
+        let mut key = identity(control);
+        let anonymous = ["name", "href"]
+            .iter()
+            .all(|field| control[*field].as_str().is_none_or(str::is_empty));
+        if anonymous || controls.iter().filter(|c| identity(c) == key).count() > 1 {
+            key["bounds"] = control["bounds"].clone();
+        }
+        Some(fingerprint(&key))
+    });
+    resolved.arguments["target"]["ref"] = json!(target.unwrap_or_else(|| "unobserved_ref".into()));
+    crate::working_state::call_key(&resolved)
+}
+
+fn resolved_keys(run: &Run, call: &ToolCall) -> (Vec<String>, String) {
+    let mut observations = BTreeMap::new();
+    let mut keys = Vec::with_capacity(run.invocations.len());
+    let mut current = None;
+    for invocation in &run.invocations {
+        let browser = invocation.call.arguments["browser_id"]
+            .as_str()
+            .unwrap_or("");
+        let key = resolved_key(&invocation.call, observations.get(browser).copied());
+        if invocation.call.id == call.id {
+            current = Some(key.clone());
+        }
+        keys.push(key);
+        if let Some(data) = invocation.result.as_ref().map(|r| &r.data)
+            && let Some(browser) = data["browser_id"].as_str()
+            && data["observation_id"].is_string()
+        {
+            observations.insert(browser, data);
+        }
+    }
+    let current = current.unwrap_or_else(|| {
+        resolved_key(
+            call,
+            observations
+                .get(call.arguments["browser_id"].as_str().unwrap_or(""))
+                .copied(),
+        )
+    });
+    (keys, current)
+}
+
 /// Each browser/tab has its own epoch. Seen semantic states cannot renew it
 /// twice (e.g. blinking). Visual novelty has a finite allowance, even if an
 /// animation produces infinitely many different frames.
 pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
+    let (keys, key) = resolved_keys(run, call);
     let browser = call.arguments["browser_id"].as_str().unwrap_or("");
     let current_scope = run
         .invocations
@@ -30,13 +93,7 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
         .filter_map(|r| scope(&r.data))
         .find(|(id, _)| id == browser);
     let Some(current_scope) = current_scope else {
-        return run
-            .invocations
-            .iter()
-            .filter(|i| {
-                crate::working_state::call_key(&i.call) == crate::working_state::call_key(call)
-            })
-            .count();
+        return keys.iter().filter(|candidate| **candidate == key).count();
     };
     let mut seen = BTreeSet::new();
     let mut frames = BTreeSet::new();
@@ -61,8 +118,9 @@ pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
     }
     run.invocations[boundary..]
         .iter()
-        .filter(|i| {
-            crate::working_state::call_key(&i.call) == crate::working_state::call_key(call)
+        .zip(&keys[boundary..])
+        .filter(|(i, candidate)| {
+            **candidate == key
                 && i.result
                     .as_ref()
                     .and_then(|r| scope(&r.data))
@@ -174,7 +232,16 @@ pub(crate) fn compact_controls(messages: &mut [Message], browser_calls: &BTreeSe
                             fields
                                 .get(*key)
                                 .and_then(Value::as_str)
-                                .is_some_and(|kind| matches!(kind, "checkbox" | "radio" | "switch"))
+                                .is_some_and(|kind| {
+                                    matches!(
+                                        kind,
+                                        "checkbox"
+                                            | "radio"
+                                            | "switch"
+                                            | "menuitemcheckbox"
+                                            | "menuitemradio"
+                                    )
+                                })
                         })
                     {
                         continue;
@@ -239,7 +306,8 @@ mod tests {
         let mut result = ToolResult::ok(json!({"controls":[
             {"ref":"e1","tag":"canvas","name":"","href":"","protected":false,"bounds":{"x":0,"y":25}},
             {"ref":"e2","name":"Password","protected":true,"consequential":true,"disabled":true,"checked":true},
-            {"ref":"e3","role":"checkbox","checked":false}
+            {"ref":"e3","role":"checkbox","checked":false},
+            {"ref":"e4","role":"menuitemcheckbox","checked":false}
         ],"error":"Click failed","action_outcome":"unknown"}));
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(1, 1)
@@ -258,6 +326,7 @@ mod tests {
         );
         assert_eq!(projected["data"]["controls"][1], result.data["controls"][1]);
         assert_eq!(projected["data"]["controls"][2], result.data["controls"][2]);
+        assert_eq!(projected["data"]["controls"][3], result.data["controls"][3]);
         assert_eq!(projected["data"]["error"], result.data["error"]);
         assert_eq!(messages[0].images, original.images);
         assert!(original.content.contains("\"protected\":false"));
@@ -378,6 +447,61 @@ mod tests {
     }
     fn run() -> Run {
         serde_json::from_value(json!({"id":"r","status":"running","input":"Browse", "limits":Limits::default(),"started_at_ms":0,"deadline_ms":0,"history_start":0,"metrics":Metrics::default(),"attempts":[],"contexts":[],"invocations":[],"steering":[],"plan":null,"similar_grants":[],"repaired_output":false})).unwrap()
+    }
+    #[test]
+    fn ref_clicks_distinguish_controls_but_still_stop_repeated_selection() {
+        let mut run = run();
+        let observation = |n: usize| {
+            ToolResult::ok(json!({
+                "browser_id":"browser","tab_id":1,"observation_id":format!("o{n}"),
+                "progress":{"semantic":"unchanged"},
+                "controls":[
+                    {"ref":format!("fill{n}"),"tag":"div","name":"Fill","bounds":{"x":20+n,"y":40}},
+                    {"ref":format!("blue{n}"),"tag":"div","color":"rgb(0,0,255)","bounds":{"x":50,"y":700}}
+                ]
+            }))
+        };
+        run.invocations.push(serde_json::from_value(json!({"invocation_id":"open","step_id":"s","message_index":0,
+            "call":{"id":"open","name":"browser.open","arguments":{}},"status":"finished","prepared":{},"result":observation(0)})).unwrap());
+        for (n, target) in ["fill", "blue", "fill", "fill", "fill"]
+            .into_iter()
+            .enumerate()
+        {
+            let call = ToolCall {
+                id: format!("c{n}"),
+                name: "browser.action".into(),
+                arguments: json!({"browser_id":"browser","action":"click","target":{"ref":format!("{target}{n}"),"name":format!("explanation {n}")}}),
+            };
+            run.invocations.push(
+                serde_json::from_value(
+                    json!({"invocation_id":format!("i{n}"),"step_id":"s","message_index":n+1,
+                "call":call,"status":"finished","prepared":{},"result":observation(n+1)}),
+                )
+                .unwrap(),
+            );
+            let expected = [1, 1, 2, 3, 4][n];
+            assert_eq!(super::repetitions(&run, &call), expected);
+            assert_eq!(
+                crate::harness::repetition_counts(&run)[&crate::working_state::call_key(&call)],
+                expected
+            );
+        }
+        let restored: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        assert_eq!(
+            super::repetitions(&restored, &run.invocations.last().unwrap().call),
+            4
+        );
+        // Invalid refs cannot reset the guard just by inventing another ID.
+        for n in 0..5 {
+            let call = ToolCall {
+                id: format!("invalid{n}"),
+                name: "browser.action".into(),
+                arguments: json!({"browser_id":"browser","action":"click","target":{"ref":format!("invented{n}")}}),
+            };
+            run.invocations.push(serde_json::from_value(json!({"invocation_id":format!("bad{n}"),"step_id":"s","message_index":100+n,
+                "call":call,"status":"finished","prepared":{},"result":ToolResult::error(Outcome::ValidationError,"invalid_browser_target")})).unwrap());
+            assert_eq!(super::repetitions(&run, &call), n + 1);
+        }
     }
     fn add(
         run: &mut Run,

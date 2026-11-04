@@ -143,9 +143,264 @@ pub(crate) fn counts(run: &Run) -> BTreeMap<String, usize> {
 }
 
 /// Rebuild an actionable warning from durable receipts on every decision.
-/// Unlike a one-shot adaptive hint, this survives compaction and remains until
-/// the action changes or the guard observes progress. Never grants extra calls.
+/// Unlike a one-shot adaptive hint, this survives compaction and follows both
+/// repeated calls and cycles across different actions. Never grants extra calls.
 pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Message>> {
+    if let Some(strategy) = strategy_feedback(run) {
+        return Ok(Some(strategy));
+    }
+    repetition_feedback(session, run)
+}
+
+/// Different calls can cycle through the same observed states. This is evidence
+/// to reconsider the method, not permission to reset a guard or claim failure of
+/// an application operation. Unknown outcomes require observation first.
+fn strategy_feedback(run: &Run) -> Option<Message> {
+    strategy_data(run).map(|data| crate::harness::feedback("browser_strategy", data))
+}
+
+fn strategy_data(run: &Run) -> Option<Value> {
+    #[derive(Default)]
+    struct Trace<'a> {
+        seen: BTreeSet<String>,
+        stagnant: Vec<&'a ToolInvocation>,
+        observation: Option<&'a Value>,
+    }
+    let mut traces = BTreeMap::<(String, u64), Trace<'_>>::new();
+    let mut tabs = BTreeMap::<String, (String, u64)>::new();
+    let mut current = None;
+    for invocation in &run.invocations {
+        let Some(result) = &invocation.result else {
+            continue;
+        };
+        if !is_browser(&invocation.call) && invocation.call.name != "browser.open" {
+            continue;
+        }
+        if matches!(
+            result.status,
+            Outcome::ValidationError | Outcome::Denied | Outcome::CancelledBeforeStart
+        ) {
+            current = invocation.call.arguments["browser_id"]
+                .as_str()
+                .and_then(|browser| tabs.get(browser))
+                .cloned();
+            if let Some(key) = &current {
+                traces
+                    .entry(key.clone())
+                    .or_default()
+                    .stagnant
+                    .push(invocation);
+            }
+            continue;
+        }
+        let data = &result.data;
+        let next = scope(data);
+        let progress = &data["progress"];
+        if result.status != Outcome::Succeeded
+            || next.is_none()
+            || (!progress["semantic"].is_string() && !progress["visual"].is_string())
+        {
+            if let Some(browser) = invocation.call.arguments["browser_id"].as_str()
+                && let Some(key) = tabs.get(browser)
+            {
+                let trace = traces.entry(key.clone()).or_default();
+                trace.stagnant.clear();
+                trace.observation = None;
+            }
+            current = None;
+            continue;
+        }
+        current = next;
+        let key = current.clone().unwrap();
+        tabs.insert(key.0.clone(), key.clone());
+        let trace = traces.entry(key).or_default();
+        let state = fingerprint(&(progress["semantic"].as_str(), progress["visual"].as_str()));
+        let inspected = invocation
+            .request_input_schema
+            .as_ref()
+            .is_some_and(|schema| schema["x-werk-browser-strategy"] == "inspect")
+            && trace.observation.is_some_and(|previous| {
+                fingerprint(&(
+                    previous["progress"]["semantic"].as_str(),
+                    previous["progress"]["visual"].as_str(),
+                )) != state
+            });
+        let novel = trace.seen.insert(state);
+        // A verified alternative may reopen a previously seen tool/options
+        // state. Release gestures after that inspection; hard guards still use
+        // their original histories and are never reset by this transition.
+        if novel || inspected {
+            trace.stagnant.clear();
+        } else if is_browser(&invocation.call) {
+            trace.stagnant.push(invocation);
+        }
+        trace.observation = Some(data);
+    }
+    // A few setup operations are normal. Escalate the guidance before a long
+    // alternating-action loop, independently of a one-shot adaptive hint.
+    let trace = traces.get(&current?)?;
+    let stagnant = &trace.stagnant;
+    if stagnant.len() < run.limits.max_repeated_calls.max(1).saturating_mul(2) {
+        return None;
+    }
+    let data = trace.observation?;
+    let controls = data["controls"].as_array()?;
+    let attempted: BTreeSet<_> = stagnant
+        .iter()
+        .filter(|i| i.call.arguments["browser_id"] == data["browser_id"])
+        .filter_map(|i| i.result.as_ref())
+        .filter(|r| scope(&r.data) == scope(data))
+        .filter_map(|r| r.data["action_target"]["name"].as_str())
+        .collect();
+    let mut names = Vec::new();
+    let mut bytes = 0;
+    for control in controls {
+        if control["disabled"] == true
+            || control["selected"] == true
+            || control["protected"] == true
+            || control["consequential"] == true
+            || control["submits"] == true
+            || control["download"] == true
+        {
+            continue;
+        }
+        let Some(name) = control["name"]
+            .as_str()
+            .filter(|n| !n.is_empty() && !attempted.contains(n))
+        else {
+            continue;
+        };
+        let name = crate::completion::excerpt(name, 96);
+        if bytes + name.len() > 1024 || names.len() == 24 {
+            break;
+        }
+        bytes += name.len();
+        names.push(name);
+    }
+    let surfaces: Vec<_> = controls
+        .iter()
+        .filter(|c| matches!(c["tag"].as_str(), Some("canvas" | "svg")))
+        .filter(|c| {
+            c["bounds"]["width"].as_f64().unwrap_or(0.)
+                * c["bounds"]["height"].as_f64().unwrap_or(0.)
+                >= 16384.
+        })
+        .take(4)
+        .map(|c| c["bounds"].clone())
+        .collect();
+    let recent: Vec<_> = stagnant
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(|i| {
+            let result = i.result.as_ref().unwrap();
+            let args = &i.call.arguments;
+            let mut entry = json!({"action":args["action"],"result":result.status,
+            "actual_target":target_summary(&result.data["action_target"])});
+            if args["x"].is_number() && args["y"].is_number() {
+                entry["point"] = json!({"x":args["x"],"y":args["y"]});
+            }
+            entry
+        })
+        .collect();
+    Some(json!({
+        "browser_id":data["browser_id"],"observation_id":data["observation_id"],"attempts_without_new_state":stagnant.len(),
+        "recent_actions":recent,"untried_control_names":names,"visual_surface_bounds":surfaces,
+        "detail":"These different attempts returned already-seen page states or were rejected before execution. Change the unsuccessful method now. Inspect an untried native control and its options; do not assume its capabilities without inspecting them. For visual editing, consider shape/fill modes or selections/masks instead of repeating flood fills. A color/tool selection alone does not change the work. Use the actual surface bounds for pointer actions, not the surrounding workspace. Choose one concrete alternative operation and verify its visible effect. Use a fresh target:{ref} alone for a known control. Preserve existing work and all user constraints. Counters and limits are unchanged; this is not completion."
+    }))
+}
+
+/// Use the engine's existing per-request schema gate: inspect a different
+/// available control before issuing more blind coordinates. No actions execute
+/// automatically, and a new observed state restores the ordinary catalog.
+pub(crate) fn bound_strategy_tools(run: &Run, tools: &mut [ToolDefinition]) {
+    let Some(data) = strategy_data(run) else {
+        return;
+    };
+    let Some(observation) = run
+        .invocations
+        .iter()
+        .rev()
+        .filter_map(|i| i.result.as_ref())
+        .find(|r| {
+            r.data["browser_id"] == data["browser_id"]
+                && r.data["observation_id"] == data["observation_id"]
+        })
+    else {
+        return;
+    };
+    let Some(controls) = observation.data["controls"].as_array() else {
+        return;
+    };
+    let names = data["untried_control_names"].as_array().unwrap();
+    let references: Vec<_> = controls
+        .iter()
+        .filter(|c| {
+            [
+                "disabled",
+                "selected",
+                "protected",
+                "consequential",
+                "submits",
+                "download",
+            ]
+            .iter()
+            .all(|key| c[*key] != true)
+        })
+        .filter(|c| {
+            c["name"]
+                .as_str()
+                .is_some_and(|name| names.contains(&json!(crate::completion::excerpt(name, 96))))
+        })
+        .filter_map(|c| c["ref"].as_str())
+        .take(64)
+        .collect();
+    if references.is_empty() {
+        return;
+    }
+    let Some(tool) = tools.iter_mut().find(|t| t.name == "browser.action") else {
+        return;
+    };
+    let Some(properties) = tool.input_schema["properties"].as_object_mut() else {
+        return;
+    };
+    properties.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "browser_id" | "action" | "target" | "screenshot" | "visual"
+        )
+    });
+    properties.insert(
+        "action".into(),
+        json!({"type":"string","enum":["click","hover"]}),
+    );
+    properties.get_mut("browser_id").unwrap()["enum"] = json!([data["browser_id"]]);
+    properties.insert("target".into(),json!({"type":"object","properties":{"ref":{"type":"string","enum":references}},"required":["ref"],"additionalProperties":false}));
+    tool.input_schema["required"] = json!(["browser_id", "action", "target"]);
+    tool.input_schema["x-werk-browser-strategy"] = json!("inspect");
+    tool.description = "Strategy recovery: recent different actions produced no new page state. Inspect an alternative visible control and its options with click or hover using one of the current target.ref values. Choose a method relevant to the user's pending goal; preserve existing work. Coordinate gestures return after new UI evidence. Observe separately only if the current view is missing or stale. Permissions and all run limits still apply.".into();
+}
+
+fn target_summary(observed: &Value) -> Value {
+    let mut target = serde_json::Map::new();
+    for key in ["tag", "role", "name", "type", "color"] {
+        if let Some(value) = observed[key].as_str().filter(|s| !s.is_empty()) {
+            target.insert(key.into(), json!(crate::completion::excerpt(value, 160)));
+        }
+    }
+    let bounds: serde_json::Map<_, _> = ["x", "y", "width", "height"]
+        .into_iter()
+        .filter(|key| observed["bounds"][key].is_number())
+        .map(|key| (key.into(), observed["bounds"][key].clone()))
+        .collect();
+    if !bounds.is_empty() {
+        target.insert("bounds".into(), Value::Object(bounds));
+    }
+    Value::Object(target)
+}
+
+fn repetition_feedback(session: &SessionData, run: &Run) -> Result<Option<Message>> {
     let Some((index, invocation)) = run
         .invocations
         .iter()
@@ -180,22 +435,7 @@ pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Messag
                 .iter()
                 .find(|c| c["ref"] == reference)
         });
-    let mut target = serde_json::Map::new();
-    if let Some(observed) = observed_target {
-        for key in ["tag", "role", "name", "type", "color"] {
-            if let Some(value) = observed[key].as_str().filter(|s| !s.is_empty()) {
-                target.insert(key.into(), json!(crate::completion::excerpt(value, 160)));
-            }
-        }
-        let bounds: serde_json::Map<_, _> = ["x", "y", "width", "height"]
-            .into_iter()
-            .filter(|key| observed["bounds"][key].is_number())
-            .map(|key| (key.into(), observed["bounds"][key].clone()))
-            .collect();
-        if !bounds.is_empty() {
-            target.insert("bounds".into(), Value::Object(bounds));
-        }
-    }
+    let target = target_summary(observed_target.unwrap_or(&Value::Null));
     Ok(Some(crate::harness::feedback(
         "browser_repetition",
         json!({
@@ -688,6 +928,141 @@ mod tests {
     }
     fn run() -> Run {
         serde_json::from_value(json!({"id":"r","status":"running","input":"Browse", "limits":Limits::default(),"started_at_ms":0,"deadline_ms":0,"history_start":0,"metrics":Metrics::default(),"attempts":[],"contexts":[],"invocations":[],"steering":[],"plan":null,"similar_grants":[],"repaired_output":false})).unwrap()
+    }
+    #[test]
+    fn alternating_browser_states_trigger_strategy_recovery_across_tabs_and_resume() {
+        let mut run = run();
+        let observe = |run: &mut Run, browser: &str, tab: u64, state: &str| {
+            let call = add(run, browser, tab, state, Some(format!("frame-{state}")));
+            let invocation = run.invocations.last_mut().unwrap();
+            // Different pointer calls must not hide a recurring unchanged UI.
+            invocation.call.name = "browser.action".into();
+            invocation.call.arguments["action"] = json!("click_at");
+            invocation.call.arguments["x"] = json!(invocation.message_index);
+            invocation.call.arguments["y"] = json!(650);
+            let data = &mut invocation.result.as_mut().unwrap().data;
+            data["observation_id"] = json!(call.id);
+            data["action_target"] = json!({"name":"Current method","tag":"button"});
+            data["controls"] = json!([
+                {"ref":"old-a","name":"Current method","tag":"button"},
+                {"ref":"old-b","name":"Alternative operation","tag":"button"},
+                {"name":"Disabled operation","disabled":true},
+                {"name":"Protected input","protected":true},
+                {"name":"Submit data","submits":true},
+                {"name":"Delete data","consequential":true},
+                {"name":"Download data","download":true},
+                {"name":"Selected operation","selected":true},
+                {"tag":"canvas","bounds":{"x":60,"y":20,"width":600,"height":380}}
+            ]);
+        };
+        observe(&mut run, "b", 1, "A");
+        observe(&mut run, "b", 1, "B");
+        for n in 0..6 {
+            observe(&mut run, "other", 1, &format!("new{n}"));
+            observe(&mut run, "b", 2, &format!("tab{n}"));
+            observe(&mut run, "b", 1, if n % 2 == 0 { "A" } else { "B" });
+            assert_eq!(
+                super::repetitions(&run, &run.invocations.last().unwrap().call),
+                1
+            );
+            assert_eq!(super::strategy_feedback(&run).is_some(), n == 5);
+        }
+        let warning = super::strategy_feedback(&run).unwrap();
+        let data: Value = serde_json::from_str(&warning.content).unwrap();
+        assert_eq!(data["data"]["attempts_without_new_state"], 6);
+        assert_eq!(
+            data["data"]["untried_control_names"],
+            json!(["Alternative operation"])
+        );
+        assert_eq!(data["data"]["recent_actions"].as_array().unwrap().len(), 4);
+        assert_eq!(data["data"]["visual_surface_bounds"][0]["height"], 380);
+        assert!(!warning.content.contains("old-a"));
+        assert!(!warning.content.contains("old-b"));
+        let registry = crate::tools::ToolRegistry::builtins().unwrap();
+        let original: Vec<_> = ["browser.action", "browser.observe"]
+            .iter()
+            .map(|name| registry.get(name).unwrap().definition())
+            .collect();
+        let mut offered = original.clone();
+        super::bound_strategy_tools(&run, &mut offered);
+        assert_eq!(offered[1].input_schema, original[1].input_schema);
+        let coordinate = json!({"browser_id":"b","action":"click_at","x":400,"y":650});
+        assert!(crate::tools::validate_arguments(&original[0].input_schema, &coordinate).is_ok());
+        assert!(crate::tools::validate_arguments(&offered[0].input_schema, &coordinate).is_err());
+        assert!(
+            crate::tools::validate_arguments(
+                &offered[0].input_schema,
+                &json!({"browser_id":"b","action":"click","target":{"ref":"old-b"},"visual":true})
+            )
+            .is_ok()
+        );
+        assert!(
+            crate::tools::validate_arguments(
+                &offered[0].input_schema,
+                &json!({"browser_id":"b","action":"click","target":{"ref":"old-a"}})
+            )
+            .is_err()
+        );
+        let restored: Run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        assert_eq!(super::strategy_feedback(&restored), Some(warning));
+        let mut inspected = restored.clone();
+        observe(&mut inspected, "b", 1, "A");
+        let inspection = inspected.invocations.last_mut().unwrap();
+        inspection.call.arguments =
+            json!({"browser_id":"b","action":"click","target":{"ref":"old-b"}});
+        inspection.request_input_schema = Some(offered[0].input_schema.clone());
+        inspection.result.as_mut().unwrap().data["action_target"]["name"] =
+            json!("Alternative operation");
+        assert!(
+            super::strategy_feedback(&inspected).is_none(),
+            "reopening known alternative options must release gestures"
+        );
+        let prior = &restored.invocations.last().unwrap().call;
+        assert_eq!(
+            super::repetitions(&inspected, prior),
+            super::repetitions(&restored, prior),
+            "strategy transitions never reset the hard repetition guard"
+        );
+        let mut unavailable = restored.clone();
+        unavailable
+            .invocations
+            .last_mut()
+            .unwrap()
+            .result
+            .as_mut()
+            .unwrap()
+            .data["controls"] = json!([]);
+        let mut no_alternatives = original.clone();
+        super::bound_strategy_tools(&unavailable, &mut no_alternatives);
+        assert_eq!(
+            serde_json::to_value(no_alternatives).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        // Replanning and pre-execution validation do not erase the episode.
+        let mut extra = run.invocations.last().unwrap().clone();
+        extra.call.name = "task.plan".into();
+        extra.result = Some(ToolResult::ok(json!({"steps":[]})));
+        run.invocations.push(extra.clone());
+        assert!(super::strategy_feedback(&run).is_some());
+        extra.call.name = "browser.action".into();
+        extra.result = Some(ToolResult::error(
+            Outcome::ValidationError,
+            "invalid_browser_target",
+        ));
+        run.invocations.push(extra.clone());
+        assert!(super::strategy_feedback(&run).is_some());
+        // No claim of unchanged output after a possibly executed unknown call.
+        extra.result = Some(ToolResult::error(Outcome::OutcomeUnknown, "transport_lost"));
+        run.invocations.push(extra);
+        assert!(super::strategy_feedback(&run).is_none());
+        observe(&mut run, "b", 1, "changed work");
+        assert!(super::strategy_feedback(&run).is_none());
+        let mut restored_catalog = original.clone();
+        super::bound_strategy_tools(&run, &mut restored_catalog);
+        assert_eq!(
+            serde_json::to_value(restored_catalog).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
     }
     #[test]
     fn repetition_warning_bounds_observed_data_and_echo_ownership() {

@@ -277,6 +277,7 @@ pub fn request_tools(
         crate::completion::bound_tools(&mut tools, fixed_file_bounds);
     }
     crate::working_state::bound_repairs(session, run, &mut tools);
+    crate::browser_progress::bound_strategy_tools(run, &mut tools);
     Ok(tools)
 }
 

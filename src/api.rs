@@ -3307,6 +3307,12 @@ impl SessionHandle {
         if let Some(schema) = &invocation.request_input_schema
             && let Err(error) = validate_arguments(schema, &invocation.call.arguments)
         {
+            if def.name == "browser.action" && schema["x-werk-browser-strategy"] == "inspect" {
+                let mut result =
+                    ToolResult::error(Outcome::ValidationError, "browser_strategy_recovery");
+                result.data = json!({"executed":false,"message":"No browser action executed. This recovery decision requires inspecting an alternative visible control with click/hover and one of the offered target.ref values. Reuse the current view; choose a different method relevant to the pending task. New observed UI evidence restores the ordinary gesture catalog. Permissions and limits are unchanged."});
+                return self.outcome(run_id, invocation_id, result).await;
+            }
             let lengths: std::collections::BTreeMap<_, _> = ["old", "new", "content"]
                 .into_iter()
                 .filter_map(|key| {

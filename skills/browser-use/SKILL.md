@@ -11,6 +11,9 @@ or {"path":"index.html"}. Only a successful receipt supplies a live browser_id;
 validation errors and cancelled_before_start do not create a browser.
 Reuse the live browser_id. Observe, choose one useful action, then inspect its
 effect. Tool success alone is not task success.
+Inspect native controls and their options before assuming their capabilities.
+When actions keep returning the same state, change the method and checkpoint;
+try a relevant alternative operation and verify its effect instead of repeating setup.
 Use named DOM/accessibility controls and fresh target.ref values. References
 expire on the next observation or state change; never reuse them across actions.
 Click an observed control with target:{"ref":"e123"}; an optional name is explanatory

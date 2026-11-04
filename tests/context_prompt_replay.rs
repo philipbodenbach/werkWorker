@@ -39,7 +39,7 @@ async fn saved_browser_repetition_decision() {
         .messages
         .iter()
         .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
-        .find(|v| v["event"] == "browser_repetition")
+        .find(|v| v["event"] == "browser_repetition" || v["event"] == "browser_strategy")
         .expect("concrete repetition warning");
     let observation: Value = request
         .messages
@@ -76,6 +76,9 @@ async fn saved_browser_repetition_decision() {
         "unmodified task decision: calls={:?}, usage={usage:?}",
         message.tool_calls
     );
+    if let Ok(path) = std::env::var("WW_REPLAY_DECISION") {
+        std::fs::write(path, serde_json::to_vec(&message).unwrap()).unwrap();
+    }
     assert!(
         !message.tool_calls.is_empty(),
         "must continue the pending task"
@@ -100,6 +103,15 @@ async fn saved_browser_repetition_decision() {
                 .iter()
                 .find(|c| c["ref"] == reference)
                 .expect("fresh observed ref");
+            if warning["event"] == "browser_strategy" {
+                assert!(
+                    warning["data"]["untried_control_names"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&selected["name"]),
+                    "strategy recovery must inspect a concrete alternative, not repeat setup"
+                );
+            }
             if call.arguments["action"] == warning["data"]["action"] {
                 assert_ne!(
                     selected["bounds"], warning["data"]["target"]["bounds"],
@@ -108,6 +120,24 @@ async fn saved_browser_repetition_decision() {
             }
         }
         if call.arguments["action"] == "click_at" {
+            if warning["event"] == "browser_strategy" {
+                let x = call.arguments["x"].as_f64().unwrap();
+                let y = call.arguments["y"].as_f64().unwrap();
+                assert!(
+                    controls.iter().any(|c| {
+                        let b = &c["bounds"];
+                        warning["data"]["untried_control_names"]
+                            .as_array()
+                            .unwrap()
+                            .contains(&c["name"])
+                            && x >= b["x"].as_f64().unwrap()
+                            && x < b["x"].as_f64().unwrap() + b["width"].as_f64().unwrap()
+                            && y >= b["y"].as_f64().unwrap()
+                            && y < b["y"].as_f64().unwrap() + b["height"].as_f64().unwrap()
+                    }),
+                    "strategy recovery must select a new observed operation, not repeat a coordinate fill"
+                );
+            }
             let bounds = &warning["data"]["target"]["bounds"];
             if let (Some(x), Some(y), Some(bx), Some(by), Some(w), Some(h)) = (
                 call.arguments["x"].as_f64(),

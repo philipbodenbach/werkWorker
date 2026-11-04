@@ -138,7 +138,9 @@ with tempfile.TemporaryDirectory(prefix='ww-tui-test-') as temp:
         wait_for(b'12 lines')
         assert b'fold_value_06' not in screen.text()
         os.write(master, b'draft survives\x0f')  # Ctrl-O expands all.
-        wait_for(b'12 lines')
+        # The line count is already present while collapsed. Wait for the
+        # expanded frame (including its scroll anchor) before testing Ctrl-End.
+        wait_for('▼ python · 12 lines'.encode())
         os.write(master, b'\x1b[1;5F')  # Ctrl-End keeps the complete tail visible.
         wait_for(b'fold_value_06')
         wait_for('› draft survives'.encode())

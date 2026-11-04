@@ -147,7 +147,7 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
         .map(|name| tools.get(name).unwrap().definition())
         .collect();
     let mut current_call = "call5";
-    for _ in 0..2 {
+    for _ in 0..3 {
         let original = fingerprint(&state);
         let (request, snapshot) = DefaultContextBuilder
             .build_with_provider(&state, &state.runs[0], definitions.clone(), &DenseCounter)
@@ -224,6 +224,13 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
             usize::from(current_call == "call9"),
             "the persistent warning must also fit alongside the full dense catalog"
         );
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|m| m["event"] == "browser_strategy")
+                .count(),
+            usize::from(current_call == "call17")
+        );
         context::validate_messages(&request.messages).unwrap();
         assert_eq!(fingerprint(&state), original);
         state.runs[0].contexts.push(snapshot);
@@ -237,6 +244,16 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
                 );
             }
             current_call = "call9";
+        } else if current_call == "call9" {
+            for x in 1..=4 {
+                append(
+                    &mut state,
+                    "browser.action",
+                    json!({"browser_id":"live","action":"click_at","x":x,"y":650}),
+                    frame.clone(),
+                );
+            }
+            current_call = "call17";
         }
     }
     // Merely using a browser must not disable coding guidance for mixed work.

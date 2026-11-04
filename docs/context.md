@@ -75,6 +75,25 @@ clears the warning; the existing repetition guard and its limits are unchanged.
 This feedback is available in every profile and participates in full-request
 admission. It guides model recovery but cannot guarantee that a model obeys it.
 
+Different actions can also cycle through already observed page states. After
+twice the configured repeat allowance in such attempts, a strategy observation
+replaces the single-call warning. It retains the last four actual targets,
+observed visual-surface bounds and bounded names of untried available controls.
+It directs a change of method and inspection of native options, without choosing
+an application-specific action or granting any extra execution. If alternative
+named controls are available, the next `browser.action` schema permits only
+click/hover on those current refs. The engine persists and validates that exact
+offered schema before execution. Other browser tools remain subject to their
+ordinary permissions; no alternative is invented when none is observed.
+New UI evidence restores the full action schema. A successful constrained
+inspection that visibly changes the UI also restores gestures when it reopens
+previously seen options; the original hard repetition counts remain intact.
+State is scoped
+to browser/tab and reconstructed from receipts across compaction, replanning and
+resume. Unknown outcomes require fresh evidence; a genuinely new observed state
+clears the signal. An unchanged screen is not proof of task failure; the recovery
+phase requires exploring an alternative and does not change any stop counter.
+
 A dense current browser observation can overflow even a short conversation.
 After ordinary history compaction, the planner can represent its controls as a
 table with explicit `columns`, `bounds_columns` and `rows`. This preserves every

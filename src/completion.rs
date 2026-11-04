@@ -163,14 +163,23 @@ pub(crate) fn enabled(session: &SessionData, run: &Run) -> Result<bool> {
 }
 
 /// Suppress implementation coaching only when all observed work is browser
-/// interaction or its setup. Any file/process/check/unknown activity restores
-/// the ordinary coding feedback. This changes guidance, never tools or gates.
+/// interaction or its setup. Calls rejected before execution are not evidence
+/// of coding work. Failed/uncertain execution still restores ordinary coding
+/// feedback, as do actual file/process/check/unknown activity. No gate changes.
 pub(crate) fn browser_observations_only(session: &SessionData, run: &Run) -> bool {
     let mut observed = false;
     for invocation in std::iter::once(run)
         .chain(session.runs.iter().filter(|r| r.id != run.id))
         .flat_map(|r| &r.invocations)
     {
+        if invocation.result.as_ref().is_some_and(|result| {
+            matches!(
+                result.status,
+                Outcome::ValidationError | Outcome::Denied | Outcome::CancelledBeforeStart
+            )
+        }) {
+            continue;
+        }
         if crate::browser_policy::TOOLS.contains(&invocation.call.name.as_str()) {
             observed |= invocation
                 .result
@@ -262,6 +271,10 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
         if !editing {
             break;
         }
+        // Browser repetition has its own persistent, target-specific feedback.
+        if crate::browser_progress::is_browser(&invocation.call) {
+            continue;
+        }
         let key = fingerprint(&(&invocation.call.name, &invocation.call.arguments));
         if !considered.insert(key.clone()) {
             continue;
@@ -305,7 +318,7 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
     let mut cycle = if browser_observations_only(session, run) {
         json!({
             "checkpoint":crate::work_cycle::checkpoint(run),
-            "next_action":"Continue the current milestone using the latest browser observation. Verify the requested result before completing the plan."
+            "next_action":"Continue the current milestone using the latest browser observation within the user's interaction scope. Verify the result before completing the plan."
         })
     } else {
         crate::work_cycle::observation(run, &state.verifications)
@@ -328,8 +341,7 @@ pub(crate) fn observation(session: &SessionData, run: &Run) -> Result<Option<Mes
             cycle.as_object_mut().unwrap().remove(field);
         }
     }
-    let mut detail =
-        "Current run plan and verification. Finish and verify remaining work.".to_owned();
+    let mut detail = "Current run plan/checkpoint are session state, not a filesystem file. Reuse them directly and update with task.plan. Finish and verify remaining work.".to_owned();
     if !files.is_empty() {
         detail.push_str(" Latest observations per normalized path supersede older receipts, including not_found and missing directory entries. A missing file has no valid edit hash or anchor. Compaction does not change files.");
     }

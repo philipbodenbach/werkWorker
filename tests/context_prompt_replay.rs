@@ -23,6 +23,109 @@ struct AdmissionCapture {
     best: std::sync::Mutex<Option<(usize, werk_worker::providers::ModelRequest, String)>>,
 }
 
+/// Keep the real task and runtime continuation intact. A targeted label probe
+/// alone cannot show that the model can escape a repeated-selection loop.
+#[tokio::test]
+#[ignore = "one local inference; WW_REPLAY_REQUEST and WW_REPLAY_CONFIG; never executes tools"]
+async fn saved_browser_repetition_decision() {
+    use futures_util::StreamExt;
+    use serde_json::Value;
+    use werk_worker::providers::*;
+    let request: ModelRequest = serde_json::from_slice(
+        &std::fs::read(std::env::var("WW_REPLAY_REQUEST").expect("WW_REPLAY_REQUEST")).unwrap(),
+    )
+    .unwrap();
+    let warning: Value = request
+        .messages
+        .iter()
+        .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+        .find(|v| v["event"] == "browser_repetition")
+        .expect("concrete repetition warning");
+    let observation: Value = request
+        .messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+        .find(|v| !v["data"]["controls"].is_null())
+        .expect("current controls");
+    let controls = expanded_controls(&observation["data"]["controls"]);
+    let config: WerkConfig = serde_json::from_slice(
+        &std::fs::read(std::env::var("WW_REPLAY_CONFIG").expect("WW_REPLAY_CONFIG")).unwrap(),
+    )
+    .unwrap();
+    let provider = WerkProvider::connect(config, std::env::var("WW_REPLAY_API_KEY").ok())
+        .await
+        .unwrap();
+    let counted = provider.estimate_input_tokens(&request).await.unwrap();
+    assert!(
+        counted + request.max_output_tokens + 512
+            <= provider.capabilities().context_tokens.unwrap()
+    );
+    let schemas = request.tools.clone();
+    let mut stream = provider.stream(request).await.unwrap();
+    let mut assembler = ResponseAssembler::default();
+    while let Some(delta) = tokio::time::timeout(std::time::Duration::from_secs(180), stream.next())
+        .await
+        .unwrap()
+    {
+        assembler.push(&delta.unwrap(), 1_048_576).unwrap();
+    }
+    let (message, usage, _) = assembler.finish().unwrap();
+    eprintln!(
+        "unmodified task decision: calls={:?}, usage={usage:?}",
+        message.tool_calls
+    );
+    assert!(
+        !message.tool_calls.is_empty(),
+        "must continue the pending task"
+    );
+    for call in &message.tool_calls {
+        assert_eq!(
+            call.name, "browser.action",
+            "probe expects an actual task operation"
+        );
+        let schema = &schemas
+            .iter()
+            .find(|s| s.name == call.name)
+            .unwrap()
+            .input_schema;
+        tools::validate_arguments(schema, &call.arguments).unwrap();
+        assert_eq!(
+            call.arguments["browser_id"],
+            observation["data"]["browser_id"]
+        );
+        if let Some(reference) = call.arguments["target"]["ref"].as_str() {
+            let selected = controls
+                .iter()
+                .find(|c| c["ref"] == reference)
+                .expect("fresh observed ref");
+            if call.arguments["action"] == warning["data"]["action"] {
+                assert_ne!(
+                    selected["bounds"], warning["data"]["target"]["bounds"],
+                    "repeated warned control"
+                );
+            }
+        }
+        if call.arguments["action"] == "click_at" {
+            let bounds = &warning["data"]["target"]["bounds"];
+            if let (Some(x), Some(y), Some(bx), Some(by), Some(w), Some(h)) = (
+                call.arguments["x"].as_f64(),
+                call.arguments["y"].as_f64(),
+                bounds["x"].as_f64(),
+                bounds["y"].as_f64(),
+                bounds["width"].as_f64(),
+                bounds["height"].as_f64(),
+            ) {
+                assert!(
+                    !(x >= bx && x < bx + w && y >= by && y < by + h),
+                    "coordinate retry of warned control"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "one local inference; WW_REPLAY_REQUEST, WW_REPLAY_CONFIG, WW_REPLAY_TARGET; never executes tools"]
 async fn saved_browser_target_decision() {

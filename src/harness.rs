@@ -234,7 +234,11 @@ pub(crate) fn minimal_feedback(session: &SessionData, run: &Run) -> Result<Vec<M
             json!({"steps":steps,"tool_calls":calls}),
         ));
     }
-    if let Some(invocation) = run.invocations.last() {
+    if let Some(invocation) = run
+        .invocations
+        .last()
+        .filter(|i| !crate::browser_progress::is_browser(&i.call))
+    {
         let count = repeated_calls(session, run, &invocation.call)?;
         if count >= 2 && count >= run.limits.max_repeated_calls.saturating_sub(1) {
             messages.push(feedback("repeated_call", json!({
@@ -274,6 +278,11 @@ pub(crate) fn is_feedback_echo(
         .collect();
     owned.extend(
         crate::completion::observation(session, run)?
+            .into_iter()
+            .filter(|observation| request.messages.contains(observation)),
+    );
+    owned.extend(
+        crate::browser_progress::feedback(session, run)?
             .into_iter()
             .filter(|observation| request.messages.contains(observation)),
     );

@@ -4,8 +4,8 @@ description: Complete browser tasks by observing the current page, choosing acti
 ---
 
 Derive a goal and observable completion criteria from the user's request.
-For multiple steps record the subgoal, next step and uncertainties in task.plan;
-plans describe intent, while browser receipts establish observations.
+Use task.plan for milestones/checkpoints. This session state survives compaction;
+reuse it directly, never via invented runtime paths. Receipts establish observations.
 Open with exactly one target, for example browser.open {"url":"https://example.com"}
 or {"path":"index.html"}. Only a successful receipt supplies a live browser_id;
 validation errors and cancelled_before_start do not create a browser.
@@ -58,5 +58,5 @@ user requests it or when the task calls for cleanup, rather than after every tas
 Honor site permissions, Ask/Deny, protected inputs and manual takeover. Do not
 replace visual interaction with scripts, internal game state or solution APIs.
 Report completion against observed criteria and state remaining uncertainty.
-Pure browser work needs no invented file edits or browser.check evidence; when
-code was changed retain the existing behavioral checks on those files.
+For browser-only tasks stay in the browser UI; do not switch to files/process or
+browser.check. If code changed, retain its behavioral checks.

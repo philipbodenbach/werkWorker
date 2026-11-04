@@ -711,6 +711,7 @@ impl DefaultContextBuilder {
             }
             dynamic.extend(crate::completion::observation(session, run)?);
         }
+        dynamic.extend(crate::browser_progress::feedback(session, run)?);
         // Only the stable host/profile prefix has system authority. Rebuild all
         // lower-authority evidence together, including after rolling compaction.
         if let Some(feedback) = crate::agents::report_feedback(session, run) {

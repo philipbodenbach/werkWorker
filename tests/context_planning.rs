@@ -122,7 +122,7 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
         })
         .collect();
     let mut frame = ToolResult::ok(
-        json!({"browser_id":"live","observation_id":"live:1","revision":1,
+        json!({"browser_id":"live","tab_id":1,"observation_id":"live:1","revision":1,"progress":{"semantic":"stable"},
         "controls":controls,"perception":"auto","text":"Dashboard ready","action_executed":true,
         "screenshot":{"width":1024,"height":768,"scale_x":1,"scale_y":1}}),
     );
@@ -146,6 +146,7 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
         .iter()
         .map(|name| tools.get(name).unwrap().definition())
         .collect();
+    let mut current_call = "call5";
     for _ in 0..2 {
         let original = fingerprint(&state);
         let (request, snapshot) = DefaultContextBuilder
@@ -162,7 +163,7 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
         let current = request
             .messages
             .iter()
-            .find(|m| m.tool_call_id.as_deref() == Some("call5"))
+            .find(|m| m.tool_call_id.as_deref() == Some(current_call))
             .unwrap();
         assert_eq!(current.images, frame.images);
         let data: Value = serde_json::from_str(&current.content).unwrap();
@@ -215,9 +216,28 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
                 .iter()
                 .any(|m| m["event"] == "retained_evidence" && !m["data"]["plan"].is_null())
         );
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|m| m["event"] == "browser_repetition")
+                .count(),
+            usize::from(current_call == "call9"),
+            "the persistent warning must also fit alongside the full dense catalog"
+        );
         context::validate_messages(&request.messages).unwrap();
         assert_eq!(fingerprint(&state), original);
         state.runs[0].contexts.push(snapshot);
+        if current_call == "call5" {
+            for _ in 0..2 {
+                append(
+                    &mut state,
+                    "browser.action",
+                    json!({"browser_id":"live","action":"click","target":{"ref":"e3"}}),
+                    frame.clone(),
+                );
+            }
+            current_call = "call9";
+        }
     }
     // Merely using a browser must not disable coding guidance for mixed work.
     // Give this representation check room to keep the additional file receipt.
@@ -249,6 +269,228 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
 #[derive(Default)]
 struct Counter {
     calls: AtomicUsize,
+}
+
+#[tokio::test]
+async fn browser_repetition_warning_survives_compaction_resume_and_plan_updates() {
+    use serde_json::{Value, json};
+    for mode in ["classic", "minimal", "adaptive"] {
+        let mut state = history(14).await;
+        let id = state.runs[0].id.clone();
+        state.metadata["_werkworker_harness"][&id]["config"]["mode"] = json!(mode);
+        // An exhausted one-shot hint must not suppress durable target evidence.
+        state.metadata["_werkworker_harness"][&id]["adaptive"]["aids"]["repeated_action"] = json!({
+            "active":false,"trigger":"old","scope":"old","detail":"Already delivered",
+            "episodes":3,"activated_at":0,"rearm_at":0,"delivered_step":"old","reason":"run_finished"
+        });
+        let append = |state: &mut SessionData, name: &str, args: Value, result: ToolResult| {
+            let index = state.messages.len();
+            let call = ToolCall {
+                id: format!("call{index}"),
+                name: name.into(),
+                arguments: args,
+            };
+            let mut message = Message::text(Role::Assistant, "");
+            message.tool_calls.push(call.clone());
+            state.messages.push(message);
+            state.messages.push(Message::tool(&call.id, &result));
+            state.runs[0].invocations.push(serde_json::from_value(json!({
+                "invocation_id":format!("inv{index}"),"step_id":format!("step{index}"),
+                "message_index":index,"call":call,"status":"finished","prepared":{},"result":result
+            })).unwrap());
+        };
+        let target = json!({"tag":"button","role":"button","name":"Choose category","color":"rgb(10,20,30)",
+            "bounds":{"x":12,"y":48,"width":80,"height":24}});
+        let observation = |n: usize, progress: &str| {
+            let mut control = target.clone();
+            control["ref"] = json!(format!("e{n}"));
+            ToolResult::ok(
+                json!({"browser_id":"b","tab_id":1,"observation_id":format!("b:{n}"),
+                "progress":{"semantic":progress},"controls":[control]}),
+            )
+        };
+        append(
+            &mut state,
+            "browser.open",
+            json!({"url":"https://example.com"}),
+            observation(0, "same"),
+        );
+        for n in 1..=4 {
+            let mut receipt = observation(n, if n == 4 { "changed" } else { "same" });
+            if n >= 3 {
+                receipt.data["action_target"] = target.clone();
+            }
+            append(
+                &mut state,
+                "browser.action",
+                json!({"browser_id":"b","action":"click","target":{"ref":format!("e{}",n-1)}}),
+                receipt,
+            );
+            let current_call = state.runs[0].invocations.last().unwrap().call.id.clone();
+            // Planning between browser decisions must not erase the warning.
+            append(
+                &mut state,
+                "task.plan",
+                json!({"steps":[]}),
+                ToolResult::ok(json!({"steps":[]})),
+            );
+            for _ in 0..2 {
+                let original = fingerprint(&state);
+                let (request, snapshot) = DefaultContextBuilder
+                    .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+                    .await
+                    .unwrap();
+                assert!(snapshot.estimated_tokens + request.max_output_tokens + 512 <= 16384);
+                assert!(
+                    !snapshot.omitted_messages.is_empty(),
+                    "exercise actual compaction"
+                );
+                let warnings: Vec<Value> = request
+                    .messages
+                    .iter()
+                    .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+                    .filter(|v| v["event"] == "browser_repetition")
+                    .collect();
+                if (2..=3).contains(&n) {
+                    assert_eq!(warnings.len(), 1, "{mode}");
+                    let data = &warnings[0]["data"];
+                    assert_eq!(data["target"], target);
+                    assert_eq!(data["count"], n);
+                    assert_eq!(data["remaining_identical_calls"], 3 - n);
+                    assert!(
+                        data["target"].get("ref").is_none(),
+                        "never suggest an expired ref"
+                    );
+                    assert_eq!(data["last_result"], "succeeded");
+                } else {
+                    assert!(
+                        warnings.is_empty(),
+                        "first action/new evidence must clear warning"
+                    );
+                }
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|m| m.tool_call_id.as_deref() == Some(&current_call))
+                );
+                assert!(request.messages.contains(&state.messages[0]));
+                context::validate_messages(&request.messages).unwrap();
+                assert_eq!(fingerprint(&state), original);
+                state.runs[0].contexts.push(snapshot);
+                state = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn rejected_workspace_calls_do_not_turn_browser_work_into_coding() {
+    use serde_json::{Value, json};
+    let mut base = history(0).await;
+    base.profile = AgentProfile::bundled("coding-basic").unwrap();
+    let plan = json!({"steps":[{"id":"inspect","description":"Inspect the browser dashboard","status":"in_progress","acceptance_criteria":["Visible result confirmed"],"verification_method":"Screenshot"}],
+        "checkpoint":{"next_action":"Inspect the current browser frame","decisions":["Use only the browser UI"]}});
+    base.runs[0].plan = plan.clone();
+    let append = |state: &mut SessionData, name: &str, arguments: Value, result: ToolResult| {
+        let index = state.messages.len();
+        let call = ToolCall {
+            id: format!("call{index}"),
+            name: name.into(),
+            arguments,
+        };
+        let mut message = Message::text(Role::Assistant, "");
+        message.tool_calls.push(call.clone());
+        state.messages.push(message);
+        state.messages.push(Message::tool(&call.id, &result));
+        state.runs[0].invocations.push(serde_json::from_value(json!({"invocation_id":format!("inv{index}"),"step_id":format!("step{index}"),"message_index":index,"call":call,"status":"finished","prepared":{},"result":result})).unwrap());
+    };
+    append(
+        &mut base,
+        "browser.open",
+        json!({"url":"https://example.com"}),
+        ToolResult::ok(
+            json!({"browser_id":"live","observation_id":"live:1","controls":[{"ref":"e1","name":"Inspect","bounds":{"x":1,"y":2,"width":10,"height":10}}]}),
+        ),
+    );
+    let registry = tools::ToolRegistry::builtins().unwrap();
+    let definitions: Vec<_> = [
+        "browser.open",
+        "browser.action",
+        "files.read",
+        "files.write",
+        "process.run",
+        "task.plan",
+    ]
+    .iter()
+    .map(|name| registry.get(name).unwrap().definition())
+    .collect();
+    for status in [
+        Outcome::ValidationError,
+        Outcome::Denied,
+        Outcome::CancelledBeforeStart,
+        Outcome::Failed,
+        Outcome::OutcomeUnknown,
+        Outcome::Succeeded,
+    ] {
+        let no_execution = matches!(
+            status,
+            Outcome::ValidationError | Outcome::Denied | Outcome::CancelledBeforeStart
+        );
+        let mut state = base.clone();
+        let mut result = ToolResult::error(status.clone(), "path_denied");
+        result.data = json!({"message":"Requested path is not accessible"});
+        append(
+            &mut state,
+            "files.read",
+            json!({"path":"/tmp/unobserved/plan.json"}),
+            result,
+        );
+        for _ in 0..2 {
+            let original = fingerprint(&state);
+            let (request, snapshot) = DefaultContextBuilder
+                .build_with_provider(
+                    &state,
+                    &state.runs[0],
+                    definitions.clone(),
+                    &Counter::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                !request.messages[0]
+                    .content
+                    .contains("orient briefly, build a minimal"),
+                no_execution,
+                "{status:?}"
+            );
+            let task: Value = request
+                .messages
+                .iter()
+                .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+                .find(|v| v["event"] == "coding_task_state")
+                .unwrap();
+            assert_eq!(task["data"]["work_cycle"]["checkpoint"], plan["checkpoint"]);
+            assert_eq!(
+                serde_json::from_str::<Value>(task["data"]["plan_excerpt"].as_str().unwrap())
+                    .unwrap()["steps"],
+                plan["steps"]
+            );
+            assert!(request.messages.iter().any(
+                |m| m.tool_call_id.as_deref() == Some("call1") && m.content.contains("live:1")
+            ));
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .any(|m| m.tool_call_id.as_deref() == Some("call3")
+                        && m.content.contains("path_denied"))
+            );
+            assert_eq!(fingerprint(&state), original);
+            context::validate_messages(&request.messages).unwrap();
+            state.runs[0].contexts.push(snapshot);
+        }
+    }
 }
 #[async_trait]
 impl ModelProvider for Counter {

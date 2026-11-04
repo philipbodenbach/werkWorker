@@ -61,6 +61,19 @@ feedback follows the browser milestone rather than adding implementation-cycle
 coaching just because the coding catalog is enabled. Any file/process/check or
 unknown tool activity restores ordinary coding guidance. Completion gates and
 tool permissions are unaffected.
+Validation errors, denials and cancellation before execution do not establish
+coding activity. Failed or uncertain execution still does, because side effects
+may exist. The plan/checkpoint is retained session state, not a workspace file to
+recover with `files.read`; rejected calls and their errors remain in history.
+
+Near the browser repetition limit, each decision includes a compact warning
+rebuilt from durable action receipts: the observed control's identity and bounds,
+last outcome, repeat count and remaining identical calls. It survives compaction,
+resume, plan updates and exhaustion of one-shot adaptive hints. Expired references
+are not suggested as new targets. New observed progress or a different action
+clears the warning; the existing repetition guard and its limits are unchanged.
+This feedback is available in every profile and participates in full-request
+admission. It guides model recovery but cannot guarantee that a model obeys it.
 
 A dense current browser observation can overflow even a short conversation.
 After ordinary history compaction, the planner can represent its controls as a

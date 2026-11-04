@@ -142,6 +142,72 @@ pub(crate) fn counts(run: &Run) -> BTreeMap<String, usize> {
         .collect()
 }
 
+/// Rebuild an actionable warning from durable receipts on every decision.
+/// Unlike a one-shot adaptive hint, this survives compaction and remains until
+/// the action changes or the guard observes progress. Never grants extra calls.
+pub(crate) fn feedback(session: &SessionData, run: &Run) -> Result<Option<Message>> {
+    let Some((index, invocation)) = run
+        .invocations
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, i)| is_browser(&i.call) && i.result.is_some())
+    else {
+        return Ok(None);
+    };
+    let count = crate::harness::repeated_calls(session, run, &invocation.call)?;
+    if count < run.limits.max_repeated_calls.saturating_sub(1).max(1) {
+        return Ok(None);
+    }
+    let result = invocation.result.as_ref().unwrap();
+    let args = &invocation.call.arguments;
+    let observed_target = result
+        .data
+        .get("action_target")
+        .filter(|v| v.is_object())
+        .or_else(|| {
+            let reference = args["target"]["ref"].as_str()?;
+            run.invocations[..index]
+                .iter()
+                .rev()
+                .filter_map(|i| i.result.as_ref())
+                .find(|r| {
+                    r.data["browser_id"] == args["browser_id"]
+                        && r.data["observation_id"].is_string()
+                })?
+                .data["controls"]
+                .as_array()?
+                .iter()
+                .find(|c| c["ref"] == reference)
+        });
+    let mut target = serde_json::Map::new();
+    if let Some(observed) = observed_target {
+        for key in ["tag", "role", "name", "type", "color"] {
+            if let Some(value) = observed[key].as_str().filter(|s| !s.is_empty()) {
+                target.insert(key.into(), json!(crate::completion::excerpt(value, 160)));
+            }
+        }
+        let bounds: serde_json::Map<_, _> = ["x", "y", "width", "height"]
+            .into_iter()
+            .filter(|key| observed["bounds"][key].is_number())
+            .map(|key| (key.into(), observed["bounds"][key].clone()))
+            .collect();
+        if !bounds.is_empty() {
+            target.insert("bounds".into(), Value::Object(bounds));
+        }
+    }
+    Ok(Some(crate::harness::feedback(
+        "browser_repetition",
+        json!({
+            "browser_id":args["browser_id"],"tool":invocation.call.name,"action":args["action"],
+            "target":target,"count":count,"limit":run.limits.max_repeated_calls,
+            "remaining_identical_calls":run.limits.max_repeated_calls.saturating_sub(count),
+            "last_result":result.status,
+            "detail":"This action/target repeats without new evidence. A new ref does not mean a new control. Reuse successful effects; perform the next task operation from the latest observation instead of selecting the same control again. At zero remaining calls, another identical action is blocked."
+        }),
+    )))
+}
+
 /// Driver supplies a temporally stable, redacted semantic sample. Metadata,
 /// references, pointer positions and the screenshot bytes are not DOM progress.
 pub(crate) fn stamp(data: &mut Value, bytes: Option<&[u8]>) {
@@ -622,6 +688,57 @@ mod tests {
     }
     fn run() -> Run {
         serde_json::from_value(json!({"id":"r","status":"running","input":"Browse", "limits":Limits::default(),"started_at_ms":0,"deadline_ms":0,"history_start":0,"metrics":Metrics::default(),"attempts":[],"contexts":[],"invocations":[],"steering":[],"plan":null,"similar_grants":[],"repaired_output":false})).unwrap()
+    }
+    #[test]
+    fn repetition_warning_bounds_observed_data_and_echo_ownership() {
+        let mut run = run();
+        for n in 0..3 {
+            let mut result = ToolResult::error(Outcome::OutcomeUnknown, "lost_connection");
+            result.data = json!({"action_target":{
+                "name":"é".repeat(5000),"text":"private text","value":"private field",
+                "bounds":{"x":1,"y":2,"width":3,"height":4,"extra":"unbounded"}
+            }});
+            run.invocations.push(serde_json::from_value(json!({
+                "invocation_id":format!("i{n}"),"step_id":"s","message_index":n,
+                "call":{"id":format!("c{n}"),"name":"browser.action",
+                    "arguments":{"browser_id":"b","action":"fill","text":"private value","target":{"label":"invented label"}}},
+                "status":"finished","prepared":{},"result":result
+            })).unwrap());
+        }
+        let session: SessionData = serde_json::from_value(json!({
+            "schema_version":1,"id":"s","revision":0,"workspace":"/tmp","workspace_identity":"w",
+            "sandbox_id":"b","principal":"p","profile":crate::profiles::AgentProfile::bundled("general-readonly").unwrap(),
+            "profile_hash":"h","policy":crate::policy::HostPolicy::default(),"metadata":{},
+            "messages":[],"runs":[run],"commands":{},"events":[],"skill_snapshots":{},"compactions":[]
+        })).unwrap();
+        let warning = super::feedback(&session, &run).unwrap().unwrap();
+        let data: Value = serde_json::from_str(&warning.content).unwrap();
+        assert_eq!(data["data"]["last_result"], "outcome_unknown");
+        assert_eq!(data["data"]["remaining_identical_calls"], 0);
+        assert!(warning.content.len() < 1200);
+        for private in ["private", "invented label", "unbounded"] {
+            assert!(!warning.content.contains(private));
+        }
+        let mut request = crate::providers::ModelRequest {
+            reasoning_tier: None,
+            messages: vec![warning.clone()],
+            tools: vec![],
+            max_output_tokens: 1024,
+            output_schema: None,
+        };
+        assert!(crate::harness::is_feedback_echo(&session, &run, &request, &warning).unwrap());
+        request.messages.clear();
+        assert!(!crate::harness::is_feedback_echo(&session, &run, &request, &warning).unwrap());
+        // Host policy may use a different hard limit; the warning cannot grant
+        // another call or silently assume the default of three.
+        run.limits.max_repeated_calls = 2;
+        let data: Value =
+            serde_json::from_str(&super::feedback(&session, &run).unwrap().unwrap().content)
+                .unwrap();
+        assert_eq!(data["data"]["limit"], 2);
+        assert_eq!(data["data"]["remaining_identical_calls"], 0);
+        run.limits.max_repeated_calls = 5;
+        assert!(super::feedback(&session, &run).unwrap().is_none());
     }
     #[test]
     fn ref_clicks_distinguish_controls_but_still_stop_repeated_selection() {

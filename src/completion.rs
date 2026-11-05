@@ -214,9 +214,20 @@ pub(crate) fn retains_plan(session: &SessionData, run: &Run, plan: &Value) -> bo
         fields.remove("checkpoint");
     }
     steps.to_string().len() <= 4096
-        && plan
-            .get("checkpoint")
-            .is_none_or(|value| crate::work_cycle::checkpoint(run).as_ref() == Some(value))
+        && plan.get("checkpoint").is_none_or(|value| {
+            let retained = crate::work_cycle::checkpoint(run);
+            // The bounded projection supplies optional defaults (for example
+            // decisions: []). Those do not lose evidence. Compare every saved
+            // field instead of requiring the two objects to have identical keys.
+            // Unknown, malformed or shortened fields still require fallback.
+            value.as_object().is_some_and(|fields| {
+                retained.as_ref().is_some_and(|retained| {
+                    fields
+                        .iter()
+                        .all(|(key, value)| retained.get(key) == Some(value))
+                })
+            })
+        })
 }
 
 /// Keep the end of diagnostics as well as their beginning. Interpreters often

@@ -56,6 +56,9 @@ plan is restored only once when the decision-point task state already contains
 its complete steps and checkpoint; older or truncated plans still retain their
 fallback evidence. Empty retained-evidence envelopes and irrelevant file-repair
 guidance are omitted.
+Checkpoint comparison checks every saved field against the retained projection;
+added optional defaults such as `decisions: []` do not duplicate the entire plan.
+Unknown or truncated fields still require fallback evidence.
 When observed work consists exclusively of browser interaction and its setup,
 feedback follows the browser milestone rather than adding implementation-cycle
 coaching just because the coding catalog is enabled. Any file/process/check or
@@ -104,7 +107,9 @@ used only if it is smaller; tools, rules, context ceilings and safety margins ar
 unchanged. The offline dense-catalog regression covers 34 tools, four skills and
 64 controls at 16K. `saved_browser_admission_replay` additionally checks a frozen
 session through the local Werk admission counter without generation or actions;
-set `WW_REPLAY_SNAPSHOT`, `WW_REPLAY_MODEL` and optionally `WW_REPLAY_API_KEY`.
+set `WW_REPLAY_SNAPSHOT`, `WW_REPLAY_CONFIG` to the worker's actual configuration,
+and optionally `WW_REPLAY_API_KEY`. A model-only fallback via `WW_REPLAY_MODEL`
+uses defaults that need not reproduce the running worker's tools or budgets.
 
 The default context builder keeps a stable profile/host prefix, sorted tool
 schemas, available skill metadata, optional output schema, committed summaries

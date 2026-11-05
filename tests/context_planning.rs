@@ -104,7 +104,9 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
         "status":"in_progress","acceptance_criteria":[format!("Requirement {n}: confirm the observed labels, enabled states, and visible information without changing any data")],
         "verification_method":"Inspect the returned screenshot and accessibility evidence"
     })).collect();
-    let plan = json!({"steps":steps});
+    // Optional decisions is absent in the saved failing browser run. The
+    // decision-point projection adds [], which must not restore a second plan.
+    let plan = json!({"steps":steps,"checkpoint":{"next_action":"Inspect the dashboard menu"}});
     state.runs[0].plan = plan.clone();
     append(
         &mut state,
@@ -193,7 +195,11 @@ async fn full_coding_catalog_and_dense_browser_fit_16k_without_losing_controls()
             .unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(task["data"]["plan_excerpt"].as_str().unwrap()).unwrap(),
-            plan
+            json!({"steps":steps})
+        );
+        assert_eq!(
+            task["data"]["work_cycle"]["checkpoint"]["next_action"],
+            plan["checkpoint"]["next_action"]
         );
         assert!(
             task["data"]["work_cycle"]
@@ -1368,6 +1374,70 @@ async fn successful_plan_can_compact_without_losing_steps_or_checkpoint() {
     assert_eq!(task["data"]["work_cycle"]["checkpoint"], plan["checkpoint"]);
     assert_eq!(fingerprint(&state), original);
     context::validate_messages(&request.messages).unwrap();
+}
+
+#[tokio::test]
+async fn compacted_checkpoint_defaults_do_not_duplicate_plans_or_hide_lost_fields() {
+    use serde_json::{Value, json};
+    let mut base = history(0).await;
+    base.profile.name = "coding-basic".into();
+    for (checkpoint, fallback) in [
+        (json!({"next_action":"Inspect the menu"}), false),
+        (json!({"decisions":["Preserve existing work"]}), false),
+        (json!({}), false),
+        (json!({"next_action":"Inspect","decisions":[]}), false),
+        (json!({"next_action":"長".repeat(180)}), true),
+        (json!({"decisions":["x".repeat(257)]}), true),
+        (json!({"decisions":["a","b","c","d","e","f","g"]}), true),
+        (
+            json!({"next_action":"Inspect","custom":"Keep this evidence"}),
+            true,
+        ),
+        (json!({"decisions":[42]}), true),
+        (Value::Null, true),
+    ] {
+        let mut state = base.clone();
+        let plan = json!({"steps":[{"id":"inspect","description":"Inspect the page","status":"in_progress"}],"checkpoint":checkpoint});
+        state.runs[0].plan = plan.clone();
+        let call = ToolCall {
+            id: "plan".into(),
+            name: "task.plan".into(),
+            arguments: plan.clone(),
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls.push(call.clone());
+        let result = ToolResult::ok(plan.clone());
+        state.messages.extend([
+            assistant,
+            Message::tool(&call.id, &result),
+            Message::text(Role::Assistant, "Continue from the current checkpoint"),
+        ]);
+        state.runs[0].invocations.push(serde_json::from_value(json!({"invocation_id":"plan","step_id":"plan","message_index":1,"call":call,"status":"finished","prepared":{},"result":result})).unwrap());
+        let (_, mut snapshot) = DefaultContextBuilder
+            .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+            .await
+            .unwrap();
+        // Simulate a saved compaction selection that omitted the plan's group.
+        snapshot.omitted_messages.extend([1, 2]);
+        state.runs[0].contexts.push(snapshot);
+        let original = fingerprint(&state);
+        let (request, snapshot) = DefaultContextBuilder
+            .build_with_provider(&state, &state.runs[0], vec![], &Counter::default())
+            .await
+            .unwrap();
+        assert!(snapshot.omitted_messages.contains(&1));
+        let restored = request
+            .messages
+            .iter()
+            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok())
+            .find(|v| v["event"] == "retained_evidence");
+        assert_eq!(restored.is_some(), fallback, "checkpoint: {checkpoint}");
+        if let Some(restored) = restored {
+            assert_eq!(restored["data"]["plan"], plan);
+        }
+        assert_eq!(fingerprint(&state), original);
+        context::validate_messages(&request.messages).unwrap();
+    }
 }
 
 #[tokio::test]

@@ -276,7 +276,7 @@ impl werk_worker::providers::ModelProvider for AdmissionCapture {
 
 /// Uses only the local admission/token-count API, never generation or tools.
 #[tokio::test]
-#[ignore = "set WW_REPLAY_DATABASE/WW_REPLAY_SESSION/WW_REPLAY_MODEL; requires local Werk token counter"]
+#[ignore = "set WW_REPLAY_SNAPSHOT or WW_REPLAY_DATABASE/WW_REPLAY_SESSION; WW_REPLAY_CONFIG (or WW_REPLAY_MODEL); requires local Werk token counter"]
 async fn saved_browser_admission_replay() {
     use werk_worker::{providers::*, tools::ToolRegistry};
     let text = if let Ok(path) = std::env::var("WW_REPLAY_SNAPSHOT") {
@@ -299,12 +299,18 @@ async fn saved_browser_admission_replay() {
     let original = fingerprint(&session);
     let run = session.runs.last().unwrap();
     let registry = ToolRegistry::builtins().unwrap();
-    let provider = WerkProvider::connect(
-        WerkConfig::local(std::env::var("WW_REPLAY_MODEL").expect("WW_REPLAY_MODEL")),
-        std::env::var("WW_REPLAY_API_KEY").ok(),
-    )
-    .await
-    .unwrap();
+    // Match the running worker's capabilities and wire settings. Model-only
+    // defaults need not reproduce its offered catalog or reasoning budget.
+    let config = if let Ok(path) = std::env::var("WW_REPLAY_CONFIG") {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    } else {
+        WerkConfig::local(
+            std::env::var("WW_REPLAY_MODEL").expect("WW_REPLAY_CONFIG or WW_REPLAY_MODEL"),
+        )
+    };
+    let provider = WerkProvider::connect(config, std::env::var("WW_REPLAY_API_KEY").ok())
+        .await
+        .unwrap();
     let tools = context::request_tools(
         &session,
         run,

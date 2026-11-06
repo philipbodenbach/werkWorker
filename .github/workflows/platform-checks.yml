@@ -1,7 +1,8 @@
 name: Platform build checks
 on:
   push:
-    branches: [main]
+    # Required checks must also run when GitHub delays a PR synchronize event.
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 permissions:

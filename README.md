@@ -280,26 +280,14 @@ Filesystem search is bounded and nonrecursive. Sandbox resource limits are
 Linux rlimits, not aggregate cgroup quotas. These limitations are explicit in
 the security documentation. No live-model quality or benchmark parity is claimed.
 
-## What’s new in v0.2.0
+## What’s new in v0.3.0
 
-WerkWorker SDK and both CLI commands share release version **0.2.0**.
+WerkWorker SDK and both CLI commands share release version **0.3.0**.
 
-- Persist validated rolling-context selections across turns and resumes; use
-  local sizing to bound remote candidate counts while retaining complete-request
-  admission under current Werk Protocol limits and reasoning settings.
-- Detect ineffective compaction, stop unsuccessful repeated pruning, record
-  planning cost/progress, and suppress duplicate TUI compaction notices when the
-  working selection is merely reused.
-- Add `/effort` and `/reasoning` chat controls with protocol-owned model tiers,
-  effective defaults and availability. Session choices persist and apply to new
-  parent/subagent requests while in-flight request settings remain stable. A small
-  arrow-key slider offers only valid values above the input.
-- Replan when steering arrives during context construction or before a model
-  retry. Show separate queued/delivered notices and retain user corrections
-  through compaction; task planning and verification must reflect updates.
-- Preserve current coding file receipts after compaction, stop retaining stale
-  directory listings as setup evidence, and explain existing-file edits without
-  recommending unavailable write parameters. Repeated reads get bounded,
-  persisted recovery decisions before a run-wide repetition failure.
+- feat(): subagent settings (`6018c67c8b38`)
+- feat(): subagent settings (`5f69e135680d`)
+- feat(): subagent settings (`4aad968ea0da`)
+- feat(): subagent settings (`3f8de6d671e6`)
+- feat(): subagent settings (`a6b52d8a370f`)
 
-See the [v0.2.0 changelog](CHANGELOG.md#020---2026-10-26) for all changes and compatibility notes.
+See the [v0.3.0 changelog](CHANGELOG.md#030---2026-11-06) for all changes and compatibility notes.

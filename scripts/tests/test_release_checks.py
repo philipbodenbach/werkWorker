@@ -71,11 +71,31 @@ class ReleaseChecksTests(unittest.TestCase):
         self.pr.update(mergeable_state='clean', mergeable=None)
         self.assertIn('waiting for GitHub merge readiness', self.status())
 
-    def test_absent_checks_and_workflow_approval_keep_waiting(self):
+    def test_absent_checks_keep_waiting(self):
         self.runs = []
         self.assertIn('waiting for the PR workflow', self.status())
-        self.runs = [self.run_for(checks.WORKFLOWS[0], 1, conclusion='action_required')]
-        self.assertIn('workflow approval required', self.status())
+
+    def test_approval_required_stops_with_exact_pr_and_run_links(self):
+        for state in ({'conclusion': 'action_required'}, {'status': 'action_required'}):
+            with self.subTest(state=state):
+                self.runs = [self.run_for(checks.WORKFLOWS[0], 77, **state)]
+                with self.assertRaises(checks.WorkflowApprovalRequired) as error:
+                    self.status()
+                message = str(error.exception)
+                self.assertIn('https://github.com/owner/worker/actions/runs/77', message)
+                self.assertIn('https://github.com/owner/worker/pull/5', message)
+                self.assertIn('Approve workflows to run', message)
+                self.assertIn('re-run the failed Release job', message)
+
+    def test_approval_required_does_not_spend_an_hour_polling(self):
+        self.runs[0]['conclusion'] = 'action_required'
+        responses = [json.dumps(self.pr), '\n'.join(json.dumps(run) for run in self.runs)]
+        with patch.object(checks, 'gh', side_effect=responses), \
+                patch.object(checks.time, 'sleep') as sleep, \
+                patch('sys.stdout', new_callable=io.StringIO):
+            with self.assertRaises(checks.WorkflowApprovalRequired):
+                checks.wait_for_release(*self.args)
+        sleep.assert_not_called()
 
     def test_failed_cancelled_and_timed_out_runs_stop_release(self):
         for conclusion in ('failure', 'cancelled', 'timed_out', 'skipped', 'neutral'):
@@ -124,23 +144,23 @@ class ReleaseChecksTests(unittest.TestCase):
                         checks.release_status(*self.args)
                     self.assertEqual(gh.call_count, 1)
 
-    def test_wait_resumes_after_approval_tests_and_policy_update(self):
-        states = ['workflow approval required', 'ci.yml: in_progress',
+    def test_retry_waits_for_started_tests_and_policy_update(self):
+        states = ['ci.yml: queued', 'ci.yml: in_progress',
                   'waiting for GitHub merge readiness (blocked)', None]
         with patch.object(checks, 'release_status', side_effect=states), \
                 patch.object(checks.time, 'sleep') as sleep, \
                 patch('sys.stdout', new_callable=io.StringIO) as stdout:
             checks.wait_for_release(*self.args)
         self.assertEqual(sleep.call_count, 3)
-        self.assertIn('Approve workflows to run', stdout.getvalue())
+        self.assertIn('re-run the failed Release job', stdout.getvalue())
         self.assertIn('ready to merge', stdout.getvalue())
 
     def test_wait_timeout_is_actionable_and_never_authorizes_merge(self):
-        with patch.object(checks, 'release_status', return_value='workflow approval required'), \
+        with patch.object(checks, 'release_status', return_value='ci.yml: in_progress'), \
                 patch.object(checks.time, 'monotonic', side_effect=[0, 60]), \
                 patch.object(checks.time, 'sleep') as sleep, \
                 patch('sys.stdout', new_callable=io.StringIO):
-            with self.assertRaisesRegex(RuntimeError, 'Timed out.*pull/5.*workflow approval required'):
+            with self.assertRaisesRegex(RuntimeError, 'Timed out.*pull/5.*in_progress'):
                 checks.wait_for_release(*self.args, timeout=60)
         sleep.assert_not_called()
 

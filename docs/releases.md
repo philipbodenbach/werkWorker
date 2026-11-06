@@ -28,19 +28,23 @@ is regenerated from the versioned binary before the preparation PR.
 Actions' repository setting allows creation of pull requests. The workflow
 requires contents/pull-requests write and actions read permissions and honors
 branch protection; it does not use `--admin`. Release waits up to 60 minutes for
-the actual `pull_request` run of the three-job `worker` workflow on the exact
-preparation commit, then for GitHub to report the PR ready to merge.
+started CI and merge readiness on the exact preparation commit. When GitHub
+reports `action_required`, the job stops immediately with the exact PR and CI
+run links instead of spending an hour waiting for a human approval. The three
+jobs of the real `pull_request` run must still pass before the merge.
 It does not dispatch duplicate test runs: `workflow_dispatch` checks do not
 satisfy required PR checks. See
 [GitHub's required-check rules](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
 
 With the built-in `GITHUB_TOKEN`, GitHub requires approval before running CI
 on the generated PR. Open the PR linked in the action log and select
-**Approve workflows to run**. The running release action waits and continues
-after the checks pass; a second Release dispatch is unnecessary. Failed tests
-stop the release with a link to the failing run. A retry reuses successful PR
-runs for the same commit. If an existing PR still awaits approval, approve it
-there; changing a token alone does not retrigger that PR.
+**Approve workflows to run**, then select **Re-run failed jobs** on the failed
+Release run. Its summary contains the recovery steps. The retry reuses the
+preparation PR and version, waits for the now-started tests, and proceeds only
+after the required checks pass. Failed tests stop the release with a link to
+the failing run; successful PR runs for the same commit are reused. If an
+existing PR still awaits approval, approve it there; changing a token alone
+does not retrigger that PR.
 
 For one-click releases without that approval step, an owner can configure the
 optional repository Actions secret **`RELEASE_PR_TOKEN`**: a fine-grained token
@@ -68,9 +72,20 @@ platform assets attached to the draft before publication.
 
 | Host | Build | Package | Archive suffix |
 |---|---|---|---|
-| Linux x86_64 / WSL2 | `cargo build-linux` | `./scripts/package-release.sh linux` | `linux-x86_64.tar.gz` |
+| Linux x86_64 / WSL2 | `./scripts/build-linux.sh` | `./scripts/package-release.sh linux` | `linux-x86_64.tar.gz` |
 | Windows x86_64 | `./scripts/build-windows.ps1` | `./scripts/package-release.ps1` | `windows-x86_64.zip` |
-| macOS Apple Silicon | `cargo build-macos-apple-silicon` | `./scripts/package-release.sh macos` | `macos-aarch64.tar.gz` |
+| macOS Apple Silicon | `./scripts/build-macos.sh` | `./scripts/package-release.sh macos` | `macos-aarch64.tar.gz` |
+
+The build entrypoints follow werk1112's native-build pattern: check the host,
+native Rust toolchain, C compiler and Python before building; use the locked
+release Cargo alias; run both command versions; and validate CLI reference
+generation in a temporary directory without rewriting `docs/cli.md`. They work
+from outside the checkout and respect `CARGO_TARGET_DIR`. Windows accepts the
+`py -3` launcher as well as `python` or `python3` and requires the x64 MSVC
+developer environment. Unlike the inference server, Worker needs no CUDA
+compiler or GPU toolkit. Packaging invokes the same build entrypoints, so local
+builds and the three CI jobs use the same validation path. Direct Cargo aliases
+remain available when only compilation is needed.
 
 Archives are `releases/werkWorker-v<VERSION>-<suffix>` with adjacent `.sha256`.
 Each contains both commands (`werk-worker` and `ww`, `.exe` on Windows), README,

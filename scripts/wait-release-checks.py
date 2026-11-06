@@ -9,6 +9,10 @@ import time
 WORKFLOWS = ('.github/workflows/ci.yml',)
 
 
+class WorkflowApprovalRequired(RuntimeError):
+    """CI cannot start until a repository writer approves the bot-created PR."""
+
+
 def gh(*args):
     result = subprocess.run(
         ['gh', *args], capture_output=True, text=True, timeout=60,
@@ -59,7 +63,13 @@ def release_status(repo, pr_number, branch, head, base, default_branch):
             continue
         url = f'https://github.com/{repo}/actions/runs/{run["id"]}'
         if run['conclusion'] == 'action_required' or run['status'] == 'action_required':
-            pending.append(f'{name}: workflow approval required ({url})')
+            raise WorkflowApprovalRequired(
+                f'GitHub requires workflow approval for {url}. '
+                f'Open https://github.com/{repo}/pull/{pr_number}, select '
+                '"Approve workflows to run", then re-run the failed Release job. '
+                'The retry reuses this preparation PR and version. '
+                'No merge, tag or release has been authorized by this check.'
+            )
         elif run['status'] != 'completed':
             pending.append(f'{name}: {run["status"]} ({url})')
         elif run['conclusion'] != 'success':
@@ -78,8 +88,8 @@ def wait_for_release(repo, pr_number, branch, head, base, default_branch,
                      timeout=3600, interval=30):
     url = f'https://github.com/{repo}/pull/{pr_number}'
     print(f'Waiting for PR checks: {url}', flush=True)
-    print('If GitHub requests approval, select "Approve workflows to run" in this PR. '
-          'Release will continue automatically after the checks pass.', flush=True)
+    print('If CI needs workflow approval, this job stops immediately with instructions. '
+          'After approval, re-run the failed Release job to reuse this PR and version.', flush=True)
     deadline = time.monotonic() + timeout
     previous = None
     while True:

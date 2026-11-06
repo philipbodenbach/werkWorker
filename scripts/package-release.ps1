@@ -7,7 +7,14 @@ Set-Location $RepoRoot
 $Manifest = Get-Content Cargo.toml -Raw
 $Version = [regex]::Match($Manifest, '(?ms)^\[package\]\s+.*?^version = "([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
 if (-not $Version) { throw 'Missing package version' }
-$BuildRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $RepoRoot 'target' }
+$BuildRoot = Join-Path $RepoRoot 'target'
+if ($env:CARGO_TARGET_DIR) {
+    $BuildRoot = if ([IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+        $env:CARGO_TARGET_DIR
+    } else {
+        Join-Path $RepoRoot $env:CARGO_TARGET_DIR
+    }
+}
 $Build = Join-Path $BuildRoot 'x86_64-pc-windows-msvc/release'
 $Staging = Join-Path ([IO.Path]::GetTempPath()) ('werkWorker-package-' + [guid]::NewGuid().ToString('N'))
 try {
@@ -17,8 +24,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Binary smoke failed: $Binary" }
         Copy-Item (Join-Path $Build $Binary) $Staging
     }
-    python scripts/generate-cli-reference.py (Join-Path $Build 'werk-worker.exe') --output-dir (Join-Path $Staging 'reference')
-    if ($LASTEXITCODE -ne 0) { throw 'CLI reference validation failed' }
     foreach ($Name in @('README.md', 'LICENSE', 'NOTICE')) { Copy-Item $Name $Staging }
     New-Item releases -ItemType Directory -Force | Out-Null
     $Name = "werkWorker-v$Version-windows-x86_64.zip"

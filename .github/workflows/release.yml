@@ -125,8 +125,9 @@ jobs:
           after the tag is available. Release preparation tests passed.
           The preparation branch must pass the same required checks as feature
           branches before this PR can merge into protected main.
-          If GitHub requests workflow approval, select "Approve workflows to run"
-          here. Release waits for these PR checks and then continues automatically.
+          If GitHub requests workflow approval, Release stops immediately. Select
+          "Approve workflows to run" here, then re-run the failed Release job.
+          The retry reuses this PR and version and waits for the required checks.
           BODY
               pr=$(gh pr create --head "$branch" --base "$DEFAULT_BRANCH" \
                 --title "release(): $RELEASE_TAG" --body-file "$RUNNER_TEMP/release-pr.md")
@@ -141,6 +142,7 @@ jobs:
           fi
 
       - name: Wait for required PR checks and merge readiness
+        id: pr-checks
         if: steps.release-pr.outputs.number != ''
         env:
           RELEASE_PR: ${{ steps.release-pr.outputs.number }}
@@ -153,6 +155,22 @@ jobs:
           python scripts/wait-release-checks.py \
             --repo "$GH_REPO" --pr "$RELEASE_PR" --branch "$RELEASE_BRANCH" \
             --head "$RELEASE_SHA" --base "$BASE_SHA" --default-branch "$DEFAULT_BRANCH"
+
+      - name: Explain how to resume the prepared release
+        if: failure() && steps.pr-checks.outcome == 'failure'
+        env:
+          RELEASE_PR: ${{ steps.release-pr.outputs.number }}
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          {
+            echo "### Release $RELEASE_TAG is prepared but has not been merged or tagged"
+            echo
+            echo "PR: https://github.com/$GH_REPO/pull/$RELEASE_PR"
+            echo
+            echo 'Read the check error above. If GitHub requests approval, select **Approve workflows to run** in the PR.'
+            echo 'Then use **Re-run failed jobs** on this Release run; the prepared PR and version are reused.'
+            echo 'For unattended future releases, configure the optional repository-scoped RELEASE_PR_TOKEN described in docs/releases.md.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Merge the release preparation PR
         if: steps.release-pr.outputs.number != ''

@@ -44,7 +44,13 @@ class ReleaseChecksTests(unittest.TestCase):
         self.assertIn('--paginate', gh.call_args_list[1].args)
         return result
 
-    def test_both_pr_workflows_and_merge_readiness_allow_release(self):
+    def test_consolidated_pr_workflow_and_merge_readiness_allow_release(self):
+        self.assertIsNone(self.status())
+
+    def test_retired_platform_workflow_does_not_block_consolidated_ci(self):
+        self.runs.append(self.run_for(
+            '.github/workflows/platform-checks.yml', 99, conclusion='failure',
+        ))
         self.assertIsNone(self.status())
 
     def test_green_manual_runs_do_not_satisfy_pr_checks(self):

@@ -144,7 +144,9 @@ async fn browser_target_recovers_after_output_limit_and_compaction_in_the_engine
             "Open preview.html in the browser",
             "start",
             Limits {
-                context_tokens: 16384,
+                // The v3 schema and bundled browser skill add context. The
+                // large read fixtures below still require actual compaction.
+                context_tokens: 20480,
                 reserve_output_tokens: 1024,
                 ..Default::default()
             },
@@ -476,6 +478,19 @@ async fn invalid_scope_and_action_never_launch_a_browser() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "invalid_browser_action");
+    let err = action
+        .prepare(json!({"browser_id":"x","action":"type"}), &ctx)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "invalid_browser_action");
+    let err = action
+        .prepare(
+            json!({"browser_id":"x","action":"type","text":"hello","target":{"selector":"input"}}),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "invalid_browser_target");
     let err=action.prepare(json!({"browser_id":"x","action":"click","target":{"role":"button","name":"Save","selector":"#other"}}),&ctx).await.unwrap_err();
     assert_eq!(err.code, "invalid_browser_target");
     let prepared = open
@@ -602,9 +617,10 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
         let (status, body, headers) = match r.path.as_str() {
             "/save" => {
                 assert_eq!(r.method, "POST");
-                assert_eq!(r.body["name"], "Alice");
+                let name = r.body["name"].as_str().unwrap();
+                assert!(matches!(name, "Alice" | "Grüße 世界"));
                 assert!(r.raw.contains("fixture=session"));
-                (200, "Saved Alice".to_string(), vec![])
+                (200, format!("Saved {name}"), vec![])
             }
             "/redirect" => (
                 302,
@@ -661,6 +677,35 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
             save.data["text"].as_str().unwrap().contains("Saved Alice"),
             "{}",
             save.data
+        );
+        // Focus, replace text and submit entirely through mouse/keyboard input.
+        for args in [
+            json!({"action":"move","x":100,"y":18}),
+            json!({"action":"click_at","x":100,"y":18}),
+            json!({"action":"press","key":"Control+a"}),
+            json!({"action":"type","text":"Grüße 世界"}),
+            json!({"action":"press","key":"Tab"}),
+        ] {
+            let mut args = args;
+            args["browser_id"] = browser_id.clone();
+            assert_ok(&call(&registry, &ctx, "browser.action", args).await.unwrap());
+        }
+        let keyboard_save = call(
+            &registry,
+            &ctx,
+            "browser.action",
+            json!({"browser_id":browser_id,"action":"press","key":"Enter"}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&keyboard_save);
+        assert!(
+            keyboard_save.data["text"]
+                .as_str()
+                .unwrap()
+                .contains("Saved Grüße 世界"),
+            "{}",
+            keyboard_save.data
         );
         let pixel = call(
             &registry,
@@ -809,7 +854,12 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
         .await
         .unwrap();
         assert_ok(&back);
-        assert!(back.data["text"].as_str().unwrap().contains("Saved Alice"));
+        assert!(
+            back.data["text"]
+                .as_str()
+                .unwrap()
+                .contains("Saved Grüße 世界")
+        );
         let redirect = call(
             &registry,
             &ctx,
@@ -1080,4 +1130,592 @@ async fn downloads_keep_cookie_scope_and_produce_owned_artifacts() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn module_heavy_pages_load_with_a_bounded_request_budget() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..300 {
+        std::fs::write(
+            dir.path().join(format!("part-{index}.js")),
+            "window.loaded=(window.loaded||0)+1;",
+        )
+        .unwrap();
+    }
+    for count in [128, 300] {
+        let scripts: String = (0..count)
+            .map(|i| format!("<script src='part-{i}.js'></script>"))
+            .collect();
+        std::fs::write(dir.path().join("index.html"), format!("<!doctype html><body>{scripts}<script>document.body.textContent='Modules loaded: '+window.loaded</script>")).unwrap();
+        let ctx = context(dir.path()).await;
+        let registry = ToolRegistry::builtins().unwrap();
+        let result = call(
+            &registry,
+            &ctx,
+            "browser.open",
+            json!({"path":"index.html","screenshot":true}),
+        )
+        .await
+        .unwrap();
+        call(
+            &registry,
+            &ctx,
+            "browser.close",
+            json!({"browser_id":result.data["browser_id"]}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&result);
+        assert!(!result.images.is_empty());
+        if count == 128 {
+            assert_eq!(result.data["text"], "Modules loaded: 128");
+            assert!(
+                result.data["network"]["blocked"]
+                    .as_object()
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            assert!(
+                result.data["network"]["blocked"]["browser_network_limit"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+            assert_ne!(result.data["text"], "Modules loaded: 300");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit live-site compatibility probe; no model decisions"]
+async fn live_jspaint_observations_remain_available() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"url":"https://jspaint.app/", "screenshot":true}),
+    )
+    .await
+    .unwrap();
+    let browser_id = opened.data["browser_id"].clone();
+    let mut results = vec![opened];
+    let editor_ready = |r: &ToolResult| {
+        r.data["visual_surface"] == true
+            && r.data["title"]
+                .as_str()
+                .is_some_and(|title| title.ends_with(" - Paint"))
+    };
+    for _ in 0..5 {
+        results.push(
+            call(
+                &registry,
+                &ctx,
+                "browser.observe",
+                json!({"browser_id":browser_id,"screenshot":true}),
+            )
+            .await
+            .unwrap(),
+        );
+        if results.len() >= 3 && results.iter().rev().take(2).all(editor_ready) {
+            break;
+        }
+    }
+    call(
+        &registry,
+        &ctx,
+        "browser.close",
+        json!({"browser_id":browser_id}),
+    )
+    .await
+    .unwrap();
+    if let Ok(path) = std::env::var("WW_JSPAINT_FRAME")
+        && let Some(image) = results.last().and_then(|r| r.images.last())
+    {
+        use base64::Engine;
+        std::fs::write(
+            path,
+            base64::engine::general_purpose::STANDARD
+                .decode(&image.data_base64)
+                .unwrap(),
+        )
+        .unwrap();
+    }
+    for result in &results {
+        println!(
+            "{}",
+            json!({"status":result.status,"error":result.data["error"],"errors":result.data["observation_errors"],"transport":result.data["transport_diagnostics"],"network":result.data["network"],"visual_surface":result.data["visual_surface"],"title":result.data["title"]})
+        );
+    }
+    for result in results.iter().rev().take(2) {
+        assert!(
+            editor_ready(result),
+            "Editor did not become usable: {}",
+            result.data
+        );
+    }
+    for (index, result) in results.into_iter().enumerate() {
+        // A remote navigation deadline can expire while the editor still loads.
+        // Only tolerate that first timeout if the subsequent observations prove
+        // the editor loaded and remained usable without reopening the page.
+        if index == 0 && result.status == Outcome::Failed {
+            assert!(
+                result.data["error"]
+                    .as_str()
+                    .is_some_and(|e| e.starts_with("Page.goto: Timeout")),
+                "{}",
+                result.data
+            );
+        } else {
+            assert_eq!(result.status, Outcome::Succeeded, "{}", result.data);
+        }
+        assert!(!result.images.is_empty(), "{}", result.data);
+        assert!(result.data["network"]["blocked"]["browser_network_limit"].is_null());
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit JSPaint mouse-gesture probe; draws only through browser.action"]
+async fn live_jspaint_rectangle_uses_opposite_corner_drag() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"url":"https://jspaint.app/", "screenshot":true}),
+    )
+    .await
+    .unwrap();
+    let browser_id = opened.data["browser_id"].clone();
+    for _ in 0..3 {
+        let observed = call(
+            &registry,
+            &ctx,
+            "browser.observe",
+            json!({"browser_id":browser_id,"screenshot":true}),
+        )
+        .await
+        .unwrap();
+        assert_ok(&observed);
+    }
+    let selected = call(
+        &registry,
+        &ctx,
+        "browser.action",
+        json!({"browser_id":browser_id,"action":"click_at","x":15,"y":181,"screenshot":true}),
+    )
+    .await
+    .unwrap();
+    let closed = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"drag","path":[{"x":200,"y":400},{"x":450,"y":400},{"x":450,"y":550},{"x":200,"y":550},{"x":200,"y":400}],"screenshot":true})).await.unwrap();
+    let closed_inside = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"drag","path":[{"x":200,"y":150},{"x":450,"y":150},{"x":450,"y":300},{"x":200,"y":300},{"x":200,"y":150}],"screenshot":true})).await.unwrap();
+    let diagonal = call(&registry, &ctx, "browser.action", json!({"browser_id":browser_id,"action":"drag","path":[{"x":200,"y":150},{"x":450,"y":300}],"screenshot":true})).await.unwrap();
+    call(
+        &registry,
+        &ctx,
+        "browser.close",
+        json!({"browser_id":browser_id}),
+    )
+    .await
+    .unwrap();
+    for result in [&selected, &closed, &closed_inside, &diagonal] {
+        assert_ok(result);
+    }
+    let decode = |result: &ToolResult| {
+        let image = result.images.first().expect("current screenshot");
+        assert_eq!((image.width, image.height), (1024, 768));
+        base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .unwrap()
+    };
+    let dark_pixels = |result: &ToolResult| {
+        let pixels = image::load_from_memory(&decode(result)).unwrap().to_rgb8();
+        (145..306)
+            .flat_map(|y| (195..456).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixels.get_pixel(x, y).0.iter().any(|v| *v < 160))
+            .count()
+    };
+    let before = dark_pixels(&selected);
+    let closed_count = dark_pixels(&closed);
+    let closed_inside_count = dark_pixels(&closed_inside);
+    let diagonal_count = dark_pixels(&diagonal);
+    eprintln!(
+        "JSPaint canvas dark pixels: before={before}, original_path={closed_count}, closed_inside={closed_inside_count}, opposite_corners={diagonal_count}"
+    );
+    if let Ok(path) = std::env::var("WW_JSPAINT_FRAME") {
+        std::fs::write(path, decode(&diagonal)).unwrap();
+    }
+    assert!(before < 20, "canvas starts blank");
+    assert!(
+        closed_count < 80,
+        "original path does not draw inside the target area"
+    );
+    assert!(
+        closed_inside_count < 80,
+        "returning to the first corner collapses the shape"
+    );
+    assert!(
+        diagonal_count > 500,
+        "opposite corners must leave a visible rectangle"
+    );
+}
+
+#[tokio::test]
+#[ignore = "explicit live-site compatibility probe; no model decisions"]
+async fn live_browser_compatibility_probe() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let mut reports = Vec::new();
+    for url in [
+        "https://jspaint.app/",
+        "https://www.nytimes.com/games/wordle/index.html",
+        "https://lichess.org/",
+        "https://www.crazygames.com/game/8-ball-pool-billiards-multiplayer",
+    ] {
+        let result = call(&registry, &ctx, "browser.open", json!({"url":url})).await;
+        match result {
+            Ok(r) => {
+                reports.push(json!({"url":url,"status":r.status,"error_code":r.error_code,"action_error":r.data["error"],"blocked_requests":r.data["blocked_requests"],"transports":r.data["transport_diagnostics"],"title":r.data["title"],"controls":r.data["controls"].as_array().map(Vec::len),"images":r.images.len()}));
+                if r.data["browser_id"].is_string() {
+                    let _ = call(
+                        &registry,
+                        &ctx,
+                        "browser.close",
+                        json!({"browser_id":r.data["browser_id"]}),
+                    )
+                    .await;
+                }
+            }
+            Err(e) => reports.push(json!({"url":url,"error_code":e.code})),
+        }
+    }
+    let report = serde_json::to_string_pretty(&reports).unwrap();
+    if let Ok(path) = std::env::var("WW_COMPAT_REPORT") {
+        std::fs::write(path, &report).unwrap();
+    }
+    println!("{report}");
+}
+
+#[tokio::test]
+async fn host_browser_lifetime_idle_and_action_budgets_are_enforced() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    // Leave startup headroom on hosts also running a local inference backend.
+    for (lifetime, idle, actions) in [(6, 0, 400), (0, 6, 400), (0, 0, 1), (0, 0, 400)] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("page.html"), "<body>Budget</body>").unwrap();
+        let ctx = context(dir.path()).await;
+        let registry = ToolRegistry::builtins().unwrap();
+        let tool = registry.get("browser.open").unwrap();
+        let mut args = tool
+            .prepare(json!({"path":"page.html"}), &ctx)
+            .await
+            .unwrap();
+        args["_browser_settings"] = json!({"perception":"dom","lifetime_seconds":lifetime,"idle_seconds":idle,"max_actions":actions});
+        let opened = tool.execute(args, &ctx).await.unwrap();
+        assert_ok(&opened);
+        if actions > 1 {
+            tokio::time::sleep(Duration::from_secs(7)).await;
+        }
+        let result = call(
+            &registry,
+            &ctx,
+            "browser.observe",
+            json!({"browser_id":opened.data["browser_id"]}),
+        )
+        .await;
+        if lifetime == 0 && idle == 0 && actions > 1 {
+            assert_ok(&result.unwrap());
+            assert_ok(
+                &call(
+                    &registry,
+                    &ctx,
+                    "browser.close",
+                    json!({"browser_id":opened.data["browser_id"]}),
+                )
+                .await
+                .unwrap(),
+            );
+            assert!(
+                call(
+                    &registry,
+                    &ctx,
+                    "browser.observe",
+                    json!({"browser_id":opened.data["browser_id"]})
+                )
+                .await
+                .is_err()
+            );
+            continue;
+        }
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                error.code.as_str(),
+                "browser_action_limit" | "outcome_unknown"
+            ),
+            "{error:?}"
+        );
+        if actions == 1 {
+            // Reaching the action limit blocks further actions but leaves the
+            // browser available for explicit cleanup and manual control.
+            assert_ok(
+                &call(
+                    &registry,
+                    &ctx,
+                    "browser.close",
+                    json!({"browser_id":opened.data["browser_id"]}),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn browser_images_reach_the_actual_werk_backend_request_in_vision_and_dom_modes() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    use werk_worker::{browser_policy::*, profiles::AgentProfile, providers::*};
+    for perception in [Perception::Vision, Perception::Dom] {
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = step.clone();
+        let server=support::Server::start(move |request| {
+            if request.path!="/v1/chat/completions" {return support::werk(request);}
+            let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            let open = request.body["tools"].as_array().unwrap().iter()
+                .find(|t|t["function"]["name"]=="browser.open").unwrap();
+            assert!(open["function"]["parameters"].get("oneOf").is_none());
+            for branch in open["function"]["parameters"]["allOf"][0]["oneOf"].as_array().unwrap() {
+                let target=branch["required"][0].as_str().unwrap();
+                assert_eq!(branch["type"],"object");
+                assert_eq!(branch["properties"][target]["type"],"string");
+                assert!(validate_arguments(branch,&json!({})).is_err());
+            }
+            let messages=request.body["messages"].as_array().unwrap();
+            let images=messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count();
+            if perception==Perception::Vision && n>0 { assert!((1..=2).contains(&images),"current image must survive, comparison frame is optional"); }
+            else {assert_eq!(images,0);}
+            for part in messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url") {
+                assert!(part["image_url"]["url"].as_str().unwrap().starts_with("data:image/jpeg;base64,"));
+            }
+            let browser_id=messages.iter().rev().filter(|m|m["role"]=="tool").find_map(|m| {
+                let data:Value=serde_json::from_str(m["content"].as_str()?).ok()?;data["data"]["browser_id"].as_str().map(str::to_owned)
+            });
+            let (name,args)=match n {
+                0=>("browser.open",json!({"path":"page.html"})),
+                1=>("browser.navigate",json!({"browser_id":browser_id,"url":"http://workspace.invalid/page.html"})),
+                2=>("browser.action",json!({"browser_id":browser_id,"action":"click","target":{"selector":"button"}})),
+                _=>return support::werk(request),
+            };
+            support::Response::json(json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":format!("call{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}]}))
+        }).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("page.html"),
+            "<button onclick='this.textContent=\"Done\"'>Change</button>",
+        )
+        .unwrap();
+        let config = WerkConfig {
+            base_url: server.origin.clone(),
+            stream: false,
+            capabilities: ModelCapabilities {
+                tool_calling: Support::Supported,
+                context_tokens: Some(32768),
+                images: if perception == Perception::Dom {
+                    Support::Unsupported
+                } else {
+                    Support::Unknown
+                },
+                ..Default::default()
+            },
+            ..WerkConfig::local("fixture-model")
+        };
+        let provider = WerkProvider::connect(config, None).await.unwrap();
+        let engine = WorkerEngine::builder(Arc::new(provider))
+            .build()
+            .await
+            .unwrap();
+        let mut browser = BrowserPolicy {
+            settings: BrowserSettings {
+                perception,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for category in ["browsing", "actions"] {
+            browser
+                .set("http://workspace.invalid", category, ToolPermission::Allow)
+                .unwrap();
+        }
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    schema_version: 1,
+                    name: "wire".into(),
+                    prompt: "Inspect".into(),
+                    tools: ["browser.open", "browser.navigate", "browser.action"]
+                        .map(str::to_owned)
+                        .into(),
+                    skills: vec![],
+                },
+                dir.path(),
+                HostPolicy {
+                    browser: Some(browser),
+                    ..Default::default()
+                },
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let run = session
+            .submit(
+                "Open, navigate, click and verify",
+                "wire",
+                Limits::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let result = run.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{result:?}");
+        assert_eq!(step.load(std::sync::atomic::Ordering::SeqCst), 4);
+        let state = run.status().await.unwrap();
+        assert!(
+            state
+                .invocations
+                .last()
+                .unwrap()
+                .result
+                .as_ref()
+                .unwrap()
+                .data["text"]
+                .as_str()
+                .unwrap()
+                .contains("Done")
+        );
+        engine.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn scaled_canvas_coordinates_and_explicit_perception_overrides() {
+    if std::env::var_os("REQUIRE_BROWSER").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("noise.html"),r#"<style>body{margin:0}</style><canvas width="1024" height="768"></canvas><script>
+    const c=document.querySelector('canvas'),g=c.getContext('2d'),d=g.createImageData(1024,768);let seed=17;
+    for(let i=0;i<d.data.length;i+=4){for(let j=0;j<3;j++){seed=(Math.imul(seed,1664525)+1013904223)|0;d.data[i+j]=(seed>>>24);}d.data[i+3]=255;}g.putImageData(d,0,0);
+    c.onclick=e=>{g.fillStyle='#ff0000';g.fillRect(e.clientX-10,e.clientY-10,20,20);};</script>"#).unwrap();
+    let ctx = context(dir.path()).await;
+    let registry = ToolRegistry::builtins().unwrap();
+    let opened = call(
+        &registry,
+        &ctx,
+        "browser.open",
+        json!({"path":"noise.html","visual":true}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&opened);
+    let image = &opened.images[0];
+    assert!(image.width < 1024, "noise must exercise actual resizing");
+    let x = (160.0 * f64::from(image.width) / 1024.0
+        * opened.data["screenshot"]["scale_x"].as_f64().unwrap())
+    .round() as u64;
+    let y = (220.0 * f64::from(image.height) / 768.0
+        * opened.data["screenshot"]["scale_y"].as_f64().unwrap())
+    .round() as u64;
+    let browser_id = opened.data["browser_id"].clone();
+    let clicked = call(
+        &registry,
+        &ctx,
+        "browser.action",
+        json!({"browser_id":browser_id,"action":"click_at","x":x,"y":y,"screenshot":false}),
+    )
+    .await
+    .unwrap();
+    assert_ok(&clicked);
+    assert_eq!(
+        clicked.images.len(),
+        1,
+        "Auto must retain feedback on a detected drawing surface even if the model requests screenshot:false"
+    );
+    assert_eq!(clicked.data["action_target"]["tag"], "canvas");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let bytes = client
+        .get(format!(
+            "{}frame",
+            opened.data["viewer_url"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let pixels = image::load_from_memory(&bytes).unwrap().to_rgb8();
+    let pixel = pixels.get_pixel(160, 220);
+    assert!(
+        pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40,
+        "{pixel:?}"
+    );
+    let tool = registry.get("browser.observe").unwrap();
+    for (perception, screenshot, frames) in
+        [("dom", true, 1), ("dom", false, 0), ("vision", false, 1)]
+    {
+        let mut args = tool
+            .prepare(
+                json!({"browser_id":browser_id,"screenshot":screenshot}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        args["_browser_settings"] = json!({"perception":perception});
+        assert_eq!(
+            tool.execute(args, &ctx).await.unwrap().images.len(),
+            frames,
+            "{perception} with screenshot:{screenshot} must retain the host's image policy"
+        );
+    }
+    let mut args = tool
+        .prepare(json!({"browser_id":browser_id,"screenshot":false}), &ctx)
+        .await
+        .unwrap();
+    args["_browser_settings"] = json!({"perception":"vision"});
+    args["_images_supported"] = json!(false);
+    assert_eq!(
+        tool.execute(args, &ctx).await.unwrap_err().code,
+        "images_unsupported"
+    );
+    let mut denied = tool
+        .prepare(json!({"browser_id":browser_id,"screenshot":true}), &ctx)
+        .await
+        .unwrap();
+    denied["_images_supported"] = json!(false);
+    assert_eq!(
+        tool.execute(denied, &ctx).await.unwrap_err().code,
+        "images_unsupported"
+    );
+    let close = registry.get("browser.close").unwrap();
+    let mut close_args = close
+        .prepare(json!({"browser_id":browser_id}), &ctx)
+        .await
+        .unwrap();
+    close_args["_browser_settings"] = json!({"perception":"vision"});
+    close_args["_images_supported"] = json!(false);
+    assert_ok(&close.execute(close_args, &ctx).await.unwrap());
 }

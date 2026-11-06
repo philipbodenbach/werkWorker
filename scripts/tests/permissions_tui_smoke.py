@@ -86,6 +86,16 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         with sqlite3.connect(root / store) as db:
             return json.loads(db.execute("SELECT data FROM sessions").fetchone()[0])
 
+    def wait_completed(store):
+        # Streamed final text can precede the durable terminal transition.
+        # These prompts start new runs; they are not steering during a run.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if state(store)["runs"][-1]["status"] == "completed":
+                return
+            time.sleep(.01)
+        raise AssertionError(("Run did not complete", state(store)["runs"][-1]["status"]))
+
     def click(label):
         for y, row in enumerate(screen.rows):
             line = "".join(row)
@@ -170,6 +180,7 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         # Approval initially selects Deny; two Down keys select project.
         os.write(master, b"\x1b[B\x1b[B\r")
         wait("Both files written")
+        wait_completed("state.sqlite")
         assert (workspace / "one.txt").read_text() == "one"
         assert (workspace / "two.txt").read_text() == "two"
         policy = json.loads(policy_path.read_text())["policy"]
@@ -189,6 +200,7 @@ with tempfile.TemporaryDirectory(prefix="ww-permissions-test-") as temp:
         assert not any(m["content"].startswith("Read: ") for m in state("state.sqlite")["messages"] if m["role"] == "user")
         os.write(master, b"\r")
         wait("Pasted message received")
+        wait_completed("state.sqlite")
         users = [m["content"] for m in state("state.sqlite")["messages"] if m["role"] == "user"]
         assert users[-1] == f"Read: {first} and {second}", "Collapsed markers must not replace the actual prompt"
         os.write(master, b"Run the commands\r")

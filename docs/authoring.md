@@ -133,9 +133,15 @@ control a separate headless browser, retaining tabs, cookies and form state
 across tool calls. They are ordinary JSON tools shared by all
 tool-capable model providers, including local Qwen, Llama, DeepSeek and GLM
 models served by Werk. No Qwen-specific SDK or model-name allowlist is involved.
-Text and accessibility snapshots work without vision; `browser.observe` can
-add a screenshot for image-capable models. Model tool-calling quality still
+Text and accessibility snapshots work without vision. Host-selected Auto, DOM
+and Vision perception modes control automatic model images (see below). Model tool-calling quality still
 depends on the selected model and server configuration.
+
+`browser.action` supports both DOM targets and direct input. `click_at`, `move`,
+`drag` and `scroll` use mouse coordinates; `press` sends keys or chords such as
+`Control+a`; `type` inserts `text` into the current focus without a DOM target.
+Click or Tab into the field first. Protected inputs still require manual takeover,
+including when focus is inside an iframe. `fill` remains available for named fields.
 
 For local static development, call `browser.open` with `{"path":"index.html"}`
 (relative to the workspace, or `/workspace/...`). The existing
@@ -170,7 +176,7 @@ scripts. Other systems can use Playwright's documented platform dependency setup
 
 Enter **`/browser on`** in the TUI to enable browser mode for the current
 session. `/browser` prints the panel URL; `/browser off` disables subsequent
-agent actions and rejects unresolved browser approvals. The panel's Stop button
+agent actions and rejects unresolved browser approvals. The panel's Stop & close browser button
 cancels the active run. Enabling this mode adds the browser tools to any profile;
 workspace/process grants alone do not authorize them. Hard denies still apply.
 SDK hosts use `SessionHandle::set_browser_mode`, `browser_panel` and
@@ -278,7 +284,9 @@ Persistent browsers have separate host-configurable
 `browser_session_cpu_seconds` (300 CPU seconds per process) limits; normal
 commands and one-shot `browser.check` keep their existing limits. Browser
 processes use at most two CPUs and 1024 descriptors per process.
-Browser sessions expire after 15 minutes and are not persisted on engine restart.
+Browser sessions default to 900 seconds absolute lifetime, 900 seconds idle time
+and 400 actions. Host-configured bounds apply even in Continuous Mode. Live
+browsers are not persisted on engine restart.
 Close idle browsers explicitly; engine shutdown and conversation deletion also
 clean them up. To require real cross-engine tests:
 
@@ -311,3 +319,111 @@ general-readonly/coding-basic/automation-basic profiles are embedded with
 `include_str!`. Host builder and explicit CLI flags choose effective resources;
 workspace configuration is not implicitly loaded. The exported session shows
 the effective profile hash, host policy and immutable skill snapshots.
+
+
+### Autonomous browser tasks and perception
+
+`browser-use` is bundled in coding/automation profiles and added when browser
+mode is enabled or an older browser-capable session is opened. Existing skill
+snapshots are preserved. The manifest stays small; the snapshotted instructions
+are supplied automatically once the run invokes browser tools, including after
+compaction. The agent derives completion criteria, reuses its browser ID and
+checks observed effects. Pure browser tasks require no synthetic workspace edits;
+coding tasks retain their file verification requirements.
+
+`browser.open` requires exactly one target, for example
+`{"url":"https://jspaint.app"}` or `{"path":"index.html"}`. Version 4 expresses
+these alternatives as complete object schemas so native tool parsers retain
+the target fields. Missing targets are still rejected before execution; the
+host does not invent a URL from chat text. Validation failures create no browser
+checkpoint. Checkpoints require actual observation IDs, and copying an emitted
+checkpoint as the model's answer uses the existing bounded echo recovery.
+
+Use `/browser perception auto`, `dom` or `vision`, the panel selector, or the
+host API `set_browser_settings(BrowserSettings, command_id)`:
+
+| Mode | Model feedback |
+| --- | --- |
+| Auto (default) | DOM normally; images for visible visual surfaces, coordinate actions, or the agent's generic `visual:true` request |
+| DOM | Text, controls and accessibility; suitable for text models |
+| Vision | Automatic images on opening, navigation, observations and actions |
+
+All four tools accept `screenshot`: explicit `true` requests an image even in
+DOM mode. Explicit `false` suppresses optional images, but cannot disable the
+host's Vision mode or Auto feedback on a detected visual surface.
+`images=unknown` permits image input;
+`images=unsupported` rejects an explicit visual request before acting. Auto can
+continue in DOM and reports that visual content cannot be inspected. Backend
+rejection names missing vision/projector support when the server supplies a
+recognized diagnostic. Worker never chooses a cloud backend or downloads models.
+A missing screenshot is an observation problem, not evidence an action failed.
+
+Control discovery is site-independent. Native elements, interactive ARIA roles
+and explicit click handlers supply candidates; bounded naming hints include
+`aria-labelledby`, `aria-label`, associated labels, visible text, icon titles,
+image alternatives and tooltips. The browser's accessibility snapshot and current
+image remain complementary evidence, not substitutes for action verification.
+Auto also requests an image for unlabelled icon/custom controls on ordinary HTML
+pages. Open shadow roots are followed when resolving the actual click target.
+Selected, checked and disabled states are retained. A hit test omits controls
+whose click point is covered by an unrelated element; decorative canvas icons
+resolve to the control that receives their pointer events.
+
+Receipts associate browser/tab, URL, viewport, revision, observation ID, timestamp,
+image dimensions and scale. `action_executed`, `readiness`, `observation_errors`
+and `vision_issue` distinguish action effects from partial observation failure.
+`action_target` retains the actual control's name, color and bounds before its
+reference expires. Selecting a palette color is not evidence of painting.
+The driver samples DOM stability for 400–1200 ms, without `networkidle`; future
+delayed updates can still require bounded `wait` and another observation. Text,
+accessibility and screenshot extraction are independent after a successful
+protected-field scan. If masking cannot be established, no text/frame fallback
+is emitted. The panel hides an unavailable frame rather than showing it as current.
+
+Browser progress uses stable normalized DOM text/controls per browser and active
+tab. Refs, revisions, timestamps and mouse positions do not count. Known semantic
+states cannot reset the repetition guard again. Visual novelty uses a coarse
+luminance grid with at most twelve credits per tab per run; this is bounded
+observation evidence, not a claim of task success. Idle clicks, periodic blinking
+and foreign sessions cannot supply unlimited progress. Host action/time limits
+remain effective even if an animation produces new frames.
+
+The working checkpoint separates plan intent from the latest observation and
+records the last action, observed state and uncertainty. Follow-up requests keep
+at most two current browser images; user images and other image tools are
+untouched. Selection precedes token counting, compaction and request fingerprints;
+canonical receipts/artifacts retain historical frames. After Continue, or when compaction removes the latest browser observation, a
+fresh observe is required before another action. Compacting older observations
+keeps the retained latest observation usable.
+After restart open a new browser; old IDs are historical evidence only.
+
+### Host-owned browser budgets
+
+Browser sessions stay open by default until explicitly closed with `browser.close`,
+the panel's **Stop & close browser**, or worker shutdown. `/browser limits 0 0 400`
+disables both time limits for the **next** browser session. Existing saved positive
+limits remain explicit settings; close/reopen to apply changes.
+`/browser limits 3600 1200 600` optionally sets absolute seconds, idle seconds and
+an action count. Allowed ranges are 0–14400 s absolute, 0–3600 s idle and 1–2000
+actions; defaults are 0/0/400. Zero disables the corresponding time limit.
+Exhausting the action budget blocks further agent actions but retains the browser
+for manual control or explicit closure. Resource safeguards and each agent run's
+budgets remain enforced. Model arguments cannot change these host settings.
+Perception applies to newly prepared actions; settings changes invalidate
+outstanding preparation before dispatch. Timed-out external actions are never
+retried automatically. Slow inference counts toward an explicitly enabled idle limit.
+
+Each browser operation permits up to 256 HTTP requests within the existing
+response-size budget. `network.blocked` counts all rejection reasons even when
+the bounded `blocked_requests` detail list is full. A renderer crash is reported
+as `browser_page_crashed` with `browser_state: "crashed"`; close and reopen the
+session instead of observing or navigating the dead tab repeatedly.
+
+Natural-language examples after `/browser on` and granting the relevant sites:
+
+- “Open JSPaint and draw a house with a red roof, two windows and a tree.”
+- “Open this registration page, enter the supplied details and verify the confirmation.”
+- “Play one Wordle round using the visible feedback and report its actual outcome.”
+
+These are tasks for the configured model, not guarantees of model quality.
+See [the executable live evaluation and current review evidence](browser-agent-review.md).

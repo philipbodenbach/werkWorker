@@ -234,7 +234,11 @@ pub(crate) fn minimal_feedback(session: &SessionData, run: &Run) -> Result<Vec<M
             json!({"steps":steps,"tool_calls":calls}),
         ));
     }
-    if let Some(invocation) = run.invocations.last() {
+    if let Some(invocation) = run
+        .invocations
+        .last()
+        .filter(|i| !crate::browser_progress::is_browser(&i.call))
+    {
         let count = repeated_calls(session, run, &invocation.call)?;
         if count >= 2 && count >= run.limits.max_repeated_calls.saturating_sub(1) {
             messages.push(feedback("repeated_call", json!({
@@ -274,6 +278,16 @@ pub(crate) fn is_feedback_echo(
         .collect();
     owned.extend(
         crate::completion::observation(session, run)?
+            .into_iter()
+            .filter(|observation| request.messages.contains(observation)),
+    );
+    owned.extend(
+        crate::browser_progress::feedback(session, run)?
+            .into_iter()
+            .filter(|observation| request.messages.contains(observation)),
+    );
+    owned.extend(
+        crate::working_state::browser_checkpoint(session, run)
             .into_iter()
             .filter(|observation| request.messages.contains(observation)),
     );
@@ -355,6 +369,25 @@ pub(crate) fn is_feedback_echo(
         owned.push(boundary);
     }
     let value = serde_json::from_str::<Value>(&message.content).ok();
+    // During an owned recovery turn a model can invent a new event instead of
+    // copying one literally (e.g. continuation_missing_result). It is still
+    // model output, never runtime evidence. Reject only a standalone envelope
+    // in this recovery context; preserve requested JSON and user quotations.
+    let invented_notice = !owned.is_empty()
+        && request.output_schema.is_none()
+        && value.as_ref().is_some_and(|value| {
+            value.as_object().is_some_and(|object| object.len() == 3)
+                && value["source"] == "werk_worker.harness"
+                && value["event"].is_string()
+                && value["data"].is_object()
+        })
+        && !session
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("werk_worker.harness"));
+    if invented_notice {
+        return Ok(true);
+    }
     Ok(owned.iter().any(|observation| {
         message.content.trim() == observation.content.trim()
             || value.as_ref().is_some_and(|value| {
@@ -386,6 +419,9 @@ pub(crate) fn push_feedback(
 /// Count repeated calls since a changed observation, without trusting model text.
 /// Adaptive and legacy minimal use this; classic keeps its workspace-revision rule.
 pub(crate) fn repetitions(run: &Run, call: &ToolCall) -> usize {
+    if crate::browser_progress::is_browser(call) {
+        return crate::browser_progress::repetitions(run, call);
+    }
     let call_key = crate::working_state::call_key(call);
     // Polling a proven active owned job is bounded by ordinary tool/step/time
     // limits; lack of a workspace write does not make waiting an error.
@@ -437,6 +473,7 @@ pub(crate) fn repetition_counts(run: &Run) -> std::collections::BTreeMap<String,
             .entry(crate::working_state::call_key(&invocation.call))
             .or_default() += 1;
     }
+    counts.extend(crate::browser_progress::counts(run));
     counts
 }
 
@@ -530,11 +567,15 @@ fn repetition_boundary(run: &Run) -> usize {
 }
 
 pub(crate) fn repeated_calls(session: &SessionData, run: &Run, call: &ToolCall) -> Result<usize> {
-    Ok(if config(session, run)?.mode != HarnessMode::Classic {
-        repetitions(run, call)
-    } else {
-        run.repeated_calls_without_progress(call)
-    })
+    Ok(
+        if crate::browser_progress::is_browser(call)
+            || config(session, run)?.mode != HarnessMode::Classic
+        {
+            repetitions(run, call)
+        } else {
+            run.repeated_calls_without_progress(call)
+        },
+    )
 }
 pub(crate) fn check_passes(check: &CompletionCheck, result: &ToolResult) -> bool {
     result.status == Outcome::Succeeded

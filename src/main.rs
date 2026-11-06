@@ -1,3 +1,5 @@
+#[path = "cli_cleanup.rs"]
+mod cli_cleanup;
 #[path = "cli_config.rs"]
 mod cli_config;
 #[path = "cli_effort.rs"]
@@ -72,6 +74,17 @@ struct Cli {
 }
 #[derive(Clone, Subcommand)]
 enum Command {
+    /// Inspect and remove old WerkWorker temporary files.
+    #[command(visible_alias = "temp")]
+    Tmp {
+        #[command(subcommand)]
+        action: cli_cleanup::TmpCommand,
+    },
+    /// Inspect and remove build files, backups and explicitly selected shared caches.
+    Cache {
+        #[command(subcommand)]
+        action: cli_cleanup::CacheCommand,
+    },
     /// Interactive agent UI (the default when no command is supplied).
     Tui {
         input: Option<String>,
@@ -196,6 +209,17 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         session: None,
         run_id: None,
     });
+    match &command {
+        Command::Tmp { action } => {
+            cli_cleanup::temporary(action)?;
+            return Ok(false);
+        }
+        Command::Cache { action } => {
+            cli_cleanup::cache(action, &cli.workspace)?;
+            return Ok(false);
+        }
+        _ => {}
+    }
     if matches!(&command, Command::Tui { .. })
         && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
     {

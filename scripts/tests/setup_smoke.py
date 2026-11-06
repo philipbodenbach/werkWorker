@@ -25,6 +25,8 @@ from tui_support import Screen
 KEY = 'setup-fixture-sensitive-key'
 requests = []
 discovery_requests = []
+expected_model = 'fixture-model'
+expected_output = 4096
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -78,8 +80,8 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         requests.append(body)
         assert KEY not in json.dumps(body)
-        assert body['max_completion_tokens'] == 4096
-        assert body['model'] == 'fixture-model'
+        assert body['max_completion_tokens'] == expected_output
+        assert body['model'] == expected_model
         sources = [json.loads(m['content']) for m in body['messages']
                    if m['role'] == 'system' and m['content'].startswith('{')]
         assert sum(source.get('source') == 'werk_worker.project'
@@ -433,6 +435,38 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert [i['approval']['request_id'] for i in recovered_run['invocations'] if i.get('approval')] == [request_id]
         assert len(requests) == 5
         assert termios.tcgetattr(slave) == before
+        # Editing project preferences must take effect even through Continue
+        # previous, while preserving verified capabilities and local credentials.
+        project_settings = json.loads(project_file.read_text())
+        project_settings.update(model='replacement-model', output_tokens=2048,
+                                reasoning_tier='low')
+        project_file.write_text(json.dumps(project_settings))
+        expected_model = 'replacement-model'
+        expected_output = 2048
+        screen = Screen()
+        proc = start('tui', 'Use the updated project model')
+        wait_for('Continue previous')
+        wait_for('Model: replacement-model')
+        wait_for('Reasoning effort: low')
+        send('\r')
+        wait_for('Approval')
+        send('\x19')
+        wait_for('Setup connected successfully')
+        wait_for('Completed')
+        send('\x11')
+        assert exited() == 0
+        assert len(requests) == 7
+        assert all(body['model'] == expected_model
+                   and body['max_completion_tokens'] == expected_output
+                   and body['werk']['reasoning']['tier'] == 'low'
+                   for body in requests[-2:])
+        remembered_settings = json.loads(next(
+            (root / 'config/werkworker/connections').glob('*.json')).read_text())['settings']
+        assert remembered_settings['werk']['model'] == expected_model
+        assert remembered_settings['werk']['capabilities']['tool_calling'] == 'supported'
+        assert remembered_settings['limits']['reserve_output_tokens'] == expected_output
+        assert config.read_bytes() == global_before
+        assert termios.tcgetattr(slave) == before
         # Failure keeps the previous service available for retry or explicit new setup.
         server.shutdown()
         server.server_close()
@@ -476,6 +510,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         print('PASS: remembered connection and capabilities, workspace-filtered sessions, same-session follow-up with model history, --session without run-id, interrupted approval recovery, retry/connect-new after failure; no replay or leaked credentials.')
         print('PASS: PTY setup, reasoning selection and actual request forwarding, global/project persistence and explicit server default on reconnect, masked key paste, auth retry, budgets, authenticated chat and approval, saved configs (0600), project rules and permission separation, environment reference and terminal restoration.')
         print('PASS: automatic workspace connection and masked local credentials for bare ww and --workspace; no token in settings, terminal capture or sessions.')
+        print('PASS: Continue previous applies edited project model, output budget and reasoning to real requests, preserving verified capabilities and credentials.')
     finally:
         if proc is not None and proc.poll() is None:
             proc.kill()

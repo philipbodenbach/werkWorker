@@ -12,6 +12,59 @@ struct Host {
     engine: Weak<EngineInner>,
     runtime: Weak<SessionRuntime>,
 }
+
+// Applying a host rule is itself a permission decision. Resolve matching pending
+// requests atomically instead of requiring the user to approve them a second time.
+pub(super) fn resolve_browser_approvals(data: &mut SessionData) {
+    let mut resolved = Vec::new();
+    for run in &mut data.runs {
+        if !matches!(
+            run.status,
+            RunStatus::WaitingApproval | RunStatus::Interrupted
+        ) {
+            continue;
+        }
+        for invocation in &mut run.invocations {
+            if !TOOLS.contains(&invocation.call.name.as_str()) {
+                continue;
+            }
+            let (Some(definition), Some(approval)) =
+                (&invocation.definition, &mut invocation.approval)
+            else {
+                continue;
+            };
+            if approval.decision.is_some()
+                || approval.expires_at_ms <= now_ms()
+                || approval.arguments_hash != approval_key(definition, &invocation.prepared)
+            {
+                continue;
+            }
+            let decision = if !data.profile.tools.contains(&definition.name) {
+                PolicyDecision::Deny
+            } else {
+                data.policy
+                    .evaluate(definition, &invocation.prepared, &run.similar_grants)
+            };
+            let decision = match decision {
+                PolicyDecision::Allow => ApprovalDecision::AllowOnce,
+                PolicyDecision::Deny => ApprovalDecision::Deny,
+                PolicyDecision::Ask => continue,
+            };
+            approval.decision = Some(decision.clone());
+            resolved.push((run.id.clone(), approval.request_id.clone(), decision));
+        }
+    }
+    for (run_id, request_id, decision) in resolved {
+        data.emit(
+            Some(&run_id),
+            EventKind::ApprovalResolved {
+                request_id,
+                decision,
+            },
+        );
+    }
+}
+
 impl Host {
     fn session(&self) -> Result<SessionHandle> {
         let engine = self
@@ -62,7 +115,7 @@ impl BrowserHost for Host {
                     })
                     .collect();
                 Ok(
-                    json!({"enabled":data.policy.browser.as_ref().is_some_and(|p|p.enabled),"paused":browsers.is_paused(&data.id).await,"policy":data.policy.browser,"browser":browsers.current(&data.id).await,"approvals":approvals}),
+                    json!({"enabled":data.policy.browser.as_ref().is_some_and(|p|p.enabled),"paused":browsers.is_paused(&data.id).await,"policy":data.policy.browser,"browser":browsers.current(&data.id).await,"approvals":approvals,"task":data.runs.last().map(|r|json!({"status":r.status,"plan":crate::completion::excerpt(&r.plan.to_string(),1024)})),"images":session.provider().capabilities().images}),
                 )
             }
             "mode" => {
@@ -72,6 +125,15 @@ impl BrowserHost for Host {
                             WorkerError::new("browser_mode", "Expected enabled boolean")
                         })?,
                         &id("browser-mode"),
+                    )
+                    .await?;
+                Ok(json!({"ok":true}))
+            }
+            "settings" => {
+                session
+                    .set_browser_settings(
+                        serde_json::from_value(request["settings"].clone())?,
+                        &id("browser-settings"),
                     )
                     .await?;
                 Ok(json!({"ok":true}))
@@ -175,6 +237,39 @@ impl BrowserHost for Host {
     }
 }
 impl SessionHandle {
+    /// Host-only settings, frozen into each prepared action and approval.
+    pub async fn set_browser_settings(
+        &self,
+        settings: crate::browser_policy::BrowserSettings,
+        command_id: &str,
+    ) -> Result<CommandReceipt> {
+        settings.validate()?;
+        self.update(|d| {
+            if d.parent.is_some() {
+                return Err(WorkerError::new(
+                    "root_required",
+                    "Browser settings belong to the root session",
+                ));
+            }
+            let receipt = d.command(
+                command_id,
+                &json!({"method":"browser_settings","settings":settings}),
+                None,
+            )?;
+            if !matches!(receipt.status, ReceiptStatus::Duplicate) {
+                d.policy
+                    .browser
+                    .get_or_insert_with(|| BrowserPolicy {
+                        enabled: false,
+                        ..Default::default()
+                    })
+                    .settings = settings;
+            }
+            Ok(receipt)
+        })
+        .await
+    }
+
     /// A token-scoped loopback panel for trusted host interaction only.
     pub async fn browser_panel(&self) -> Result<String> {
         let data = self.snapshot().await?;
@@ -248,6 +343,7 @@ impl SessionHandle {
                         }
                         d.policy.tool_permissions.remove(*tool);
                     }
+                    self.engine.inner.skills.ensure_browser(d);
                 }
                 d.emit(
                     None,
@@ -282,7 +378,9 @@ impl SessionHandle {
             let receipt=d.command(command_id,&json!({"method":"browser_rule","site":site,"category":category,"permission":permission}),None)?;
             if matches!(receipt.status,ReceiptStatus::Duplicate) {return Ok(receipt);}
             d.policy.browser.get_or_insert_with(||BrowserPolicy{enabled:false,..Default::default()}).set(site,category,permission)?;
-            d.emit(None,EventKind::Diagnostic{code:"browser_rule_changed".into()});Ok(receipt)
+            d.emit(None,EventKind::Diagnostic{code:"browser_rule_changed".into()});
+            resolve_browser_approvals(d);
+            Ok(receipt)
         }).await
     }
     pub(super) async fn wait_for_browser_operator(

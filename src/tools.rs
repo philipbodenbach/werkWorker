@@ -337,7 +337,7 @@ impl Tool for Builtin {
             ),
             "task.plan" => (
                 Effect::Internal,
-                "Derive outcomes and acceptance criteria from the task and references. Each step records acceptance_criteria and verification_method; complete only from evidence. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps. Save checkpoint at phase changes; replace the current plan and checkpoint, not after every read.",
+                "Replace the session plan and checkpoint at phase changes. They are retained in task-state feedback, not a filesystem file. Derive outcomes and acceptance criteria from the task and references; complete only from evidence. Each step records acceptance_criteria and verification_method. For coding, build a runnable version, compare actual behavior/content/visuals, then repair gaps.",
                 object(
                     json!({"steps":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"id":string(),"description":string(),"status":{"enum":["pending","in_progress","completed"]},"acceptance_criteria":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"verification_method":{"type":"string","minLength":1,"maxLength":512}},"required":["id","description","status"],"additionalProperties":false}},
                         "checkpoint":{"type":"object","properties":{

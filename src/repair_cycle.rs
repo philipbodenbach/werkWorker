@@ -16,6 +16,20 @@ pub(crate) struct RepairCycle {
     // Keep each parent's paths so a replacement cannot drop intermediate scope.
     replacements: BTreeMap<String, BTreeSet<String>>,
     passed_assertions: BTreeSet<String>,
+    assertion_goals: BTreeSet<String>,
+}
+
+fn assertion_key(path: &Value, action: &Value) -> Option<String> {
+    matches!(
+        action["type"].as_str(),
+        Some("expect" | "expect_visible" | "expect_text")
+    )
+    .then(|| {
+        fingerprint(&(
+            crate::working_state::path(path.as_str().unwrap_or(".")),
+            action,
+        ))
+    })
 }
 
 fn command(invocation: &ToolInvocation) -> String {
@@ -108,11 +122,13 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
             browser_failure: None,
             replacements: [(invocation.invocation_id.clone(), paths.clone())].into(),
             passed_assertions: BTreeSet::new(),
+            assertion_goals: invocation.call.arguments["actions"].as_array().into_iter().flatten()
+                .filter_map(|action| assertion_key(&invocation.call.arguments["path"], action)).collect(),
         });
         // Renew only on newly passed assertions, not changing failure strings
         // ("expected good, got bad1" -> "bad2" is still the same failure).
-        // Browser receipts identify the executed prefix; a generic process
-        // failure without structured outcomes cannot establish this progress.
+        // Freeze the original goals. New trivial assertions, timing/prefix
+        // variations and changed diagnostics cannot mint repair allowance.
         let valid_failure = result.data["failed_action"]["failure_origin"] != "check"
             && result.data["failed_action"]["failure_origin"] != "runtime";
         let relevant = related || current.source_invocation == invocation.invocation_id;
@@ -129,14 +145,11 @@ pub(crate) fn latest(run: &Run, receipts: &BTreeMap<String, Value>) -> Option<Re
                 if outcome["passed"] != true {
                     break;
                 }
-                if matches!(
-                    outcome["type"].as_str(),
-                    Some("expect" | "expect_visible" | "expect_text")
-                ) {
-                    progressed |= current.passed_assertions.insert(fingerprint(&(
-                        invocation.call.arguments["path"].clone(),
-                        &actions[..=index],
-                    )));
+                if let Some(key) =
+                    assertion_key(&invocation.call.arguments["path"], &actions[index])
+                    && current.assertion_goals.contains(&key)
+                {
+                    progressed |= current.passed_assertions.insert(key);
                 }
             }
         }
@@ -189,7 +202,7 @@ impl RepairCycle {
         "failed_command_excerpt":crate::completion::excerpt(&self.argv.to_string(), 1400),
         "paths":self.paths.iter().take(8).map(|p|crate::completion::excerpt(p,512)).collect::<Vec<_>>(),
         "decisions_without_resolution":self.rounds.len(),
-        "progress_policy":"Newly passed assertions in a related check renew the investigation allowance. The original obligation remains until a covering check passes. Changing error strings and file activity alone do not renew it.",
+        "progress_policy":"Newly passed original assertion goals in a related check renew the investigation allowance. The original obligation remains until a covering check passes. Added assertions, timing changes, error strings and file activity alone do not renew it.",
         "decision_limit":stop_limit(run),
         "final_check_due":self.final_check_due(run),
         "last_failure_excerpt":crate::completion::diagnostic_excerpt(&self.last_failure, 1000),
@@ -283,9 +296,9 @@ mod tests {
             receipt(
                 n,
                 "browser.check",
-                json!({"path":"app.html","actions":[{"type":"expect","expression":format!("stage >= {milestone}")},{"type":"expect","expression":"done === true"}],
+                json!({"path":"app.html","actions": (0..31).map(|stage| json!({"type":"expect","expression":format!("stage >= {stage}")})).collect::<Vec<_>>(),
                 "verification":{"kind":"behavior","replaces":"inv_0","criteria":["Complete all milestones"],"paths":["app.html"]}}),
-                json!({"exit_code":if passed {0} else {1},"errors":[format!("Not complete at {n}")],"actions":[{"type":"expect","passed":true}],
+                json!({"exit_code":if passed {0} else {1},"errors":[format!("Not complete at {n}")],"actions":(0..=milestone).map(|_| json!({"type":"expect","passed":true})).collect::<Vec<_>>(),
                 "failed_action":{"index":2,"failure_origin":"application"},"verification":{"passed":passed,"files":{"app.html":format!("v{n}")}}}),
             )
         };
@@ -310,6 +323,34 @@ mod tests {
         assert!(cycle.rounds.len() >= stop_limit(&restored));
         run.invocations.push(check(45, 29, true));
         assert!(latest(&run, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn neutral_prefixes_and_added_assertions_cannot_renew_repair_after_resume() {
+        let mut run = run();
+        for n in 0..16 {
+            let mut actions = vec![
+                json!({"type":"wait","ms":n+1}),
+                json!({"type":"expect","expression":"document.title === 'App'"}),
+            ];
+            let mut outcomes = vec![
+                json!({"type":"wait","passed":true}),
+                json!({"type":"expect","passed":true}),
+            ];
+            if n > 0 {
+                actions.push(json!({"type":"expect","expression":format!("{} === {}",n,n)}));
+                outcomes.push(json!({"type":"expect","passed":true}));
+            }
+            actions.push(json!({"type":"expect","expression":"goal === true"}));
+            run.invocations.push(receipt(n, "browser.check",
+                json!({"path":if n%2==0 {"app.html"} else {"./app.html"},"actions":actions,"verification":{"replaces":"inv_0"}}),
+                json!({"actions":outcomes,"errors":[format!("failure {n}")],"verification":{"passed":false,"files":{"app.html":"unchanged"}}})));
+            run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        }
+        let cycle = latest(&run, &BTreeMap::new()).unwrap();
+        assert_eq!(cycle.rounds.len(), 16);
+        assert_eq!(cycle.passed_assertions.len(), 1);
+        assert_eq!(cycle.source_invocation, "inv_0");
     }
 
     #[test]

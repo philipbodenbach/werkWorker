@@ -108,8 +108,10 @@ The following later work supersedes the initial CLI/platform description:
 The release action follows the explicitly requested Werk preparation-PR/merge/
 tag/draft lifecycle, with manual platform assets. It was not dispatched and
 no PR, commit, tag or release was created during this work. Windows x86_64,
-Linux ARM64 and macOS Apple Silicon native builds are configured in platform CI;
-this WSL environment has neither native MSVC nor a macOS SDK, so those builds
+Linux ARM64 and macOS Apple Silicon native builds were configured in platform CI
+at that time. The current three-platform matrix is documented in
+[releases](releases.md); Linux ARM64 now requires a source build. This WSL
+environment has neither native MSVC nor a macOS SDK, so those builds
 have not been locally demonstrated. The process/filesystem sandbox remains
 Linux-only. Native packaging does not remove that boundary.
 

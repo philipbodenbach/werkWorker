@@ -24,7 +24,7 @@ intelligence.
 
 ## Install and try
 
-Rust 1.88 or newer. Native packages target Linux x86_64/ARM64, Windows x86_64
+Rust 1.88 or newer. Three native packages target Linux x86_64, Windows x86_64
 and macOS Apple Silicon; file/process isolation currently requires Linux.
 See [install scripts and release workflow](docs/releases.md). Build from this
 checkout (nothing is published by these commands):
@@ -53,6 +53,22 @@ On subsequent starts, **Continue previous** reconnects to the remembered service
 **Connect new** opens setup. Choose **New session** or a previous conversation
 to restore its history and continue. `/sessions` opens this list from chat.
 See [setup and authentication](docs/setup.md) and [terminal controls](docs/tui.md).
+
+Inspect temporary files and reclaim build/cache space without connecting to a model:
+
+```sh
+ww tmp list
+ww tmp purge --all --dry-run
+ww tmp purge --all
+ww cache list
+ww cache purge --all --kind build --dry-run
+ww cache purge --all --kind build
+```
+
+`ww tmp` also accepts `temp`. Temporary cleanup defaults to entries unchanged for
+24 hours. Cache cleanup uses the selected `--workspace` for Rust build directories;
+backups and shared package caches have separate selectors. See
+[cleanup scopes and examples](docs/cleanup.md) before purging backups or shared caches.
 
 Project rules use `.werkworker.md` / `WERKWORKER.md`, with `AGENTS.override.md`,
 `AGENTS.md` and `CLAUDE.md` as ordered alternatives. Named profiles, tool/skill
@@ -109,7 +125,10 @@ prints the local panel link. Follow page snapshots, approve actions, set website
 permissions, or choose **Take over** for manual login and then continue the
 agent. Page scripts require approval every time. Standard tools cover navigation,
 page text, forms, tabs, screenshots, canvas drawing, session history and bounded
-download artifacts. No Qwen-specific browser extension is required.
+download artifacts. `/browser perception auto|dom|vision` selects model feedback;
+Browser sessions stay open until explicitly closed by default; `/browser limits`
+configures optional time limits and the session action budget. The bundled browser-use
+skill guides observation, action and result verification. No Qwen-specific browser extension is required.
 Install the isolated runtime with `sh scripts/install-browser.sh` for Chromium,
 Firefox and WebKit. Linux/WSL and the browser platform libraries are required;
 installed Chrome/Edge and common Chromium variants can also be selected. These

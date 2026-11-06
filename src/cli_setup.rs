@@ -639,26 +639,11 @@ fn error_message(error: &WorkerError) -> String {
         ),
     }
 }
-async fn resolve_settings(
-    mut settings: Settings,
-    seed: Option<WerkConfig>,
-    secret_env: Option<String>,
-    workspace: &Path,
+fn apply_project_preferences(
+    settings: &mut Settings,
     project: &Project,
     explicit_profile: Option<&str>,
-) -> Result<(Settings, Option<String>)> {
-    let mut api_key = None;
-    // An explicit transport bypasses local discovery, including invalid local files.
-    if seed.is_none()
-        && let Some(connection) = Project::connection_config(workspace).await?
-    {
-        if settings.werk.base_url != connection.werk.base_url || connection.api_key.is_some() {
-            settings.secret_env = None;
-            settings.no_auth = false;
-        }
-        settings.werk = connection.werk;
-        api_key = connection.api_key;
-    }
+) {
     if let Some(model) = &project.config.model {
         settings.werk.model = model.clone();
     }
@@ -688,6 +673,29 @@ async fn resolve_settings(
     if let Some(profile) = explicit_profile {
         settings.profile = profile.into();
     }
+}
+
+async fn resolve_settings(
+    mut settings: Settings,
+    seed: Option<WerkConfig>,
+    secret_env: Option<String>,
+    workspace: &Path,
+    project: &Project,
+    explicit_profile: Option<&str>,
+) -> Result<(Settings, Option<String>)> {
+    let mut api_key = None;
+    // An explicit transport bypasses local discovery, including invalid local files.
+    if seed.is_none()
+        && let Some(connection) = Project::connection_config(workspace).await?
+    {
+        if settings.werk.base_url != connection.werk.base_url || connection.api_key.is_some() {
+            settings.secret_env = None;
+            settings.no_auth = false;
+        }
+        settings.werk = connection.werk;
+        api_key = connection.api_key;
+    }
+    apply_project_preferences(&mut settings, project, explicit_profile);
     if let Some(config) = seed {
         settings.werk = config;
     }
@@ -767,9 +775,11 @@ pub async fn show(
     );
     if can_continue {
         // Continue uses the effective transport that actually connected, including
-        // verified capability choices. Project defaults may still be incomplete
-        // or point at a different service selected before the last setup.
-        let settings = previous.map_or_else(|| form.settings.clone(), |p| p.settings);
+        // verified capability choices. Project transport defaults may still be
+        // incomplete or point at a different service. Current project model,
+        // reasoning and budget preferences still take precedence on reconnect.
+        let mut settings = previous.map_or_else(|| form.settings.clone(), |p| p.settings);
+        apply_project_preferences(&mut settings, project, explicit_profile);
         let key = if settings.werk.base_url == form.settings.werk.base_url {
             form.key.clone()
         } else {
@@ -777,9 +787,6 @@ pub async fn show(
         };
         let mut form = Form::new(settings, custom_policy);
         form.key = key;
-        if let Some(profile) = explicit_profile.or(project.config.profile.as_deref()) {
-            form.settings.profile = profile.into();
-        }
         let saved_access = crate::cli_config::load_policy(workspace).await?;
         let access_label = saved_access
             .as_ref()

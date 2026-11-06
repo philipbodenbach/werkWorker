@@ -20,12 +20,82 @@ pub(crate) fn path(value: &str) -> Result<String> {
 
 pub(crate) fn call_key(call: &ToolCall) -> String {
     let mut args = call.arguments.clone();
+    if crate::browser_progress::is_browser(call)
+        && let Some(args) = args.as_object_mut()
+    {
+        args.remove("screenshot");
+        args.remove("visual");
+        if let Some(target) = args.get_mut("target").and_then(Value::as_object_mut)
+            && target.get("ref").is_some_and(Value::is_string)
+        {
+            target.remove("name");
+        }
+    }
     for field in ["path", "cwd"] {
         if let Some(value) = args[field].as_str().and_then(|p| path(p).ok()) {
             args[field] = json!(value);
         }
     }
     fingerprint(&(&call.name, args))
+}
+
+pub(crate) fn latest_browser_observation<'a>(
+    session: &'a SessionData,
+    run: &'a Run,
+) -> Option<&'a ToolInvocation> {
+    ordered(session, run)
+        .filter(|i| crate::browser_policy::TOOLS.contains(&i.call.name.as_str()))
+        .filter(|i| {
+            i.result.as_ref().is_some_and(|r| {
+                r.data["browser_id"].is_string() && r.data["observation_id"].is_string()
+            })
+        })
+        .last()
+}
+
+/// Browser receipts complement file evidence; plan text remains intent only.
+pub(crate) fn browser_checkpoint(session: &SessionData, run: &Run) -> Option<Message> {
+    let invocation = latest_browser_observation(session, run)?;
+    let data = &invocation.result.as_ref()?.data;
+    let observation: serde_json::Map<String, Value> = [
+        "browser_id",
+        "tab_id",
+        "url",
+        "viewport",
+        "observation_id",
+        "revision",
+        "observed_at_ms",
+        "screenshot",
+        "progress",
+        "observation_errors",
+        "perception",
+        "action_executed",
+    ]
+    .into_iter()
+    .filter_map(|key| data.get(key).map(|v| (key.into(), v.clone())))
+    .collect();
+    let last_action = ordered(session, run)
+        .filter(|i| {
+            matches!(
+                i.call.name.as_str(),
+                "browser.open" | "browser.navigate" | "browser.action" | "browser.evaluate"
+            ) && i.result.as_ref().is_some_and(|r| {
+                r.data["browser_id"] == data["browser_id"]
+                    && (r.data["action_executed"] == true || r.data["action_outcome"] == "unknown")
+            })
+        })
+        .last();
+    Some(crate::harness::feedback(
+        "browser_checkpoint",
+        json!({
+            "intent":crate::completion::excerpt(&run.plan.to_string(),1024),"intent_trust":"model plan, not evidence",
+            "last_action":last_action.map(|i|json!({"tool":i.call.name,"action":i.call.arguments["action"]})),
+            "observed_effect":{"title":data["title"],"text_excerpt":crate::completion::excerpt(data["text"].as_str().unwrap_or(""),768),"status":invocation.result.as_ref().map(|r|&r.status)},
+            "observation":observation,
+            "uncertainty":"Historical receipt, not a live-session assertion. Use the retained observation and attached frame. Observe if missing or stale, after takeover or browser_changed. After restart open a new browser if the session is missing.",
+            "next_step":"Compare the latest observation with the user goal; only claim criteria actually observed."
+        }),
+    ))
 }
 
 fn ordered<'a>(session: &'a SessionData, run: &'a Run) -> impl Iterator<Item = &'a ToolInvocation> {
@@ -275,4 +345,85 @@ pub(crate) fn changes(before: &BTreeMap<String, Value>, after: BTreeMap<String, 
             .filter(|(p, value)| before.get(p) != Some(value))
             .collect::<BTreeMap<_, _>>()
     )
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+    use crate::{api::WorkerEngine, policy::HostPolicy, profiles::AgentProfile, providers::*};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn validation_is_not_an_observation_and_real_checkpoint_echo_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine =
+            WorkerEngine::builder(Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text(
+                "seed",
+            )])))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile {
+                    schema_version: 1,
+                    name: "fixture".into(),
+                    prompt: "Browse".into(),
+                    tools: vec![],
+                    skills: vec![],
+                },
+                dir.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        session
+            .submit("Browse", "seed", Limits::default(), None)
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let mut data = session.snapshot().await.unwrap();
+        engine.close().await.unwrap();
+        let invalid: ToolInvocation = serde_json::from_value(json!({
+            "invocation_id":"invalid", "step_id":"step", "message_index":1,
+            "call":{"id":"invalid","name":"browser.open","arguments":{}},
+            "status":"finished","prepared":{},
+            "result":ToolResult::error(Outcome::ValidationError,"validation_error")
+        }))
+        .unwrap();
+        data.runs[0].invocations.push(invalid.clone());
+        assert!(browser_checkpoint(&data, &data.runs[0]).is_none());
+
+        let observed = &mut data.runs[0].invocations[0];
+        observed.invocation_id = "opened".into();
+        observed.call.id = "opened".into();
+        observed.call.arguments = json!({"url":"https://example.com"});
+        observed.result = Some(ToolResult::ok(json!({
+            "browser_id":"live", "observation_id":"observed-1", "tab_id":1,
+            "action_executed":true, "title":"Actual page"
+        })));
+        data.runs[0].invocations.push(invalid);
+        let checkpoint = browser_checkpoint(&data, &data.runs[0]).unwrap();
+        let value: Value = serde_json::from_str(&checkpoint.content).unwrap();
+        assert_eq!(value["data"]["observation"]["observation_id"], "observed-1");
+        assert_eq!(value["data"]["observed_effect"]["status"], "succeeded");
+        let mut request = ModelRequest {
+            messages: vec![checkpoint.clone()],
+            tools: vec![],
+            max_output_tokens: 512,
+            output_schema: None,
+            reasoning_tier: None,
+        };
+        assert!(
+            crate::harness::is_feedback_echo(&data, &data.runs[0], &request, &checkpoint).unwrap()
+        );
+        request.messages.clear();
+        assert!(
+            !crate::harness::is_feedback_echo(&data, &data.runs[0], &request, &checkpoint).unwrap(),
+            "A harness source label alone does not establish ownership"
+        );
+    }
 }

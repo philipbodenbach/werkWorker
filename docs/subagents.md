@@ -16,6 +16,10 @@ Automatic helpers require at least three plan steps with remaining work, two
 verified configured model slots, no active or successful helper, available read
 tools and permission/capacity for delegation. No level creates busywork or
 guarantees that the model will delegate on every request.
+In browser mode, or after selecting the browser-use skill/browser tools, even
+Max waits for an actual file change before starting an automatic coding reviewer.
+A drawing/game/form plan alone is not implementation work. Explicit delegation
+remains available, and mixed tasks retain their coding reviews and completion checks.
 The reviewer receives the requirements, recent user corrections, current plan and
 bounded file observations (historical paths/hashes) and can inspect files. Automatic
 reviews inherit the parent's resource policy, including continuous mode; there is
@@ -307,3 +311,9 @@ root goal and are not applied to child goals. In adaptive and preserved minimal 
 delivery uses a low-authority assistant data envelope with separately persisted
 harness provenance, rather than appearing as a new user request. The parent
 continues through the same synthesis loop and tree budget. See [harness](harness.md).
+
+
+Directory-list evidence is scoped to its normalized directory: `app0/index.ts`
+and `app1/index.ts` are distinct discoveries, while `./app0`, `app0` and
+`/workspace/app0` are aliases. Repeated listings remain idle. Changing a search
+query alone still does not create evidence when returned rows are unchanged.

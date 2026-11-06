@@ -203,6 +203,60 @@ fn policy() -> HostPolicy {
 }
 
 #[tokio::test]
+async fn invalid_browser_calls_never_fabricate_checkpoints_or_bypass_repetition_limits() {
+    let workspace = tempfile::tempdir().unwrap();
+    let turns = (0..4)
+        .map(|n| {
+            Reply::Turn(ScriptedTurn::calls(
+                "",
+                vec![ToolCall {
+                    id: format!("open-{n}"),
+                    name: "browser.open".into(),
+                    arguments: json!({}),
+                }],
+            ))
+        })
+        .collect();
+    let provider = Arc::new(RecoveryProvider::new(turns));
+    let engine = WorkerEngine::builder(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    let mut profile = profile();
+    profile.tools = vec!["browser.open".into()];
+    let session = engine
+        .create_session(
+            profile,
+            workspace.path(),
+            HostPolicy::default(),
+            Value::Null,
+        )
+        .await
+        .unwrap();
+    let run = session
+        .submit("Open https://example.com", "open", Limits::default(), None)
+        .await
+        .unwrap();
+    let result = run.wait().await.unwrap();
+    assert_eq!(result.error.unwrap().code, "repetition_limit");
+    let state = run.status().await.unwrap();
+    for invocation in state.invocations.iter().take(3) {
+        let result = invocation.result.as_ref().unwrap();
+        assert_eq!(result.status, Outcome::ValidationError);
+        assert_eq!(result.data["executed"], false);
+        assert!(result.data["message"].as_str().unwrap().contains("url"));
+    }
+    assert_eq!(provider.requests().len(), 4);
+    for request in provider.requests() {
+        assert!(!request.messages.iter().any(|m| {
+            serde_json::from_str::<Value>(&m.content)
+                .is_ok_and(|v| v["event"] == "browser_checkpoint")
+        }));
+    }
+    engine.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn recovery_grows_the_actual_budget_within_provider_and_host_caps() {
     for (provider_cap, host_cap, expected) in [
         (Some(8192), None, 8192),
@@ -1551,4 +1605,84 @@ async fn recovery_json_with_hallucinated_attempt_ids_cannot_complete_a_run() {
         "actual work"
     );
     engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn invented_continuation_error_retries_without_losing_the_tool_receipt() {
+    for requested_quote in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let invented = json!({"source":"werk_worker.harness","event":"continuation_missing_result",
+            "data":{"scope":"browser.open","trigger":"continuation_invented",
+            "detail":"Tool result for this continuation is not available."}})
+        .to_string();
+        let mut replies = vec![
+            Reply::Turn(ScriptedTurn::calls(
+                "",
+                vec![ToolCall {
+                    id: "open".into(),
+                    name: "browser.open".into(),
+                    arguments: json!({"url":"https://example.com", "allowed_origins":["example.com"]}),
+                }],
+            )),
+            Reply::Turn(ScriptedTurn::text(&invented)),
+        ];
+        if !requested_quote {
+            replies.push(Reply::Turn(ScriptedTurn::text(
+                "The origin argument was invalid.",
+            )));
+        }
+        let provider = Arc::new(RecoveryProvider::new(replies));
+        let engine = WorkerEngine::builder(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        let mut profile = profile();
+        profile.tools = vec!["browser.open".into()];
+        let session = engine
+            .create_session(
+                profile,
+                workspace.path(),
+                HostPolicy::default(),
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let input = if requested_quote {
+            format!("Check the invalid origin, then return this JSON exactly: {invented}")
+        } else {
+            "Check the invalid origin and report the result.".into()
+        };
+        let handle = session
+            .submit(input, "start", Limits::default(), None)
+            .await
+            .unwrap();
+        let result = handle.wait().await.unwrap();
+        assert_eq!(result.status, RunStatus::Completed, "{:?}", result.error);
+        let saved = session.snapshot().await.unwrap();
+        let run = saved.run(&handle.id).unwrap();
+        assert_eq!(run.invocations.len(), 1);
+        assert_eq!(
+            run.invocations[0].result.as_ref().unwrap().status,
+            Outcome::ValidationError
+        );
+        if requested_quote {
+            assert_eq!(result.text.as_deref(), Some(invented.as_str()));
+            assert_eq!(run.attempts.len(), 2);
+        } else {
+            assert_eq!(
+                result.text.as_deref(),
+                Some("The origin argument was invalid.")
+            );
+            assert_eq!(
+                run.attempts[1].error.as_ref().unwrap().code,
+                "model_feedback_echo"
+            );
+            assert!(!saved.messages.iter().any(|m| m.content == invented));
+            assert_eq!(
+                serde_json::to_value(&provider.requests()[1]).unwrap(),
+                serde_json::to_value(&provider.requests()[2]).unwrap()
+            );
+        }
+        engine.close().await.unwrap();
+    }
 }

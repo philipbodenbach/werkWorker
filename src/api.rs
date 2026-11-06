@@ -343,6 +343,7 @@ impl WorkerEngine {
             skill_snapshots,
             compactions: vec![],
         };
+        self.inner.skills.ensure_browser(&mut data);
         data.emit(None, EventKind::SessionCreated);
         let inference = self.inference_for(&data.metadata).await?;
         self.inner.store.save(&data, None).await?;
@@ -545,6 +546,7 @@ impl WorkerEngine {
         let inference = self.inference_for(&data.metadata).await?;
         let previous = data.revision;
         crate::harness::migrate(&mut data)?;
+        self.inner.skills.ensure_browser(&mut data);
         let mut recovery_events = Vec::new();
         for run in &mut data.runs {
             if !run.status.terminal() {
@@ -861,6 +863,7 @@ impl SessionHandle {
             d.profile_hash = fingerprint(&d.profile);
             d.policy = policy;
             d.skill_snapshots = skills;
+            self.engine.inner.skills.ensure_browser(d);
             d.emit(
                 None,
                 EventKind::Diagnostic {
@@ -1622,37 +1625,13 @@ impl SessionHandle {
             if run.limits.steps_exhausted(run.metrics.steps) {
                 return Err(WorkerError::new("step_budget", "Maximum steps reached"));
             }
-            let mut defs: Vec<_> = data
-                .profile
-                .tools
-                .iter()
-                .map(|name| self.engine.inner.tools.get(name).map(|t| t.definition()))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .filter(|def| data.policy.can_request(def))
-                .filter(|def| {
-                    def.name != "files.read_image"
-                        || self.provider().capabilities().images
-                            != crate::providers::Support::Unsupported
-                })
-                .filter(|def| {
-                    def.name != "browser.check" || crate::browser::runtime_path().is_some()
-                })
-                .collect();
-            let fixed_file_bounds =
-                !crate::file_io::FileIoBudget::supported(self.provider().as_ref());
-            crate::parallel::describe_delegation(
-                &mut defs,
+            let mut defs = crate::context::request_tools(
+                &data,
+                run,
+                &self.engine.inner.tools,
+                self.provider().as_ref(),
                 &self.engine.inner.execution,
-                &self.provider().concurrency(),
-                data.parent.as_ref().map_or(0, |parent| parent.depth),
-                crate::parallel::DelegationLevel::from_metadata(&data.metadata)?,
-            );
-            crate::context::bound_recovery_tools(run, &mut defs, fixed_file_bounds);
-            if crate::completion::enabled(&data, run)? {
-                crate::completion::bound_tools(&mut defs, fixed_file_bounds);
-            }
-            crate::working_state::bound_repairs(&data, run, &mut defs);
+            )?;
             if reporting {
                 defs.clear();
             }
@@ -1727,6 +1706,34 @@ impl SessionHandle {
                     "context_overflow",
                     "Checkpoint recovery did not reduce the rejected input; the unchanged request was not retried",
                 ));
+            }
+            // Older frames may be compacted while the latest observation is
+            // still present. Only losing that latest observation requires a
+            // fresh one; otherwise rolling compaction would block every action.
+            if let Some(latest_browser) = data
+                .runs
+                .iter()
+                .flat_map(|r| &r.invocations)
+                .filter(|i| crate::browser_policy::TOOLS.contains(&i.call.name.as_str()))
+                .rfind(|i| {
+                    i.result
+                        .as_ref()
+                        .is_some_and(|r| r.data["observation_id"].is_string())
+                })
+                && snapshot
+                    .omitted_messages
+                    .contains(&latest_browser.message_index)
+                && run
+                    .contexts
+                    .last()
+                    .is_none_or(|old| !old.omitted_messages.contains(&latest_browser.message_index))
+            {
+                self.engine
+                    .inner
+                    .tools
+                    .browsers
+                    .require_observation(&data.id)
+                    .await;
             }
             let request_fingerprint = self.provider().request_fingerprint(&request);
             let step_id = id("step");
@@ -2611,14 +2618,17 @@ impl SessionHandle {
         let draining = AtomicBool::new(false);
         let operation = async {
             let data = self.snapshot().await?;
-            let limits = crate::context::effective_limits(
-                &data.run(run_id)?.limits,
-                self.provider().capabilities().context_tokens,
-            )?;
             // Another session can evict an earlier planning count while this
             // run waits. Recount on a cache miss instead of falsely rejecting
             // a valid request using the conservative byte fallback.
             let input_tokens = self.provider().estimate_input_tokens(&request).await?;
+            // Admission can lower the live model limit. Read capabilities only
+            // after counting, including for custom providers, before charging
+            // or dispatching a request against a stale discovery value.
+            let limits = crate::context::effective_limits(
+                &data.run(run_id)?.limits,
+                self.provider().capabilities().context_tokens,
+            )?;
             if request.max_output_tokens == 0
                 || request.max_output_tokens
                     > crate::context::output_ceiling(&limits, self.provider().as_ref())
@@ -2749,7 +2759,7 @@ impl SessionHandle {
                     crate::harness::is_feedback_echo(&data, data.run(run_id)?, &request, &result.0)?
                         .then_some((
                             "model_feedback_echo",
-                            "Model echoed runtime feedback without a new answer or tool call",
+                            "Model returned a runtime feedback envelope without a new answer or tool call",
                         ))
                 };
                 if let Some((code, message)) = rejection {
@@ -3297,6 +3307,12 @@ impl SessionHandle {
         if let Some(schema) = &invocation.request_input_schema
             && let Err(error) = validate_arguments(schema, &invocation.call.arguments)
         {
+            if def.name == "browser.action" && schema["x-werk-browser-strategy"] == "inspect" {
+                let mut result =
+                    ToolResult::error(Outcome::ValidationError, "browser_strategy_recovery");
+                result.data = json!({"executed":false,"message":"No browser action executed. This recovery decision requires inspecting an alternative visible control with click/hover and one of the offered target.ref values. Reuse the current view; choose a different method relevant to the pending task. New observed UI evidence restores the ordinary gesture catalog. Permissions and limits are unchanged."});
+                return self.outcome(run_id, invocation_id, result).await;
+            }
             let lengths: std::collections::BTreeMap<_, _> = ["old", "new", "content"]
                 .into_iter()
                 .filter_map(|key| {
@@ -3457,7 +3473,28 @@ impl SessionHandle {
                 .prepare(invocation.call.arguments.clone(), &context)
                 .await
             {
-                Ok(v) => v,
+                Ok(mut v) => {
+                    if crate::browser_policy::TOOLS.contains(&def.name.as_str()) {
+                        v["_browser_settings"] = serde_json::to_value(
+                            preliminary
+                                .policy
+                                .browser
+                                .as_ref()
+                                .map(|p| p.settings.clone())
+                                .unwrap_or_default(),
+                        )?;
+                        if v.get("_session_budgets").is_none() {
+                            let settings: crate::browser_policy::BrowserSettings =
+                                serde_json::from_value(v["_browser_settings"].clone())?;
+                            v["_session_budgets"] = settings.budgets();
+                        }
+                        v["_images_supported"] = json!(
+                            self.provider().capabilities().images
+                                != crate::providers::Support::Unsupported
+                        );
+                    }
+                    v
+                }
                 Err(e) => {
                     let mut result = ToolResult::error(Outcome::ValidationError, &e.code);
                     result.data = json!({"message":crate::completion::diagnostic_excerpt(&e.message, 2000),"executed":false});
@@ -3567,6 +3604,8 @@ impl SessionHandle {
                     i.approval = Some(request.clone());
                     i.status = InvocationStatus::AwaitingApproval;
                     d.emit(Some(run_id), EventKind::ApprovalRequested { request });
+                    // A panel rule may have changed since the policy snapshot.
+                    browser_host::resolve_browser_approvals(d);
                     Ok(())
                 })
                 .await?;
@@ -3591,6 +3630,7 @@ impl SessionHandle {
                             },
                         );
                     }
+                    browser_host::resolve_browser_approvals(d);
                     Ok(())
                 })
                 .await?;
@@ -3741,6 +3781,21 @@ impl SessionHandle {
             self.wait_for_browser_operator(run_id, shutdown).await?;
         }
         self.update(|d| {
+            if crate::browser_policy::TOOLS.contains(&def.name.as_str())
+                && prepared["_browser_settings"]
+                    != serde_json::to_value(
+                        d.policy
+                            .browser
+                            .as_ref()
+                            .map(|p| p.settings.clone())
+                            .unwrap_or_default(),
+                    )?
+            {
+                return Err(WorkerError::new(
+                    "browser_settings_changed",
+                    "Captured browser settings are missing or changed; prepare the action again",
+                ));
+            }
             if !d.profile.tools.contains(&def.name)
                 || d.policy
                     .evaluate(def, &prepared, &d.run(run_id)?.similar_grants)
@@ -3835,6 +3890,11 @@ impl SessionHandle {
         }
         if outcome.status == Outcome::Succeeded {
             if self.provider().capabilities().images == crate::providers::Support::Unsupported {
+                if !outcome.images.is_empty() {
+                    outcome.data["vision_issue"] = json!(
+                        "Image input was disabled before delivery. Browser action completed; images were not sent to the model. Observe with a capable backend before further visual decisions."
+                    );
+                }
                 outcome.images.clear();
             }
             if outcome.images.len() > crate::attachments::MAX_IMAGES

@@ -410,11 +410,10 @@ async fn checkpoint_and_goal_survive_missing_transcript_and_new_user_steering() 
         .unwrap();
     validate_messages(&request.messages).unwrap();
     let progress = cycle(&request).unwrap();
-    assert_eq!(progress["objective_excerpt"], "Build a public counter API");
-    assert_eq!(
-        progress["latest_user_update_excerpt"],
-        "Also handle negative input"
-    );
+    assert!(request.messages.contains(&restored.messages[0]));
+    assert!(request.messages.contains(&restored.messages[1]));
+    assert!(progress.get("objective_excerpt").is_none());
+    assert!(progress.get("latest_user_update_excerpt").is_none());
     assert_eq!(
         progress["current_milestone"],
         "Runnable counter with a verified increment"
@@ -432,6 +431,18 @@ async fn checkpoint_and_goal_survive_missing_transcript_and_new_user_steering() 
     );
     assert!(evidence.content.contains("counter.sh defines increment"));
     assert_eq!(evidence.role, Role::Assistant); // Checkpoint data gains no system authority.
+    // Truly missing user turns still need their durable fallback excerpts.
+    restored.messages.clear();
+    let (request, _) = DefaultContextBuilder
+        .build(&restored, restored.runs.last().unwrap(), vec![])
+        .await
+        .unwrap();
+    let progress = cycle(&request).unwrap();
+    assert_eq!(progress["objective_excerpt"], "Build a public counter API");
+    assert_eq!(
+        progress["latest_user_update_excerpt"],
+        "Also handle negative input"
+    );
     engine.close().await.unwrap();
 }
 
@@ -966,6 +977,12 @@ async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
         .policy
         .hard_denied_tools
         .push("process.run".into());
+    checkpoint.policy.browser = Some(Default::default());
+    checkpoint.profile.tools.extend(
+        werk_worker::browser_policy::TOOLS
+            .iter()
+            .map(|name| (*name).into()),
+    );
     let (request, _) = DefaultContextBuilder
         .build(
             &checkpoint,
@@ -974,17 +991,23 @@ async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
                 .tools()
                 .into_iter()
                 .filter(|t| {
-                    matches!(
-                        t.name.as_str(),
-                        "browser.check" | "files.read" | "interaction.ask"
-                    )
+                    werk_worker::browser_policy::TOOLS.contains(&t.name.as_str())
+                        || matches!(
+                            t.name.as_str(),
+                            "browser.check" | "files.read" | "interaction.ask"
+                        )
                 })
+                .filter(|t| checkpoint.policy.can_request(t))
                 .collect(),
         )
         .await
         .unwrap();
     assert!(request.tools.iter().any(|t| t.name == "browser.check"));
     assert!(!request.tools.iter().any(|t| t.name == "files.read"));
+    for name in werk_worker::browser_policy::TOOLS {
+        let tool = request.tools.iter().find(|t| t.name == *name).unwrap();
+        assert!(tool.input_schema.get("x-werk-work-cycle").is_none());
+    }
     engine.close().await.unwrap();
 }
 

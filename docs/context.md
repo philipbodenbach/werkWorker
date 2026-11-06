@@ -37,12 +37,79 @@ After a truncated generation, the next desired reservation doubles within that
 ceiling. Recovery state is persisted and the larger budget remains available on
 subsequent turns. Compaction first frees eligible history. If the larger reserve
 cannot fit, the builder reduces it using the actual input count; its minimum is
-based on the original reserve (up to one quarter can be lent to input), rather
-than making a larger recovery target cause an avoidable context overflow.
+1024 tokens (or the configured smaller reserve), bounded by the advertised minimum
+of an explicitly selected reasoning tier. Opaque native effort and failed reasoning
+discovery keep the original reserve. This also applies when a new screenshot pushes
+the current request over budget. The next turn starts from the configured reserve
+again; the planner recounts the changed tool guidance before dispatch.
 The input estimate, output reservation and 512-token safety margin must fit before
 any provider dispatch. User/system constraints and tool pairs remain intact.
 A custom `ContextBuilder` cannot bypass admission. Zero output budgets and
 arithmetic-overflow-sized limits are rejected.
+The engine reads the live context ceiling after counting, since an admission
+response can lower the limit discovered at connection time. An impossible
+request stops before generation; compaction cannot guarantee that arbitrarily
+large mandatory instructions fit a finite context.
+
+Derived task feedback does not repeat a canonical user message. A compacted
+plan is restored only once when the decision-point task state already contains
+its complete steps and checkpoint; older or truncated plans still retain their
+fallback evidence. Empty retained-evidence envelopes and irrelevant file-repair
+guidance are omitted.
+Checkpoint comparison checks every saved field against the retained projection;
+added optional defaults such as `decisions: []` do not duplicate the entire plan.
+Unknown or truncated fields still require fallback evidence.
+When observed work consists exclusively of browser interaction and its setup,
+feedback follows the browser milestone rather than adding implementation-cycle
+coaching just because the coding catalog is enabled. Any file/process/check or
+unknown tool activity restores ordinary coding guidance. Completion gates and
+tool permissions are unaffected.
+Validation errors, denials and cancellation before execution do not establish
+coding activity. Failed or uncertain execution still does, because side effects
+may exist. The plan/checkpoint is retained session state, not a workspace file to
+recover with `files.read`; rejected calls and their errors remain in history.
+
+Near the browser repetition limit, each decision includes a compact warning
+rebuilt from durable action receipts: the observed control's identity and bounds,
+last outcome, repeat count and remaining identical calls. It survives compaction,
+resume, plan updates and exhaustion of one-shot adaptive hints. Expired references
+are not suggested as new targets. New observed progress or a different action
+clears the warning; the existing repetition guard and its limits are unchanged.
+This feedback is available in every profile and participates in full-request
+admission. It guides model recovery but cannot guarantee that a model obeys it.
+
+Different actions can also cycle through already observed page states. After
+twice the configured repeat allowance in such attempts, a strategy observation
+replaces the single-call warning. It retains the last four actual targets,
+observed visual-surface bounds and bounded names of untried available controls.
+It directs a change of method and inspection of native options, without choosing
+an application-specific action or granting any extra execution. If alternative
+named controls are available, the next `browser.action` schema permits only
+click/hover on those current refs. The engine persists and validates that exact
+offered schema before execution. Other browser tools remain subject to their
+ordinary permissions; no alternative is invented when none is observed.
+New UI evidence restores the full action schema. A successful constrained
+inspection that visibly changes the UI also restores gestures when it reopens
+previously seen options; the original hard repetition counts remain intact.
+State is scoped
+to browser/tab and reconstructed from receipts across compaction, replanning and
+resume. Unknown outcomes require fresh evidence; a genuinely new observed state
+clears the signal. An unchanged screen is not proof of task failure; the recovery
+phase requires exploring an alternative and does not change any stop counter.
+
+A dense current browser observation can overflow even a short conversation.
+After ordinary history compaction, the planner can represent its controls as a
+table with explicit `columns`, `bounds_columns` and `rows`. This preserves every
+control, exact coordinate, name, state and extra attribute, along with the image
+and other receipt data. Canonical receipts and action validation keep their
+original representation. The complete projected request is counted again and
+used only if it is smaller; tools, rules, context ceilings and safety margins are
+unchanged. The offline dense-catalog regression covers 34 tools, four skills and
+64 controls at 16K. `saved_browser_admission_replay` additionally checks a frozen
+session through the local Werk admission counter without generation or actions;
+set `WW_REPLAY_SNAPSHOT`, `WW_REPLAY_CONFIG` to the worker's actual configuration,
+and optionally `WW_REPLAY_API_KEY`. A model-only fallback via `WW_REPLAY_MODEL`
+uses defaults that need not reproduce the running worker's tools or budgets.
 
 The default context builder keeps a stable profile/host prefix, sorted tool
 schemas, available skill metadata, optional output schema, committed summaries
@@ -62,7 +129,12 @@ Observations retain their assistant role; the remaining conversation keeps its
 order. A later image can still move when earlier history is compacted, and then
 the normal conservative image estimate applies. No image-key or margin is relaxed.
 
-When werkProtocol advertises `api.chat.token_count`, sizing uses the exact native
+When werkProtocol advertises `api.chat.admission`, the planner first uses the
+server's admission count for the complete request. Its provenance distinguishes
+`native_exact` from `server_admission_estimate`; an estimated visual contribution
+is not presented as an exact native count. The provider and server still check
+admission before generation. Otherwise, when the protocol advertises
+`api.chat.token_count`, sizing uses the exact native
 chat count from `/werk/v1/chat/count_tokens`, including tool schemas/history and
 template options. Identical requests reuse a bounded cache; eviction triggers
 recounting before admission. Protocol errors and model identity are validated.
@@ -152,14 +224,23 @@ constraint are retained. Under pressure, a latest group consisting solely of
 successful file writes/edits may also be compacted if
 complete, bounded path/hash receipts are available. Its implementation already
 lives in the workspace and canonical history; the receipt summary instructs the
-model to reread code when needed. Any accompanying assistant text/images remain
-verbatim in the request. Failed writes and the latest reads/checks
+model to reread code when needed. Accompanying images remain intact. Failed writes and the latest reads/checks
 retain their ordinary protection. After a run finishes, its final answer becomes eligible
 for compaction on the next turn. A long code answer therefore does not permanently
 block follow-up messages in the same session. This trims the next request, not
 the saved conversation, and does not require a server restart or cache reset.
 Pending invocations finish or resolve their approvals before this step; no
 half tool-call/result group is compacted.
+
+Protection of a current tool group does not pin its entire preceding narration.
+If the request still exceeds its budget, the builder tries two bounded alternatives:
+shorten assistant prose attached to completed calls to 512 characters, then omit
+that prose. Tool arguments/results, current browser frames and user/system messages
+are preserved. The original prose stays in canonical session history. Each changed
+request is counted again. The minimum-output alternative is also counted even when
+the earlier request appears too large, because its tool schemas/guidance may shrink
+with the output allowance. If essential content still cannot fit, the error reports
+the minimum reserve and no generation is dispatched.
 
 For coding profiles with file-editing tools, each request ends with bounded
 `coding_task_state` evidence reconstructed from durable plan/check/file receipts.
@@ -206,6 +287,24 @@ semantic summarization. The model may need to reread evidence through granted
 tools. If the fixed excerpt allowance would crowd out current work, older
 excerpts are further removed to fit the available budget. Canonical messages,
 outcomes and approvals are never deleted.
+
+The latest browser observation keeps its complete call/result group and attached
+frame even when a later action fails argument validation. This also repairs a
+saved selection that omitted the observation. A failed action's returned frame
+can be the newest observation; a validation error without a frame cannot replace
+it. The driver omits empty control attributes and safe default flags before its
+bounded metadata budget is spent. Refs, bounds, nonempty values, true flags,
+checkbox/radio checked state and explicit link permission flags remain available.
+Request projection also compacts legacy receipts, with or without an image;
+it never rewrites stored receipts or changes host permission checks. Compaction alone
+does not require observing again when the current observation is still present.
+The separate browser checkpoint is only a fallback when that canonical group is
+unavailable; it does not repeat the retained observation and plan on every turn.
+
+Compaction feedback restores a saved plan only when that plan's own message group
+was omitted. A successful latest `task.plan` group can itself be compacted under
+pressure when the coding task state retains all steps (at most 4 KiB) and its
+checkpoint. Failed proposals, mixed tool groups and larger plans remain protected.
 
 Small setup/skill results, file reads (including their hashes and errors) and task
 plans receive bounded retention. Before discarding this evidence the builder can

@@ -1834,13 +1834,17 @@ async fn coding_image_budget_uses_native_text_without_repeating_unsupported_coun
                     .iter()
                     .any(|m| m["content"].is_array()))
                 .count(),
-            1
+            1 + usize::from(native_images.is_some() && expected_status == RunStatus::Failed)
         );
         assert_eq!(
             counts.len(),
-            if native_images.is_some() { 1 } else { 2 },
-            "only one unsupported image count and one cached text/tool count"
+            if native_images.is_some() { 1 } else { 2 }
+                + usize::from(expected_status == RunStatus::Failed),
+            "unsupported image counting is tried once; a minimum-output alternative needs its own supported count"
         );
+        if expected_status == RunStatus::Failed {
+            assert_eq!(counts.last().unwrap().body["max_completion_tokens"], 1024);
+        }
         let generations: Vec<_> = requests
             .iter()
             .filter(|r| r.path == "/v1/chat/completions")
@@ -2494,4 +2498,40 @@ async fn configured_protocol_capacity_survives_missing_observability_and_refresh
             .iter()
             .any(|r| r.path == "/v1/chat/completions")
     );
+}
+
+#[tokio::test]
+async fn rejected_browser_image_reports_the_actual_projector_diagnostic() {
+    let server=Server::start(|request| {
+        if request.path=="/v1/chat/completions" {
+            assert!(request.body["messages"].as_array().unwrap().iter().any(|m|m["content"].is_array()));
+            return Response {status:400,headers:vec![],body:json!({"error":{"code":"invalid_request","message":"Missing vision projector; run werk setup tool-model"}}).to_string().into_bytes()};
+        }
+        werk(request)
+    }).await;
+    let provider = WerkProvider::connect(config(&server.origin, false), None)
+        .await
+        .unwrap();
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let mut message = Message::text(Role::User, "Browser frame");
+    message
+        .images
+        .push(attachments::ImageAttachment::from_bytes(bytes.get_ref()).unwrap());
+    let error = provider
+        .stream(ModelRequest {
+            messages: vec![message],
+            tools: vec![],
+            max_output_tokens: 128,
+            output_schema: None,
+            reasoning_tier: None,
+        })
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "image_request_rejected");
+    assert!(error.message.contains("Missing vision projector"));
+    assert!(!error.retryable);
 }

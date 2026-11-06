@@ -14,9 +14,22 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+# Follow open web components at a viewport point without exposing page scripts
+# or treating the outer host as the actual button. Bound nesting defensively.
+POINT_TARGET = """p=>{
+    let hit=document.elementFromPoint(p.x,p.y);
+    for(let depth=0;depth<16 && hit?.shadowRoot;depth++){
+        const inner=hit.shadowRoot.elementFromPoint(p.x,p.y);
+        if(!inner||inner===hit)break;
+        hit=inner;
+    }
+    return hit;
+}"""
 
 
 def emit(value):
@@ -76,12 +89,14 @@ class Proxy:
             def forward(self):
                 epoch = driver.epoch
                 if not driver.active:
+                    driver.block_transport("background_network_disabled")
                     self.send_error(403, "No browser action is active")
                     self.close_connection = True
                     return
                 try:
                     length = int(self.headers.get("content-length", "0"))
                     if length < 0 or length > 1048576 or self.headers.get("transfer-encoding") or self.headers.get("upgrade"):
+                        driver.block_transport("streaming_request_unsupported")
                         raise ValueError("Unsupported streaming request")
                     body = self.rfile.read(length) if length else b""
                     url = self.scheme + "://" + self.authority + self.path if self.authority else self.path
@@ -130,6 +145,7 @@ class Driver:
         self.context = None
         self.page = None
         self.pages = {}
+        self.crashed_pages = set()
         self.next_page = 1
         self.active = False
         self.pointer = None
@@ -137,6 +153,7 @@ class Driver:
         self.secrets = set()
         self.ref_sequence = 0
         self.epoch = 0
+        self.transport_blocks = []
         self.lock = threading.Lock()
         self.proxy = Proxy(self)
 
@@ -148,6 +165,7 @@ class Driver:
         self.next_page += 1
         page.set_default_timeout(5000)
         page.set_default_navigation_timeout(15000)
+        page.on("crash", lambda: self.crashed_pages.add(page))
         page.on("dialog", lambda dialog: dialog.dismiss())
         page.on("download", lambda download: download.cancel())
         page.on("filechooser", lambda chooser: chooser.set_files([]))
@@ -188,7 +206,10 @@ class Driver:
         self.context = self.browser.new_context(
             viewport={"width": 1024, "height": 768},
             service_workers="block", accept_downloads=False, ignore_https_errors=True)
-        self.context.route_web_socket("**/*", lambda ws: ws.close())
+        def blocked_socket(ws):
+            self.block_transport("websocket_unsupported")
+            ws.close()
+        self.context.route_web_socket("**/*", blocked_socket)
         self.context.on("page", self.add_page)
         self.page = self.context.new_page()
         self.page.goto(args["url"], wait_until="domcontentloaded")
@@ -208,11 +229,22 @@ class Driver:
 
     @staticmethod
     def info(element):
-        meta = element.evaluate("""e => ({tag:e.tagName.toLowerCase(),type:e.type||'',role:e.getAttribute('role')||({a:'link',button:'button',input:e.type==='checkbox'?'checkbox':'textbox',textarea:'textbox',select:'combobox'}[e.tagName.toLowerCase()]||''),
-          name:(e.getAttribute('aria-label') || (e.labels&&Array.from(e.labels).map(x=>x.innerText).join(' ')) || e.innerText || e.name || '').slice(0,160),
+        meta = element.evaluate("""e => ({tag:e.tagName.toLowerCase(),type:e.type||'',role:e.getAttribute('role')||({a:'link',button:'button',summary:'button',input:({checkbox:'checkbox',radio:'radio',range:'slider',number:'spinbutton',button:'button',submit:'button',reset:'button'}[e.type]||'textbox'),textarea:'textbox',select:'combobox'}[e.tagName.toLowerCase()]||''),
+          name:(()=>{
+            // Bounded DOM naming hints complement the browser's accessibility
+            // snapshot and image; this is not a replacement for AccName.
+            const labelled=(e.getAttribute('aria-labelledby')||'').slice(0,1024).split(/\\s+/).slice(0,16)
+              .map(id=>(e.getRootNode().getElementById?.(id)?.textContent||'').slice(0,160)).join(' ').trim();
+            const icon=e.querySelector('img[alt],svg title');
+            return (labelled || e.getAttribute('aria-label') || (e.labels&&Array.from(e.labels).map(x=>x.innerText).join(' ')) ||
+              e.innerText || e.getAttribute('alt') || icon?.getAttribute('alt') || icon?.textContent ||
+              (['button','submit','reset'].includes(e.type)?e.value:'') || e.getAttribute('title') || e.name || '').slice(0,160);
+          })(),
           id:(e.id||'').slice(0,256),autocomplete:(e.autocomplete||'').slice(0,128),href:(e.href||'').slice(0,2048),download:e.hasAttribute('download'),
           submits:!!e.form && (e.type==='submit'||e.type==='image'),form_action:e.form?e.form.action.slice(0,2048):'',
-          bounds:(()=>{let r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()})""")
+          bounds:(()=>{let r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})(),
+          color:(()=>{const c=e.getAttribute('data-color');return c && c.length<=64 && CSS.supports('color',c)?c:undefined})(),
+          selected:e.getAttribute('aria-selected')==='true'||e.getAttribute('aria-pressed')==='true'||e.classList.contains('selected')})""")
         description = ' '.join(str(meta.get(k,'')) for k in ('name','id','autocomplete','type'))
         meta['protected'] = (meta['type'] in ('password','file') or bool(re.search(
             r'password|passwort|passcode|one.time.code|einmalcode|current-password|new-password|cc-[a-z]+|card.?number|cardholder|expiration|expiry|kreditkarte|cvc|cvv|security.?code|verification.?code|auth.?code|\botp\b|\bpin\b',description,re.I)))
@@ -223,17 +255,21 @@ class Driver:
         values=[]; masks=[]
         if not self.page:
             return values,masks
-        for frame in self.page.frames[:16]:
+        if len(self.page.frames) > 16:
+            raise ValueError("Protected-field scan exceeds frame limit")
+        for frame in self.page.frames:
             fields=frame.locator('input,textarea,[contenteditable=true]')
-            for i in range(min(fields.count(),100)):
+            if fields.count() > 100:
+                raise ValueError("Protected-field scan exceeds field limit")
+            for i in range(fields.count()):
                 field=fields.nth(i)
                 try:
                     if self.info(field)['protected']:
                         value=field.evaluate("e => e.value || e.innerText || ''")
                         if value: values.append(value)
                         masks.append(field)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    raise ValueError("Protected-field scan failed") from exc
         return values,masks
 
     def focused_element(self):
@@ -259,11 +295,11 @@ class Driver:
         kind=args['action']; element=None
         if 'target' in args:
             element=self.target(args['target'])
-        elif kind=='press':
+        elif kind in ('press','type'):
             element=self.focused_element()
         if element:
             meta=self.info(element)
-            if meta['protected'] and (kind in ('fill','select') or kind=='press' and args['key'] not in ('Enter','Tab','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown')):
+            if meta['protected'] and (kind in ('fill','select','type') or kind=='press' and args['key'] not in ('Enter','Tab','Escape','ArrowLeft','ArrowRight','ArrowUp','ArrowDown')):
                 raise ValueError('Protected password, payment, OTP or file field: use Take over in the browser panel and enter it yourself')
             if args.get('browser_category')=='browsing' and kind in ('click','fill','select'):
                 safe = kind=='fill' and not meta['protected'] or kind=='click' and meta['tag']=='a' and meta['href'] and not meta['submits'] and not meta['consequential'] and not meta['download']
@@ -273,6 +309,16 @@ class Driver:
     def action(self, args):
         kind = args["action"]
         self.review_action(args)
+        # References expire in the following snapshot. Retain what the action
+        # actually targeted, so a palette/tool selection cannot be mistaken for
+        # painting the canvas after older observations have been compacted.
+        observed=None
+        if 'target' in args:
+            observed=self.info(self.target(args['target']))
+        elif kind in ('click_at','move','drag'):
+            point=args['path'][0] if kind=='drag' else args
+            hit=self.page.evaluate_handle(POINT_TARGET,{'x':point['x'],'y':point['y']}).as_element()
+            if hit is not None: observed=self.info(hit)
         if kind in ("click", "fill", "select", "hover"):
             target = self.target(args["target"])
             if kind == "fill":
@@ -281,7 +327,7 @@ class Driver:
                 target.select_option(args["value"])
             else:
                 getattr(target, kind)()
-        elif kind == "type" and args.get("human"):
+        elif kind == "type":
             self.page.keyboard.insert_text(args["text"])
         elif kind == "press":
             target = self.target(args["target"]) if "target" in args else self.page.keyboard
@@ -326,70 +372,201 @@ class Driver:
                     self.page = next((p for p in self.context.pages if not p.is_closed()), None)
                     if self.page is None:
                         self.page = self.context.new_page()
+        if observed:
+            return {k:v for k,v in observed.items() if k in ('tag','name','role','color','bounds') and v}
 
-    def snapshot(self, screenshot=False):
+    def redact(self, value):
+        if isinstance(value,str):
+            for secret in self.secrets: value=value.replace(secret,'[private]')
+        elif isinstance(value,list): value=[self.redact(item) for item in value]
+        elif isinstance(value,dict): value={k:self.redact(v) for k,v in value.items()}
+        return value
+
+    def block_transport(self, reason):
+        # No URL, credentials or page payload in transport diagnostics.
+        if reason not in self.transport_blocks and len(self.transport_blocks) < 16:
+            self.transport_blocks.append(reason)
+
+    def semantic(self):
+        # Exclude known incidental/live regions. Cursor, refs, time and pixel
+        # animation are deliberately absent from semantic progress.
+        return self.page.evaluate(r"""() => {
+          if(!document.body) return '';
+          // Cloning images can start new requests even off-DOM, especially for
+          // blocked resources. Observations must not reload page assets.
+          const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{
+            acceptNode:node=>node.parentElement?.closest('script,style,canvas,[aria-live],[role=timer],time')
+              ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+          });
+          let text='',node,count=0;
+          while(text.length<6000 && count++<10000 && (node=walker.nextNode()))
+            text+=(node.textContent||'').replace(/\s+/g,' ');
+          return text.replace(/\s+/g,' ').trim().slice(0,6000);
+        }""")
+
+    def settle(self):
+        start=time.monotonic(); previous=None; stable_since=start
+        while time.monotonic()-start < 1.2:
+            self.page.wait_for_timeout(100)
+            sample=self.semantic()
+            now=time.monotonic()
+            if sample != previous:
+                previous=sample; stable_since=now
+            if now-start >= 0.4 and now-stable_since >= 0.2:
+                return {"state":"settled", "waited_ms":round((now-start)*1000)}, sample
+        return {"state":"bounded_wait", "waited_ms":1200}, None
+
+    def snapshot(self, screenshot=False, stable_text=None):
         self.pages = {key: page for key, page in self.pages.items() if not page.is_closed()}
+        self.crashed_pages.intersection_update(self.pages.values())
         if self.page is None or self.page.is_closed():
             self.page = next(iter(self.pages.values()), None)
-        result = {"url": self.page.url if self.page else "about:blank", "tabs": [], "viewport": {"width": 1024, "height": 768}, "pointer": self.pointer}
+        result = {"url": self.page.url if self.page else "about:blank", "tabs": [],
+                  "viewport": {"width": 1024, "height": 768}, "pointer": self.pointer,
+                  "observation_errors":[], "transport_diagnostics":list(self.transport_blocks),
+                  "transport_policy":{"websocket":"unsupported", "service_worker":"blocked", "background_network":"disabled", "streaming":"bounded_buffer_only"}}
+        self.transport_blocks.clear()
         for key, page in self.pages.items():
             result["tabs"].append({"tab_id": key, "url": page.url[:512], "active": page == self.page})
-        if self.page:
-            self.references = {}
-            result["controls"] = []
-            controls_size=0
-            for element in self.page.query_selector_all('a,button,input,select,textarea,[role=button],[contenteditable=true],canvas')[:100]:
-                try:
-                    if not element.is_visible(): continue
-                    meta=self.info(element)
-                    controls_size+=len(json.dumps(meta,ensure_ascii=True))
-                    if controls_size>10000: break
-                    self.ref_sequence += 1
-                    ref=f'e{self.ref_sequence}'
-                    self.references[ref]=element
-                    meta['ref']=ref
-                    result['controls'].append(meta)
-                    if len(result['controls'])>=40: break
-                except Exception:
-                    continue
-            result["title"] = self.page.title()[:512]
-            body = self.page.locator("body")
-            if body.count():
-                result["text"] = body.inner_text(timeout=2000)[:6000]
-                result["accessibility"] = body.aria_snapshot(timeout=2000)[:8000]
+            if page == self.page: result["tab_id"] = key
+        self.references = {}
+        if not self.page: return result
+        def crashed():
+            # No old frame or partial page text is evidence of the crashed tab's
+            # current state. In particular, do not misreport this as masking failure.
+            for key in ('screenshot_base64','text','accessibility','controls','semantic_state','title','visual_surface'):
+                result.pop(key, None)
+            result['browser_state'] = 'crashed'
+            result['readiness'] = {'state':'unavailable'}
+            result['error'] = 'Browser tab crashed. Close this browser session and open a new one; do not repeat actions in this tab.'
+            return result
+        if self.page in self.crashed_pages: return crashed()
+        def part(name, operation):
+            try:
+                result[name] = operation()
+            except Exception:
+                result["observation_errors"].append({"part":name,"reason":"extraction_failed"})
+        # Fail closed: a partial protection scan cannot authorize any replacement
+        # frame or text. Other extraction failures do not discard a safe frame.
+        try:
             secret_values,masks=self.protected_values()
-            self.secrets.update(secret_values[:max(0,128-len(self.secrets))])
-            def redact(value):
-                if isinstance(value,str):
-                    for secret in self.secrets: value=value.replace(secret,'[private]')
-                elif isinstance(value,list): value=[redact(item) for item in value]
-                elif isinstance(value,dict): value={k:redact(v) for k,v in value.items()}
-                return value
-            for key in ("text","accessibility","title","controls"):
-                if key in result: result[key]=redact(result[key])
-            if screenshot:
-                result["screenshot_base64"] = base64.b64encode(
-                    self.page.screenshot(type="jpeg", quality=65, timeout=5000, mask=masks)).decode("ascii")
+            if len(self.secrets.union(secret_values)) > 128:
+                raise ValueError("Protected-value redaction capacity exceeded")
+            self.secrets.update(secret_values)
+        except Exception:
+            if self.page in self.crashed_pages: return crashed()
+            result["observation_errors"].append({"part":"protection","reason":"masking_unavailable"})
+            return result
+        def controls():
+            items=[]; size=0; seen=self.page.evaluate_handle('()=>new Set()')
+            interactive='a,button,input,select,textarea,summary,[onclick]:not(body):not(html),[tabindex],[title],[contenteditable=true],'+','.join(
+                '[role='+role+']' for role in ('button','link','menuitem','menuitemcheckbox','menuitemradio','checkbox','radio','switch','tab','option','combobox','slider','spinbutton','textbox','treeitem'))
+            # Hidden menu entries must not spend the candidate budget before
+            # visible toolbar controls and drawing surfaces are considered.
+            candidates=self.page.query_selector_all(':is('+interactive+',canvas):visible')
+            for element in candidates[:100]:
+                if not element.is_visible(): continue
+                # Small pointer-transparent canvases paint custom controls that
+                # need not have a role/title/tabindex. Return the actual parent
+                # receiving pointer events, never a decorative child that will
+                # time out under its parent's overlay. Large transparent helper
+                # layers are not drawing surfaces. No site-specific selectors.
+                element=element.evaluate_handle("""(e, selector) => {
+                    if(e.tagName!=='CANVAS') return e;
+                    const r=e.getBoundingClientRect(), transparent=getComputedStyle(e).pointerEvents==='none';
+                    if(r.width>64 || r.height>64) return transparent?null:e;
+                    const parent=e.parentElement?.closest(selector)||e.parentElement;
+                    if(!parent) return transparent?null:e;
+                    const p=parent.getBoundingClientRect();
+                    return p.width<=r.width+16 && p.height<=r.height+16 &&
+                        (transparent || parent.matches(selector))?parent:(transparent?null:e);
+                }""", interactive).as_element()
+                if element is None or element.evaluate('(e,seen)=>{if(seen.has(e))return true;seen.add(e);return false}',seen): continue
+                # Playwright clicks the element's center. Do not advertise a
+                # ref whose center is covered by an unrelated control (e.g. an
+                # overlapping foreground/background preview or a modal).
+                # Offscreen elements may still be scrolled into view normally.
+                if not element.evaluate("""e=>{
+                    const hitTest="""+POINT_TARGET+""";
+                    const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+                    if(x<0||y<0||x>=innerWidth||y>=innerHeight)return true;
+                    let hit=hitTest({x,y});
+                    if(!hit)return true;
+                    for(let depth=0;hit && depth<16;depth++,hit=hit.getRootNode().host){
+                        if(e.contains(hit))return true;
+                    }
+                    return false;
+                }"""): continue
+                meta=self.info(element)
+                meta.update(element.evaluate("""e=>({disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',
+                    checked:e.getAttribute('aria-checked')==='mixed'?'mixed':(e.getAttribute('aria-checked')==='true'||!!e.checked),
+                    value:e.tagName==='SELECT'?e.value:undefined})"""))
+                # Default fields must not crowd later palette/toolbar controls
+                # out of the bounded observation. Action review still obtains
+                # the complete fresh metadata with info(), including protection.
+                for key in list(meta):
+                    if meta[key] in ('',False,None) and key not in ('bounds',):
+                        if key=='checked' and (meta.get('role') in ('checkbox','radio','switch','menuitemcheckbox','menuitemradio') or meta.get('type') in ('checkbox','radio')): continue
+                        if meta.get('tag')=='a' and key in ('download','consequential'): continue
+                        del meta[key]
+                size+=len(json.dumps(meta,ensure_ascii=True))
+                if size>10000: break
+                self.ref_sequence+=1
+                ref=f'e{self.ref_sequence}'
+                self.references[ref]=element; meta['ref']=ref; items.append(meta)
+                if len(items)>=64: break
+            seen.dispose()
+            return items
+        part("controls", controls)
+        part("title", lambda: self.page.title()[:512])
+        body=self.page.locator("body")
+        part("text", lambda: body.inner_text(timeout=2000)[:6000])
+        part("accessibility", lambda: body.aria_snapshot(timeout=2000)[:8000])
+        # Unlabelled icon/custom controls need visual context even on ordinary
+        # HTML pages without a large canvas or image. Labelled form fields keep
+        # the usual DOM path; the host still decides whether images are allowed.
+        unlabelled_controls=any(not c.get('name') and c.get('tag') not in ('input','select','textarea')
+            for c in result.get('controls',[]))
+        part("visual_surface", lambda: unlabelled_controls or self.page.locator('canvas,svg,[role=img],img').evaluate_all("""els => els.some(e => {
+            const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+            return r.width*r.height>=16384 && r.bottom>0 && r.right>0 && r.top<768 && r.left<1024 && s.display!=='none' && s.visibility!=='hidden';
+        })"""))
+        if stable_text is not None:
+            result["semantic_state"]={"url":result["url"],"text":stable_text,
+                "controls":[{k:v for k,v in meta.items() if k in ('tag','role','name','disabled','checked','value','color','selected')}
+                            for meta in result.get("controls",[]) if meta.get('tag')!='canvas']}
+        result=self.redact(result)
+        if screenshot:
+            part("screenshot_base64", lambda: base64.b64encode(
+                self.page.screenshot(type="jpeg", quality=65, timeout=5000, mask=masks)).decode("ascii"))
+        if self.page in self.crashed_pages: return crashed()
         return result
 
     def run(self, tool, args):
         # Drain queued browser events with networking disabled before authorizing
         # this operation; there is never an ambient host network connection.
         if self.page and not self.page.is_closed():
-            self.page.wait_for_timeout(1)
+            try:
+                self.page.wait_for_timeout(1)
+            except Exception:
+                if self.page not in self.crashed_pages: raise
+        if self.page in self.crashed_pages:
+            return {"action_executed":False, **self.snapshot()}
         if tool not in ("browser.open", "browser.observe") and args.get("expected_url") != self.page.url:
             return {"url": self.page.url, "error": "Page changed since approval; observe before acting"}
         with self.lock:
             self.epoch += 1
             self.active = True
-        result = {}
+        result = {"action_executed":False}
+        stable_text = None
         try:
             if tool == "browser.open":
                 self.open(args)
             elif tool == "browser.navigate":
                 self.page.goto(args["url"], wait_until="domcontentloaded")
             elif tool == "browser.action":
-                self.action(args)
+                target=self.action(args)
+                if target: result['action_target']=target
             elif tool == "browser.evaluate":
                 value=self.page.evaluate(args['script'])
                 encoded=json.dumps(value,ensure_ascii=True)
@@ -401,24 +578,31 @@ class Driver:
                 if len(body)>4*1024*1024: raise ValueError('Download exceeds 4 MiB')
                 result['download_base64']=base64.b64encode(body).decode('ascii')
                 result['content_type']=response.headers.get('content-type','application/octet-stream')
-            # Include immediate event handlers/popups in this action's result.
-            if self.page and not self.page.is_closed():
-                self.page.wait_for_timeout(50)
+            result["action_executed"] = tool != "browser.observe"
         except Exception as exc:
+            result["action_executed"] = None
+            result["action_outcome"] = "unknown"
             result["error"] = str(exc)[:1500]
             for secret in self.secrets: result['error']=result['error'].replace(secret,'[private]')
         try:
             # Leave transport headroom for a maximum-sized download; the
             # existing panel frame remains valid for this nonvisual operation.
-            result.update(self.snapshot("download_base64" not in result))
-        except Exception as exc:
-            result.setdefault("error", str(exc)[:1500])
+            try:
+                if self.page and not self.page.is_closed():
+                    result["readiness"],stable_text=self.settle()
+            except Exception:
+                result["readiness"]={"state":"unavailable"}
+            result.update(self.snapshot("download_base64" not in result, stable_text))
+        except Exception:
+            result.setdefault("observation_errors", []).append({"part":"snapshot","reason":"extraction_failed"})
             result.setdefault("url", self.page.url if self.page else "about:blank")
         finally:
             with self.lock:
                 self.active = False
         if args.get('human') and args.get('text') and 'error' in result:
             result['error']=result['error'].replace(args['text'],'[private]')
+        if 'action_target' in result:
+            result['action_target']=self.redact(result['action_target'])
         return result
 
 

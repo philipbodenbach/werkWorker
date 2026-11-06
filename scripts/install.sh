@@ -102,7 +102,7 @@ detect_platform() {
 
     case "$os:$arch" in
         Linux:x86_64) WERK_WORKER_PLATFORM="linux-x86_64" ;;
-        Linux:arm64|Linux:aarch64) WERK_WORKER_PLATFORM="linux-aarch64" ;;
+        Linux:arm64|Linux:aarch64) die "no prebuilt Linux ARM64 archive; build from source with cargo install --path . --locked" ;;
         Darwin:arm64|Darwin:aarch64) WERK_WORKER_PLATFORM="macos-aarch64" ;;
         *) die "unsupported OS/architecture: $os $arch" ;;
     esac

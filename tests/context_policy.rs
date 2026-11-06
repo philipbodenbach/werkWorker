@@ -14,6 +14,67 @@ fn profile(tools: &[&str]) -> AgentProfile {
         skills: vec![],
     }
 }
+
+#[tokio::test]
+async fn admission_lowering_live_context_is_checked_before_dispatch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct ShrinkingProvider(AtomicUsize);
+    #[async_trait::async_trait]
+    impl ModelProvider for ShrinkingProvider {
+        fn identity(&self) -> String {
+            "shrinking-context".into()
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities {
+                context_tokens: Some(if self.0.load(Ordering::SeqCst) < 2 {
+                    32768
+                } else {
+                    2048
+                }),
+                ..Default::default()
+            }
+        }
+        async fn count_input_tokens(&self, _: &ModelRequest) -> Result<Option<usize>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(3000))
+        }
+        async fn stream(&self, _: ModelRequest) -> Result<ModelStream> {
+            panic!("A request over the newly reported limit must never reach inference")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkerEngine::builder(Arc::new(ShrinkingProvider(AtomicUsize::new(0))))
+        .build()
+        .await
+        .unwrap();
+    let session = engine
+        .create_session(profile(&[]), dir.path(), HostPolicy::default(), Value::Null)
+        .await
+        .unwrap();
+    let run = session
+        .submit(
+            "Keep this constraint",
+            "test",
+            Limits {
+                context_tokens: 32768,
+                reserve_output_tokens: 1024,
+                max_retries: 0,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(run.error.as_ref().unwrap().code, "context_overflow");
+    assert_eq!(
+        session.snapshot().await.unwrap().runs[0].tree_model_requests,
+        0
+    );
+    engine.close().await.unwrap();
+}
 fn read(path: &str) -> ScriptedTurn {
     ScriptedTurn::calls(
         "",
@@ -736,6 +797,7 @@ async fn small_context_overflow_borrows_output_reserve_without_losing_constraint
     struct Counted {
         inner: Arc<ScriptedProvider>,
         input: usize,
+        effort: Option<&'static str>,
     }
     #[async_trait::async_trait]
     impl ModelProvider for Counted {
@@ -751,16 +813,45 @@ async fn small_context_overflow_borrows_output_reserve_without_losing_constraint
         async fn count_input_tokens(&self, _: &ModelRequest) -> Result<Option<usize>> {
             Ok(Some(self.input))
         }
+        async fn reasoning_options(&self, output: usize) -> Result<Option<ReasoningOptions>> {
+            let Some(effort) = self.effort else {
+                return Ok(None);
+            };
+            if effort == "unavailable" {
+                return Err(WorkerError::new("reasoning_unavailable", "fixture"));
+            }
+            Ok(Some(serde_json::from_value(json!({
+                "model":"fixture", "requested": if effort == "native" { "default" } else { effort },
+                "native_effort": if effort == "native" { json!("high") } else { Value::Null },
+                "profile":{"schema_version":1,"model":"fixture","supported":true,
+                    "default_tier":"high","default_adjusted_to_limits":false,
+                    "limits":{"context_tokens":16384,"output_tokens":output,"reasoning_tokens":1536,"answer_reserve_tokens":512},
+                    "tiers":[{"id":"high","label":"High","available":true,"reasoning_tokens":1536,"minimum_output_tokens":2048}]}
+            })).unwrap()))
+        }
         async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
             assert!(self.input + request.max_output_tokens + 512 <= 16384);
             self.inner.stream(request).await
         }
     }
-    for (input, output) in [(11776, Some(4096)), (11866, Some(3942)), (13000, None)] {
+    for (input, output, effort) in [
+        (11776, Some(4096), None),
+        (11866, Some(3942), None),
+        (13000, Some(2808), None),
+        (14265, Some(1543), None),
+        (14848, Some(1024), None),
+        (14849, None, None),
+        (13000, Some(2808), Some("high")),
+        (13824, Some(2048), Some("high")),
+        (14265, None, Some("high")),
+        (11866, None, Some("native")),
+        (11866, None, Some("unavailable")),
+    ] {
         let scripted = Arc::new(ScriptedProvider::new(vec![ScriptedTurn::text("done")]));
         let engine = WorkerEngine::builder(Arc::new(Counted {
             inner: scripted.clone(),
             input,
+            effort,
         }))
         .build()
         .await

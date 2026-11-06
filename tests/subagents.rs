@@ -515,14 +515,17 @@ async fn wait_for_question(run: &RunHandle, question: &str) -> InteractionReques
 #[tokio::test]
 async fn delegation_levels_start_helpers_at_distinct_stages_and_respect_capacity() {
     use werk_worker::policy::ToolPermission;
-    for (level, capacity, allowed, expected_plan, expected_write) in [
-        (None, 2, true, 0, 1), // Missing config defaults to Active.
-        (Some(DelegationLevel::Off), 2, true, 0, 0),
-        (Some(DelegationLevel::Conservative), 2, true, 0, 0),
-        (Some(DelegationLevel::Active), 2, true, 0, 1),
-        (Some(DelegationLevel::Max), 2, true, 1, 1),
-        (Some(DelegationLevel::Max), 1, true, 0, 0),
-        (Some(DelegationLevel::Max), 2, false, 0, 0),
+    for (level, capacity, allowed, browser_mode, expected_plan, expected_write) in [
+        (None, 2, true, false, 0, 1), // Missing config defaults to Active.
+        (Some(DelegationLevel::Off), 2, true, false, 0, 0),
+        (Some(DelegationLevel::Conservative), 2, true, false, 0, 0),
+        (Some(DelegationLevel::Active), 2, true, false, 0, 1),
+        (Some(DelegationLevel::Max), 2, true, false, 1, 1),
+        (Some(DelegationLevel::Max), 1, true, false, 0, 0),
+        (Some(DelegationLevel::Max), 2, false, false, 0, 0),
+        // A browser-only plan is not implementation. A later real file change
+        // still receives the ordinary coding review, including in mixed work.
+        (Some(DelegationLevel::Max), 2, true, true, 0, 1),
     ] {
         let provider = Arc::new(CodingReviewProbe {
             capacity,
@@ -579,6 +582,7 @@ async fn delegation_levels_start_helpers_at_distinct_stages_and_respect_capacity
                 dir.path(),
                 HostPolicy {
                     workspace_writable: true,
+                    browser: browser_mode.then(Default::default),
                     tool_permissions: [
                         ("files.write".into(), ToolPermission::Allow),
                         ("files.read".into(), ToolPermission::Allow),

@@ -6,7 +6,7 @@ import subprocess
 import time
 
 
-WORKFLOWS = ('.github/workflows/ci.yml', '.github/workflows/platform-checks.yml')
+WORKFLOWS = ('.github/workflows/ci.yml',)
 
 
 def gh(*args):

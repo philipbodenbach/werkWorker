@@ -862,7 +862,7 @@ pub struct WerkProvider {
     pub reasoning_defaults: BTreeMap<String, ReasoningDefaults>,
     pub inference_concurrency: InferenceConcurrency,
     refreshed_concurrency: Mutex<InferenceConcurrency>,
-    capacity_refresh_at: std::sync::atomic::AtomicU64,
+    capacity_refresh_at: Mutex<tokio::time::Instant>,
     capacity_refresh_gate: tokio::sync::Mutex<()>,
     context_limit: std::sync::atomic::AtomicUsize,
     output_limit: Option<usize>,
@@ -1156,7 +1156,7 @@ impl WerkProvider {
             client,
             config,
             refreshed_concurrency: Mutex::new(inference_concurrency.clone()),
-            capacity_refresh_at: std::sync::atomic::AtomicU64::new(now_ms()),
+            capacity_refresh_at: Mutex::new(tokio::time::Instant::now()),
             capacity_refresh_gate: tokio::sync::Mutex::new(()),
             inference_concurrency,
             context_limit: std::sync::atomic::AtomicUsize::new(context_limit.unwrap_or(0)),
@@ -1384,14 +1384,15 @@ impl ModelProvider for WerkProvider {
         self.refreshed_concurrency.lock().unwrap().clone()
     }
     async fn refresh_concurrency(&self) {
-        use std::sync::atomic::Ordering;
-        if now_ms().saturating_sub(self.capacity_refresh_at.load(Ordering::Relaxed)) < 5000 {
+        // A polling interval must use the same monotonic clock as async waits.
+        // Wall-clock corrections can otherwise suppress an already-due refresh.
+        if self.capacity_refresh_at.lock().unwrap().elapsed() < Duration::from_secs(5) {
             return;
         }
         let Ok(_gate) = self.capacity_refresh_gate.try_lock() else {
             return;
         };
-        if now_ms().saturating_sub(self.capacity_refresh_at.load(Ordering::Relaxed)) < 5000 {
+        if self.capacity_refresh_at.lock().unwrap().elapsed() < Duration::from_secs(5) {
             return;
         }
         let mut capacity = None;
@@ -1430,7 +1431,7 @@ impl ModelProvider for WerkProvider {
         } else if authoritative_unknown {
             *self.refreshed_concurrency.lock().unwrap() = InferenceConcurrency::default();
         }
-        self.capacity_refresh_at.store(now_ms(), Ordering::Relaxed);
+        *self.capacity_refresh_at.lock().unwrap() = tokio::time::Instant::now();
     }
     fn capabilities(&self) -> ModelCapabilities {
         let mut caps = self.config.capabilities.clone();
@@ -1696,6 +1697,7 @@ impl ModelProvider for WerkProvider {
                 "Streaming support is not confirmed",
             ));
         }
+        let has_images = request.messages.iter().any(|m| !m.images.is_empty());
         let body = self.chat_body(&request)?;
         let request = self
             .client
@@ -1768,6 +1770,24 @@ impl ModelProvider for WerkProvider {
                         ),
                     ));
                 }
+                if has_images
+                    && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                    && matches!(
+                        value["error"]["code"].as_str(),
+                        Some(
+                            "images_unsupported"
+                                | "image_input_unsupported"
+                                | "vision_unsupported"
+                                | "multimodal_not_supported"
+                                | "missing_mmproj"
+                        )
+                    )
+                {
+                    return Err(WorkerError::new(
+                        "images_unsupported",
+                        "The configured backend rejected image input. Check its vision capability and projector/mmproj configuration. Browser actions may already have completed; images were not processed. No backend was switched.",
+                    ));
+                }
                 if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
                     && matches!(
                         value["error"]["code"].as_str(),
@@ -1784,6 +1804,22 @@ impl ModelProvider for WerkProvider {
                             .chars()
                             .take(2048)
                             .collect::<String>(),
+                    ));
+                }
+                if has_images && let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                    let detail = value["error"]["message"]
+                        .as_str()
+                        .unwrap_or("No structured diagnostic supplied");
+                    let detail = if detail.contains("base64,") {
+                        "Backend diagnostic omitted because it contains an image payload".to_owned()
+                    } else {
+                        self.client.redact(detail).chars().take(512).collect()
+                    };
+                    return Err(WorkerError::new(
+                        "image_request_rejected",
+                        format!(
+                            "The configured backend rejected the image-bearing request: {detail}. Image feedback was not processed; inspect backend vision/projector support and request settings before continuing the visual task."
+                        ),
                     ));
                 }
             }

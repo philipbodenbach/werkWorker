@@ -30,6 +30,7 @@ pub const CATEGORIES: &[&str] = &[
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserPolicy {
     pub enabled: bool,
+    pub settings: BrowserSettings,
     pub defaults: BTreeMap<String, ToolPermission>,
     pub sites: BTreeMap<String, BTreeMap<String, ToolPermission>>,
 }
@@ -37,12 +38,60 @@ impl Default for BrowserPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
+            settings: BrowserSettings::default(),
             defaults: CATEGORIES
                 .iter()
                 .map(|c| ((*c).into(), ToolPermission::Ask))
                 .collect(),
             sites: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Perception {
+    #[default]
+    Auto,
+    Dom,
+    Vision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrowserSettings {
+    pub perception: Perception,
+    /// Zero disables automatic expiry. Sessions otherwise live until closed.
+    pub lifetime_seconds: u64,
+    /// Zero disables automatic idle expiry.
+    pub idle_seconds: u64,
+    pub max_actions: usize,
+}
+impl Default for BrowserSettings {
+    fn default() -> Self {
+        Self {
+            perception: Perception::Auto,
+            lifetime_seconds: 0,
+            idle_seconds: 0,
+            max_actions: 400,
+        }
+    }
+}
+impl BrowserSettings {
+    pub(crate) fn budgets(&self) -> Value {
+        serde_json::json!({"lifetime_seconds":self.lifetime_seconds,"idle_seconds":self.idle_seconds,"max_actions":self.max_actions})
+    }
+    pub fn validate(&self) -> Result<()> {
+        if self.lifetime_seconds > 14400
+            || self.idle_seconds > 3600
+            || !(1..=2000).contains(&self.max_actions)
+        {
+            return Err(WorkerError::new(
+                "browser_settings",
+                "Browser lifetime must be 0..14400 seconds, idle limit 0..3600 seconds and action limit 1..2000; 0 disables the corresponding time limit",
+            ));
+        }
+        Ok(())
     }
 }
 pub fn origin(input: &str) -> Result<String> {
@@ -65,12 +114,18 @@ pub fn origin(input: &str) -> Result<String> {
 }
 impl BrowserPolicy {
     pub fn set(&mut self, site: &str, category: &str, permission: ToolPermission) -> Result<()> {
+        // The panel offers one explicit choice for both ways of operating a page.
+        // Persist the existing categories so older hosts retain the same scope.
+        if category == "controls" {
+            self.set(site, "actions", permission)?;
+            return self.set(site, "unlabelled", permission);
+        }
         if !CATEGORIES.contains(&category)
             || category == "scripts" && permission == ToolPermission::Allow
         {
             return Err(WorkerError::new(
                 "browser_permission",
-                "Choose browsing/actions/unlabelled/downloads/history/scripts and ask/allow/deny; scripts always require approval",
+                "Choose browsing/controls/actions/unlabelled/downloads/history/scripts and ask/allow/deny; scripts always require approval",
             ));
         }
         if site == "*" {

@@ -73,8 +73,10 @@ With a saved connection, ordinary startup instead offers **Continue previous**
 and **Connect new**. Continue checks the live server and its current context
 capacity with a cancellable 20-second timeout. Failure leaves the choices visible
 for retry or new setup; it does not erase previous chats or silently use a demo.
-It reuses the effective model and capability choices from the successful setup,
-even when the original project transport file contains incomplete defaults.
+It reuses the saved transport and verified capability choices, even when the
+original project transport file contains incomplete defaults. Current project
+model, profile, reasoning and token budgets override the remembered preferences;
+for example, switching the project's model takes effect on Continue previous.
 After connecting, choose a new or previous session. `/sessions` returns to that
 selection without reconnecting.
 
@@ -209,3 +211,20 @@ Headless runs retain their default 2,048-token output reserve; the wizard's budg
 applies to runs started in its connected TUI session.
 
 For the currently discussed Qwen server, use the [local example](local-werk-example.md).
+
+
+### Browser perception and local model evaluation
+
+Enable `/browser on`, then `/browser perception auto|dom|vision`. Auto treats an
+unknown image capability as unknown, not unsupported. Vision requires a backend
+that accepts real image content parts and, when applicable, a compatible vision
+projector. Qwen3.8-27B is a comparison candidate, not a model-name dependency.
+Worker uses the configured Werk server; it does not start a second inference
+server. Allow enough context for tool schemas, output reserve and 8192 conservative
+tokens per selected image (up to two current browser frames).
+
+Browser lifetime/idle/action settings live in the existing host policy under
+`browser.settings`; missing fields use compatible defaults. TUI `/browser limits`
+and the panel expose them. Details and opt-in model-run commands are in
+[Browser authoring](authoring.md#autonomous-browser-tasks-and-perception) and
+[Browser review/evaluation](browser-agent-review.md).

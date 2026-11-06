@@ -133,6 +133,12 @@ verification; delivery alone is not evidence that the requested change is done.
 Pending approvals and questions appear below the conversation
 and identify their owning agent. Questions show the agent's suggested answers plus
 **Write my own answer**. Use Up/Down and Enter, or type a custom answer directly.
+The free-text option is also shown when the agent supplied no suggested answers.
+With browser mode enabled, **Website permissions** shows a fresh browser-panel
+link directly in the question card; open it to edit website rules. **Workspace
+permissions (F5)** opens the separate file/process settings. `/browser` also works
+while a question is pending. Viewing or editing permissions does not answer the
+question or approve an action; only an **Approval** card grants a prepared action.
 When the input contains text, Enter sends that text instead of the highlighted
 choice. Questions and submitted answers remain in the visible chat history.
 Approval cards offer **Allow once** and **Deny** (initial selection); use Up/Down

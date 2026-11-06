@@ -62,7 +62,9 @@ const CHECK_AFTER_CHANGES: usize = 3;
 /// inspect. Offer the permitted check tool with its verification contract for
 /// the next decision. A recorded check restores the normal tool catalog; if
 /// execution is unavailable, retain all existing capabilities instead of
-/// creating a recovery dead end. Already admitted calls retain their authority.
+/// creating a recovery dead end. Browser session tools retain their host-filtered
+/// availability: coding checkpoints must not strand an interactive browser task.
+/// Already admitted calls retain their authority.
 pub(crate) fn check_tools(
     session: &SessionData,
     run: &Run,
@@ -80,13 +82,17 @@ pub(crate) fn check_tools(
             .any(|t| t.name == "task.plan" && session.policy.can_request(t))
     {
         tools.retain(|t| {
-            t.effect == Effect::Read
+            crate::browser_policy::TOOLS.contains(&t.name.as_str())
+                || t.effect == Effect::Read
                 || matches!(
                     t.name.as_str(),
                     "task.plan" | "skills.load" | "skills.list" | "interaction.ask"
                 )
         });
         for tool in tools {
+            if crate::browser_policy::TOOLS.contains(&tool.name.as_str()) {
+                continue;
+            }
             tool.input_schema["x-werk-work-cycle"] = json!("plan");
             if tool.name == "task.plan" {
                 tool.description.push_str(" Before implementation, record nonempty acceptance_criteria and verification_method for each step, derived from the task and references.");
@@ -128,6 +134,9 @@ pub(crate) fn check_tools(
         "repair"
     };
     tools.retain(|t| {
+        if crate::browser_policy::TOOLS.contains(&t.name.as_str()) {
+            return true;
+        }
         if check_repair {
             return matches!(t.name.as_str(), "browser.check" | "interaction.ask");
         }
@@ -142,6 +151,9 @@ pub(crate) fn check_tools(
                 ))
     });
     for tool in tools {
+        if crate::browser_policy::TOOLS.contains(&tool.name.as_str()) {
+            continue;
+        }
         // The underlying write tool already supports atomic hash-bound
         // replacement under the same policy. Coding normally hides it in favor
         // of small edits. In recovery, copying an entire old file as an anchor
@@ -447,11 +459,7 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "objective_excerpt": crate::completion::excerpt(&run.input, 1200),
         "latest_user_update_excerpt": run.steering.last().map(|s| crate::completion::excerpt(s, 600)),
         "current_milestone": current.map(|s| crate::completion::excerpt(s["description"].as_str().unwrap_or(""), 384)),
-        "checkpoint": run.plan.get("checkpoint").map(|c| json!({
-            "next_action": crate::completion::excerpt(c["next_action"].as_str().unwrap_or(""), 512),
-            "decisions": c["decisions"].as_array().into_iter().flatten().take(6)
-                .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
-        })),
+        "checkpoint": checkpoint(run),
         "suggested_phase": phase,
         "check_repair_due": check_repair_due,
         "unresolved_check": repair.as_ref().map(|c| c.observation(run)),
@@ -479,6 +487,14 @@ pub(crate) fn observation(run: &Run, receipts: &BTreeMap<String, Value>) -> Valu
         "refocus": investigation >= REFOCUS_AFTER,
         "trust": "Observed work plus user/plan excerpts; phase directs workflow, not verified completion. Full user messages and newer steering govern scope."
     })
+}
+
+pub(crate) fn checkpoint(run: &Run) -> Option<Value> {
+    run.plan.get("checkpoint").map(|c| json!({
+        "next_action": crate::completion::excerpt(c["next_action"].as_str().unwrap_or(""), 512),
+        "decisions": c["decisions"].as_array().into_iter().flatten().take(6)
+            .filter_map(|v| v.as_str()).map(|s| crate::completion::excerpt(s, 256)).collect::<Vec<_>>()
+    }))
 }
 
 #[cfg(test)]

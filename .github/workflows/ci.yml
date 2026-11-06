@@ -1,30 +1,77 @@
 name: worker
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: worker-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
-  linux-real-sandbox:
-    runs-on: ubuntu-24.04
-    env:
-      REQUIRE_SANDBOX: "1"
-      WERK_WORKER_BWRAP: /usr/bin/bwrap
+  native:
+    # Keep these three existing required-check names during consolidation.
+    name: ${{ matrix.check_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            suffix: linux-x86_64.tar.gz
+            check_name: linux-real-sandbox
+          - os: macos-15
+            platform: macos
+            target: aarch64-apple-darwin
+            suffix: macos-aarch64.tar.gz
+            check_name: native (macos-14, macos, aarch64-apple-darwin, macos-aarch64.tar.gz)
+          - os: windows-2022
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            suffix: windows-x86_64.zip
+            check_name: native (windows-2022, windows, x86_64-pc-windows-msvc, windows-x86_64.zip)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - name: MSVC x64 environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Test release tooling and installers
+        run: python -m unittest discover -s scripts/tests
+      - name: Test native platform integration
+        if: runner.os != 'Linux'
+        run: cargo test --locked --test platform
       - name: Prepare real namespace backend
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap python3-pip python3-apt
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets -- --nocapture
-      - run: python3 -m unittest discover -s scripts/tests
+          echo "REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
+          echo "WERK_WORKER_BWRAP=/usr/bin/bwrap" >> "$GITHUB_ENV"
+      - name: Lint and test with real Linux sandbox
+        if: runner.os == 'Linux'
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets -- --nocapture
       - name: Install isolated Chromium runtime
+        if: runner.os == 'Linux'
         run: sh scripts/install-browser.sh --local-deps chromium
       - name: Test real browser control and observation
+        if: runner.os == 'Linux'
         env:
           REQUIRE_BROWSER: "1"
           WW_BROWSER_ENGINES: chromium
@@ -36,20 +83,24 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH="$runtime/browsers" \
           LD_LIBRARY_PATH="$runtime/deps/usr/lib/$multiarch:$runtime/deps/lib/$multiarch${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             /usr/bin/python3 scripts/tests/test_browser_observation.py
-      - run: python3 scripts/tests/tui_smoke.py target/debug/ww
-      - run: python3 scripts/tests/selection_tui_smoke.py target/debug/ww
-      - run: python3 scripts/tests/permissions_tui_smoke.py target/debug/ww
-      - run: python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
-      - run: python3 scripts/tests/delegation_tui_smoke.py target/debug/ww
-      - run: python3 scripts/tests/sessions_tui_smoke.py target/debug/ww
-      - run: python3 scripts/tests/setup_smoke.py target/debug/ww
-      - run: python3 scripts/tests/effort_tui_smoke.py target/debug/ww
-      - run: cargo run --locked --example eval
-      - run: cargo run --locked --example coding
-      - run: cargo run --locked --example automation
-      - run: cargo package --locked --allow-dirty
-      - name: Install from package in a fresh directory
+      - name: Test terminal workflows and SDK examples
+        if: runner.os == 'Linux'
         run: |
+          python3 scripts/tests/tui_smoke.py target/debug/ww
+          python3 scripts/tests/selection_tui_smoke.py target/debug/ww
+          python3 scripts/tests/permissions_tui_smoke.py target/debug/ww
+          python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
+          python3 scripts/tests/delegation_tui_smoke.py target/debug/ww
+          python3 scripts/tests/sessions_tui_smoke.py target/debug/ww
+          python3 scripts/tests/setup_smoke.py target/debug/ww
+          python3 scripts/tests/effort_tui_smoke.py target/debug/ww
+          cargo run --locked --example eval
+          cargo run --locked --example coding
+          cargo run --locked --example automation
+      - name: Install from package in a fresh directory
+        if: runner.os == 'Linux'
+        run: |
+          cargo package --locked --allow-dirty
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           mkdir -p /tmp/worker-package /tmp/worker-workspace
           tar -xzf target/package/werk-worker-$version.crate -C /tmp/worker-package
@@ -59,3 +110,31 @@ jobs:
           /tmp/worker-install/bin/werk-worker profiles inspect coding-basic
           /tmp/worker-install/bin/werk-worker skills inspect ticket-drafting
           /tmp/worker-install/bin/ww --store /tmp/worker-short.sqlite run --demo "short command smoke"
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: ./scripts/package-release.sh "$PLATFORM"
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: ./scripts/package-release.ps1
+      - name: Install archive and smoke both commands
+        id: archive
+        shell: bash
+        env:
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          archive="releases/werkWorker-v$version-$SUFFIX"
+          python scripts/smoke-install.py "$archive"
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - name: Upload tested platform archive and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: werkWorker-${{ matrix.platform }}
+          path: |
+            ${{ steps.archive.outputs.path }}
+            ${{ steps.archive.outputs.path }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

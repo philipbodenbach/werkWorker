@@ -24,7 +24,7 @@ intelligence.
 
 ## Install and try
 
-Rust 1.88 or newer. Native packages target Linux x86_64/ARM64, Windows x86_64
+Rust 1.88 or newer. Three native packages target Linux x86_64, Windows x86_64
 and macOS Apple Silicon; file/process isolation currently requires Linux.
 See [install scripts and release workflow](docs/releases.md). Build from this
 checkout (nothing is published by these commands):

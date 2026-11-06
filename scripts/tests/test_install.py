@@ -48,5 +48,34 @@ class InstallTests(unittest.TestCase):
     def test_symlink_member_is_rejected_before_install(self):
         self.archive_files(symlink=True); self.assertNotEqual(self.install().returncode,0)
         self.assertFalse((self.root/'bin').exists())
+    def test_linux_arm64_reports_source_build_without_replacing_commands(self):
+        (self.root/'bin').mkdir(); (self.root/'bin'/'ww').write_text('old')
+        for arch in ('arm64', 'aarch64'):
+            with self.subTest(arch=arch):
+                (self.root/'mock'/'uname').write_text(
+                    f'#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo {arch};; esac\n')
+                result = self.install()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('no prebuilt Linux ARM64 archive', result.stderr)
+                self.assertIn('cargo install --path . --locked', result.stderr)
+                self.assertNotIn('Downloading', result.stdout)
+                self.assertEqual((self.root/'bin'/'ww').read_text(), 'old')
+    def test_macos_apple_silicon_uses_its_archive(self):
+        self.archive = self.root/'werkWorker-v0.1.0-macos-aarch64.tar.gz'
+        self.env['WERK_WORKER_ARCHIVE'] = str(self.archive)
+        self.archive_files()
+        (self.root/'mock'/'uname').write_text(
+            '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n')
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.archive.name, result.stdout)
+        self.assertTrue((self.root/'bin'/'ww').exists())
+    def test_linux_arm64_is_not_an_official_package_target(self):
+        result = subprocess.run(
+            ['bash', str(ROOT/'scripts/package-release.sh'), 'linux-aarch64'],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('<linux|macos>', result.stderr)
 
 if __name__ == '__main__': unittest.main()

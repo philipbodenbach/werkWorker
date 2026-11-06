@@ -28,8 +28,8 @@ is regenerated from the versioned binary before the preparation PR.
 Actions' repository setting allows creation of pull requests. The workflow
 requires contents/pull-requests write and actions read permissions and honors
 branch protection; it does not use `--admin`. Release waits up to 60 minutes for
-the actual `pull_request` runs of `worker` and `Platform build checks` on the
-exact preparation commit, then for GitHub to report the PR ready to merge.
+the actual `pull_request` run of the three-job `worker` workflow on the exact
+preparation commit, then for GitHub to report the PR ready to merge.
 It does not dispatch duplicate test runs: `workflow_dispatch` checks do not
 satisfy required PR checks. See
 [GitHub's required-check rules](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
@@ -53,7 +53,7 @@ for this purpose; see
 [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
 Without this optional secret the approval-based flow remains available.
 
-Unlike Werk1112's release setup, this repository requires five CI checks on
+Unlike Werk1112's release setup, this repository requires three CI checks on
 the preparation PR, so its `[skip ci]` shortcut cannot be reused here.
 Keep merge commits enabled for the release PR's two-parent verification. Base/head/tree checks
 reject races. Retries preserve existing releases/assets and never move a tag.
@@ -69,7 +69,6 @@ platform assets attached to the draft before publication.
 | Host | Build | Package | Archive suffix |
 |---|---|---|---|
 | Linux x86_64 / WSL2 | `cargo build-linux` | `./scripts/package-release.sh linux` | `linux-x86_64.tar.gz` |
-| Linux ARM64 | `cargo build-linux-aarch64` | `./scripts/package-release.sh linux-aarch64` | `linux-aarch64.tar.gz` |
 | Windows x86_64 | `./scripts/build-windows.ps1` | `./scripts/package-release.ps1` | `windows-x86_64.zip` |
 | macOS Apple Silicon | `cargo build-macos-apple-silicon` | `./scripts/package-release.sh macos` | `macos-aarch64.tar.gz` |
 
@@ -78,15 +77,34 @@ Each contains both commands (`werk-worker` and `ww`, `.exe` on Windows), README,
 LICENSE and NOTICE. Skills/profiles are embedded. Build on the target OS/CPU;
 Rust target installation alone is not a cross toolchain. Native Rust stable,
 a C compiler and Python 3.11+ are needed (MSVC + Windows SDK on Windows,
-Xcode command-line tools on macOS). There is no CUDA/toolkit/GPU dependency:
-Strix Halo and DGX Spark use the corresponding generic Linux CPU archive.
-These hardware-specific Werk builds need no separate Worker binary.
+Xcode command-line tools on macOS). These are the only three published binary
+targets. There is no CUDA/toolkit/GPU dependency: Strix Halo uses the generic
+Linux x86_64 archive. Linux ARM64 systems, including DGX Spark, require a source
+build (`cargo install --path . --locked` from this checkout); the installer
+reports this instead of requesting an unpublished ARM64 archive.
 
 After checkout of the release tag, build each archive on the matching host,
 then upload archives and their checksum files to the draft GitHub release.
 Review assets before publishing. `latest` installers see published releases only.
-The `Platform build checks` action validates native builds, archive contents,
-installers and offline startup on each target; it does not publish artifacts.
+The `worker` action has exactly three native jobs: Linux x86_64, macOS Apple
+Silicon and Windows x86_64. It validates archive contents, installers and
+offline startup on each target. The Linux job also runs the full sandbox,
+browser, terminal, SDK and crate-installation suite. Release automation tests
+run within those jobs rather than in an extra workflow.
+
+Each job uploads one Actions artifact (`werkWorker-linux`, `werkWorker-macos`
+or `werkWorker-windows`) containing its archive and adjacent `.sha256`, retained
+for seven days. A successful run therefore offers three platform downloads.
+These CI artifacts do not publish a GitHub release; public releases still use
+archives built from the release tag and attached to the draft as above.
+
+CI runs on PR updates, pushes to main and manual dispatch. Feature-branch pushes
+do not start a duplicate run, and newer updates cancel an older run for the same
+PR. The retired `platform-checks.yml` and `release-checks.yml` workflows must not
+remain required in branch protection. The required checks are the existing
+Linux sandbox, macOS native and Windows native names listed in
+[CONTRIBUTING.md](../CONTRIBUTING.md); the separate Linux native and Linux ARM64
+check contexts are removed. The Linux archive now belongs to the sandbox job.
 
 ## Installers
 

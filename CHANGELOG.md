@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
+### Changes
+
+- feat(): subagent settings (`6018c67c8b38`)
+- feat(): subagent settings (`5f69e135680d`)
+- feat(): subagent settings (`4aad968ea0da`)
+- feat(): subagent settings (`3f8de6d671e6`)
+- feat(): subagent settings (`a6b52d8a370f`)
+- fix(): backend installer (`886027000ec9`)
+- feat(): subagent settings (`a285746cf498`)
+- feat(): subagent settings (`9c3105a8af85`)
+- feat(): subagent settings (`12cc332720ef`)
+- feat(): subagent settings (`99094d55e7de`)
+- feat(): subagent settings (`eec9787aff4b`)
+- feat(): subagent settings (`6aa5a6f44d47`)
+- feat(): subagent settings (`1404ab229c15`)
+- feat(): subagent settings (`99c69c449b0e`)
+- feat(): subagent settings (`cbf73a7f6d75`)
+- feat(): subagent settings (`d8c7e0ec9c50`)
+- feat(): browser agent (`186463bc5f04`)
+- feat(): browser agent (`bbb515b5f40c`)
+- feat(): browser agent (`3ad6b0a9bc30`)
+- feat(): browser agent (`679002b9c6c4`)
+- feat(): browser agent (`17baa6d9419c`)
+- feat(): expand cli (`1f0a0c4dd3f5`)
+- feat(): expand cli (`a86e97957d54`)
+- feat(): expand cli (`13adb9387898`)
+- feat(): expand cli (`4ef56b7f35a1`)
+- feat(): expand cli (`1c4f5d78a6f4`)
+- feat(): expand cli (`478fef38e1ed`)
+- feat(): expand cli (`faefa4ca6fcd`)
+- feat(): expand cli (`59fc059bd9ce`)
+- feat(): expand cli (`352190a0103f`)
+- feat(): expand cli (`409c15329998`)
+- feat(): expand cli (`84b0f3417734`)
+- feat(): expand cli (`a809051f4c6e`)
+- feat(): expand cli (`ddc5f5bd9eac`)
+- feat(): expand cli (`4fe310485770`)
+- feat(): expand cli (`33ac129deccf`)
+- feat(): expand cli (`3c8794af63f3`)
+- feat(): expand cli (`2971037f4a39`)
+- feat(): expand cli (`02ff56f3e0d9`)
+- feat(): expand cli (`5c46e93ff66f`)
+- feat(): expand cli (`d2dc974f7ca7`)
+- feat(): add jspaint experiment (`883502b09221`)
+- feat(): add jspaint experiment (`8706cce376bb`)
+- feat(): expand cli (`4494141dead3`)
+- fix(): pipeline release (`e155be441ab5`)
+
 ## [0.2.0] - 2026-10-26
 
 - Persist validated rolling-context selections across turns and resumes; use
@@ -83,4 +133,6 @@
 - Interactive agent terminal with the werk top color palette and the short command `ww`.
 
 
-[Unreleased]: https://github.com/philipbodenbach/werkWorker/compare/v0.2.0...HEAD
+
+[Unreleased]: https://github.com/philipbodenbach/werkWorker/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/philipbodenbach/werkWorker/compare/v0.2.0...v0.3.0

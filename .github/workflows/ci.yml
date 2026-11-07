@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native:
-    # Keep these three existing required-check names during consolidation.
+    # Keep the existing check names for the three native platforms.
     name: ${{ matrix.check_name }}
     strategy:
       fail-fast: false

@@ -1,6 +1,6 @@
 # Build, install and release
 
-Current release: `v0.2.0`.
+Current release: `v0.3.0`.
 
 The workflow deliberately follows werk1112 at revision
 `3d33f7c5ccb3785a450310b5af9268077c5c9683`: a manually dispatched release action

@@ -3,7 +3,7 @@
 Current release: `v0.2.0`.
 
 The workflow deliberately follows werk1112 at revision
-`78254d7f709586576ec14d06a7f362a8185c2f36`: a manually dispatched release action
+`3d33f7c5ccb3785a450310b5af9268077c5c9683`: a manually dispatched release action
 prepares versions/notes, creates and merges its preparation PR, tags the merge
 and creates a GitHub release. Platform archives are built separately from that
 tag and uploaded manually. The workflow defaults to a **draft**, allowing all
@@ -25,44 +25,55 @@ precedence over generated commit-subject notes. Versions in Cargo.toml, both
 Cargo lockfiles, README and this page are updated together. The CLI reference
 is regenerated from the versioned binary before the preparation PR.
 
-Actions' repository setting allows creation of pull requests. The workflow
-requires contents/pull-requests write and actions read permissions and honors
-branch protection; it does not use `--admin`. Release waits up to 60 minutes for
-started CI and merge readiness on the exact preparation commit. When GitHub
-reports `action_required`, the job stops immediately with the exact PR and CI
-run links instead of spending an hour waiting for a human approval. The three
-jobs of the real `pull_request` run must still pass before the merge.
-It does not dispatch duplicate test runs: `workflow_dispatch` checks do not
-satisfy required PR checks. See
-[GitHub's required-check rules](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
+Release uses the built-in `GITHUB_TOKEN` with contents/pull-requests write
+permissions, just like werk1112. It runs release-tooling tests, builds the
+versioned CLI and validates the generated reference before creating the
+preparation PR. Only that generated metadata commit carries `[skip ci]`.
+Normal product changes must pass the three-platform `worker` workflow before
+starting Release; those platform tests are not repeated by the Release job.
 
-With the built-in `GITHUB_TOKEN`, GitHub requires approval before running CI
-on the generated PR. Open the PR linked in the action log and select
-**Approve workflows to run**, then select **Re-run failed jobs** on the failed
-Release run. Its summary contains the recovery steps. The retry reuses the
-preparation PR and version, waits for the now-started tests, and proceeds only
-after the required checks pass. Failed tests stop the release with a link to
-the failing run; successful PR runs for the same commit are reused. If an
-existing PR still awaits approval, approve it there; changing a token alone
-does not retrigger that PR.
+There is no PR-check polling, manual CI dispatch or separate bot-token secret.
+The flow does not depend on approving the generated PR's workflow. This requires
+the branch policy below: skipped PR CI cannot satisfy required status checks.
+See [GitHub's required-check rules](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
 
-For one-click releases without that approval step, an owner can configure the
-optional repository Actions secret **`RELEASE_PR_TOKEN`**: a fine-grained token
-from a trusted bot/user, scoped only to this repository with **Pull requests:
-read and write** and **Contents: read**. It is used only in the preparation-PR
-step. Checkout/push, merge, tags and releases still use `GITHUB_TOKEN`. CI uses
-its own read-only token. Do not place personal CLI credentials in the workflow
-or disable required checks. GitHub also supports a dedicated GitHub App identity
-for this purpose; see
-[GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
-Without this optional secret the approval-based flow remains available.
+Release still honors branch protection and never uses `--admin`. Keep merge
+commits enabled for the preparation PR's two-parent verification. Base/head/tree
+checks reject races before tagging. A retry reuses an identical preparation
+branch and PR; conflicting generated content stops the run rather than
+replacing the branch. Retries preserve existing releases/assets and never move
+a tag. The first release needs no previous tag. No local build or preparation
+script commits, tags or pushes. Only the explicitly started GitHub release
+workflow performs those operations.
 
-Unlike Werk1112's release setup, this repository requires three CI checks on
-the preparation PR, so its `[skip ci]` shortcut cannot be reused here.
-Keep merge commits enabled for the release PR's two-parent verification. Base/head/tree checks
-reject races. Retries preserve existing releases/assets and never move a tag.
-The first release needs no previous tag. No local script commits, tags or pushes.
-Only the explicitly started GitHub release workflow performs those operations.
+### Repository configuration
+
+Workflow files do not change GitHub branch protection. To migrate an existing
+werkWorker repository to the werk1112 policy, under **Settings → Branches →
+main**, disable **Require status checks to pass before merging**, including its
+up-to-date-branch requirement. Remove all former required contexts, including
+Linux sandbox, macOS and Windows. Keep PRs required (also for administrators),
+conversation resolution, and the restrictions on force pushes and deletion.
+Mandatory approving reviews remain zero for this single-maintainer repository.
+Also retain **Allow GitHub Actions to create and approve pull requests** under
+**Settings → Actions → General → Workflow permissions** and enable merge commits.
+
+This removes the merge requirement, not the CI jobs: ordinary PRs and main
+still run all three platform jobs and produce three artifacts. Maintainers
+must check these results before merging product changes; GitHub no longer
+blocks a merge for a failing or missing status check. If required status checks
+are retained, this release design cannot be used without a different CI/token
+flow. Do not add a rule requiring workflows/status checks to the release PR.
+
+An early, read-only check in Release detects classic branch-protection status
+requirements before any build or preparation PR. It reports the incompatible
+contexts immediately; it never changes protection settings. Rulesets and other
+merge requirements are still enforced by GitHub at merge time.
+
+After the workflow change reaches the default branch and settings are aligned,
+start a **new Release run** there. Re-running a failed job from the old workflow
+still uses its old workflow definition. Old unmerged preparation PRs are not
+modified automatically; the new run derives its branch from the current base.
 
 Development follows [short-lived feature branches into protected main](../CONTRIBUTING.md).
 Main advances continuously; a tagged release remains an explicit action, with
@@ -115,11 +126,9 @@ archives built from the release tag and attached to the draft as above.
 
 CI runs on PR updates, pushes to main and manual dispatch. Feature-branch pushes
 do not start a duplicate run, and newer updates cancel an older run for the same
-PR. The retired `platform-checks.yml` and `release-checks.yml` workflows must not
-remain required in branch protection. The required checks are the existing
-Linux sandbox, macOS native and Windows native names listed in
-[CONTRIBUTING.md](../CONTRIBUTING.md); the separate Linux native and Linux ARM64
-check contexts are removed. The Linux archive now belongs to the sandbox job.
+PR. No platform status context is required by the werk1112 branch policy;
+this also applies to contexts from the retired `platform-checks.yml` and
+`release-checks.yml` workflows. The Linux archive belongs to the sandbox job.
 
 ## Installers
 
@@ -152,6 +161,6 @@ sandbox tools currently require Linux and fail closed elsewhere. Native
 Windows/macOS packages support the TUI, SDK, HTTP/Werk tools and sessions; their
 presence is not a claim of a native process/filesystem sandbox.
 
-Primary references: [Werk release workflow](https://github.com/philipbodenbach/werk1112/blob/78254d7f709586576ec14d06a7f362a8185c2f36/.github/workflows/release.yml),
+Primary references: [Werk release workflow](https://github.com/philipbodenbach/werk1112/blob/3d33f7c5ccb3785a450310b5af9268077c5c9683/.github/workflows/release.yml),
 [GitHub release CLI](https://cli.github.com/manual/gh_release_create),
 [hosted runner platforms](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).

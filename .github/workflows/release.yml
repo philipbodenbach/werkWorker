@@ -16,7 +16,7 @@ on:
           - minor
           - major
       draft:
-        description: Keep release as a draft until manual artifacts are uploaded
+        description: Keep release as a draft after all platform artifacts are uploaded
         type: boolean
         default: true
 
@@ -32,6 +32,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
     env:
       CARGO_TARGET_DIR: target/cli-reference-neutral
       GH_TOKEN: ${{ github.token }}
@@ -130,8 +133,8 @@ jobs:
               cat > "$RUNNER_TEMP/release-pr.md" <<'BODY'
           Automatically synchronize product versions, changelog, README and current
           documentation for this release, including the generated CLI reference
-          from a fresh build. Platform artifacts are built and uploaded manually
-          after the tag is available. Release preparation tests passed.
+          from a fresh build. Three native platform jobs build and test the tagged
+          source before uploading release assets. Release preparation tests passed.
           This generated metadata commit skips duplicate PR CI; product changes
           must pass their normal CI before starting Release.
           BODY
@@ -189,6 +192,7 @@ jobs:
           fi
 
       - name: Validate and tag the merged release
+        id: tag
         env:
           RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
         run: |
@@ -200,16 +204,15 @@ jobs:
             git tag -a "$RELEASE_TAG" -m "werkWorker $RELEASE_TAG"
           fi
           git push origin "refs/tags/$RELEASE_TAG"
+          release_sha=$(git rev-parse HEAD)
+          echo "commit=$release_sha" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         env:
           RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
-          DRAFT: ${{ inputs.draft }}
         run: |
-          args=(--verify-tag --title "werkWorker $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md")
-          if [[ "$DRAFT" == "true" ]]; then
-            args+=(--draft)
-          fi
+          # A new release stays a draft until every native package is validated.
+          args=(--verify-tag --title "werkWorker $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft)
           if gh release view "$RELEASE_TAG" --json url --jq .url; then
             echo "Release already exists; keeping its assets, notes and publication state."
           else
@@ -221,6 +224,133 @@ jobs:
             gh release view "$RELEASE_TAG" --json url,isDraft \
               --jq '"Release: " + .url + " (draft: " + (.isDraft | tostring) + ")"'
             echo "Build from tag \`$RELEASE_TAG\`."
-            echo "Upload platform archives and their .sha256 files manually."
+            echo "Linux, macOS and Windows packages are built next, then uploaded together."
             echo "See docs/releases.md for the release checklist."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Package (${{ matrix.platform }})
+    needs: release
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Keep the Linux release compatible with Ubuntu 22.04's glibc.
+          - os: ubuntu-22.04
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            suffix: linux-x86_64.tar.gz
+          - os: macos-15
+            platform: macos
+            target: aarch64-apple-darwin
+            suffix: macos-aarch64.tar.gz
+          - os: windows-2022
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            suffix: windows-x86_64.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      RELEASE_SHA: ${{ needs.release.outputs.commit }}
+    steps:
+      - name: Check out the exact release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Verify the tagged build source
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+          python -c 'import os, tomllib; version = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]; assert os.environ["RELEASE_TAG"] == "v" + version, "Tag and package version differ"'
+      - name: Install native Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: MSVC x64 environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Test release tooling and installers
+        run: python -m unittest discover -s scripts/tests
+      - name: Test native platform integration
+        run: cargo test --locked --test platform
+      - name: Build Unix release archive
+        if: runner.os != 'Windows'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: ./scripts/package-release.sh "$PLATFORM"
+      - name: Build Windows release archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+      - name: Install and smoke the release archive
+        env:
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          python scripts/smoke-install.py "releases/werkWorker-$RELEASE_TAG-$SUFFIX"
+      - name: Retain the tested platform archive and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: werkWorker-release-${{ matrix.platform }}
+          path: |
+            releases/werkWorker-${{ needs.release.outputs.tag }}-${{ matrix.suffix }}
+            releases/werkWorker-${{ needs.release.outputs.tag }}-${{ matrix.suffix }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+          # Replacing an intermediate artifact on retry never replaces release assets.
+          overwrite: true
+
+  upload:
+    name: Upload release assets
+    needs: [release, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      RELEASE_SHA: ${{ needs.release.outputs.commit }}
+      DRAFT: ${{ inputs.draft }}
+    steps:
+      - name: Check out the release upload tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Download the three packages from this release run
+        uses: actions/download-artifact@v7
+        with:
+          pattern: werkWorker-release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Validate and upload all release assets
+        run: |
+          python scripts/upload-release-assets.py \
+            --repo "$GH_REPO" --tag "$RELEASE_TAG" --commit "$RELEASE_SHA" \
+            --directory release-assets --draft "$DRAFT"
+          {
+            echo "### werkWorker $RELEASE_TAG: all three platforms are available"
+            echo
+            gh release view "$RELEASE_TAG" --json url,isDraft \
+              --jq '"Release: " + .url + " (draft: " + (.isDraft | tostring) + ")"'
+            echo "Linux x86_64, macOS ARM64 and Windows x86_64 archives and SHA256 files verified."
           } >> "$GITHUB_STEP_SUMMARY"

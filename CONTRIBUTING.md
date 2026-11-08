@@ -57,5 +57,21 @@ on main after normal CI passes to prepare the next version, validate and merge
 its preparation PR, and create a tag and draft release. Release runs its own
 preparation tests, CLI build and reference validation. Only generated metadata
 uses `[skip ci]`; the workflow uses the built-in token without waiting for PR
-workflow approval. Build platform archives from the tag and attach them before
-publishing. See [build and release instructions](docs/releases.md).
+workflow approval.
+
+After preparation, the same Release workflow builds exactly three native
+packages from the emitted tag commit: Linux x86_64 on `ubuntu-22.04`, macOS
+Apple Silicon on `macos-15`, and Windows x86_64 on `windows-2022`. The jobs use
+the package scripts and run installer smoke tests. A final job waits for all
+three, then uploads their archives and SHA256 files. New releases always start
+as drafts; `draft=true` keeps the completed release as a draft, while
+`draft=false` publishes only after the six assets are ready. This extends
+werk1112's preparation pattern without adding a second dispatch or tag-triggered
+workflow. The ordinary three-job CI remains unchanged.
+
+Successful Release build artifacts are retained for 30 days so **Re-run failed
+jobs** can reuse them. Upload retries retain valid existing asset pairs, add
+missing files and stop on inconsistent assets instead of overwriting them.
+Version selection remains in `prepare-release.py`; no local version bump is
+needed to start Release. Optional manual builds and uploads remain documented
+in the [build and release instructions](docs/releases.md).

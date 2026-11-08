@@ -30,7 +30,12 @@ POLICY_QUERY = ('[.protection.required_status_checks.contexts[]?, '
 
 def step_script(name):
     step = WORKFLOW.split(f"      - name: {name}\n", 1)[1].split("\n      - name:", 1)[0]
-    return textwrap.dedent(step.split("        run: |\n", 1)[1])
+    lines = []
+    for line in step.split("        run: |\n", 1)[1].splitlines():
+        if line.strip() and not line.startswith("          "):
+            break
+        lines.append(line[10:])
+    return "\n".join(lines) + "\n"
 
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Linux/macOS shell steps")
@@ -209,7 +214,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.expect("git", "rev-parse", "HEAD", out=MERGED)
                 if matches:
                     self.expect("git", "push", "origin", f"refs/tags/{TAG}")
+                    self.expect("git", "rev-parse", "HEAD", out=MERGED)
                 self.run_step("Validate and tag the merged release", success=matches)
+                if matches:
+                    self.assertEqual(self.output.read_text(), f"commit={MERGED}\n")
 
     def test_metadata_validation_failure_prevents_new_tag(self):
         self.expect("python", "scripts/generate-cli-reference.py",
@@ -219,7 +227,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     str(self.root / "release-notes.md"), code=1)
         self.run_step("Validate and tag the merged release", success=False)
 
-    def test_new_release_is_a_draft_and_existing_release_is_preserved(self):
+    def test_new_release_waits_for_packages_even_when_publication_is_requested(self):
         for existing in (False, True):
             with self.subTest(existing=existing):
                 self.expect("gh", "release", "view", TAG, "--json", "url", "--jq", ".url", code=0 if existing else 1)
@@ -228,7 +236,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
                                 f"werkWorker {TAG}", "--notes-file", str(self.root / "release-notes.md"), "--draft")
                 self.expect("gh", "release", "view", TAG, "--json", "url,isDraft", "--jq",
                             '"Release: " + .url + " (draft: " + (.isDraft | tostring) + ")"')
-                self.run_step("Create GitHub release")
+                self.run_step("Create GitHub release", DRAFT="false")
+
+    def test_tag_push_failure_does_not_allow_downstream_builds(self):
+        self.expect("python", "scripts/generate-cli-reference.py",
+                    "target/cli-reference-neutral/debug/werk-worker", "--check")
+        self.expect("git", "show-ref", "--verify", "--quiet", f"refs/tags/{TAG}")
+        self.expect("git", "rev-parse", f"{TAG}^{{commit}}", out=MERGED)
+        self.expect("git", "rev-parse", "HEAD", out=MERGED)
+        self.expect("git", "push", "origin", f"refs/tags/{TAG}", code=1)
+        self.run_step("Validate and tag the merged release", success=False)
+        self.assertFalse(self.output.exists())
+
+    def test_wrong_checkout_or_moved_tag_stops_packaging(self):
+        for wrong in ("checkout", "tag"):
+            with self.subTest(wrong=wrong):
+                self.expect("git", "rev-parse", "HEAD", out="wrong" if wrong == "checkout" else HEAD)
+                if wrong == "tag":
+                    self.expect("git", "rev-parse", f"{TAG}^{{commit}}", out="wrong")
+                self.run_step("Verify the tagged build source", success=False)
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
@@ -246,6 +272,32 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn("python -m unittest discover -s scripts/tests -p 'test*release*.py'", WORKFLOW)
         self.assertIn("cargo +stable build --locked --bin werk-worker", WORKFLOW)
+
+    def test_release_artifacts_are_built_from_the_prepared_commit_before_upload(self):
+        build = WORKFLOW.split("\n  build:\n", 1)[1].split("\n  upload:\n", 1)[0]
+        upload = WORKFLOW.split("\n  upload:\n", 1)[1]
+        self.assertIn("commit: ${{ steps.tag.outputs.commit }}", WORKFLOW)
+        self.assertIn("    needs: release\n", build)
+        self.assertIn("    needs: [release, build]\n", upload)
+        self.assertNotIn("always()", upload)
+        for job in (build, upload):
+            self.assertIn("ref: ${{ needs.release.outputs.commit }}", job)
+            self.assertNotIn("github.sha", job)
+        self.assertEqual(build.count("          - os:"), 3)
+        for runner in ("ubuntu-22.04", "macos-15", "windows-2022"):
+            self.assertIn(f"          - os: {runner}\n", build)
+        self.assertIn('run: ./scripts/package-release.sh "$PLATFORM"', build)
+        self.assertIn("run: ./scripts/package-release.ps1", build)
+        self.assertIn('python scripts/smoke-install.py "releases/werkWorker-$RELEASE_TAG-$SUFFIX"', build)
+        self.assertIn("name: werkWorker-release-${{ matrix.platform }}", build)
+        self.assertIn("retention-days: 30", build)
+        self.assertIn("overwrite: true", build)
+        self.assertNotIn("run_attempt", build + upload)
+        self.assertIn("pattern: werkWorker-release-*", upload)
+        self.assertIn("merge-multiple: true", upload)
+        self.assertNotIn("run-id:", upload)
+        self.assertIn("python scripts/upload-release-assets.py", upload)
+        self.assertIn('--directory release-assets --draft "$DRAFT"', upload)
 
 
 if __name__ == "__main__":

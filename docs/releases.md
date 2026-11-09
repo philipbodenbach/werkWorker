@@ -44,6 +44,20 @@ and installed only in the Release workflow. Ordinary push/PR CI checks both
 debug commands on every platform without building release archives.
 The first run still needs to populate the caches.
 
+Only the ordinary CI job reduces dev/test debug information to line tables:
+file/line backtraces, debug assertions and overflow checks remain available.
+Local builds and release profiles keep their defaults. The profile variables
+are part of the Rust cache key, so changing them requires one cache rebuild.
+Linux runs the complete `--all-targets` Rust suite with pinned cargo-nextest,
+bounded to four test processes in the existing job. Ignored tests remain
+ignored, no automatic retries are enabled, and any failed test fails the job.
+Real browser tests run with at most two test threads. The eight terminal smoke
+scripts also run with at most two processes, with separate configuration/state
+directories and complete per-script logs. A failure or timeout fails the job;
+the runner still collects the remaining script results and cleans up child
+processes. Installed browser/sandbox runtimes are found through the inherited
+data directory.
+
 There is no PR-check polling, manual CI dispatch or separate bot-token secret.
 The flow does not depend on approving the generated PR's workflow. This requires
 the branch policy below: skipped PR CI cannot satisfy required status checks.

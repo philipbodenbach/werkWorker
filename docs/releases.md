@@ -83,6 +83,13 @@ existing valid archive/checksum pair, fill in missing files and stop on
 inconsistent existing assets. They do not use `--clobber` or replace existing
 files. A retry does not turn an already published release back into a draft.
 
+If the failure requires a workflow fix, start a new Release run from the updated
+default branch once its normal CI passes. **Re-run failed jobs** retains the
+original workflow revision; it does not pick up that fix. If the failed run
+already created a tag, the new fix is a subsequent commit and the next `patch`
+run prepares the next patch version. See
+[GitHub's rerun behavior](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+
 Version selection still belongs to `scripts/prepare-release.py` and the
 `bump` input. Do not edit Cargo versions or create a tag just to rebuild
 artifacts. For example, after the v0.3.0 release and subsequent changes,

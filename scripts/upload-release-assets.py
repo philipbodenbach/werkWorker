@@ -203,7 +203,8 @@ def upload_release(repo, tag, commit, directory, draft, client=None):
             elif name in existing:
                 # Repair a previous upload that stopped before its checksum.
                 checksum_path = temporary / checksum_name
-                checksum_path.write_text(f"{archive_hash}  {name}\n", encoding="ascii")
+                # Fixed bytes keep the checksum file identical on every host.
+                checksum_path.write_bytes(f"{archive_hash}  {name}\n".encode("ascii"))
                 uploads.append(checksum_path)
             else:
                 checksum_path = directory / checksum_name

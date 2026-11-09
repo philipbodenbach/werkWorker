@@ -1,5 +1,8 @@
 # Interactive connection setup
 
+Install `ww` with the [GitHub release installer or from source](../README.md#install-and-try)
+before starting the connection setup.
+
 Start `ww`, or `cargo run --bin ww --` from this checkout. The setup uses the
 same colors and banner as the chat. On first use, no API request is made until
 you choose **Discover models**. On subsequent starts, **Continue previous**

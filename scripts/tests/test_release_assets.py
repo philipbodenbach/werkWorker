@@ -228,6 +228,37 @@ class ReleaseAssetTests(unittest.TestCase):
         expected = f"{digest(self.client.files[name])}  {name}\n".encode()
         self.assertEqual(self.client.files[name + ".sha256"], expected)
 
+    def test_repaired_checksums_use_lf_even_with_windows_text_defaults(self):
+        for name in self.names:
+            self.client.files[name] = archive_bytes(windows=name.endswith(".zip"),
+                                                   marker=b"older valid build")
+        original_open = Path.open
+
+        def windows_text_open(path, mode="r", *args, **kwargs):
+            # Exercise Windows newline translation on Linux/macOS CI as well.
+            if "b" not in mode and any(flag in mode for flag in "wax"):
+                if kwargs.get("newline") is None:
+                    kwargs["newline"] = "\r\n"
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, "open", windows_text_open):
+            self.run_upload()
+        for name in self.names:
+            expected = f"{digest(self.client.files[name])}  {name}\n".encode("ascii")
+            self.assertEqual(self.client.files[name + ".sha256"], expected)
+            self.assertNotIn(("upload", name), self.client.calls)
+
+    def test_existing_crlf_checksums_are_preserved(self):
+        for name in self.names:
+            self.seed_pair(name)
+            self.client.files[name + ".sha256"] = (
+                f"{digest(self.client.files[name])}  {name}\r\n".encode("ascii")
+            )
+        before = dict(self.client.files)
+        self.run_upload()
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.client.files, before)
+
     def test_existing_checksum_without_archive_accepts_only_matching_local_bytes(self):
         name = self.names[0]
         self.client.files[name + ".sha256"] = (self.root / (name + ".sha256")).read_bytes()

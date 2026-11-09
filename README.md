@@ -7,8 +7,9 @@
 WerkWorker is a local, general-purpose Rust agent engine with its own harness.
 The default `ww` command opens an interactive terminal in the werk top palette.
 The package is `werk-worker`, the Rust import is `werk_worker`, and the binary is
-`werk-worker`, with `ww` as its short command. Both commands are installed by
-Cargo and expose the same CLI. It is licensed under [Elastic License 2.0](LICENSE).
+`werk-worker`, with `ww` as its short command. Both the release installers and
+Cargo install these two commands, which expose the same CLI. It is licensed
+under [Elastic License 2.0](LICENSE).
 
 The SDK runs an asynchronous model/tool loop with streamed events, explicit
 resource grants and approvals, SQLite sessions, cancellation, steering,
@@ -24,13 +25,42 @@ intelligence.
 
 ## Install and try
 
-Rust 1.88 or newer. Three native packages target Linux x86_64, Windows x86_64
-and macOS Apple Silicon; file/process isolation currently requires Linux.
-See [install scripts and release workflow](docs/releases.md). Build from this
-checkout (nothing is published by these commands):
+Install a prebuilt package from the [latest published GitHub release](https://github.com/philipbodenbach/werkWorker/releases/latest).
+The installers select the matching platform archive, verify its SHA256 checksum
+and install both `ww` and `werk-worker`. No Rust toolchain or repository checkout
+is needed. Supported packages target Linux x86_64, Windows x86_64 and macOS
+Apple Silicon; file/process isolation currently requires Linux.
+
+Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/philipbodenbach/werkWorker/main/scripts/install.sh -o /tmp/werkWorker-install.sh &&
+sh /tmp/werkWorker-install.sh
+```
+
+Windows PowerShell:
+
+```powershell
+$env:WERK_WORKER_ADD_TO_PATH = '1'
+irm https://raw.githubusercontent.com/philipbodenbach/werkWorker/main/scripts/install.ps1 | iex
+```
+
+On Linux/macOS, ensure `~/.local/bin` is on `PATH`. The Windows command adds the
+installation directory to your user `PATH`; open a new terminal afterward.
+The default download is the latest published release; drafts are not selected.
+That release must contain the platform archive and its `.sha256` file. See
+[installer options and the build/upload workflow](docs/releases.md#installers)
+for a specific version or a custom installation directory.
+
+Alternatively, build from this checkout with Rust 1.88 or newer:
 
 ```sh
 cargo install --path . --locked
+```
+
+Try the installed commands:
+
+```sh
 ww tui --demo "Hello"
 ww --help
 ww profiles list

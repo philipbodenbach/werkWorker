@@ -18,19 +18,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            platform: linux
             target: x86_64-unknown-linux-gnu
-            suffix: linux-x86_64.tar.gz
             check_name: linux-real-sandbox
           - os: macos-15
-            platform: macos
             target: aarch64-apple-darwin
-            suffix: macos-aarch64.tar.gz
             check_name: native (macos-14, macos, aarch64-apple-darwin, macos-aarch64.tar.gz)
           - os: windows-2022
-            platform: windows
             target: x86_64-pc-windows-msvc
-            suffix: windows-x86_64.zip
             check_name: native (windows-2022, windows, x86_64-pc-windows-msvc, windows-x86_64.zip)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
@@ -109,8 +103,8 @@ jobs:
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           mkdir -p /tmp/worker-package /tmp/worker-workspace
           tar -xzf target/package/werk-worker-$version.crate -C /tmp/worker-package
-          # Verify source installation with existing debug dependencies. The
-          # archive below still receives a full release build and installer test.
+          # Verify source installation with existing debug dependencies.
+          # Optimized archives and their installer smoke tests run in Release.
           cargo install --locked --debug --target-dir "$GITHUB_WORKSPACE/target" \
             --path /tmp/worker-package/werk-worker-$version --root /tmp/worker-install
           cd /tmp/worker-workspace
@@ -118,31 +112,3 @@ jobs:
           /tmp/worker-install/bin/werk-worker profiles inspect coding-basic
           /tmp/worker-install/bin/werk-worker skills inspect ticket-drafting
           /tmp/worker-install/bin/ww --store /tmp/worker-short.sqlite run --demo "short command smoke"
-      - name: Package Unix
-        if: runner.os != 'Windows'
-        env:
-          PLATFORM: ${{ matrix.platform }}
-        run: ./scripts/package-release.sh "$PLATFORM"
-      - name: Package Windows
-        if: runner.os == 'Windows'
-        run: ./scripts/package-release.ps1
-      - name: Install archive and smoke both commands
-        id: archive
-        shell: bash
-        env:
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
-          archive="releases/werkWorker-v$version-$SUFFIX"
-          python scripts/smoke-install.py "$archive"
-          echo "path=$archive" >> "$GITHUB_OUTPUT"
-      - name: Upload tested platform archive and checksum
-        uses: actions/upload-artifact@v7
-        with:
-          name: werkWorker-${{ matrix.platform }}
-          path: |
-            ${{ steps.archive.outputs.path }}
-            ${{ steps.archive.outputs.path }}.sha256
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7

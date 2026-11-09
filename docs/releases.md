@@ -35,6 +35,15 @@ starting Release. The full Linux sandbox/browser/TUI/SDK suite remains in
 normal CI. Release builds and smoke-tests the three native packages from its
 tagged commit after preparation succeeds.
 
+CI and release builds cache Cargo dependencies by Rust toolchain, dependency
+configuration, runner version and target platform. Linux CI's source-install
+check uses the debug profile and reuses the checkout's build directory, while
+still compiling the extracted crate and testing its installation outside the
+checkout. Package verification remains enabled. The release archive is built
+with the optimized release profile and receives a separate installer smoke test,
+so CI no longer performs a second optimized build just for source installation.
+The first run still needs to populate the caches.
+
 There is no PR-check polling, manual CI dispatch or separate bot-token secret.
 The flow does not depend on approving the generated PR's workflow. This requires
 the branch policy below: skipped PR CI cannot satisfy required status checks.

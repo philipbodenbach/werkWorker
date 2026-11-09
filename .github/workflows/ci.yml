@@ -48,6 +48,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: Cache Cargo dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate runner versions: Linux release builds use an older glibc.
+          shared-key: native-${{ matrix.os }}-${{ matrix.target }}
       - name: Test release tooling and installers
         run: python -m unittest discover -s scripts/tests
       - name: Test native platform integration
@@ -104,7 +109,10 @@ jobs:
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           mkdir -p /tmp/worker-package /tmp/worker-workspace
           tar -xzf target/package/werk-worker-$version.crate -C /tmp/worker-package
-          cargo install --locked --path /tmp/worker-package/werk-worker-$version --root /tmp/worker-install
+          # Verify source installation with existing debug dependencies. The
+          # archive below still receives a full release build and installer test.
+          cargo install --locked --debug --target-dir "$GITHUB_WORKSPACE/target" \
+            --path /tmp/worker-package/werk-worker-$version --root /tmp/worker-install
           cd /tmp/worker-workspace
           /tmp/worker-install/bin/werk-worker --store /tmp/worker-installed.sqlite run --demo "package smoke"
           /tmp/worker-install/bin/werk-worker profiles inspect coding-basic

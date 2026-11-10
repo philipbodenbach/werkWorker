@@ -1,6 +1,6 @@
 [package]
 name = "werk-worker"
-version = "0.3.2"
+version = "0.3.3"
 default-run = "werk-worker"
 edition = "2024"
 rust-version = "1.88"

@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import stat
 import subprocess
@@ -363,6 +364,47 @@ class ReleaseAssetTests(unittest.TestCase):
 
 
 class GitHubClientTests(unittest.TestCase):
+    def test_resolves_draft_and_published_releases_by_id(self):
+        client = assets.GitHub(REPO)
+        for draft in (True, False):
+            with self.subTest(draft=draft):
+                release = dict(id=12, tag_name=TAG, draft=draft)
+
+                def github(command, **kwargs):
+                    if command == ["gh", "release", "view", TAG, "--repo", REPO,
+                                   "--json", "apiUrl"]:
+                        reply = dict(apiUrl=f"https://api.github.com/repos/{REPO}/releases/12")
+                    elif command == ["gh", "api", f"repos/{REPO}/releases/12"]:
+                        reply = release
+                    elif command == ["gh", "api", f"repos/{REPO}/releases/tags/{TAG}"]:
+                        if draft:
+                            raise subprocess.CalledProcessError(
+                                1, command, stderr="gh: Not Found (HTTP 404)\n")
+                        reply = release
+                    else:
+                        self.fail(f"Unexpected GitHub command: {command}")
+                    return subprocess.CompletedProcess(command, 0, json.dumps(reply), "")
+
+                with patch.object(assets.subprocess, "run", side_effect=github):
+                    self.assertEqual(client.release(TAG), release)
+
+    def test_release_tag_mismatch_is_rejected(self):
+        client = assets.GitHub(REPO)
+        replies = [dict(apiUrl=f"https://api.github.com/repos/{REPO}/releases/12"),
+                   dict(id=12, tag_name="v9.9.9", draft=True)]
+        with patch.object(assets.subprocess, "run", side_effect=[
+                subprocess.CompletedProcess([], 0, json.dumps(reply), "") for reply in replies]):
+            with self.assertRaisesRegex(ValueError, "Release tag does not match"):
+                client.release(TAG)
+
+    def test_failed_release_lookup_stops_before_fetching_assets(self):
+        client = assets.GitHub(REPO)
+        error = subprocess.CalledProcessError(1, ["gh"], stderr="release not found\n")
+        with patch.object(assets.subprocess, "run", side_effect=error) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                client.release(TAG)
+            self.assertEqual(run.call_count, 1)
+
     def test_resolves_annotated_and_lightweight_tags(self):
         client = assets.GitHub(REPO)
         for replies in ([{"object": {"type": "commit", "sha": COMMIT}}],
@@ -393,6 +435,25 @@ class GitHubClientTests(unittest.TestCase):
         with patch.object(client, "api", side_effect=[[dict(name=str(i)) for i in range(100)], [dict(name="last")]]) as api:
             self.assertEqual(len(client.assets(12)), 101)
             self.assertEqual(api.call_args.args[0], "releases/12/assets?per_page=100&page=2")
+
+
+class CommandLineTests(unittest.TestCase):
+    def test_github_failure_reports_captured_diagnostics_and_exits_unsuccessfully(self):
+        command = ["gh", "api", f"repos/{REPO}/releases/12"]
+        argv = ["upload-release-assets.py", "--repo", REPO, "--tag", TAG,
+                "--commit", COMMIT, "--directory", "unused", "--draft", "false"]
+        for diagnostic in ("gh: Not Found (HTTP 404)\n",
+                           "gh: Resource not accessible by integration (HTTP 403)\n", None):
+            with self.subTest(diagnostic=diagnostic):
+                error = subprocess.CalledProcessError(1, command, stderr=diagnostic)
+                output = io.StringIO()
+                with patch.object(assets.sys, "argv", argv), \
+                        patch.object(assets.sys, "stderr", output), \
+                        patch.object(assets, "upload_release", side_effect=error):
+                    self.assertEqual(assets.main(), 1)
+                self.assertIn("Release asset upload failed:", output.getvalue())
+                if diagnostic:
+                    self.assertIn(diagnostic, output.getvalue())
 
 
 if __name__ == "__main__":

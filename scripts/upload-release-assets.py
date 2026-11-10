@@ -102,7 +102,13 @@ class GitHub:
         return obj["sha"]
 
     def release(self, tag):
-        release = self.api(f"releases/tags/{tag}")
+        # The REST tag endpoint only finds published releases. Let gh resolve
+        # drafts too, then fetch by database ID to keep the same REST fields.
+        result = subprocess.run(["gh", "release", "view", tag, "--repo", self.repo,
+                                 "--json", "apiUrl"],
+                                check=True, capture_output=True, text=True)
+        release_id = json.loads(result.stdout)["apiUrl"].rsplit("/", 1)[-1]
+        release = self.api(f"releases/{release_id}")
         if release["tag_name"] != tag:
             raise ValueError("Release tag does not match the requested version")
         return release
@@ -251,6 +257,8 @@ def main():
     except (ValueError, OSError, EOFError, subprocess.CalledProcessError, tarfile.TarError,
             zipfile.BadZipFile, UnicodeError) as error:
         print(f"Release asset upload failed: {error}", file=sys.stderr)
+        if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+            print(error.stderr.rstrip(), file=sys.stderr)
         return 1
     return 0
 

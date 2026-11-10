@@ -95,15 +95,22 @@ watch notifications only to wake up. Slow/paused/dropped subscribers are not
 execution dependencies. The JSONL host additionally bounds its output queue
 and emits `resync_required` when a subscription cannot keep up.
 
-For werkCoder/werkStation: own the trusted host configuration, render prepared
-approval details, store the last session cursor, reconnect with `open_session`,
-then answer existing request IDs. A session ID is an identifier, not an
+Host applications, including the planned werkStation wrapper suite, own the
+trusted host configuration, render prepared approval details, store the last
+session cursor, reconnect with `open_session`, then answer existing request IDs.
+A session ID is an identifier, not an
 authentication credential. A future remote transport must add authorization
 outside this local stdio protocol. Do not turn model text or process stdout
 into host commands.
 
+Rust hosts depend on the `werk-worker` package and import `werk_worker`.
 Library-only consumers can set `default-features = false` to omit the optional
-ratatui/crossterm client dependencies. Default installs include both CLI commands.
+ratatui/crossterm client dependencies, as the
+[separate consumer crate](../examples/sdk-consumer/Cargo.toml) demonstrates.
+Default installs include both CLI commands. Hosts that use a separate process
+can use `ww rpc` and the [JSONL protocol](protocol.md). The planned werkStation
+suite will compose this agent component with werk1112; see
+[component boundaries](architecture.md#components-and-planned-werkstation-integration).
 
 For image input, construct `attachments::ImageAttachment::from_bytes(&png_or_jpeg)`
 and use `session.submit_with_images`, `session.follow_up_with_images` or

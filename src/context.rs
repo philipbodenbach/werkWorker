@@ -527,6 +527,11 @@ impl DefaultContextBuilder {
             prompt.push_str(
                 "File paths: relative or /workspace/... name the same confined workspace.\n",
             );
+            #[cfg(any(target_os = "macos", windows))]
+            prompt.push_str(&format!(
+                "Native process platform: {}. Workspace root (path data): {}. /workspace is a file-tool alias, not a native process mount. Process argv/scripts/stdin are passed literally. Use CWD-relative files and available native executable paths. The native process mode denies child creation; multiprocess builds and browser isolation are unavailable. Read temporary paths from TMPDIR (macOS) or TEMP (Windows); Windows private profile data can persist between calls.\n",
+                std::env::consts::OS, serde_json::to_string(&session.workspace)?,
+            ));
             prompt.push_str(&format!(
             "Remaining: {} steps, {} tool calls, including implementation, repeated checks and final report.\n",
             if run.limits.continuous { "unlimited".into() } else { run.limits.max_steps.saturating_sub(run.metrics.steps).to_string() },

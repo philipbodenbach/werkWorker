@@ -169,6 +169,10 @@ impl HostPolicy {
         if self.remembered_grants.iter().any(|g| {
             g.tool == def.name
                 && g.version == def.version
+                // Legacy process grants had no argument scope. They must not
+                // authorize another backend or an unbound prepared invocation.
+                && (!matches!(def.name.as_str(), "process.run" | "process.start")
+                    || (g.arguments_hash.is_some() && args["sandbox"]["contract_version"] == 2))
                 && g.expires_at_ms.is_none_or(|t| t > now_ms())
                 && g.arguments_hash
                     .as_ref()

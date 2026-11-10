@@ -600,7 +600,7 @@ async fn real_browser_preserves_state_controls_tabs_and_enforces_scope() {
     }
     let dir = tempfile::tempdir().unwrap();
     let ctx = context(dir.path()).await;
-    if let Err(e) = ctx.sandbox.doctor().await {
+    if let Err(e) = ctx.sandbox.require_process_backend().await {
         assert_ne!(
             std::env::var("REQUIRE_BROWSER").as_deref(),
             Ok("1"),

@@ -61,6 +61,12 @@ struct Cli {
     /// Bubblewrap executable; defaults to the system or per-user installation.
     #[arg(long)]
     bubblewrap: Option<PathBuf>,
+    /// Trusted native sandbox configuration JSON; never read from the workspace.
+    #[arg(long)]
+    native_sandbox_config: Option<PathBuf>,
+    /// Trusted process resource limits JSON, separate from agent run budgets.
+    #[arg(long)]
+    process_limits: Option<PathBuf>,
     /// Explicit Werk transport/model configuration JSON; no credentials inside.
     #[arg(long)]
     werk_config: Option<PathBuf>,
@@ -165,6 +171,14 @@ enum InspectCommand {
 #[derive(Clone, Subcommand)]
 enum DoctorCommand {
     Doctor,
+    /// Create a NEW dedicated Windows AppContainer workspace (never adopt an existing directory).
+    CreateWorkspace {
+        path: PathBuf,
+    },
+    /// Remove dedicated Windows AppContainer profile storage after all workspace engines have closed.
+    RemoveWorkspaceProfiles {
+        path: PathBuf,
+    },
 }
 #[tokio::main]
 async fn main() {
@@ -269,10 +283,50 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         bubblewrap: cli
             .bubblewrap
             .unwrap_or_else(|| Sandbox::default().bubblewrap),
-        ..Default::default()
+        native: if let Some(path) = &cli.native_sandbox_config {
+            let metadata = tokio::fs::metadata(path).await?;
+            if !metadata.is_file() || metadata.len() > 16_384 {
+                return Err(WorkerError::new(
+                    "invalid_sandbox_config",
+                    "Native sandbox configuration must be a bounded JSON file",
+                ));
+            }
+            serde_json::from_slice(&tokio::fs::read(path).await?)?
+        } else {
+            Default::default()
+        },
+        limits: if let Some(path) = &cli.process_limits {
+            let metadata = tokio::fs::metadata(path).await?;
+            if !metadata.is_file() || metadata.len() > 16_384 {
+                return Err(WorkerError::new(
+                    "invalid_limits",
+                    "Process limits must be a bounded JSON file",
+                ));
+            }
+            serde_json::from_slice(&tokio::fs::read(path).await?)?
+        } else {
+            Default::default()
+        },
     };
-    if matches!(&command, Command::Sandbox { .. }) {
-        println!("{}", sandbox.doctor().await?);
+    if let Command::Sandbox { action } = &command {
+        match action {
+            DoctorCommand::Doctor => println!("{}", sandbox.doctor().await?),
+            DoctorCommand::CreateWorkspace { path } => {
+                let workspace = sandbox.create_native_workspace(path).await?;
+                println!(
+                    "{}",
+                    serde_json::json!({"workspace":workspace.path,"identity":workspace.identity,"prepared":true})
+                );
+            }
+            DoctorCommand::RemoveWorkspaceProfiles { path } => {
+                let workspace = werk_worker::runtime::Workspace::open(path).await?;
+                sandbox.remove_native_workspace_profiles(&workspace)?;
+                println!(
+                    "{}",
+                    serde_json::json!({"workspace":workspace.path,"profiles_removed":true})
+                );
+            }
+        }
         return Ok(false);
     }
     let execution = if let Some(path) = &cli.execution_config {
@@ -285,6 +339,11 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     let mut setup_profile = None;
     let mut reuse_project_access = true;
     let explicit_policy = cli.grants.is_some();
+    let host_workspace = if matches!(&command, Command::Tui { .. } | Command::Run { .. }) {
+        Some(runtime::Workspace::open(&cli.workspace).await?)
+    } else {
+        None
+    };
     let mut setup_access = if matches!(&command, Command::Tui { .. }) {
         project::Access::Ask
     } else {
@@ -452,6 +511,10 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                     },
                     cli_start::SessionChoice::New => {
                         // Reload defaults after /sessions as well as after restart.
+                        let selected_workspace = host_workspace
+                            .as_ref()
+                            .expect("TUI workspace allocated")
+                            .clone();
                         let project = project::Project::load(&cli.workspace).await?;
                         let mut next_profile = if first_new_session {
                             profile.clone()
@@ -466,7 +529,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                         };
                         let next_policy =
                             if !explicit_policy && (!first_new_session || reuse_project_access) {
-                                cli_config::load_policy(&cli.workspace)
+                                cli_config::load_policy(&selected_workspace)
                                     .await?
                                     .unwrap_or_else(|| policy.clone())
                             } else {
@@ -482,12 +545,14 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                                     engine.skills().into_iter().map(|s| s.name).collect();
                             }
                         }
+                        let metadata =
+                            cli_config::session_metadata(&project, &selected_workspace).await?;
                         engine
-                            .create_session(
+                            .create_session_in_workspace(
                                 next_profile,
-                                &cli.workspace,
+                                selected_workspace,
                                 next_policy,
-                                cli_config::session_metadata(&project, &cli.workspace).await?,
+                                metadata,
                             )
                             .await?
                     }
@@ -585,8 +650,13 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                 .await
         }
         Command::Run { input, profile, .. } => {
+            let selected_workspace = host_workspace
+                .as_ref()
+                .expect("Run workspace allocated")
+                .clone();
+            let metadata = cli_config::session_metadata(&project, &selected_workspace).await?;
             let session = engine
-                .create_session(
+                .create_session_in_workspace(
                     project
                         .scoped_profile(
                             if profile == "general-readonly" {
@@ -598,9 +668,9 @@ async fn execute_once(cli: Cli) -> Result<bool> {
                             cli_setup::settings_path()?.parent().expect("config parent"),
                         )
                         .await?,
-                    &cli.workspace,
+                    selected_workspace,
                     policy,
-                    cli_config::session_metadata(&project, &cli.workspace).await?,
+                    metadata,
                 )
                 .await?;
             let run = session

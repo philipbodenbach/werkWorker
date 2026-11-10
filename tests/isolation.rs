@@ -230,8 +230,9 @@ async fn real_sandbox_host_sentinel_network_limits_and_descendant_cleanup() {
             cpu_seconds: 2,
             ..Default::default()
         },
+        ..Default::default()
     };
-    if let Err(error) = sandbox.doctor().await {
+    if let Err(error) = sandbox.require_process_backend().await {
         if std::env::var_os("REQUIRE_SANDBOX").is_some() {
             panic!("Required real sandbox unavailable: {error}");
         }

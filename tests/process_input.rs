@@ -6,7 +6,7 @@ use werk_worker::{policy::*, profiles::AgentProfile, providers::*, runtime::*, *
 
 async fn sandbox() -> Option<Sandbox> {
     let sandbox = Sandbox::default();
-    if let Err(error) = sandbox.doctor().await {
+    if let Err(error) = sandbox.require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         eprintln!("SKIP real stdin isolation: {error}");
         return None;

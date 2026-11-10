@@ -249,26 +249,18 @@ pub struct Project {
     pub config_hash: Option<String>,
 }
 
-/// Root-pinned no-symlink reads on Linux; conservative rejection on platforms
-/// without the secure workspace reader when a project file actually exists.
+/// Optional reads through the native pinned workspace boundary. Missing
+/// metadata is optional; unsafe aliases and unavailable backends are errors.
 async fn optional(workspace: &Workspace, relative: &str, max: usize) -> Result<Option<Vec<u8>>> {
-    crate::policy::relative_path(relative)?;
-    let mut check = workspace.path.clone();
-    for component in Path::new(relative).components() {
-        check.push(component);
-        match tokio::fs::symlink_metadata(&check).await {
-            Ok(m) if m.file_type().is_symlink() => {
-                return Err(WorkerError::new(
-                    "project_path",
-                    "Symlinked project metadata is not allowed",
-                ));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        }
+    match workspace.read(relative, max).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.code == "not_found" => Ok(None),
+        Err(error) if error.code == "path_denied" => Err(WorkerError::new(
+            "project_path",
+            "Unsafe or linked project metadata is not allowed",
+        )),
+        Err(error) => Err(error),
     }
-    workspace.read(relative, max).await.map(Some)
 }
 fn profile_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -390,14 +382,20 @@ impl Project {
     }
     /// Called only after the user selects Project as the TUI save destination.
     pub async fn save(&self, root: &Path, config: &ProjectConfig) -> Result<()> {
+        self.save_in_workspace(&Workspace::open(root).await?, config)
+            .await
+    }
+    /// Save through an already allocated workspace so a path replacement cannot
+    /// redirect host-authorized configuration changes to a different project.
+    pub async fn save_in_workspace(
+        &self,
+        workspace: &Workspace,
+        config: &ProjectConfig,
+    ) -> Result<()> {
+        workspace.revalidate().await?;
         let bytes = serde_json::to_vec_pretty(config)?;
         ProjectConfig::parse(&bytes)?;
-        let workspace = Workspace::open(root).await?;
-        match tokio::fs::create_dir(workspace.path.join(".werkworker")).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
+        workspace.create_directory(".werkworker").await?;
         workspace
             .write(CONFIG, bytes, self.config_hash.clone())
             .await
@@ -407,22 +405,24 @@ impl Project {
             .into_iter()
             .map(str::to_owned)
             .collect();
-        for dir in [global.join("profiles"), root.join(".werkworker/profiles")] {
-            let mut entries = match tokio::fs::read_dir(dir).await {
+        for (base, relative) in [(global, "profiles"), (root, ".werkworker/profiles")] {
+            if !tokio::fs::try_exists(base).await? {
+                continue;
+            }
+            let workspace = Workspace::open(base).await?;
+            let entries = match workspace.list(relative, 128).await {
                 Ok(entries) => entries,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            let mut count = 0;
-            while let Some(entry) = entries.next_entry().await? {
-                count += 1;
-                if count > 128 {
+                Err(error) if error.code == "not_found" => continue,
+                Err(error) if error.code == "listing_limit" => {
                     return Err(WorkerError::new(
                         "profile_limit",
                         "At most 128 entries per profile directory",
                     ));
                 }
-                let path = entry.path();
+                Err(error) => return Err(error),
+            };
+            for entry in entries {
+                let path = Path::new(&entry);
                 if path.extension().is_some_and(|v| v == "toml")
                     && let Some(name) = path.file_stem().and_then(|v| v.to_str())
                 {

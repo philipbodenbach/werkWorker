@@ -22,10 +22,17 @@ representation favors auditability over high-volume database efficiency.
 SQLite work uses blocking-pool threads. Event clients replay by cursor and wait
 on bounded watch notifications, so subscribers cannot stall execution.
 
-Linux bubblewrap is the process boundary: separate namespaces, read-only OS
-tools, explicit workspace, empty environment and no network. File access uses
-descriptor-relative Linux openat2 with no symlinks or mount crossings. There is
-no host-shell fallback. HTTP and authenticated connectors are trusted brokers.
+`runtime::Workspace` and `Sandbox` remain the common facades. Native modules
+implement pinned file access and process isolation, while tools, approvals,
+`JobManager`, live output, cancellation and workspace leases stay shared.
+Linux retains Bubblewrap namespaces and `openat2`; macOS adds descriptor-relative
+files and an explicitly selected Seatbelt single-process mode; Windows adds
+handle-relative NTFS files and LPAC/Job Objects in dedicated workspaces.
+Object identities bind leases and saved permissions. Prepared process calls
+bind the backend contract and recheck it before launch. Browser isolation is
+a separate Linux capability. There is no host-shell fallback. See
+[native contracts and limitations](cross-platform-sandbox.md).
+HTTP and authenticated connectors are trusted brokers.
 JSON Schema validation is delegated to jsonschema; rusqlite bundles SQLite for
 installation portability. No inference or reference-agent runtime is linked.
 The optional `tui` feature supplies the ratatui/crossterm CLI client; library-only

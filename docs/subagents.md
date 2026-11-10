@@ -256,8 +256,10 @@ Git transactions. Separate Worker engines and external editors are outside the
 lease manager. No automatic worktrees, merges, per-file locks or rollback are
 implemented. Parallel inference does not make writes in a shared workspace
 parallel. A host can allocate disjoint workspaces to independent SDK sessions.
-Linux file/process isolation requirements remain unchanged; native macOS and
-Windows packaging does not imply a native execution sandbox.
+Linux retains its descriptor and namespace isolation. Native macOS and Windows
+use the same lease/job engine with distinct backend contracts and remaining
+limitations; see [native capabilities and validation](cross-platform-sandbox.md).
+Package availability alone is not evidence of sandbox conformance.
 
 ## Persistence, recovery and host control
 

@@ -62,7 +62,7 @@ async fn engine(turns: Vec<ScriptedTurn>, dir: &std::path::Path) -> (WorkerEngin
     (engine, session)
 }
 async fn sandbox() -> bool {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         eprintln!("SKIP real sandbox: {error}");
         return false;

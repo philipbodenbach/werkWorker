@@ -140,6 +140,7 @@ impl BrowserView {
             port,
         })
     }
+    #[cfg(target_os = "linux")]
     pub async fn stopped(&self, reason: &str) {
         let mut frame = self.frame.lock().await;
         frame.metadata["stopped"] = json!(reason);

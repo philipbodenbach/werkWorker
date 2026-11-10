@@ -65,11 +65,17 @@ See [protocol-informed sections](repair-state.md#protocol-informed-sections-and-
 for request-local size guidance and pagination. File operations
 do not implement a multi-file transaction. Tools run serially in this release.
 
-Process `cwd` accepts workspace-relative paths and the fixed `/workspace` sandbox
-mount, normalized before approval. Other absolute paths and traversal remain
-denied. `/workspace` persists between calls; each call gets a fresh `/tmp`.
+Process `cwd` accepts workspace-relative paths and the logical `/workspace`
+alias, normalized before approval. Other absolute paths and traversal remain
+denied. Linux mounts the workspace at `/workspace` and provides fresh `/tmp`.
+Native processes see real workspace paths; arbitrary argv, scripts and stdin
+are never rewritten. Use CWD-relative file paths and an available native
+executable. macOS uses a private per-call temporary directory; Windows uses
+profile-private temporary storage shared by that workspace/mode until profile removal.
+The current native modes deny child creation and do not support multiprocess
+builds. See [native contracts](cross-platform-sandbox.md).
 
-`process.start` can mount the workspace read-only (`read_only:true`), allowing
+`process.start` can expose the workspace read-only (`read_only:true`), allowing
 other readers while it runs. Writers still wait for that lease. An owned running
 job that blocks access produces `workspace_busy` with its job ID rather than
 silently stalling the agent. `process.log` exposes live stdout/stderr with bounded

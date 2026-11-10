@@ -1,6 +1,6 @@
 //! Interactive session configuration and explicitly saved workspace defaults.
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use werk_worker::{
     parallel::DelegationLevel,
     policy::{HostPolicy, PolicyDecision, ToolPermission},
@@ -17,31 +17,41 @@ struct SavedPolicy {
     delegation_level: Option<DelegationLevel>,
 }
 
-async fn policy_path(workspace: &Path) -> Result<PathBuf> {
-    let root = tokio::fs::canonicalize(workspace).await?;
+fn policy_path(workspace: &runtime::Workspace) -> Result<PathBuf> {
     Ok(crate::cli_setup::settings_path()?
         .parent()
         .expect("config parent")
         .join("workspace-access")
-        .join(format!("{}.json", fingerprint(&root))))
+        // v2 keys refer to the directory object, not its spelling. Legacy
+        // path-keyed grants are not transferred to a replacement directory.
+        .join(format!("v2-{}.json", fingerprint(&workspace.identity))))
 }
 
-async fn load_saved(workspace: &Path) -> Result<Option<SavedPolicy>> {
-    let bytes = match crate::cli_setup::read_settings(&policy_path(workspace).await?).await {
+async fn load_saved(workspace: &runtime::Workspace) -> Result<Option<SavedPolicy>> {
+    workspace.revalidate().await?;
+    if !workspace.supports_persistent_identity() {
+        // No durable incarnation: never import old approvals into a new live
+        // allocation. Fresh sessions continue with explicitly selected policy.
+        return Ok(None);
+    }
+    let bytes = match crate::cli_setup::read_settings(&policy_path(workspace)?).await {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let saved: SavedPolicy = serde_json::from_slice(&bytes)?;
-    let current = runtime::Workspace::open(workspace).await?;
-    Ok((saved.workspace_identity == current.identity).then_some(saved))
+    workspace.revalidate().await?;
+    Ok((saved.workspace_identity == workspace.identity).then_some(saved))
 }
 
-pub async fn load_policy(workspace: &Path) -> Result<Option<HostPolicy>> {
+pub async fn load_policy(workspace: &runtime::Workspace) -> Result<Option<HostPolicy>> {
     Ok(load_saved(workspace).await?.map(|saved| saved.policy))
 }
 
-pub async fn session_metadata(project: &Project, workspace: &Path) -> Result<serde_json::Value> {
+pub async fn session_metadata(
+    project: &Project,
+    workspace: &runtime::Workspace,
+) -> Result<serde_json::Value> {
     let mut metadata = project.scoped_metadata();
     if let Some(level) = load_saved(workspace)
         .await?
@@ -52,7 +62,7 @@ pub async fn session_metadata(project: &Project, workspace: &Path) -> Result<ser
     Ok(metadata)
 }
 
-pub async fn save_policy(workspace: &Path, policy: HostPolicy) -> Result<()> {
+pub async fn save_policy(workspace: &runtime::Workspace, policy: HostPolicy) -> Result<()> {
     let preference = load_saved(workspace)
         .await?
         .and_then(|s| s.delegation_level);
@@ -60,15 +70,16 @@ pub async fn save_policy(workspace: &Path, policy: HostPolicy) -> Result<()> {
 }
 
 async fn save_preferences(
-    workspace: &Path,
+    workspace: &runtime::Workspace,
     policy: HostPolicy,
     delegation_level: Option<DelegationLevel>,
 ) -> Result<()> {
-    let current = runtime::Workspace::open(workspace).await?;
+    workspace.require_persistent_identity()?;
+    workspace.revalidate().await?;
     crate::cli_setup::save(
-        &policy_path(workspace).await?,
+        &policy_path(workspace)?,
         &SavedPolicy {
-            workspace_identity: current.identity,
+            workspace_identity: workspace.identity.clone(),
             policy,
             delegation_level,
         },
@@ -78,13 +89,25 @@ async fn save_preferences(
 
 pub async fn save_defaults(session: &SessionHandle) -> Result<()> {
     let data = session.snapshot().await?;
+    let workspace = session_workspace(&data).await?;
     let project = Project::load(&data.workspace).await?;
     let mut config = project.config.clone();
     config.profile = Some(data.profile.name);
     config.tools = Some(data.profile.tools);
     config.skills = Some(data.profile.skills);
-    project.save(&data.workspace, &config).await?;
-    save_policy(&data.workspace, data.policy).await
+    project.save_in_workspace(&workspace, &config).await?;
+    save_policy(&workspace, data.policy).await
+}
+
+async fn session_workspace(data: &SessionData) -> Result<runtime::Workspace> {
+    let workspace = runtime::Workspace::open(&data.workspace).await?;
+    if workspace.identity != data.workspace_identity {
+        return Err(WorkerError::new(
+            "workspace_conflict",
+            "Session workspace was replaced; permissions cannot be transferred",
+        ));
+    }
+    Ok(workspace)
 }
 
 pub async fn browser_command(session: &SessionHandle, command: &str) -> Result<String> {
@@ -255,7 +278,7 @@ pub struct Editor {
     tools: Vec<ToolDefinition>,
     skills: Vec<skills::Skill>,
     project: Project,
-    workspace: PathBuf,
+    workspace: runtime::Workspace,
     saved_draft: String,
     saved_access: String,
 }
@@ -263,6 +286,7 @@ pub struct Editor {
 impl Editor {
     pub async fn open(session: &SessionHandle) -> Result<Self> {
         let data = session.snapshot().await?;
+        let workspace = session_workspace(&data).await?;
         let project = Project::load(&data.workspace).await?;
         let global = crate::cli_setup::settings_path()?
             .parent()
@@ -303,6 +327,7 @@ impl Editor {
         let project_delegation_level = DelegationLevel::project_override(&data.metadata)?;
         let saved_access = fingerprint(&(&data.profile, &data.policy));
         let saved_draft = fingerprint(&(&data.profile, &data.policy, delegation_level));
+        workspace.revalidate().await?;
         Ok(Self {
             profile: data.profile,
             policy: data.policy,
@@ -325,7 +350,7 @@ impl Editor {
             tools: session.available_tools(),
             skills: session.available_skills(),
             project,
-            workspace: data.workspace,
+            workspace,
             saved_draft,
             saved_access,
         })
@@ -642,6 +667,13 @@ impl Editor {
     }
 
     pub async fn apply(&mut self, session: &SessionHandle) -> Result<()> {
+        self.workspace.revalidate().await?;
+        if session.snapshot().await?.workspace_identity != self.workspace.identity {
+            return Err(WorkerError::new(
+                "workspace_conflict",
+                "Editor belongs to a different workspace",
+            ));
+        }
         // Strategy changes do not reconfigure permissions or require stopping
         // the current run. Profile/access edits keep their existing guards.
         if fingerprint(&(&self.profile, &self.policy)) != self.saved_access {
@@ -662,8 +694,10 @@ impl Editor {
                 config.profile = Some(self.profile.name.clone());
                 config.tools = Some(self.profile.tools.clone());
                 config.skills = Some(self.profile.skills.clone());
-                self.project.save(&self.workspace, &config).await?;
-                self.project = Project::load(&self.workspace).await?;
+                self.project
+                    .save_in_workspace(&self.workspace, &config)
+                    .await?;
+                self.project = Project::load(&self.workspace.path).await?;
                 save_preferences(
                     &self.workspace,
                     session.snapshot().await?.policy,
@@ -707,11 +741,55 @@ fn toggle(items: &mut Vec<String>, name: &str) {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
     use werk_worker::providers::{ScriptedProvider, ScriptedTurn};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replaced_workspace_cannot_inherit_session_defaults_or_editor_rights() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let engine = WorkerEngine::builder(Arc::new(ScriptedProvider::default()))
+            .build()
+            .await
+            .unwrap();
+        let session = engine
+            .create_session(
+                AgentProfile::bundled("coding-basic").unwrap(),
+                &path,
+                HostPolicy {
+                    workspace_writable: true,
+                    ..Default::default()
+                },
+                serde_json::Value::Null,
+            )
+            .await
+            .unwrap();
+        let mut editor = Editor::open(&session).await.unwrap();
+        let old_key = policy_path(&editor.workspace).unwrap();
+        std::fs::rename(&path, directory.path().join("original")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let replacement = runtime::Workspace::open(&path).await.unwrap();
+        assert_ne!(old_key, policy_path(&replacement).unwrap());
+        assert_eq!(
+            save_defaults(&session).await.unwrap_err().code,
+            "workspace_conflict"
+        );
+        assert_eq!(
+            Editor::open(&session).await.err().unwrap().code,
+            "workspace_conflict"
+        );
+        assert_eq!(
+            editor.apply(&session).await.unwrap_err().code,
+            "workspace_conflict"
+        );
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+        engine.close().await.unwrap();
+    }
 
     #[tokio::test]
     async fn profile_switch_keeps_saved_project_rules_for_scoped_and_legacy_sessions() {

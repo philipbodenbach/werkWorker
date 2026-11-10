@@ -18,11 +18,11 @@ the chat. A text selection in the settings details does not consume the save
 shortcut. Esc warns about unsaved edits; a second Esc discards them. Selecting
 a profile retains tools explicitly enabled through permission rules.
 
-Remembered approvals cover the named file or sandboxed process tool within the
-workspace, bound to its version. For example, remembering `process.run` permits
-later commands without another prompt, but does not permit `process.start`.
-Other actions retain exact prepared-argument scopes. Existing exact-action
-grants stay exact until a new workspace-scoped approval is explicitly chosen.
+Remembered file approvals cover the named file tool within the workspace, bound
+to its version. Process approvals cover the exact prepared arguments, including
+argv, stdin and the sandbox contract; different commands require another
+approval. `process.run` never grants `process.start`. Legacy unscoped process
+grants are ignored. Other actions retain exact prepared-argument scopes.
 A project approval is saved in
 the host's `workspace-access` configuration and reloaded for new project chats.
 Hard denials, invalid paths and read-only workers still take precedence.
@@ -246,11 +246,11 @@ instruction text in that limit. Separate snapshots retain the 32 KiB total
 instruction limit above, and the actual combined request must pass admission.
 
 Global connection setup is available on all packaged platforms. Project metadata
-uses the secure workspace reader/writer: currently Linux `openat2` is required
-when such files exist. macOS/Windows fail closed for this feature, like the
-existing native file/process tools; they do not fall back to insecure reads.
-Use Linux/WSL2 for the full project workflow until native filesystem isolation is
-implemented. See [the platform matrix](security.md).
+uses the secure workspace reader/writer: Linux `openat2`, descriptor-relative
+macOS access on local APFS/HFS+, or handle-relative Windows access on local
+NTFS. Nonempty projects and profile discovery use the same pinned directory
+as file tools, independently of process-backend availability. Unsupported
+filesystem semantics fail closed. See [the platform matrix](security.md).
 
 ## Validation
 

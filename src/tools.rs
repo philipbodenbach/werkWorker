@@ -274,7 +274,7 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed literal argv, no implicit shell or network. For scripts use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. /workspace persists; /tmp is fresh per call.",
+                "Sandboxed literal argv, no implicit shell or network. When the interpreter is available, use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. Workspace files persist. Linux exposes /workspace and a fresh /tmp; native platforms use real workspace paths and private OS temporary storage. Use CWD-relative file paths; argv and stdin are never rewritten. Native modes deny child creation.",
                 object(
                     json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"stdin":{"type":"string","maxLength":32768,"description":"Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files."},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
@@ -282,9 +282,9 @@ impl Tool for Builtin {
             ),
             "process.start" => (
                 Effect::Process,
-                "Sandboxed argv, no network. /workspace persists; /tmp is fresh each call. Keep cross-call files in /workspace. Shell argv needs explicit approval",
+                "Sandboxed argv, no network or implicit shell. Keep cross-call files in the workspace. Linux exposes /workspace and fresh /tmp; native platforms use real paths and private OS temporary storage. Use CWD-relative file paths. Native modes deny child creation. Shell argv needs explicit approval",
                 object(
-                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"},"read_only":{"type":"boolean","description":"Mount workspace read-only; other readers may proceed. Prefer for inspection/watchers. Writers still wait for this job; use process.wait or cancel."}}),
+                    json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"},"read_only":{"type":"boolean","description":"Expose workspace read-only; other readers may proceed. Prefer for inspection/watchers. Writers still wait for this job; use process.wait or cancel."}}),
                     &["argv"],
                 ),
             ),
@@ -474,7 +474,10 @@ impl Tool for Builtin {
                 }
                 let cwd = process_cwd(args["cwd"].as_str().unwrap_or("."))?;
                 args["cwd"] = json!(cwd);
-                args["sandbox"] = json!({"backend":"bubblewrap","workspace_writable":ctx.writable,"network":false,"host_home":false,"limits":ctx.sandbox.limits});
+                args["sandbox"] = ctx
+                    .sandbox
+                    .execution_description(&ctx.workspace, ctx.writable)
+                    .await?;
             }
             _ => {}
         }
@@ -517,6 +520,7 @@ impl Tool for Builtin {
                 json!({"path":args["path"],"sha256":hash(content),"bytes_written":content.len(),"total_lines":content.lines().count(),"next_insert_after_line":if self.name=="files.insert"{args["next_insert_after_line"].clone()}else{json!(content.lines().count())}})
             },
             "process.run"|"process.start"=>{
+                ctx.sandbox.verify_execution_description(&ctx.workspace,ctx.writable,&args["sandbox"]).await?;
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
                 if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
                 else{

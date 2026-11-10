@@ -5,13 +5,15 @@ Local HTTP fakes use loopback listeners. Run:
 
 ```sh
 cargo fmt --check
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo check --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo check --locked --no-default-features --lib
+cargo check --locked --manifest-path examples/sdk-consumer/Cargo.toml
 cargo run --example eval
 ```
 
-The Linux isolation job must set `REQUIRE_SANDBOX=1`; it tests a real backend.
+The native CI jobs must set `REQUIRE_SANDBOX=1`; they test real backends.
 A local missing backend prints an explicit SKIP reason. A green unit suite with
 that skip is not isolation proof. Example:
 
@@ -19,6 +21,38 @@ that skip is not isolation proof. Example:
 WERK_WORKER_BWRAP=/usr/bin/bwrap REQUIRE_SANDBOX=1 cargo test --test isolation
 WERK_WORKER_BWRAP=/usr/bin/bwrap REQUIRE_SANDBOX=1 cargo run --example eval
 ```
+
+The existing macOS/Windows jobs also run:
+
+```sh
+cargo test --locked --lib parallel::tests
+cargo test --locked --test platform --test native_workspace --test sandbox_contract --test native_coding --test native_lifecycle --test native_policy --test contracts --test macos_process --test windows_sandbox
+```
+
+Run this command on the target OS, not merely with a cross-compilation target.
+`native_workspace` checks pinned-object file operations, atomic publication,
+aliases, links and root/parent replacement. `sandbox_contract` checks approval
+binding and legacy rejection. `native_coding` runs the shared scripted engine
+through file reads, an approved edit, a real process and current-file verification.
+The OS-specific suites compile the std-only `native_process_probe.rs` fixture
+and use synthetic files/listeners/handles with host-side positive controls.
+They test read-only access, network/IPC denial, argv/stdin, bounded output,
+cancellation and process lifetime. Windows tests explicitly provision new empty
+workspaces; macOS tests explicitly enable its constrained single-process mode.
+macOS fixtures use a finite 1 TiB virtual-address bound to accommodate Darwin
+mappings; that is not a resident-memory containment measurement. A separate
+tiny-limit test must fail before any untrusted code executes.
+
+`native_lifecycle` drives background jobs through the real engine and checks
+status/log/wait/cancel, lease retention and shutdown cleanup. `native_policy`
+uses SQLite restart and actual process approvals, checks protected store/home
+aliases, and requires conservative rejection where durable identity is missing.
+Linux inode-reuse tests distinguish immutable creation identity from live lease
+identity. Existing CLI configuration tests also run on native CI.
+
+The local [validation record](cross-platform-sandbox.md#validation-record)
+distinguishes executed native tests from configured CI and source typechecks.
+No macOS native pass is claimed from this Linux/Windows development host.
 
 `evals/suite.json` is versioned machine-readable infrastructure data with eight
 cases. `examples/eval.rs` runs them through the public engine, real temporary

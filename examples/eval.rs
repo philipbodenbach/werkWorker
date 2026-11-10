@@ -82,7 +82,7 @@ async fn evaluate(f: &Value) -> Result<Value> {
         ..Default::default()
     };
     if kind == "sandbox"
-        && let Err(error) = sandbox.doctor().await
+        && let Err(error) = sandbox.require_process_backend().await
     {
         if std::env::var_os("REQUIRE_SANDBOX").is_some() {
             return Err(error);

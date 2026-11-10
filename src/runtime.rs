@@ -2,27 +2,172 @@
 use crate::{core::*, policy::relative_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{Read, Write},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
     time::Duration,
 };
+#[cfg(target_os = "linux")]
+use tokio::io::AsyncWriteExt;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt},
     sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(target_os = "macos")]
+mod workspace_macos;
+#[cfg(windows)]
+mod workspace_windows;
+#[cfg(target_os = "macos")]
+use workspace_macos as native_workspace;
+#[cfg(windows)]
+use workspace_windows as native_workspace;
+
 #[derive(Clone)]
 pub struct Workspace {
     root: Arc<File>,
+    // Windows directory handles deny delete sharing. Retaining the full chain
+    // prevents ancestor moves while the workspace is allocated.
+    _ancestors: Arc<Vec<File>>,
+    ancestor_ids: Arc<Vec<String>>,
+    persistent_identity: bool,
+    execution_identity: String,
     pub path: PathBuf,
     pub identity: String,
+}
+
+fn workspace_file_identity(file: &File) -> Result<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        workspace_windows::identity(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Err(WorkerError::new(
+            "sandbox_unavailable",
+            "No native workspace identity implementation",
+        ))
+    }
+}
+
+/// A live inode ID is safe while held open, but may be recycled after deletion.
+/// Only an immutable incarnation may authorize state loaded by a later host.
+fn workspace_persistent_identity(file: &File) -> Result<Option<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+        let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstatfs(file.as_raw_fd(), &mut filesystem) } != 0
+            || filesystem.f_type != libc::EXT4_SUPER_MAGIC
+        {
+            // Only ext4's immutable, nanosecond crtime is supported here.
+            // Unknown/coarse filesystems retain live operations, never saved
+            // authority. ext2/ext3 share this magic but provide no BTIME below.
+            return Ok(None);
+        }
+        let mut info: libc::statx = unsafe { std::mem::zeroed() };
+        // Query the pinned descriptor, never its mutable path. Linux btime is
+        // set on creation and cannot be changed by ordinary inode writes or
+        // utimensat; ctime/mtime are deliberately excluded.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_statx,
+                file.as_raw_fd(),
+                c"".as_ptr(),
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                libc::STATX_INO | libc::STATX_BTIME,
+                &mut info,
+            )
+        };
+        if result != 0
+            || info.stx_mask & (libc::STATX_INO | libc::STATX_BTIME)
+                != libc::STATX_INO | libc::STATX_BTIME
+            || info.stx_btime.tv_nsec >= 1_000_000_000
+        {
+            // Existing pinned file/process operations remain available, but
+            // saved authority and recovery cannot rely on a recycled inode.
+            return Ok(None);
+        }
+        let metadata = file.metadata()?;
+        if metadata.ino() != info.stx_ino {
+            return Err(WorkerError::new(
+                "workspace_conflict",
+                "Inconsistent workspace inode identity",
+            ));
+        }
+        Ok(Some(format!(
+            "linux-v2:{}:{}:{}:{}",
+            metadata.dev(),
+            info.stx_ino,
+            info.stx_btime.tv_sec,
+            info.stx_btime.tv_nsec
+        )))
+    }
+    #[cfg(windows)]
+    {
+        // NTFS's file ID includes its allocation sequence. CreationTime is
+        // mutable by the owner and must never become a live lease key.
+        workspace_windows::identity(file).map(Some)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = file;
+        // getattrlist(2): fid_generation is zero for non-root callers, even
+        // for OBJPERMANENTID; CRTIME is writable. Neither inode+birthtime nor
+        // public Foundation fileIdentifier proves a durable incarnation.
+        Ok(None)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = file;
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
+fn workspace_ancestors(root: &File) -> Result<Vec<File>> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut current = root.try_clone()?;
+    let mut ancestors = Vec::new();
+    for _ in 0..256 {
+        #[cfg(target_os = "linux")]
+        let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        #[cfg(not(target_os = "linux"))]
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: current remains open, and the fixed parent component is not
+        // model input. Ancestors identify lease overlap; they grant no access.
+        let fd = unsafe { libc::openat(current.as_raw_fd(), c"..".as_ptr(), flags) };
+        if fd < 0 {
+            return Err(WorkerError::new(
+                "workspace_conflict",
+                "Cannot identify workspace ancestors",
+            ));
+        }
+        let parent = unsafe { File::from_raw_fd(fd) };
+        if workspace_file_identity(&parent)? == workspace_file_identity(&current)? {
+            return Ok(ancestors);
+        }
+        current = parent.try_clone()?;
+        ancestors.push(parent);
+    }
+    Err(WorkerError::new(
+        "workspace_conflict",
+        "Workspace ancestry exceeds supported depth",
+    ))
 }
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -157,7 +302,19 @@ impl Workspace {
             .await
             .map_err(|_| WorkerError::new("io_error", "Discovery worker failed"))?
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            let root = self.root.clone();
+            let ancestors = self._ancestors.clone();
+            let path = path.to_owned();
+            tokio::task::spawn_blocking(move || {
+                let _ancestors = ancestors;
+                native_workspace::discover(&root, &path, recursive, hidden)
+            })
+            .await
+            .map_err(|_| WorkerError::new("io_error", "Discovery worker failed"))?
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
             let _ = (path, recursive, hidden);
             Err(WorkerError::new(
@@ -169,21 +326,23 @@ impl Workspace {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         tokio::task::spawn_blocking(move || {
-            let path = std::fs::canonicalize(path)?;
-            let mut opts = std::fs::OpenOptions::new();
-            opts.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
-            }
+            #[cfg(target_os = "macos")]
+            let (root, path) = workspace_macos::open_root(&path)?;
             #[cfg(windows)]
-            {
-                use std::os::windows::fs::OpenOptionsExt;
-                // FILE_FLAG_BACKUP_SEMANTICS permits opening a directory handle.
-                opts.custom_flags(0x02000000);
-            }
-            let root = opts.open(&path)?;
+            let (root, path, mut ancestors) = workspace_windows::open_root(&path)?;
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let (root, path) = {
+                let path = std::fs::canonicalize(path)?;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.read(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+                }
+                let root = opts.open(&path)?;
+                (root, path)
+            };
             let metadata = root.metadata()?;
             if !metadata.is_dir() {
                 return Err(WorkerError::new(
@@ -191,15 +350,35 @@ impl Workspace {
                     "Workspace must be a directory",
                 ));
             }
-            #[cfg(unix)]
-            let identity = {
-                use std::os::unix::fs::MetadataExt;
-                format!("{}:{}", metadata.dev(), metadata.ino())
+            let live_identity = workspace_file_identity(&root)?;
+            let durable_identity = workspace_persistent_identity(&root)?;
+            let persistent_identity = durable_identity.is_some();
+            let identity = durable_identity
+                .unwrap_or_else(|| format!("live-v1:{}:{live_identity}", std::env::consts::OS));
+            let execution_identity = if persistent_identity {
+                identity.clone()
+            } else {
+                format!(
+                    "allocation-v1:{live_identity}:{}",
+                    id("workspace_execution")
+                )
             };
-            #[cfg(not(unix))]
-            let identity = fingerprint(&path);
+            #[cfg(unix)]
+            let ancestors = workspace_ancestors(&root)?;
+            #[cfg(windows)]
+            ancestors.reverse();
+            #[cfg(not(any(unix, windows)))]
+            let ancestors: Vec<File> = Vec::new();
+            let mut ancestor_ids = vec![live_identity];
+            for ancestor in &ancestors {
+                ancestor_ids.push(workspace_file_identity(ancestor)?);
+            }
             Ok(Self {
                 root: Arc::new(root),
+                _ancestors: Arc::new(ancestors),
+                ancestor_ids: Arc::new(ancestor_ids),
+                persistent_identity,
+                execution_identity,
                 path,
                 identity,
             })
@@ -209,13 +388,135 @@ impl Workspace {
     }
     pub async fn revalidate(&self) -> Result<()> {
         let current = Self::open(&self.path).await?;
-        if current.identity != self.identity {
+        if current.identity != self.identity || current.ancestor_ids != self.ancestor_ids {
             return Err(WorkerError::new(
                 "workspace_conflict",
                 "Workspace root identity changed",
             ));
         }
         Ok(())
+    }
+    /// Stable object identities for this root followed by its parents. Paths
+    /// may have case/short-name aliases; these IDs are the lease comparison key.
+    pub(crate) fn ancestor_identities(&self) -> &[String] {
+        &self.ancestor_ids
+    }
+    /// Immutable directory-object key while this workspace holds its handle.
+    pub(crate) fn live_identity(&self) -> &str {
+        &self.ancestor_ids[0]
+    }
+    /// Whether this filesystem exposes an immutable incarnation suitable for
+    /// restoring saved authority after all original handles have closed.
+    pub fn supports_persistent_identity(&self) -> bool {
+        self.persistent_identity
+    }
+    /// Fail closed before restoring or saving durable workspace permissions.
+    pub fn require_persistent_identity(&self) -> Result<()> {
+        if self.persistent_identity {
+            return Ok(());
+        }
+        Err(WorkerError::new(
+            "workspace_identity_unavailable",
+            "This workspace has no trustworthy persistent incarnation; saved permissions and session recovery are unavailable",
+        ))
+    }
+    /// Approval binding. When durable identity is unavailable, new allocations
+    /// receive distinct nonces; clones of the same open workspace retain it.
+    pub fn execution_identity(&self) -> &str {
+        &self.execution_identity
+    }
+    /// Check a trusted control path by its nearest existing directory object.
+    /// The path may be a not-yet-created SQLite or artifact leaf.
+    pub(crate) async fn contains_path(&self, candidate: &Path) -> Result<bool> {
+        let mut candidate = if candidate.is_absolute() {
+            candidate.to_owned()
+        } else {
+            std::env::current_dir()?.join(candidate)
+        };
+        loop {
+            match tokio::fs::canonicalize(&candidate).await {
+                Ok(resolved) => {
+                    let directory = if tokio::fs::metadata(&resolved).await?.is_dir() {
+                        resolved
+                    } else {
+                        resolved
+                            .parent()
+                            .ok_or_else(|| {
+                                WorkerError::new("workspace_conflict", "Control path has no parent")
+                            })?
+                            .to_owned()
+                    };
+                    let opened = Self::open(directory).await?;
+                    return Ok(opened
+                        .ancestor_identities()
+                        .iter()
+                        .any(|id| id == self.live_identity()));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if !candidate.pop() {
+                        return Err(WorkerError::new(
+                            "workspace_conflict",
+                            "Cannot resolve control path ancestry",
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    /// Create one directory below a pinned parent, or validate an existing real
+    /// directory. This does not create missing parents or follow links.
+    pub(crate) async fn create_directory(&self, path: &str) -> Result<()> {
+        relative_path(path)?;
+        let root = self.root.clone();
+        let ancestors = self._ancestors.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _ancestors = ancestors;
+            #[cfg(any(target_os = "macos", windows))]
+            {
+                native_workspace::create_directory(&root, &path)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::fd::AsRawFd;
+                let path = Path::new(&path);
+                let parent = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| WorkerError::new("path_denied", "Invalid directory name"))?;
+                let parent = open_beneath(
+                    &root,
+                    &parent.to_string_lossy(),
+                    libc::O_RDONLY | libc::O_DIRECTORY,
+                    0,
+                )?;
+                let name_c = std::ffi::CString::new(name)
+                    .map_err(|_| WorkerError::new("path_denied", "NUL in directory name"))?;
+                let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name_c.as_ptr(), 0o700) };
+                if result != 0
+                    && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
+                {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                let _created = open_beneath(&parent, name, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+                Ok(())
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+            {
+                let _ = (root, path);
+                Err(WorkerError::new(
+                    "sandbox_unavailable",
+                    "No native directory creation backend",
+                ))
+            }
+        })
+        .await
+        .map_err(|_| WorkerError::new("io_error", "Directory worker failed"))?
     }
     #[cfg(target_os = "linux")]
     pub async fn read(&self, path: &str, max: usize) -> Result<Vec<u8>> {
@@ -331,7 +632,8 @@ impl Workspace {
                         "Target already exists. Preserve it and use files.edit with the latest observed expected_hash and a unique nonempty old anchor. Use files.write for replacement only if its advertised schema allows expected_hash.",
                     ));
                 }
-                (None, Err(_)) => {}
+                (None, Err(error)) if error.code == "not_found" => {}
+                (None, Err(error)) => return Err(error),
             }
             let temp = format!(".werk-{}.tmp", uuid::Uuid::new_v4());
             let mut file = open_beneath(
@@ -340,12 +642,27 @@ impl Workspace {
                 libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
                 0o600,
             )?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
             #[cfg(target_os = "linux")]
             {
                 use std::os::fd::AsRawFd;
                 let from = std::ffi::CString::new(temp).unwrap();
+                struct Temporary<'a> {
+                    parent: &'a File,
+                    name: &'a std::ffi::CStr,
+                    published: bool,
+                }
+                impl Drop for Temporary<'_> {
+                    fn drop(&mut self) {
+                        if !self.published {
+                            // SAFETY: the borrowed directory and name outlive
+                            // this guard, including write/sync error returns.
+                            unsafe { libc::unlinkat(self.parent.as_raw_fd(), self.name.as_ptr(), 0) };
+                        }
+                    }
+                }
+                let mut temporary = Temporary { parent: &dir, name: &from, published: false };
+                file.write_all(&bytes)?;
+                file.sync_all()?;
                 let to = std::ffi::CString::new(name).unwrap();
                 let flags = if expected.is_none() {
                     libc::RENAME_NOREPLACE
@@ -363,14 +680,12 @@ impl Workspace {
                     )
                 };
                 if rc != 0 {
-                    unsafe {
-                        libc::unlinkat(dir.as_raw_fd(), from.as_ptr(), 0);
-                    }
                     return Err(WorkerError::new(
                         "write_conflict",
                         "Atomic file replacement failed",
                     ));
                 }
+                temporary.published = true;
                 dir.sync_all()?;
                 Ok(())
             }
@@ -385,21 +700,57 @@ impl Workspace {
         .await
         .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn read(&self, path: &str, max: usize) -> Result<Vec<u8>> {
+        let root = self.root.clone();
+        let ancestors = self._ancestors.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _ancestors = ancestors;
+            native_workspace::read(&root, &path, max)
+        })
+        .await
+        .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn list(&self, path: &str, max: usize) -> Result<Vec<String>> {
+        let root = self.root.clone();
+        let ancestors = self._ancestors.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _ancestors = ancestors;
+            native_workspace::list(&root, &path, max)
+        })
+        .await
+        .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    pub async fn write(&self, path: &str, bytes: Vec<u8>, expected: Option<String>) -> Result<()> {
+        let root = self.root.clone();
+        let ancestors = self._ancestors.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _ancestors = ancestors;
+            native_workspace::write(&root, &path, &bytes, expected.as_deref())
+        })
+        .await
+        .map_err(|_| WorkerError::new("io_error", "File worker failed"))?
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub async fn read(&self, _: &str, _: usize) -> Result<Vec<u8>> {
         Err(WorkerError::new(
             "sandbox_unavailable",
             "Secure filesystem tools require Linux openat2",
         ))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub async fn list(&self, _: &str, _: usize) -> Result<Vec<String>> {
         Err(WorkerError::new(
             "sandbox_unavailable",
             "Secure filesystem tools require Linux openat2",
         ))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub async fn write(&self, _: &str, _: Vec<u8>, _: Option<String>) -> Result<()> {
         Err(WorkerError::new(
             "sandbox_unavailable",
@@ -436,10 +787,26 @@ impl Default for ProcessLimits {
         }
     }
 }
+/// Trusted host configuration only; never loaded from workspace preferences.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NativeSandboxConfig {
+    /// Explicitly select the fork-denied Seatbelt mode only for workspaces
+    /// without hostile external renames. Native paths are not inode mounts.
+    pub macos_path_based_workspace: bool,
+}
+
+#[cfg(target_os = "macos")]
+mod macos;
+mod sandbox_contract;
+#[cfg(windows)]
+mod windows;
+
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     pub bubblewrap: PathBuf,
     pub limits: ProcessLimits,
+    pub native: NativeSandboxConfig,
 }
 impl Default for Sandbox {
     fn default() -> Self {
@@ -455,6 +822,7 @@ impl Default for Sandbox {
                 local.filter(|p| p.is_file()).unwrap_or(system)
             },
             limits: ProcessLimits::default(),
+            native: NativeSandboxConfig::default(),
         }
     }
 }
@@ -468,7 +836,8 @@ pub struct ProcessOutput {
     pub timed_out: bool,
 }
 impl Sandbox {
-    pub async fn doctor(&self) -> Result<Value> {
+    #[cfg(target_os = "linux")]
+    async fn linux_probe(&self) -> Result<Value> {
         let dir = std::env::temp_dir().join(id("werk_doctor"));
         tokio::fs::create_dir(&dir).await?;
         let workspace = Workspace::open(&dir).await?;
@@ -578,11 +947,25 @@ impl Sandbox {
         browser: bool,
         pipe_stdin: bool,
     ) -> Result<tokio::process::Command> {
+        if !self.bubblewrap.is_absolute() {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Bubblewrap must be a trusted absolute executable path",
+            ));
+        }
         relative_path(cwd)?;
         if let Some(workspace) = workspace {
             workspace.revalidate().await?;
         }
-        let mut command = tokio::process::Command::new(&self.bubblewrap);
+        let launcher = tokio::fs::canonicalize(&self.bubblewrap)
+            .await
+            .map_err(|_| {
+                WorkerError::new(
+                    "sandbox_unavailable",
+                    "Configured Bubblewrap launcher is unavailable; no host fallback",
+                )
+            })?;
+        let mut command = tokio::process::Command::new(launcher);
         command
             .env_clear()
             .stdin(if pipe_stdin {
@@ -795,7 +1178,30 @@ impl Sandbox {
         browser: bool,
         stdin: Option<&str>,
     ) -> Result<ProcessOutput> {
-        #[cfg(not(target_os = "linux"))]
+        if self.limits.timeout_ms == 0
+            || self.limits.memory_bytes == 0
+            || self.limits.cpu_seconds == 0
+            || self.limits.processes == 0
+        {
+            return Err(WorkerError::new(
+                "invalid_limits",
+                "Mandatory process limits must be nonzero",
+            ));
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            if browser {
+                return Err(WorkerError::new(
+                    "sandbox_unavailable",
+                    "Native process isolation does not provide browser network/proxy isolation",
+                ));
+            }
+            #[cfg(target_os = "macos")]
+            return macos::run(self, workspace, writable, argv, cwd, cancel, live, stdin).await;
+            #[cfg(windows)]
+            return windows::run(self, workspace, writable, argv, cwd, cancel, live, stdin).await;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
             let _ = (workspace, writable, argv, cwd, cancel, live, browser, stdin);
             return Err(WorkerError::new(
@@ -904,6 +1310,7 @@ impl Sandbox {
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn host_task_baseline() -> Result<u64> {
     tokio::task::spawn_blocking(|| {
         #[cfg(target_os = "linux")]
@@ -1001,6 +1408,7 @@ async fn drain_live<R: AsyncRead + Unpin>(
     Ok((result, truncated))
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) async fn browser_memory_limit(pid: u32, limit: u64) {
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;

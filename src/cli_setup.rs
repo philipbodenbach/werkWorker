@@ -715,6 +715,7 @@ pub async fn show(
     explicit_profile: Option<&str>,
     force_setup: bool,
 ) -> Result<Option<Connected>> {
+    let allocated_workspace = werk_worker::runtime::Workspace::open(workspace).await?;
     let path = settings_path()?;
     let (settings, load_error) = match read_settings(&path).await {
         Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
@@ -787,7 +788,7 @@ pub async fn show(
         };
         let mut form = Form::new(settings, custom_policy);
         form.key = key;
-        let saved_access = crate::cli_config::load_policy(workspace).await?;
+        let saved_access = crate::cli_config::load_policy(&allocated_workspace).await?;
         let access_label = saved_access
             .as_ref()
             .map(crate::cli_config::policy_label)
@@ -969,7 +970,7 @@ pub async fn show(
                                     config.context_tokens=form.settings.werk.capabilities.context_tokens;config.output_tokens=Some(form.settings.limits.reserve_output_tokens);
                                     config.reasoning_effort=form.settings.werk.options.get("reasoning_effort").filter(|v|!v.is_null()).cloned();
                                     config.reasoning_tier=if config.reasoning_effort.is_some(){None}else{Some(form.settings.werk.options.get("reasoning_tier").cloned().unwrap_or(serde_json::Value::Null))};
-                                    project.save(workspace,&config).await
+                                    project.save_in_workspace(&allocated_workspace,&config).await
                                 },
                                 _=>Ok(())
                             };
@@ -979,7 +980,7 @@ pub async fn show(
                                     form.error=format!("Cannot remember connection ({}). Choose Do not save to continue.",error.code);form.field=SAVE_FIELD;continue;
                             }
                             if form.save < 2 && !custom_policy
-                                && let Err(error) = crate::cli_config::save_policy(workspace, form.access.policy()).await {
+                                && let Err(error) = crate::cli_config::save_policy(&allocated_workspace, form.access.policy()).await {
                                 form.error=format!("Cannot save workspace access: {error}");continue;
                             }
                             result=Some(Connected{provider:Arc::new(provider),limits:form.settings.limits.clone(),profile:project.scoped_profile(&form.settings.profile,workspace,global).await?,access:form.access,reuse_project_access:false});break;

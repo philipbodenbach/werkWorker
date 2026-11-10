@@ -61,13 +61,33 @@ write and network rights, not a claim to understand subprocess semantics.
 Shell execution is possible only as explicitly requested program/argv (for
 example `/bin/sh -c ...`) and is fully visible in its concrete approval.
 
-| Platform/backend | Supported/tested |
-|---|---|
-| Linux + Bubblewrap 0.6.1 or newer + kernel openat2/close_range | Implemented; real WSL2 Linux tests performed locally |
-| Linux CI runner | Required isolation job installs Bubblewrap and fails on any skip |
-| Outer restricted sandbox without namespace/netlink permissions | Fails closed; tests explicitly report unavailable |
-| Docker Desktop in this development WSL | Unavailable; no Docker fallback implemented |
-| macOS/Windows native SDK/TUI packages | Native packaging and CI checks configured; file/process isolation unavailable and fails closed |
+## Native capabilities
+
+| Capability | Linux | macOS Apple Silicon | Windows x86_64 |
+|---|---|---|---|
+| Native packages / shared SDK | Available | Available | Available |
+| Secure workspace files | `openat2` | Descriptor-relative APFS/HFS+ | Handle-relative local NTFS |
+| Persisted session / saved workspace rights | Immutable inode incarnation required | Unavailable; live sessions only | NTFS allocation-sequence identity |
+| Isolated process | Bubblewrap | Opt-in Seatbelt single-process mode, macOS 15+ | LPAC single-process mode in an explicitly provisioned workspace |
+| Descendants / cleanup | PID namespace teardown | Fork/spawn denied; independent supervisor | Child creation denied; kill-on-close Job Object |
+| Resources | Per-process rlimits; UID process ceiling | Single-process rlimits | Job memory, CPU and process limits |
+| `browser.check` | Separate browser runtime | Unavailable | Unavailable |
+| Persistent browser | Separate isolated proxy/runtime | Unavailable | Unavailable |
+
+Implementation and successful native validation are different. The macOS mode
+has no local native test result and cannot provide inode-bound workspace paths
+or kernel kill-on-close supervision. It is disabled by default. Windows requires
+explicit creation of a new dedicated workspace; ordinary project ACLs are never
+silently rewritten. See [contracts, setup and actual validation results](cross-platform-sandbox.md).
+Neither backend exposes user home/cache trees as a toolchain convenience.
+Approvals bind the actual backend, workspace identity, write access and limits;
+changing that contract requires preparation and approval again.
+
+File operations remain available when process prerequisites are missing.
+`sandbox doctor` reports implementation, host availability, active probe scope
+and errors separately for each capability. A startup probe is not a substitute
+for the native denial/cleanup tests. The existing three CI jobs require their
+native tests; a missing required backend fails instead of silently skipping.
 
 ## Brokers and credentials
 
@@ -146,7 +166,7 @@ are suggestions, not startup hooks. TUI access choices are explicit, session-onl
 and still require per-action approval; existing `--grants` takes precedence.
 
 Project metadata reads use the pinned workspace reader, reject symlinks and path
-traversal, and are bounded. They currently require Linux when files exist; other
-platforms fail closed. Sources/hashes/text are frozen into each CLI session;
+traversal, and are bounded. Linux, supported local macOS filesystems and local
+NTFS use their respective pinned native readers. Sources/hashes/text are frozen into each CLI session;
 subagents inherit them without gaining authority. See [setup](setup.md) and
 [project configuration](project-configuration.md) for scope and platform limits.

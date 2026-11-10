@@ -3,7 +3,6 @@ use crate::{core::*, providers::InferenceConcurrency};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -264,7 +263,25 @@ impl Drop for InferencePermit {
 }
 #[derive(Default)]
 pub(crate) struct WorkspaceAccess {
-    leases: Mutex<Vec<(String, PathBuf, bool, String)>>,
+    leases: Mutex<Vec<(String, WorkspaceScope, bool, String)>>,
+}
+#[derive(Clone)]
+struct WorkspaceScope {
+    identity: String,
+    ancestors: Vec<String>,
+}
+impl WorkspaceScope {
+    fn from_workspace(workspace: &crate::runtime::Workspace) -> Self {
+        Self {
+            identity: workspace.live_identity().to_owned(),
+            ancestors: workspace.ancestor_identities().to_vec(),
+        }
+    }
+    fn overlaps(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            || self.ancestors.contains(&other.identity)
+            || other.ancestors.contains(&self.identity)
+    }
 }
 pub struct WorkspaceLease {
     id: String,
@@ -273,31 +290,32 @@ pub struct WorkspaceLease {
 impl WorkspaceAccess {
     pub fn try_acquire(
         self: &Arc<Self>,
-        path: &Path,
+        workspace: &crate::runtime::Workspace,
         write: bool,
         owner: &str,
     ) -> Option<Arc<WorkspaceLease>> {
         let mut leases = self.leases.lock().unwrap();
-        if leases.iter().any(|(_, other, exclusive, _)| {
-            (write || *exclusive) && (path.starts_with(other) || other.starts_with(path))
-        }) {
+        let scope = WorkspaceScope::from_workspace(workspace);
+        if leases
+            .iter()
+            .any(|(_, other, exclusive, _)| (write || *exclusive) && scope.overlaps(other))
+        {
             return None;
         }
         let id = id("lease");
-        leases.push((id.clone(), path.to_owned(), write, owner.into()));
+        leases.push((id.clone(), scope, write, owner.into()));
         Some(Arc::new(WorkspaceLease {
             id,
             access: self.clone(),
         }))
     }
-    pub fn blockers(&self, path: &Path, write: bool) -> Vec<String> {
+    pub fn blockers(&self, workspace: &crate::runtime::Workspace, write: bool) -> Vec<String> {
+        let scope = WorkspaceScope::from_workspace(workspace);
         self.leases
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, other, exclusive, _)| {
-                (write || *exclusive) && (path.starts_with(other) || other.starts_with(path))
-            })
+            .filter(|(_, other, exclusive, _)| (write || *exclusive) && scope.overlaps(other))
             .map(|(_, _, _, owner)| owner.clone())
             .collect()
     }
@@ -315,11 +333,13 @@ impl Drop for WorkspaceLease {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn wait_cycles_are_rejected_and_cancelled_dependencies_are_removed() {
+    #[tokio::test]
+    async fn wait_cycles_are_rejected_and_cancelled_dependencies_are_removed() {
         let graph = Arc::new(WaitGraph::default());
         let access = Arc::new(WorkspaceAccess::default());
-        let path = Path::new("workspace");
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = crate::runtime::Workspace::open(temp.path()).await.unwrap();
+        let path = &workspace;
         let lease = access.try_acquire(path, true, "parent_tool").unwrap();
         let parent = graph
             .wait_for("parent", vec!["parent_tool".into()])
@@ -354,19 +374,27 @@ mod tests {
         drop(job);
         drop(wait);
     }
-    #[test]
-    fn overlapping_workspaces_share_reads_and_exclude_writers_until_last_lease_drops() {
+    #[tokio::test]
+    async fn overlapping_workspaces_share_reads_and_exclude_writers_until_last_lease_drops() {
         let access = Arc::new(WorkspaceAccess::default());
-        let path = Path::new("workspace");
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        let workspace = crate::runtime::Workspace::open(temp.path()).await.unwrap();
+        let child = crate::runtime::Workspace::open(temp.path().join("child"))
+            .await
+            .unwrap();
+        let independent_dir = tempfile::tempdir().unwrap();
+        let independent = crate::runtime::Workspace::open(independent_dir.path())
+            .await
+            .unwrap();
+        let path = &workspace;
         let read = access.try_acquire(path, false, "reader").unwrap();
         let retained_by_job = read.clone();
-        let nested = access
-            .try_acquire(&path.join("child"), false, "nested")
-            .unwrap();
+        let nested = access.try_acquire(&child, false, "nested").unwrap();
         assert!(access.try_acquire(path, true, "writer").is_none());
         assert!(
             access
-                .try_acquire(Path::new("independent"), true, "independent")
+                .try_acquire(&independent, true, "independent")
                 .is_some()
         );
         drop(read);
@@ -374,11 +402,7 @@ mod tests {
         assert!(access.try_acquire(path, true, "writer").is_none());
         drop(retained_by_job);
         let write = access.try_acquire(path, true, "writer").unwrap();
-        assert!(
-            access
-                .try_acquire(&path.join("child"), false, "nested")
-                .is_none()
-        );
+        assert!(access.try_acquire(&child, false, "nested").is_none());
         drop(write);
         assert!(access.try_acquire(path, false, "reader").is_some());
     }

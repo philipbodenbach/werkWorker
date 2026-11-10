@@ -118,7 +118,7 @@ async fn local_image_is_normalized_and_not_duplicated_as_base64_text() {
 async fn live_job_logs_wait_and_cancellation_are_run_scoped() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = context(dir.path()).await;
-    if let Err(error) = ctx.sandbox.doctor().await {
+    if let Err(error) = ctx.sandbox.require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -727,7 +727,7 @@ impl ModelProvider for JobProvider {
 async fn engine_background_wait_preserves_tool_groups_and_releases_workspace() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("ready.txt"), "ready").unwrap();
-    if let Err(error) = Sandbox::default().doctor().await {
+    if let Err(error) = Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }

@@ -2235,7 +2235,7 @@ fn approval_scope(request: &ApprovalRequest) -> String {
     }
     match request.description["effect"].as_str() {
         Some("read" | "write") => format!("{tool} in workspace"),
-        Some("process") => format!("{tool} in sandboxed workspace"),
+        Some("process") => format!("exact {tool} action and sandbox contract"),
         _ => "exact prepared action".into(),
     }
 }

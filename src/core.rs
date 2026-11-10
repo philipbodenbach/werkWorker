@@ -343,8 +343,9 @@ pub enum ApprovalDecision {
     AllowOnce,
     Deny,
     AllowSameArguments,
-    /// Remember workspace access for this file or sandboxed process tool, or
-    /// exact prepared arguments for other effects, in the owning root session.
+    /// Remember workspace access for this file tool, or exact prepared
+    /// arguments (including process sandbox contract) for other effects,
+    /// in the owning root session.
     AllowForSession,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "/usr/bin/bwrap".into()),
         ..Default::default()
     };
-    sandbox.doctor().await?;
+    sandbox.require_process_backend().await?;
     let engine = WorkerEngine::builder(provider)
         .sandbox(sandbox)
         .build()

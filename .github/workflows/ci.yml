@@ -62,7 +62,18 @@ jobs:
         run: python -m unittest discover -s scripts/tests
       - name: Test native platform integration
         if: runner.os != 'Linux'
-        run: cargo test --locked --test platform
+        env:
+          REQUIRE_SANDBOX: "1"
+        run: |
+          cargo test --locked --lib parallel::tests
+          cargo test --locked --test platform --test native_workspace --test sandbox_contract --test native_coding --test native_lifecycle --test native_policy --test contracts --test macos_process --test windows_sandbox
+      - name: Check native SDK and lint
+        if: runner.os != 'Linux'
+        run: |
+          cargo test --locked --bin ww cli_config::tests
+          cargo check --locked --no-default-features --lib
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo check --locked --manifest-path examples/sdk-consumer/Cargo.toml
       - name: Prepare real namespace backend
         if: runner.os == 'Linux'
         run: |

@@ -227,22 +227,35 @@ impl WorkerEngine {
             Ok(())
         }
     }
-    fn validate_workspace(&self, workspace: &Workspace) -> Result<()> {
-        let unsafe_root = workspace.path.parent().is_none()
-            || std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .is_some_and(|home| workspace.path == home)
-            || self
-                .inner
-                .store
-                .protected_paths()
-                .iter()
-                .any(|path| path.starts_with(&workspace.path))
-            || self
-                .inner
-                .artifacts
-                .as_ref()
-                .is_some_and(|store| store.root_path().starts_with(&workspace.path));
+    async fn validate_workspace(&self, workspace: &Workspace) -> Result<()> {
+        let mut unsafe_root = workspace.path.parent().is_none();
+        #[cfg(windows)]
+        let home = std::env::var_os("USERPROFILE");
+        #[cfg(not(windows))]
+        let home = std::env::var_os("HOME");
+        if let Some(home) = home {
+            match tokio::fs::canonicalize(home).await {
+                Ok(home) => {
+                    let home = Workspace::open(home).await?;
+                    unsafe_root |= home
+                        .ancestor_identities()
+                        .iter()
+                        .any(|id| id == workspace.live_identity());
+                }
+                // An inherited HOME may refer to a removed directory. It
+                // cannot alias an existing workspace; retain fail-closed
+                // behavior for permission errors and unsupported filesystems.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for path in self.inner.store.protected_paths() {
+            unsafe_root |= workspace.contains_path(&path).await?;
+        }
+        if let Some(store) = &self.inner.artifacts {
+            unsafe_root |= workspace.contains_path(store.root_path()).await?;
+        }
+        workspace.revalidate().await?;
         if unsafe_root {
             return Err(WorkerError::new(
                 "unsafe_workspace",
@@ -310,6 +323,22 @@ impl WorkerEngine {
         metadata: Value,
     ) -> Result<SessionHandle> {
         self.ensure_open()?;
+        let workspace = Workspace::open(workspace).await?;
+        self.create_session_in_workspace(profile, workspace, policy, metadata)
+            .await
+    }
+
+    /// Create a session bound to an already-open workspace object. Hosts that
+    /// load saved authority by directory identity can retain that object from
+    /// policy lookup through admission instead of resolving the path again.
+    pub async fn create_session_in_workspace(
+        &self,
+        profile: AgentProfile,
+        workspace: Workspace,
+        policy: HostPolicy,
+        metadata: Value,
+    ) -> Result<SessionHandle> {
+        self.ensure_open()?;
         crate::parallel::DelegationLevel::from_metadata(&metadata)?;
         for name in &profile.tools {
             self.inner.tools.get(name)?;
@@ -320,8 +349,7 @@ impl WorkerEngine {
                 skill_snapshots.insert(name.clone(), skill.clone());
             }
         }
-        let workspace = Workspace::open(workspace).await?;
-        self.validate_workspace(&workspace)?;
+        self.validate_workspace(&workspace).await?;
         let mut data = SessionData {
             title: None,
             schema_version: 1,
@@ -533,7 +561,8 @@ impl WorkerEngine {
             ));
         }
         let workspace = Workspace::open(&data.workspace).await?;
-        self.validate_workspace(&workspace)?;
+        self.validate_workspace(&workspace).await?;
+        workspace.require_persistent_identity()?;
         if workspace.identity != data.workspace_identity {
             return Err(WorkerError::new(
                 "workspace_conflict",
@@ -3438,7 +3467,7 @@ impl SessionHandle {
             loop {
                 self.check_running(run_id, shutdown).await?;
                 if let Some(lease) = self.engine.inner.workspace_access.try_acquire(
-                    &context.workspace.path,
+                    &context.workspace,
                     write,
                     invocation_id,
                 ) {
@@ -3456,7 +3485,7 @@ impl SessionHandle {
                     self.engine
                         .inner
                         .workspace_access
-                        .blockers(&context.workspace.path, write),
+                        .blockers(&context.workspace, write),
                 )?;
                 self.cooperative_delay(run_id, shutdown, 20).await?;
             }
@@ -4138,11 +4167,10 @@ impl RunHandle {
                     d.policy.browser.as_mut().unwrap().set(&site,&category,crate::policy::ToolPermission::Allow)?;
                 } else {
                 let files=matches!(def.effect, Effect::Read|Effect::Write);
-                let workspace_tool=files || def.effect==Effect::Process;
                 let grant=crate::policy::CapabilityGrant {
                     tool:def.name.clone(), version:def.version.clone(),
                     resource:if files {".".into()} else {crate::policy::resource(def,&i.prepared)?},
-                    arguments_hash:if workspace_tool {None} else {Some(fingerprint(&i.prepared))},
+                    arguments_hash:if files {None} else {Some(fingerprint(&i.prepared))},
                     expires_at_ms:None, preapproved:true,
                 };
                 d.policy.remembered_grants.retain(|g| !(g.tool==grant.tool && g.arguments_hash==grant.arguments_hash));

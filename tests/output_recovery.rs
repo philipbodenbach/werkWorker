@@ -58,7 +58,7 @@ fn profile() -> AgentProfile {
 #[tokio::test]
 async fn repeated_tests_after_workspace_changes_are_allowed_but_no_progress_is_bounded() {
     let sandbox = runtime::Sandbox::default();
-    if let Err(error) = sandbox.doctor().await {
+    if let Err(error) = sandbox.require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         eprintln!("SKIP real sandbox: {error}");
         return;
@@ -172,7 +172,7 @@ async fn repeated_tests_after_workspace_changes_are_allowed_but_no_progress_is_b
 #[tokio::test]
 async fn workspace_aliases_support_long_edit_validate_repair_cycles() {
     let sandbox = runtime::Sandbox::default();
-    if let Err(error) = sandbox.doctor().await {
+    if let Err(error) = sandbox.require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }

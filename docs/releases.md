@@ -302,10 +302,13 @@ path and set `WERK_WORKER_VERSION`; the adjacent checksum is mandatory. This
 also supports offline installation tests. Checksums and an exact archive member
 allowlist are validated before replacing commands. Session state is untouched.
 
-Installers do not install a Rust toolchain, models or Bubblewrap. File/process
-sandbox tools currently require Linux and fail closed elsewhere. Native
-Windows/macOS packages support the TUI, SDK, HTTP/Werk tools and sessions; their
-presence is not a claim of a native process/filesystem sandbox.
+Installers do not install a Rust toolchain, models or Bubblewrap. Native package
+availability is separate from sandbox support. This checkout adds native file
+access plus constrained macOS and Windows process backends without another
+helper executable; published archives reflect their tagged source. Windows
+workspace provisioning and macOS opt-in remain explicit host operations after
+installation. Native browser isolation remains unavailable. See the
+[platform contracts and actual validation status](cross-platform-sandbox.md).
 
 Primary references: [Werk release preparation pattern](https://github.com/philipbodenbach/werk1112/blob/3d33f7c5ccb3785a450310b5af9268077c5c9683/.github/workflows/release.yml),
 [GitHub release CLI](https://cli.github.com/manual/gh_release_create),

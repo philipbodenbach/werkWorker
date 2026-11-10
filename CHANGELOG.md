@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-10
+
+### Changes
+
+- fix(): pipeline release (`85b44e947a95`)
+- fix(): pipeline release (`06039d330573`)
+- fix(): pipeline release (`8f4abb594502`)
+- fix(): pipeline release (`ced76dc1fd24`)
+
 ## [0.3.1] - 2026-11-09
 
 ### Changes
@@ -144,5 +153,7 @@
 
 [0.3.0]: https://github.com/philipbodenbach/werkWorker/compare/v0.2.0...v0.3.0
 
-[Unreleased]: https://github.com/philipbodenbach/werkWorker/compare/v0.3.1...HEAD
 [0.3.1]: https://github.com/philipbodenbach/werkWorker/compare/v0.3.0...v0.3.1
+
+[Unreleased]: https://github.com/philipbodenbach/werkWorker/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/philipbodenbach/werkWorker/compare/v0.3.1...v0.3.2

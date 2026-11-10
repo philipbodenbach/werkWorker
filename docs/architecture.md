@@ -31,6 +31,27 @@ installation portability. No inference or reference-agent runtime is linked.
 The optional `tui` feature supplies the ratatui/crossterm CLI client; library-only
 consumers can disable default features.
 
+## Components and planned werkStation integration
+
+werkWorker is the shared agent component for coding, document/ticket automation
+and browser tasks. Its Rust SDK, CLI/TUI and JSONL host all use the same engine,
+harness, tools, permission model and session store.
+
+| Component | Responsibility | Current integration |
+|---|---|---|
+| werkWorker | Agent execution, harness, tools, approvals, sessions and subagents | Public `werk_worker` SDK; standalone `ww` / `werk-worker`; JSONL via `ww rpc` |
+| werk1112 | Inference, models and runtime management | werkWorker's `WerkProvider` uses its public HTTP APIs |
+| werkStation | Planned wrapper suite and shared application interface | Intended to import and compose werkWorker and werk1112; suite integration is future work |
+
+The planned suite reuses the agent implementation in werkWorker and the
+inference/runtime implementation in werk1112. A Rust host can already import
+`werk_worker` without the optional CLI/TUI dependencies; the
+[external consumer example](../examples/sdk-consumer/Cargo.toml) uses this path.
+The current worker crate communicates with werk1112 over HTTP and does not link
+its inference runtime. The suite's composition of both components is a future
+integration, separate from this existing provider connection. See
+[SDK host responsibilities](sdk.md) and the [Werk API reuse matrix](reuse-matrix.md).
+
 ## Parallel orchestration
 
 `parallel` owns validated host limits and workspace leases; `agents` owns durable

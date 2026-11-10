@@ -4,7 +4,8 @@
 [Projektseite auf Deutsch](https://philipbodenbach.github.io/werkWorker/de/) ·
 [Tetris experiment](https://philipbodenbach.github.io/werkWorker/experiments/tetris/)
 
-WerkWorker is a local, general-purpose Rust agent engine with its own harness.
+werkWorker combines a local, general-purpose Rust agent engine, an adaptive
+harness and a standalone CLI/TUI in one package.
 The default `ww` command opens an interactive terminal in the werk top palette.
 The package is `werk-worker`, the Rust import is `werk_worker`, and the binary is
 `werk-worker`, with `ww` as its short command. Both the release installers and
@@ -13,15 +14,26 @@ under [Elastic License 2.0](LICENSE).
 
 The SDK runs an asynchronous model/tool loop with streamed events, explicit
 resource grants and approvals, SQLite sessions, cancellation, steering,
-follow-ups, crash recovery and parallel subagents with separate conversations. Coding and document/ticket automation use the
-same engine. Four bundled Agent Skills and three profiles are embedded in the
+follow-ups, crash recovery and parallel subagents with separate conversations.
+Coding, document and ticket automation, and browser control use this same
+engine. Five bundled Agent Skills and three profiles are embedded in the
 package; they do not require a repository checkout at runtime.
 
-Werk1112 supplies inference and model/runtime management. WerkWorker supplies
-agent orchestration. Future werkCoder and werkStation clients consume this SDK
-or the JSONL protocol. There is no GPU runtime, Jira implementation or
-autonomous package installer here. Scripted tests measure the harness, not model
-intelligence.
+werk1112 supplies inference and model/runtime management. werkWorker owns agent
+execution, tools, permissions and sessions. Its existing `WerkProvider` connects
+to werk1112 over HTTP. Applications can embed the [Rust SDK](docs/sdk.md) through
+`werk_worker` or control a separate worker process through the
+[JSONL protocol](docs/protocol.md).
+
+werkStation is planned as a wrapper suite that imports werkWorker and werk1112
+as its agent and inference/runtime components. The suite would bring both
+together behind a shared application interface, while the agent engine and
+harness remain in werkWorker and inference remains in werk1112. This suite
+integration is planned; werkWorker already provides its own CLI/TUI and SDK.
+See [component boundaries and the integration plan](docs/architecture.md#components-and-planned-werkstation-integration).
+
+There is no GPU runtime, Jira implementation or autonomous package installer
+here. Scripted tests measure the harness, not model intelligence.
 
 ## Install and try
 

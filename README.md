@@ -310,11 +310,13 @@ Filesystem search is bounded and nonrecursive. Sandbox resource limits are
 Linux rlimits, not aggregate cgroup quotas. These limitations are explicit in
 the security documentation. No live-model quality or benchmark parity is claimed.
 
-## What’s new in v0.3.1
+## What’s new in v0.3.2
 
-WerkWorker SDK and both CLI commands share release version **0.3.1**.
+WerkWorker SDK and both CLI commands share release version **0.3.2**.
 
-- fix(): pipeline release (`f899d38cac57`)
-- fix(): pipeline release (`c322b56c8a9a`)
+- fix(): pipeline release (`85b44e947a95`)
+- fix(): pipeline release (`06039d330573`)
+- fix(): pipeline release (`8f4abb594502`)
+- fix(): pipeline release (`ced76dc1fd24`)
 
-See the [v0.3.1 changelog](CHANGELOG.md#031---2026-11-09) for all changes and compatibility notes.
+See the [v0.3.2 changelog](CHANGELOG.md#032---2026-11-10) for all changes and compatibility notes.

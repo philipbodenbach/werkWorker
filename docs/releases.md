@@ -35,6 +35,29 @@ starting Release. The full Linux sandbox/browser/TUI/SDK suite remains in
 normal CI. Release builds and smoke-tests the three native packages from its
 tagged commit after preparation succeeds.
 
+CI and release builds cache Cargo dependencies by Rust toolchain, dependency
+configuration, runner version and target platform. Linux CI's source-install
+check uses the debug profile and reuses the checkout's build directory, while
+still compiling the extracted crate and testing its installation outside the
+checkout. Package verification remains enabled. Optimized archives are built
+and installed only in the Release workflow. Ordinary push/PR CI checks both
+debug commands on every platform without building release archives.
+The first run still needs to populate the caches.
+
+Only the ordinary CI job reduces dev/test debug information to line tables:
+file/line backtraces, debug assertions and overflow checks remain available.
+Local builds and release profiles keep their defaults. The profile variables
+are part of the Rust cache key, so changing them requires one cache rebuild.
+Linux runs the complete `--all-targets` Rust suite with pinned cargo-nextest,
+bounded to four test processes in the existing job. Ignored tests remain
+ignored, no automatic retries are enabled, and any failed test fails the job.
+Real browser tests run with at most two test threads. The eight terminal smoke
+scripts also run with at most two processes, with separate configuration/state
+directories and complete per-script logs. A failure or timeout fails the job;
+the runner still collects the remaining script results and cleans up child
+processes. Installed browser/sandbox runtimes are found through the inherited
+data directory.
+
 There is no PR-check polling, manual CI dispatch or separate bot-token secret.
 The flow does not depend on approving the generated PR's workflow. This requires
 the branch policy below: skipped PR CI cannot satisfy required status checks.
@@ -83,6 +106,13 @@ existing valid archive/checksum pair, fill in missing files and stop on
 inconsistent existing assets. They do not use `--clobber` or replace existing
 files. A retry does not turn an already published release back into a draft.
 
+If the failure requires a workflow fix, start a new Release run from the updated
+default branch once its normal CI passes. **Re-run failed jobs** retains the
+original workflow revision; it does not pick up that fix. If the failed run
+already created a tag, the new fix is a subsequent commit and the next `patch`
+run prepares the next patch version. See
+[GitHub's rerun behavior](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+
 Version selection still belongs to `scripts/prepare-release.py` and the
 `bump` input. Do not edit Cargo versions or create a tag just to rebuild
 artifacts. For example, after the v0.3.0 release and subsequent changes,
@@ -102,7 +132,7 @@ Also retain **Allow GitHub Actions to create and approve pull requests** under
 **Settings → Actions → General → Workflow permissions** and enable merge commits.
 
 This removes the merge requirement, not the CI jobs: ordinary PRs and main
-still run all three platform jobs and produce three artifacts. Maintainers
+still run all three platform jobs. Maintainers
 must check these results before merging product changes; GitHub no longer
 blocks a merge for a failing or missing status check. If required status checks
 are retained, this release design cannot be used without a different CI/token
@@ -138,7 +168,7 @@ from outside the checkout and respect `CARGO_TARGET_DIR`. Windows accepts the
 `py -3` launcher as well as `python` or `python3` and requires the x64 MSVC
 developer environment. Unlike the inference server, Worker needs no CUDA
 compiler or GPU toolkit. Packaging invokes the same build entrypoints, so local
-builds, the three CI jobs and the three Release build jobs use the same
+builds and the three Release build jobs use the same
 validation path. Direct Cargo aliases remain available when only compilation
 is needed.
 
@@ -224,26 +254,27 @@ is used: an existing asset with the same name causes an error instead of being
 replaced. Inspect the release assets after uploading; publish a draft only
 after all three platform archives and their checksum files are present.
 
-### Platform CI artifacts
+### Platform CI and release artifacts
 
 The `worker` action has exactly three native jobs: Linux x86_64, macOS Apple
-Silicon and Windows x86_64. It validates archive contents, installers and
-offline startup on each target. The Linux job also runs the full sandbox,
+Silicon and Windows x86_64. Each tests native platform behavior, both debug
+commands, offline startup and embedded skills/profiles outside the checkout.
+The Linux job also runs the full sandbox,
 browser, terminal, SDK and crate-installation suite. Release automation tests
 run within those jobs rather than in an extra workflow.
 
-Each job uploads one Actions artifact (`werkWorker-linux`, `werkWorker-macos`
-or `werkWorker-windows`) containing its archive and adjacent `.sha256`, retained
-for seven days. A successful run therefore offers three platform downloads.
-These ordinary CI artifacts do not publish a GitHub release. The Release
-workflow produces its own packages from the exact tag commit, retains them for
-30 days and uploads them after all three native builds pass.
+Ordinary CI does not build or upload release archives. The Release workflow
+builds the three optimized packages from the exact tag commit, validates real
+archive installation and both installed commands on each native platform, and
+retains the packages for 30 days. It uploads them to the release only after all
+three native builds and archive checks pass. Optimized linking and actual
+archive installation are therefore checked at release time.
 
 CI runs on PR updates, pushes to main and manual dispatch. Feature-branch pushes
 do not start a duplicate run, and newer updates cancel an older run for the same
 PR. No platform status context is required by the werk1112 branch policy;
 this also applies to contexts from the retired `platform-checks.yml` and
-`release-checks.yml` workflows. The Linux archive belongs to the sandbox job.
+`release-checks.yml` workflows.
 
 ## Installers
 

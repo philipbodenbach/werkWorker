@@ -252,9 +252,8 @@ jobs:
             suffix: windows-x86_64.zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
-    defaults:
-      run:
-        shell: bash
+    # Keep the native shell (PowerShell on Windows), like ci.yml. Git Bash
+    # prepends its own link.exe ahead of MSVC when Cargo runs build scripts.
     env:
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
       RELEASE_SHA: ${{ needs.release.outputs.commit }}
@@ -269,6 +268,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Verify the tagged build source
+        shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
@@ -282,6 +282,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: Cache Cargo dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Share compatible native caches with CI, never across runner versions.
+          shared-key: native-${{ matrix.os }}-${{ matrix.target }}
       - name: Test release tooling and installers
         run: python -m unittest discover -s scripts/tests
       - name: Test native platform integration
@@ -296,6 +301,7 @@ jobs:
         shell: pwsh
         run: ./scripts/package-release.ps1
       - name: Install and smoke the release archive
+        shell: bash
         env:
           SUFFIX: ${{ matrix.suffix }}
         run: |

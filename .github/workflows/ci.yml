@@ -18,22 +18,21 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            platform: linux
             target: x86_64-unknown-linux-gnu
-            suffix: linux-x86_64.tar.gz
             check_name: linux-real-sandbox
           - os: macos-15
-            platform: macos
             target: aarch64-apple-darwin
-            suffix: macos-aarch64.tar.gz
             check_name: native (macos-14, macos, aarch64-apple-darwin, macos-aarch64.tar.gz)
           - os: windows-2022
-            platform: windows
             target: x86_64-pc-windows-msvc
-            suffix: windows-x86_64.zip
             check_name: native (windows-2022, windows, x86_64-pc-windows-msvc, windows-x86_64.zip)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    env:
+      # Keep file/line backtraces while avoiding full type/variable debug data.
+      # CI only: local development and Release keep their normal profiles.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -48,6 +47,17 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: Cache Cargo dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate runner versions: Linux release builds use an older glibc.
+          shared-key: native-${{ matrix.os }}-${{ matrix.target }}
+      - name: Install the Linux test runner
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: nextest@0.9.124
+          fallback: none
       - name: Test release tooling and installers
         run: python -m unittest discover -s scripts/tests
       - name: Test native platform integration
@@ -66,7 +76,9 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked --all-targets -- --nocapture
+          # Bound test processes within this job; keep every target and collect
+          # all failures. --nocapture would disable nextest's parallel execution.
+          cargo nextest run --locked --all-targets --no-fail-fast --test-threads=4 --success-output immediate
       - name: Install isolated Chromium runtime
         if: runner.os == 'Linux'
         run: sh scripts/install-browser.sh --local-deps chromium
@@ -76,7 +88,7 @@ jobs:
           REQUIRE_BROWSER: "1"
           WW_BROWSER_ENGINES: chromium
         run: |
-          cargo test --locked --test browser_control --test browser_mode -- --test-threads=1
+          cargo test --locked --test browser_control --test browser_mode -- --test-threads=2
           runtime="$HOME/.local/share/werk-worker/tools/browser"
           multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
           PYTHONPATH="$runtime/python" \
@@ -86,14 +98,7 @@ jobs:
       - name: Test terminal workflows and SDK examples
         if: runner.os == 'Linux'
         run: |
-          python3 scripts/tests/tui_smoke.py target/debug/ww
-          python3 scripts/tests/selection_tui_smoke.py target/debug/ww
-          python3 scripts/tests/permissions_tui_smoke.py target/debug/ww
-          python3 scripts/tests/subagents_tui_smoke.py target/debug/ww
-          python3 scripts/tests/delegation_tui_smoke.py target/debug/ww
-          python3 scripts/tests/sessions_tui_smoke.py target/debug/ww
-          python3 scripts/tests/setup_smoke.py target/debug/ww
-          python3 scripts/tests/effort_tui_smoke.py target/debug/ww
+          python3 scripts/tests/run_tui_smokes.py target/debug/ww
           cargo run --locked --example eval
           cargo run --locked --example coding
           cargo run --locked --example automation
@@ -104,37 +109,12 @@ jobs:
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           mkdir -p /tmp/worker-package /tmp/worker-workspace
           tar -xzf target/package/werk-worker-$version.crate -C /tmp/worker-package
-          cargo install --locked --path /tmp/worker-package/werk-worker-$version --root /tmp/worker-install
+          # Verify source installation with existing debug dependencies.
+          # Optimized archives and their installer smoke tests run in Release.
+          cargo install --locked --debug --target-dir "$GITHUB_WORKSPACE/target" \
+            --path /tmp/worker-package/werk-worker-$version --root /tmp/worker-install
           cd /tmp/worker-workspace
           /tmp/worker-install/bin/werk-worker --store /tmp/worker-installed.sqlite run --demo "package smoke"
           /tmp/worker-install/bin/werk-worker profiles inspect coding-basic
           /tmp/worker-install/bin/werk-worker skills inspect ticket-drafting
           /tmp/worker-install/bin/ww --store /tmp/worker-short.sqlite run --demo "short command smoke"
-      - name: Package Unix
-        if: runner.os != 'Windows'
-        env:
-          PLATFORM: ${{ matrix.platform }}
-        run: ./scripts/package-release.sh "$PLATFORM"
-      - name: Package Windows
-        if: runner.os == 'Windows'
-        run: ./scripts/package-release.ps1
-      - name: Install archive and smoke both commands
-        id: archive
-        shell: bash
-        env:
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
-          archive="releases/werkWorker-v$version-$SUFFIX"
-          python scripts/smoke-install.py "$archive"
-          echo "path=$archive" >> "$GITHUB_OUTPUT"
-      - name: Upload tested platform archive and checksum
-        uses: actions/upload-artifact@v7
-        with:
-          name: werkWorker-${{ matrix.platform }}
-          path: |
-            ${{ steps.archive.outputs.path }}
-            ${{ steps.archive.outputs.path }}.sha256
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7

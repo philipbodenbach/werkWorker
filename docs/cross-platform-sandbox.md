@@ -267,6 +267,20 @@ Native CI collects all selected integration targets with `--no-fail-fast` and
 retains failures across separate Cargo commands. SDK/lint checks also run after
 an earlier test failure unless the job is cancelled. The macOS job prints its
 architecture, user identity and `csrutil status`; no step changes SIP settings.
+Both native check steps use GitHub's `shell: python` and start Cargo directly
+with argument lists, preserving the toolchain environment. Git Bash on Windows
+can prepend its own `Git\usr\bin\link.exe`, which is a file-link utility rather
+than the MSVC linker; a native shell comparison reproduced the resulting
+`extra operand` link failure. The same Rust source compiled and ran through
+native Python with the MSVC linker. Tests of failure collection alone do not
+validate that linker selection. See GitHub's
+[shell execution contract](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell).
+After this correction, both Python blocks were extracted unchanged from the
+workflow and executed natively after cleaning the product's own build outputs.
+All 35 Windows integration tests, two parallelism tests, the CLI test, Clippy,
+no-default library and external SDK checks passed. This used Windows 11 build
+26200, Rust 1.98.1 and Python 3.10.6; it is not a rerun of the hosted Server 2022
+job with Python 3.12.
 
 The [2026-11-12 CI run for `60ef7c6`](https://github.com/philipbodenbach/werkWorker/actions/runs/43179493598)
 exposed two separate failures. Windows stopped at a license-header assertion
@@ -277,11 +291,19 @@ then passed, with four existing subprocess fixtures invoked by their parent
 tests. This does not claim a new Server 2022 CI result.
 
 macOS 15.8.2 ARM64 rejected the combined UID/SIP requirement before sandbox
-execution. The old log does not identify which condition failed. The expanded
-diagnostics and effective SIP check still require native macOS validation;
-passing the decision-table unit tests on Linux is not that validation. A runner
-label alone does not establish these host requirements, and no alternate label
-or relaxed requirement has been selected to turn this failure green.
+execution. The first log did not identify which condition failed. The subsequent
+native run with the expanded diagnostics establishes normal UID/EUID 501 and
+GID/EGID 20, but an active CSR mask of `0x0000006f` and successful
+`csr_check(CSR_ALLOW_KERNEL_DEBUGGER)` (result 0, errno 0). The debugger bit is
+set and its effective permission is granted, so this host lacks the required
+protection against custom Mach host ports. The rejection is correct; disabling
+the check or skipping process tests would not provide sandbox acceptance.
+
+Both CSR decision-table tests now pass natively, but actual process isolation
+remains unvalidated because execution is rejected on this host. It requires a
+macOS 15+ Apple Silicon test host with the existing SIP restriction in effect.
+No suitable alternative hosted-runner label has been established, and no
+alternate label or relaxed requirement has been selected to turn the job green.
 
 Validation completed locally on 2026-11-10 against the uncommitted checkout.
 Linux used Rust 1.98.0 on WSL2 kernel 6.18.58.1 with a real Bubblewrap backend.

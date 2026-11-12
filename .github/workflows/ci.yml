@@ -68,28 +68,56 @@ jobs:
           /usr/bin/csrutil status
       - name: Test native platform integration
         if: ${{ !cancelled() && runner.os != 'Linux' }}
-        shell: bash
+        # Git Bash prepends its own link.exe on Windows, hiding the MSVC linker.
+        shell: python
         env:
           REQUIRE_SANDBOX: "1"
         run: |
-          # Collect every target and command without losing an earlier failure.
-          status=0
-          check() { "$@" || status=1; }
-          check cargo test --locked --lib parallel::tests
-          check cargo test --locked --lib runtime::macos::tests
-          check cargo test --locked --no-fail-fast --test platform --test native_workspace --test sandbox_contract --test native_coding --test native_lifecycle --test native_policy --test contracts --test macos_process --test windows_sandbox
-          exit "$status"
+          import subprocess
+          import sys
+
+          commands = [
+              ["cargo", "test", "--locked", "--lib", "parallel::tests"],
+              ["cargo", "test", "--locked", "--lib", "runtime::macos::tests"],
+              ["cargo", "test", "--locked", "--no-fail-fast", "--test", "platform", "--test", "native_workspace", "--test", "sandbox_contract", "--test", "native_coding", "--test", "native_lifecycle", "--test", "native_policy", "--test", "contracts", "--test", "macos_process", "--test", "windows_sandbox"],
+          ]
+          failed = False
+          for command in commands:
+              print("+ " + " ".join(command), flush=True)
+              try:
+                  result = subprocess.run(command, check=False)
+              except OSError as error:
+                  print(f"Cannot start {command[0]}: {error}", file=sys.stderr, flush=True)
+                  failed = True
+              else:
+                  if result.returncode != 0:
+                      failed = True
+          sys.exit(1 if failed else 0)
       - name: Check native SDK and lint
         if: ${{ !cancelled() && runner.os != 'Linux' }}
-        shell: bash
+        shell: python
         run: |
-          status=0
-          check() { "$@" || status=1; }
-          check cargo test --locked --bin ww cli_config::tests
-          check cargo check --locked --no-default-features --lib
-          check cargo clippy --locked --all-targets -- -D warnings
-          check cargo check --locked --manifest-path examples/sdk-consumer/Cargo.toml
-          exit "$status"
+          import subprocess
+          import sys
+
+          commands = [
+              ["cargo", "test", "--locked", "--bin", "ww", "cli_config::tests"],
+              ["cargo", "check", "--locked", "--no-default-features", "--lib"],
+              ["cargo", "clippy", "--locked", "--all-targets", "--", "-D", "warnings"],
+              ["cargo", "check", "--locked", "--manifest-path", "examples/sdk-consumer/Cargo.toml"],
+          ]
+          failed = False
+          for command in commands:
+              print("+ " + " ".join(command), flush=True)
+              try:
+                  result = subprocess.run(command, check=False)
+              except OSError as error:
+                  print(f"Cannot start {command[0]}: {error}", file=sys.stderr, flush=True)
+                  failed = True
+              else:
+                  if result.returncode != 0:
+                      failed = True
+          sys.exit(1 if failed else 0)
       - name: Prepare real namespace backend
         if: runner.os == 'Linux'
         run: |

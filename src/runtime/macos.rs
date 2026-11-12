@@ -30,6 +30,7 @@ const POLL_MS: i32 = 10;
 // not expose the task-port routines. No library is loaded from the workspace.
 unsafe extern "C" {
     fn csr_get_active_config(config: *mut u32) -> libc::c_int;
+    fn csr_check(mask: u32) -> libc::c_int;
     fn mach_ports_register(task: u32, ports: *mut u32, count: u32) -> libc::c_int;
     fn task_get_special_port(task: u32, which: libc::c_int, port: *mut u32) -> libc::c_int;
     fn task_set_special_port(task: u32, which: libc::c_int, port: u32) -> libc::c_int;
@@ -49,6 +50,22 @@ const TASK_BOOTSTRAP_PORT: i32 = 4;
 const TASK_ACCESS_PORT: i32 = 9;
 const EXCEPTION_MASK: u32 = 0x3ffe; // all Darwin exceptions 1..=13, including crash/corpse
 const CSR_ALLOW_KERNEL_DEBUGGER: u32 = 1 << 3;
+
+fn sip_protects_host_ports(
+    active_result: libc::c_int,
+    active_config: u32,
+    check_result: libc::c_int,
+    check_errno: libc::c_int,
+) -> bool {
+    // XNU's csr_check also grants kernel-debugger access when untrusted-kext
+    // or Apple-internal access is enabled. Inspecting only the raw debugger
+    // bit misses those effective permissions. libSystem translates the
+    // kernel's EPERM into -1 plus errno; any other result remains unsupported.
+    active_result == 0
+        && active_config & CSR_ALLOW_KERNEL_DEBUGGER == 0
+        && check_result == -1
+        && check_errno == libc::EPERM
+}
 
 // All varying paths are -D parameters, not Scheme source or a shell string.
 // No mach-lookup, network, shared-memory, IOKit or fork permission is granted.
@@ -137,16 +154,45 @@ pub(super) fn requirements(sandbox: &Sandbox) -> Result<()> {
     }
     // The task host port cannot be replaced under SIP. Do not inherit a root
     // host-privileged port or support a system allowing custom host ports.
+    let (uid, euid, gid, egid) = unsafe {
+        (
+            libc::getuid(),
+            libc::geteuid(),
+            libc::getgid(),
+            libc::getegid(),
+        )
+    };
     let mut csr = 0_u32;
-    if unsafe { libc::geteuid() } == 0
-        || unsafe { libc::getuid() } != unsafe { libc::geteuid() }
-        || unsafe { libc::getgid() } != unsafe { libc::getegid() }
-        || unsafe { csr_get_active_config(&mut csr) } != 0
-        || csr & CSR_ALLOW_KERNEL_DEBUGGER != 0
+    // Capture errno immediately after each read-only call. Reset it first so
+    // successful calls cannot report an unrelated earlier syscall's error.
+    let (csr_result, csr_errno, check_result, check_errno) = unsafe {
+        *libc::__error() = 0;
+        let csr_result = csr_get_active_config(&mut csr);
+        let csr_errno = *libc::__error();
+        *libc::__error() = 0;
+        let check_result = csr_check(CSR_ALLOW_KERNEL_DEBUGGER);
+        let check_errno = *libc::__error();
+        (csr_result, csr_errno, check_result, check_errno)
+    };
+    if euid == 0
+        || uid != euid
+        || gid != egid
+        || !sip_protects_host_ports(csr_result, csr, check_result, check_errno)
     {
+        let active_config = if csr_result == 0 {
+            format!("0x{csr:08x}")
+        } else {
+            "unavailable".into()
+        };
         return Err(WorkerError::new(
             "sandbox_requirement_unavailable",
-            "Native execution requires an unprivileged host and SIP protection against custom Mach host ports",
+            format!(
+                "Native execution requires an unprivileged host and SIP protection against custom Mach host ports \
+                 (uid={uid}, euid={euid}, gid={gid}, egid={egid}, \
+                 csr_get_active_config_result={csr_result}, csr_get_active_config_errno={csr_errno}, \
+                 csr_active={active_config}, csr_check_kernel_debugger_result={check_result}, \
+                 csr_check_kernel_debugger_errno={check_errno})"
+            ),
         ));
     }
     Ok(())
@@ -903,4 +949,36 @@ pub(super) async fn run(
         cancelled: report[0] == 1,
         timed_out: report[0] == 2,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sip_requires_an_effective_kernel_debugger_denial() {
+        assert!(sip_protects_host_ports(0, 0, -1, libc::EPERM));
+        for active_config in [0, 1 << 0, 1 << 4, CSR_ALLOW_KERNEL_DEBUGGER] {
+            assert!(
+                !sip_protects_host_ports(0, active_config, 0, libc::EPERM),
+                "effective permission must reject even with stale errno: {active_config:#x}"
+            );
+        }
+        assert!(!sip_protects_host_ports(
+            0,
+            CSR_ALLOW_KERNEL_DEBUGGER,
+            -1,
+            libc::EPERM
+        ));
+    }
+
+    #[test]
+    fn sip_query_failures_do_not_establish_protection() {
+        assert!(!sip_protects_host_ports(-1, 0, -1, libc::EPERM));
+        for check_errno in [0, libc::EINVAL, libc::ENOSYS, libc::EACCES] {
+            assert!(!sip_protects_host_ports(0, 0, -1, check_errno));
+        }
+        // A kernel errno value is not the libSystem syscall return convention.
+        assert!(!sip_protects_host_ports(0, 0, libc::EPERM, libc::EPERM));
+    }
 }

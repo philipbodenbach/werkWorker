@@ -60,20 +60,36 @@ jobs:
           fallback: none
       - name: Test release tooling and installers
         run: python -m unittest discover -s scripts/tests
+      - name: Report native macOS host requirements
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          uname -m
+          id
+          /usr/bin/csrutil status
       - name: Test native platform integration
-        if: runner.os != 'Linux'
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        shell: bash
         env:
           REQUIRE_SANDBOX: "1"
         run: |
-          cargo test --locked --lib parallel::tests
-          cargo test --locked --test platform --test native_workspace --test sandbox_contract --test native_coding --test native_lifecycle --test native_policy --test contracts --test macos_process --test windows_sandbox
+          # Collect every target and command without losing an earlier failure.
+          status=0
+          check() { "$@" || status=1; }
+          check cargo test --locked --lib parallel::tests
+          check cargo test --locked --lib runtime::macos::tests
+          check cargo test --locked --no-fail-fast --test platform --test native_workspace --test sandbox_contract --test native_coding --test native_lifecycle --test native_policy --test contracts --test macos_process --test windows_sandbox
+          exit "$status"
       - name: Check native SDK and lint
-        if: runner.os != 'Linux'
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        shell: bash
         run: |
-          cargo test --locked --bin ww cli_config::tests
-          cargo check --locked --no-default-features --lib
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo check --locked --manifest-path examples/sdk-consumer/Cargo.toml
+          status=0
+          check() { "$@" || status=1; }
+          check cargo test --locked --bin ww cli_config::tests
+          check cargo check --locked --no-default-features --lib
+          check cargo clippy --locked --all-targets -- -D warnings
+          check cargo check --locked --manifest-path examples/sdk-consumer/Cargo.toml
+          exit "$status"
       - name: Prepare real namespace backend
         if: runner.os == 'Linux'
         run: |

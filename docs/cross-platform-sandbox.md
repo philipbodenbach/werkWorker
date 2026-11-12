@@ -139,7 +139,16 @@ renames or as general macOS sandbox parity.
 application API. App Sandbox entitlements are a different mechanism. Native
 tests on the supported macOS version are mandatory; no SIP or global protection
 setting is changed. Root/set-id hosts and SIP configurations permitting custom
-host ports are rejected. The supervisor clears registered/bootstrap/exception
+host ports are rejected. The SIP check queries effective debugger permission
+with `csr_check`, not just the raw configuration bit: XNU also derives that
+permission from untrusted-kext or Apple-internal access. Only the documented
+syscall denial (`-1` with `errno=EPERM`) establishes the required restriction;
+an unknown result rejects execution. See Apple's
+[effective CSR check](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_csr.c)
+and [userland wrapper](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/csr.c).
+Host-requirement failures report UID/GID, the active CSR mask, query results and
+their captured error codes so a runner incompatibility can be diagnosed without
+weakening the boundary. The supervisor clears registered/bootstrap/exception
 Mach ports, rejects a task-access port, and forks a fresh namespace before exec;
 native Mach IPC denial tests still require an actual macOS run. On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
@@ -253,6 +262,26 @@ tests; macOS and Windows additionally run their actual process backends.
 `REQUIRE_SANDBOX=1` is required. A failed native backend is not turned into a
 successful skip. Dedicated fixtures use synthetic secrets and host-side
 positive controls before checking denial.
+
+Native CI collects all selected integration targets with `--no-fail-fast` and
+retains failures across separate Cargo commands. SDK/lint checks also run after
+an earlier test failure unless the job is cancelled. The macOS job prints its
+architecture, user identity and `csrutil status`; no step changes SIP settings.
+
+The [2026-11-12 CI run for `60ef7c6`](https://github.com/philipbodenbach/werkWorker/actions/runs/43179493598)
+exposed two separate failures. Windows stopped at a license-header assertion
+that required LF checkout bytes; the check now compares the first logical line
+and accepts both LF and CRLF. A native Windows 11 CRLF reproduction failed
+before the correction and passed afterwards; all 35 Windows integration tests
+then passed, with four existing subprocess fixtures invoked by their parent
+tests. This does not claim a new Server 2022 CI result.
+
+macOS 15.8.2 ARM64 rejected the combined UID/SIP requirement before sandbox
+execution. The old log does not identify which condition failed. The expanded
+diagnostics and effective SIP check still require native macOS validation;
+passing the decision-table unit tests on Linux is not that validation. A runner
+label alone does not establish these host requirements, and no alternate label
+or relaxed requirement has been selected to turn this failure green.
 
 Validation completed locally on 2026-11-10 against the uncommitted checkout.
 Linux used Rust 1.98.0 on WSL2 kernel 6.18.58.1 with a real Bubblewrap backend.

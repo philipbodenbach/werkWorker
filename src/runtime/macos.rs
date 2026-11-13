@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const BACKEND: &str = "seatbelt-single-process";
 const EXECUTABLE: &str = "/usr/bin/sandbox-exec";
-const PROFILE_VERSION: u32 = 4;
+const PROFILE_VERSION: u32 = 5;
 const POLL_MS: i32 = 10;
 
 // Darwin Mach ABI, supplied by libSystem. Keep these bindings local: libc does
@@ -145,6 +145,8 @@ unsafe fn verify_host_port() -> std::result::Result<(), MachSetupError> {
 // Explicitly deny special-port extraction/replacement, including target self.
 // TASK_ACCESS_PORT cannot be revoked but must remain kernel-only. Apple uses
 // these Seatbelt operations on macOS >=14; unknown operations fail compilation.
+// dyld/libignition opens the root directory during startup. Permit only that
+// directory's entries, never a root subpath grant or descendant file contents.
 const PROFILE: &str = r#"(version 1)
 (deny default)
 (deny mach-task-special-port-get)
@@ -168,7 +170,8 @@ const PROFILE: &str = r#"(version 1)
   (path-ancestors (param "PRIVATE_TMP")))
 (if (not (string=? (param "WORKSPACE") "/"))
     (allow file-read-metadata (path-ancestors (param "WORKSPACE"))))
-(allow file-read-data (literal "/dev/null") (literal "/dev/zero")
+(allow file-read-data (literal "/")
+  (literal "/dev/null") (literal "/dev/zero")
   (literal "/dev/random") (literal "/dev/urandom"))
 (allow file-write-data (literal "/dev/null"))
 (allow file-write* (subpath (param "PRIVATE_TMP")))
@@ -278,6 +281,7 @@ pub(super) fn description(
             "/usr/bin", "/usr/libexec", "/Library/Developer/CommandLineTools"],
         "path_metadata": {"system_aliases": ["/var", "/tmp"],
             "ancestors": ["workspace", "private-temporary-directory"]},
+        "root_directory_entries": "readable-for-loader;no-descendant-access",
         "temporary_directory": "private-per-invocation",
         "environment": ["PATH=/usr/bin:/bin", "HOME=<private-temp>",
             "TMPDIR=<private-temp>", "LANG=C.UTF-8"],

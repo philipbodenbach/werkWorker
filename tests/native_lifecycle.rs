@@ -73,10 +73,15 @@ impl Fixture {
         );
         std::fs::copy(&compiled, &executable).unwrap();
         std::fs::write(workspace.path.join("source.txt"), "observed source").unwrap();
-        // Positive control proves this exact binary can create both readiness
-        // and completion markers before asserting sandbox cleanup denies them.
+        // Run the completed host-built executable as the positive control,
+        // independently of workspace file labels and copy launch behavior.
+        // The real sandbox run still executes the byte-identical workspace copy.
+        assert_eq!(
+            std::fs::read(&compiled).unwrap(),
+            std::fs::read(&executable).unwrap()
+        );
         std::fs::write(workspace.path.join("control-gate"), "go").unwrap();
-        let control = std::process::Command::new(&executable)
+        let control = std::process::Command::new(&compiled)
             .args([
                 "gated-write",
                 "control-ready",

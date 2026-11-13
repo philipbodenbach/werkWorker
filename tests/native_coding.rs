@@ -62,7 +62,22 @@ async fn native_scripted_coding_cycle_uses_real_files_process_and_verification()
         .write("checks.csv", b"2,3,5\n-2,3,1\n0,0,0\n".to_vec(), None)
         .await
         .unwrap();
-    let control = std::process::Command::new(&program)
+    #[cfg(windows)]
+    let control_root = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    let control_program = {
+        // Workspace executables inherit its low integrity label. Build the
+        // host control from identical bytes without copying that security
+        // metadata, so CreateProcess does not inherit the workspace's low label.
+        let control = control_root.path().join(program_name);
+        let bytes = std::fs::read(&program).unwrap();
+        std::fs::write(&control, &bytes).unwrap();
+        assert_eq!(std::fs::read(&control).unwrap(), bytes);
+        control
+    };
+    #[cfg(not(windows))]
+    let control_program = &program;
+    let control = std::process::Command::new(control_program)
         .args(["test-add", "add.expr", "checks.csv"])
         .current_dir(&workspace.path)
         .output()

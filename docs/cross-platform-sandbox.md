@@ -139,7 +139,7 @@ renames or as general macOS sandbox parity.
 application API. App Sandbox entitlements are a different mechanism. Native
 tests on the supported macOS version are mandatory; no SIP or global protection
 setting is changed. Root/set-id hosts remain rejected. macOS backend
-configuration version **4** checks the actual inherited host port instead of
+configuration version **5** checks the actual inherited host port instead of
 requiring a global SIP setting: `task_get_special_port(TASK_HOST_PORT)` obtains
 the right and `mach_port_kobject` queries its kernel object type through the
 task port. Only `IKOT_HOST` (3), the ordinary unprivileged kernel host port, is
@@ -161,7 +161,7 @@ and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215
 The query returns the object type on release kernels too; the backend does not
 use the kernel address, which release kernels hide. Port failures retain the
 Mach result or unexpected object type and identify the failing stage.
-Version 1/2/3 approval descriptions differ and must be prepared and approved again;
+Version 1/2/3/4 approval descriptions differ and must be prepared and approved again;
 the file-content/network rules and one-process limit are unchanged. The supervisor still
 clears registered ports and verifies bootstrap/exception slots are empty before
 forking a fresh namespace for exec. Only populated bootstrap/exception slots
@@ -189,8 +189,12 @@ and the exact ancestors of the workspace and private temporary directory.
 XNU checks [symlink reads during path lookup](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/vfs/vfs_lookup.c)
 before it can reach the already permitted canonical workspace. Apple's WebKit
 profile likewise permits metadata on those two aliases. Neither their contents
-nor sibling directories become readable. Native execution remains unconfirmed:
-version 3 passed Mach cleanup but failed to start payloads. On abrupt host
+nor sibling directories become readable. Version 5 permits `file-read-data` on
+the literal root directory `/` for dyld/libignition startup. This exposes only
+root directory entry names, not descendant file contents or writes; it is not a
+`subpath "/"` grant. The execution description records this permission and
+invalidates earlier approvals. Native acceptance of version 5 remains pending.
+On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
 See [Apple DTS on sandbox-exec](https://developer.apple.com/forums/thread/661939)
 and [XNU process event definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h).
@@ -407,12 +411,40 @@ reports signal/status; on failure it compares the explicit special-port deny
 rules one at a time. Those controls never replace the production result.
 CI also collects narrowly filtered Sandbox denial and crash diagnostics after
 a native failure. No Cryptex or IPC permissions are added without evidence.
-The canonical-path signal termination is still unresolved until native evidence
-identifies its cause; version 4 is not a confirmed pipeline repair.
+The [native run of `592f7a7`](https://github.com/philipbodenbach/werkWorker/actions/runs/43431980307/job/131907468156)
+now identifies the signal as `SIGABRT` with termination namespace `0x23`, code 2.
+Apple defines namespace 35 as
+[OS_REASON_LIBIGNITION](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/sys/reason.h),
+which belongs to dyld startup. The exact meaning of its code 2 is not established.
+The native logs repeatedly show `deny file-read-data /` immediately before the
+abort, including controls with the special-port rules removed. Version 5 adds
+only the literal-root directory read described above, preserving the Mach rules
+and requiring the existing native startup/isolation tests to pass. No successful
+native macOS run of version 5 is claimed.
 Local version 4 checks passed on 2026-11-13: 31 real Linux integration tests,
 eight workflow/diagnostic tests, formatting, all-targets Clippy with warnings
 denied, the no-default-features library, the separate SDK consumer and the
 extracted Apple ARM64 type/Clippy checks. These checks do not execute Seatbelt.
+
+The same CI run exposed two Windows fixture problems before their LPAC checks:
+the coding control accepted access failure instead of its intended arithmetic
+assertion, and the lifecycle control had been moved into the low-labeled
+workspace. Windows starts ordinary processes at no higher integrity than their
+executable file; see Microsoft's
+[Mandatory Integrity Control documentation](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control).
+Host controls now use byte-verified executables outside that labeled workspace;
+the real sandbox runs still use the workspace copy. No production ACL or token
+changes are required. On 2026-11-13, native Windows 11/MSVC reproduced all five
+failures at `592f7a7`; with the fixture correction, all 35 required native
+integration tests passed. The four technical Windows payload fixtures remain
+invoked by their parent tests. GitHub's Windows Server 2022 rerun is still pending.
+Native Windows all-targets Clippy with warnings denied, the no-default-features
+library and separate locked SDK consumer passed on Windows build 26200 with
+Rust/Cargo 1.98.1. The five affected Linux integration tests also passed; the
+updated macOS module passed the extracted Apple ARM64 type/Clippy check.
+Before/after logs are `/tmp/ww-native-control-before.log` and
+`/tmp/ww-native-control-after.log`; Windows lint/SDK results are in
+`/tmp/ww-native-control-checks.log`. These Windows checks do not validate Seatbelt.
 
 Version 3 local validation on 2026-11-13 passed: 31 Linux integration tests with
 real Bubblewrap and `REQUIRE_SANDBOX=1`, three CI-workflow tests, formatting,

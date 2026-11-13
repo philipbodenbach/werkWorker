@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const BACKEND: &str = "seatbelt-single-process";
 const EXECUTABLE: &str = "/usr/bin/sandbox-exec";
-const PROFILE_VERSION: u32 = 2;
+const PROFILE_VERSION: u32 = 3;
 const POLL_MS: i32 = 10;
 
 // Darwin Mach ABI, supplied by libSystem. Keep these bindings local: libc does
@@ -50,7 +50,10 @@ unsafe extern "C" {
 // Selector 3 is TASK_NAME_PORT; IKOT_HOST below is a different enum.
 const TASK_HOST_PORT: i32 = 2;
 const TASK_BOOTSTRAP_PORT: i32 = 4;
+#[cfg(test)]
 const TASK_ACCESS_PORT: i32 = 9;
+#[cfg(test)]
+const KERN_DENIED: i32 = 53;
 const EXCEPTION_MASK: u32 = 0x3ffe; // all Darwin exceptions 1..=13, including crash/corpse
 const IKOT_HOST: u32 = 3;
 
@@ -68,10 +71,6 @@ impl MachSetupError {
             8 => "host-port kernel inspection",
             9 => "host-port object type",
             10 => "host-port reference release",
-            11 => "task-access query",
-            12 => "live task-access port cannot be revoked",
-            13 => "dead task-access port clearing",
-            14 => "task-access clearing verification",
             15 => "registered-port clearing",
             16 => "bootstrap query",
             17 => "bootstrap clearing",
@@ -143,8 +142,13 @@ unsafe fn verify_host_port() -> std::result::Result<(), MachSetupError> {
 
 // All varying paths are -D parameters, not Scheme source or a shell string.
 // No mach-lookup, network, shared-memory, IOKit or fork permission is granted.
+// Explicitly deny special-port extraction/replacement, including target self.
+// TASK_ACCESS_PORT cannot be revoked but must remain kernel-only. Apple uses
+// these Seatbelt operations on macOS >=14; unknown operations fail compilation.
 const PROFILE: &str = r#"(version 1)
 (deny default)
+(deny mach-task-special-port-get)
+(deny mach-task-special-port-set)
 (allow process-exec)
 (deny process-fork)
 (allow signal (target self))
@@ -263,7 +267,7 @@ pub(super) fn description(
         "workspace_binding": "path-filter-with-pinned-cwd-and-rename-monitor",
         "requires_trusted_external_workspace_renames": true,
         "network": "denied", "host_ipc": "denied", "fork": "denied",
-        "inherited_mach_rights": "registered-bootstrap-exception-verified-empty-before-second-fork;live-task-access-rejected;dead-task-access-cleared;host-port-kernel-type-verified-after-fork",
+        "inherited_mach_rights": "registered-bootstrap-exception-verified-empty-before-second-fork;task-access-kernel-slot-retained-with-special-port-get-set-denied;host-port-kernel-type-verified-after-fork",
         "host_requirements": "unprivileged-uid;host-port-IKOT_HOST-only",
         "untrusted_processes": 1,
         "readonly_runtime": ["/System/Library", "/usr/lib", "/usr/share", "/bin",
@@ -536,36 +540,12 @@ unsafe fn exception_ports_present(
 unsafe fn scrub_inherited_mach() -> std::result::Result<(), MachSetupError> {
     #[allow(deprecated)] // local libSystem ABI avoids a second Mach binding dependency
     let task = unsafe { libc::mach_task_self() };
+    // launchd normally supplies a live TASK_ACCESS_PORT for kernel code-signing
+    // upcalls. XNU refuses to replace it. Do not copy it into this namespace or
+    // pretend that deallocating a name revokes the kernel's retained slot.
+    // The next fork discards copied-out names; PROFILE denies the user getter
+    // and setter before untrusted code, while kernel-internal upcalls remain.
     let mut port = 0_u32;
-    mach_result(
-        unsafe { task_get_special_port(task, TASK_ACCESS_PORT, &mut port) },
-        11,
-    )?;
-    if port == u32::MAX {
-        // A dead name carries no callable endpoint. A fork-copied IP_DEAD slot
-        // is replaceable; an inactive retained kernel object may still reject
-        // replacement. Propagate that failure and require a verified NULL slot.
-        mach_result(
-            unsafe { task_set_special_port(task, TASK_ACCESS_PORT, 0) },
-            13,
-        )?;
-        mach_result(
-            unsafe { task_get_special_port(task, TASK_ACCESS_PORT, &mut port) },
-            14,
-        )?;
-        if port != 0 {
-            return Err(MachSetupError {
-                stage: 14,
-                detail: port as i32,
-            });
-        }
-    } else if port != 0 {
-        // XNU deliberately disallows replacing a live task-access port.
-        return Err(MachSetupError {
-            stage: 12,
-            detail: port as i32,
-        });
-    }
     mach_result(
         unsafe { mach_ports_register(task, std::ptr::null_mut(), 0) },
         15,
@@ -623,7 +603,7 @@ fn resolve_mach_symbols() {
         mach_port_kobject(0, 0, &mut value, &mut address);
         mach_port_deallocate(0, 0);
         mach_ports_register(0, std::ptr::null_mut(), 0);
-        task_get_special_port(0, TASK_ACCESS_PORT, &mut value);
+        task_get_special_port(0, TASK_BOOTSTRAP_PORT, &mut value);
         task_set_special_port(0, TASK_BOOTSTRAP_PORT, 0);
         task_set_exception_ports(0, EXCEPTION_MASK, 0, 1, 0);
         task_get_exception_ports(
@@ -1119,7 +1099,7 @@ pub(super) async fn run(
 mod tests {
     use super::*;
 
-    fn check_scrub_in_fork(dead_access: bool) {
+    fn check_scrub_in_fork() {
         use std::io::Read;
         let (mut reader, writer) = pipe().unwrap();
         resolve_mach_symbols();
@@ -1128,17 +1108,7 @@ mod tests {
         if child == 0 {
             // Exercise the real fork snapshot and backend routine. No host
             // test-harness ports are changed and no Rust cleanup runs here.
-            #[allow(deprecated)]
-            let task = unsafe { libc::mach_task_self() };
-            let result = if dead_access {
-                mach_result(
-                    unsafe { task_set_special_port(task, TASK_ACCESS_PORT, u32::MAX) },
-                    13,
-                )
-                .and_then(|()| unsafe { scrub_inherited_mach() })
-            } else {
-                unsafe { scrub_inherited_mach() }
-            };
+            let result = unsafe { scrub_inherited_mach() };
             let mut report = [0_u8; 5];
             if let Err(error) = result {
                 report[0] = error.stage;
@@ -1177,12 +1147,7 @@ mod tests {
 
     #[test]
     fn inherited_mach_ports_are_cleared_in_fork_snapshot() {
-        check_scrub_in_fork(false);
-    }
-
-    #[test]
-    fn dead_access_sentinel_is_cleared_before_untrusted_fork() {
-        check_scrub_in_fork(true);
+        check_scrub_in_fork();
     }
 
     #[test]
@@ -1215,11 +1180,13 @@ mod tests {
         // untrusted code. A selector/type mix-up fails at compile time here.
         let source = format!(
             "#include <mach/task_special_ports.h>\n\
+             #include <mach/kern_return.h>\n\
              #include <mach/exception_types.h>\n\
              _Static_assert(TASK_HOST_PORT == {TASK_HOST_PORT}, \"TASK_HOST_PORT\");\n\
              _Static_assert(TASK_BOOTSTRAP_PORT == {TASK_BOOTSTRAP_PORT}, \"TASK_BOOTSTRAP_PORT\");\n\
              _Static_assert(TASK_ACCESS_PORT == {TASK_ACCESS_PORT}, \"TASK_ACCESS_PORT\");\n\
-             _Static_assert((EXC_MASK_ALL | EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY) == {EXCEPTION_MASK}, \"EXCEPTION_MASK\");\n"
+             _Static_assert((EXC_MASK_ALL | EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY) == {EXCEPTION_MASK}, \"EXCEPTION_MASK\");\n\
+             _Static_assert(KERN_DENIED == {KERN_DENIED}, \"KERN_DENIED\");\n"
         );
         let mut compiler = Command::new("/usr/bin/xcrun")
             .args([

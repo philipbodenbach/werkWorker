@@ -13,6 +13,41 @@ fn attempt(operation: impl FnOnce() -> io::Result<()>) {
 }
 
 #[cfg(target_os = "macos")]
+const KERN_DENIED: i32 = 53; // mach/kern_return.h; SDK-checked by the native library tests
+
+#[cfg(target_os = "macos")]
+fn mach_special_ports() {
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+        fn task_get_special_port(task: u32, which: i32, port: *mut u32) -> i32;
+        fn task_set_special_port(task: u32, which: i32, port: u32) -> i32;
+        fn mach_port_type(task: u32, name: u32, kind: *mut u32) -> i32;
+        fn mach_port_deallocate(task: u32, name: u32) -> i32;
+    }
+    let task = unsafe { mach_task_self_ };
+    let mut access = 0;
+    let access_get = unsafe { task_get_special_port(task, 9, &mut access) };
+    if access_get != 0 && access != 0 {
+        std::process::exit(79);
+    }
+    let mut access_live = false;
+    if access_get == 0 && access != 0 && access != u32::MAX {
+        let mut kind = 0;
+        if unsafe { mach_port_type(task, access, &mut kind) } != 0 {
+            std::process::exit(79);
+        }
+        access_live = kind & 0x10000 != 0; // MACH_PORT_TYPE_SEND
+        if unsafe { mach_port_deallocate(task, access) } != 0 {
+            std::process::exit(79);
+        }
+    }
+    // Clearing this isolated payload's bootstrap slot is a valid operation
+    // outside Seatbelt. Inside, the same call must return the exact MAC denial.
+    let bootstrap_set = unsafe { task_set_special_port(task, 4, 0) };
+    println!("access_get={access_get};access_live={access_live};bootstrap_set={bootstrap_set}");
+}
+
+#[cfg(target_os = "macos")]
 fn mach_state() {
     unsafe extern "C" {
         static mach_task_self_: u32;
@@ -73,9 +108,16 @@ fn mach_state() {
         }
     }
     let mut bootstrap = 0;
-    if unsafe { task_get_special_port(task, 4, &mut bootstrap) } != 0 {
+    let bootstrap_status = unsafe { task_get_special_port(task, 4, &mut bootstrap) };
+    if bootstrap_status != 0 && bootstrap_status != KERN_DENIED {
         std::process::exit(79);
     }
+    let mut access = 0;
+    let access_status = unsafe { task_get_special_port(task, 9, &mut access) };
+    if access_status != 0 && access_status != KERN_DENIED {
+        std::process::exit(79);
+    }
+    let access_denied = access_status == KERN_DENIED && access == 0;
     let mut masks = [0_u32; 32];
     let mut exceptions = [0_u32; 32];
     let mut behaviors = [0_i32; 32];
@@ -98,11 +140,11 @@ fn mach_state() {
     }
     let exceptional = exceptions[..count as usize].iter().any(|port| *port != 0);
     println!(
-        "registered={};bootstrap={};exceptions={exceptional}",
+        "registered={};bootstrap={};access_denied={access_denied};exceptions={exceptional}",
         inherited.is_some(),
         bootstrap != 0
     );
-    if inherited.is_some() || bootstrap != 0 || exceptional {
+    if inherited.is_some() || bootstrap != 0 || !access_denied || exceptional {
         std::process::exit(77);
     }
 }
@@ -113,6 +155,17 @@ fn main() {
     match mode {
         #[cfg(target_os = "macos")]
         "mach-state" => mach_state(),
+        #[cfg(target_os = "macos")]
+        "mach-special-ports" => mach_special_ports(),
+        #[cfg(target_os = "macos")]
+        "exec-mach-special-ports" => {
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("mach-special-ports")
+                .exec();
+            eprintln!("self exec failed: {error}");
+            std::process::exit(79);
+        }
         "echo" => {
             for value in &args[2..] {
                 println!("{}:{value}", value.len());

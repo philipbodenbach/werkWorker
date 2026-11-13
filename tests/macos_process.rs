@@ -129,22 +129,25 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
         .execution_description(&fixture.workspace, false)
         .await
         .unwrap();
-    assert_eq!(contract["configuration_version"], 2);
+    assert_eq!(contract["configuration_version"], 3);
     assert_eq!(
         contract["host_requirements"],
         "unprivileged-uid;host-port-IKOT_HOST-only"
     );
-    let mut legacy = contract.clone();
-    legacy["configuration_version"] = 1.into();
-    assert_eq!(
-        fixture
-            .sandbox
-            .verify_execution_description(&fixture.workspace, false, &legacy)
-            .await
-            .unwrap_err()
-            .code,
-        "sandbox_contract_changed"
-    );
+    for version in [1, 2] {
+        let mut legacy = contract.clone();
+        legacy["configuration_version"] = version.into();
+        assert_eq!(
+            fixture
+                .sandbox
+                .verify_execution_description(&fixture.workspace, false, &legacy)
+                .await
+                .unwrap_err()
+                .code,
+            "sandbox_contract_changed",
+            "configuration version {version} must require a new approval"
+        );
+    }
     let echo = fixture
         .run(
             false,
@@ -244,6 +247,35 @@ async fn outside_files_network_and_host_ipc_have_positive_controls() {
             .exit_code,
         Some(0)
     );
+}
+
+#[tokio::test]
+async fn task_access_getter_and_special_port_setter_are_denied_across_exec() {
+    let fixture = Fixture::new().await;
+    for mode in ["mach-special-ports", "exec-mach-special-ports"] {
+        let outside = fixture.outside(&[mode]);
+        assert!(
+            outside.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&outside.stderr)
+        );
+        // A real live send right proves the getter works on this native host;
+        // no message is sent to the system taskgated endpoint.
+        assert_eq!(
+            String::from_utf8(outside.stdout).unwrap().trim(),
+            "access_get=0;access_live=true;bootstrap_set=0",
+            "{mode}: positive control"
+        );
+        let inside = fixture.run(false, &[mode]).await;
+        assert_eq!(inside.exit_code, Some(0), "{mode}: {}", inside.stderr);
+        // Require the MAC policy's exact KERN_DENIED=53, not an arbitrary error,
+        // absent slot, timeout, crash, or successful access followed by cleanup.
+        assert_eq!(
+            inside.stdout.trim(),
+            "access_get=53;access_live=false;bootstrap_set=53",
+            "{mode}: sandbox boundary"
+        );
+    }
 }
 
 #[tokio::test]
@@ -417,7 +449,7 @@ async fn host_exit_fixture() {
     assert_eq!(inside_mach.exit_code, Some(0), "{}", inside_mach.stderr);
     assert_eq!(
         inside_mach.stdout.trim(),
-        "registered=false;bootstrap=false;exceptions=false"
+        "registered=false;bootstrap=false;access_denied=true;exceptions=false"
     );
     let outside = Command::new(&probe)
         .args(["env", "WERK_NATIVE_TEST_SECRET"])

@@ -139,7 +139,7 @@ renames or as general macOS sandbox parity.
 application API. App Sandbox entitlements are a different mechanism. Native
 tests on the supported macOS version are mandatory; no SIP or global protection
 setting is changed. Root/set-id hosts remain rejected. macOS backend
-configuration version **2** checks the actual inherited host port instead of
+configuration version **3** checks the actual inherited host port instead of
 requiring a global SIP setting: `task_get_special_port(TASK_HOST_PORT)` obtains
 the right and `mach_port_kobject` queries its kernel object type through the
 task port. Only `IKOT_HOST` (3), the ordinary unprivileged kernel host port, is
@@ -161,15 +161,30 @@ and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215
 The query returns the object type on release kernels too; the backend does not
 use the kernel address, which release kernels hide. Port failures retain the
 Mach result or unexpected object type and identify the failing stage.
-Version 1 approval descriptions differ and must be prepared and approved again;
-the Seatbelt rules and one-process limit are unchanged. The supervisor still
+Version 1/2 approval descriptions differ and must be prepared and approved again;
+the file/network rules and one-process limit are unchanged. The supervisor still
 clears registered ports and verifies bootstrap/exception slots are empty before
 forking a fresh namespace for exec. Only populated bootstrap/exception slots
 need mutation; after clearing exceptions, it verifies the complete mask again.
-A live task-access endpoint is rejected. A dead task-access slot is cleared and
-must read back as NULL; failure to replace even a dead slot still aborts. No
-callable inherited endpoint is accepted on the basis of its origin alone;
-native Mach IPC denial tests still require an actual macOS run. On abrupt host
+A `TASK_ACCESS_PORT` supplied by launchd remains in its kernel slot: XNU does
+not permit replacing a live access port, and deallocating a user-space name
+does not revoke it. Version 3 instead explicitly denies
+`mach-task-special-port-get` and `mach-task-special-port-set` for user getter/setter
+calls, including access to the process's own special ports. The supervisor does
+not extract the access port. After clearing the other inherited slots it forks a fresh IPC namespace;
+the backend never extracts the access right in that child. Exec into the payload
+creates another IPC namespace, discarding any ordinary port names cached by the
+trusted launcher while preserving the Seatbelt policy.
+The kernel can still perform its internal code-signing upcalls, but untrusted
+code cannot copy the endpoint out through the user getter. XNU checks the MAC
+policy before servicing that getter even for the current task. Apple's WebKit
+uses these deny operations on macOS >=14; see its
+[Seatbelt profile](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in)
+and XNU's [user special-port getter and namespace initialization](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_tt.c)
+and [exec task creation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/kern/kern_exec.c).
+Mandatory native tests require a live outside access-port control and exact
+`KERN_DENIED` results for the inside getter and setter, including after exec.
+Native acceptance of version 3 is still pending. On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
 See [Apple DTS on sandbox-exec](https://developer.apple.com/forums/thread/661939)
 and [XNU process event definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h).
@@ -318,7 +333,7 @@ set and its effective permission is granted, so this host lacks the required
 protection against custom Mach host ports required by configuration version 1.
 That gate prevented all process conformance tests from reaching Seatbelt.
 
-Configuration version 2 replaces that gate with the per-process kernel object
+Configuration version 2 replaced that gate with the per-process kernel object
 check described above. `macos_process` includes a positive control sending a
 real message through the isolated parent's injected custom host port, followed
 by rejection tests before launch and after the host preflight (using a child
@@ -355,15 +370,28 @@ while its parent slot actually contains the synthetic endpoint; its ordinary
 fork child only verifies the restored kernel host type. See Apple's
 [Mach message policy](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/ipc/ipc_policy.c).
 
-The same run reports only a generic Mach cleanup failure, insufficient to
-identify its failing call. Cleanup now checks actual slot contents, avoids
-mutating verified empty slots, handles dead access slots only with successful
-clearing and NULL verification, and returns the individual operation plus its
-immediate Mach result or observed port/mask. The native library suite also runs
-cleanup in an isolated fork snapshot and tests clearing an explicit dead access
-sentinel. The exact failing operation on that runner, and acceptance of these
-changes, remain unconfirmed until the next native run. No security check is
-skipped to turn the job green.
+That run reported only a generic Mach cleanup failure. The added per-operation
+diagnostics in `60477df` established the actual blocker: stage 12 observed a
+**live** inherited `TASK_ACCESS_PORT`; the separate dead-sentinel fixture's
+attempted overwrite returned `KERN_NO_ACCESS` (8). This is an incompatible backend
+assumption, not a transient runner failure. Another fork, plain exec or `posix_spawn` port action cannot
+revoke that slot; those paths inherit it or call the same protected setter.
+
+Version 3 removes the impossible revocation requirement and uses the explicit
+Seatbelt getter/setter denial described above. The invalid dead-slot overwrite
+test is replaced by native positive/negative access tests. The remaining Mach
+cleanup diagnostics and fork-snapshot test stay active. Old approvals do not
+authorize this changed execution description. The source-level cause is now
+established; full acceptance still requires the version 3 native run.
+
+Version 3 local validation on 2026-11-13 passed: 31 Linux integration tests with
+real Bubblewrap and `REQUIRE_SANDBOX=1`, three CI-workflow tests, formatting,
+all-targets Clippy with warnings denied, no-default-features library and the
+separate locked SDK consumer. The extracted Apple ARM64 source harness also
+passed Clippy with warnings denied, and the payload compiled to Apple ARM64
+metadata. These cross-target checks do not run Seatbelt or link the full macOS
+application; no native macOS run of version 3 was available locally. The
+existing mandatory CI command already includes the new integration test.
 
 Validation completed locally on 2026-11-10 against the uncommitted checkout.
 Linux used Rust 1.98.0 on WSL2 kernel 6.18.58.1 with a real Bubblewrap backend.

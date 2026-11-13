@@ -282,9 +282,12 @@ fn main() {
         #[cfg(unix)]
         "exec-read" => {
             use std::os::unix::process::CommandExt;
-            let error = std::process::Command::new("/bin/cat").arg(&args[2]).exec();
+            let error = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["read", &args[2]])
+                .exec();
             eprintln!("self exec failed: {error}");
-            std::process::exit(77);
+            // 77 belongs to the actual read denial in the replacement process.
+            std::process::exit(79);
         }
         #[cfg(unix)]
         "fork-detach" => {

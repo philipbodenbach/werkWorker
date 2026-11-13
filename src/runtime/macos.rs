@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const BACKEND: &str = "seatbelt-single-process";
 const EXECUTABLE: &str = "/usr/bin/sandbox-exec";
-const PROFILE_VERSION: u32 = 3;
+const PROFILE_VERSION: u32 = 4;
 const POLL_MS: i32 = 10;
 
 // Darwin Mach ABI, supplied by libSystem. Keep these bindings local: libc does
@@ -163,7 +163,11 @@ const PROFILE: &str = r#"(version 1)
   (subpath "/usr/libexec") (subpath "/Library/Developer/CommandLineTools")
   (subpath (param "WORKSPACE")) (subpath (param "PRIVATE_TMP")))
 (allow file-read-metadata (literal "/") (literal "/private")
-  (literal "/private/var") (literal "/private/tmp") (literal "/Users"))
+  (literal "/private/var") (literal "/private/tmp") (literal "/Users")
+  (literal "/var") (literal "/tmp")
+  (path-ancestors (param "PRIVATE_TMP")))
+(if (not (string=? (param "WORKSPACE") "/"))
+    (allow file-read-metadata (path-ancestors (param "WORKSPACE"))))
 (allow file-read-data (literal "/dev/null") (literal "/dev/zero")
   (literal "/dev/random") (literal "/dev/urandom"))
 (allow file-write-data (literal "/dev/null"))
@@ -272,6 +276,8 @@ pub(super) fn description(
         "untrusted_processes": 1,
         "readonly_runtime": ["/System/Library", "/usr/lib", "/usr/share", "/bin",
             "/usr/bin", "/usr/libexec", "/Library/Developer/CommandLineTools"],
+        "path_metadata": {"system_aliases": ["/var", "/tmp"],
+            "ancestors": ["workspace", "private-temporary-directory"]},
         "temporary_directory": "private-per-invocation",
         "environment": ["PATH=/usr/bin:/bin", "HOME=<private-temp>",
             "TMPDIR=<private-temp>", "LANG=C.UTF-8"],
@@ -1098,6 +1104,115 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seatbelt_profile_starts_native_payload_before_ipc_probes() {
+        use std::{
+            os::unix::process::ExitStatusExt,
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+
+        // Keep path aliases and payload Mach calls out of this startup test.
+        // The fixed host-built payload only prints a marker and exits.
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let workspace = root.join("workspace with spaces");
+        let private = root.join("private temp");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        let source = root.join("entry.rs");
+        let executable = workspace.join("native entry");
+        std::fs::write(
+            &source,
+            "fn main() { println!(\"native-profile-started\"); }\n",
+        )
+        .unwrap();
+        let compiled = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .args(["--edition=2024", "-C", "debuginfo=0"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "native startup fixture compilation: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let control = Command::new(&executable).output().unwrap();
+        assert!(control.status.success(), "outside control: {control:?}");
+        assert_eq!(control.stdout, b"native-profile-started\n");
+
+        let run_profile = |profile: &str| {
+            let mut child = Command::new(EXECUTABLE)
+                .args(["-p", profile, "-D"])
+                .arg(format!("WORKSPACE={}", workspace.display()))
+                .arg("-D")
+                .arg(format!("PRIVATE_TMP={}", private.display()))
+                .args(["-D", "WRITABLE=false", "--"])
+                .arg(&executable)
+                .current_dir(&workspace)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &private)
+                .env("TMPDIR", &private)
+                .env("LANG", "C.UTF-8")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut timed_out = false;
+            while child.try_wait().unwrap().is_none() {
+                if Instant::now() >= deadline {
+                    timed_out = true;
+                    child.kill().unwrap();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            (output, timed_out)
+        };
+        let (output, timed_out) = run_profile(PROFILE);
+        if !timed_out && output.status.success() && output.stdout == b"native-profile-started\n" {
+            return;
+        }
+
+        // Failure-only differential controls, never a production fallback or a
+        // passing substitute for PROFILE. No input or executable is user supplied.
+        let mut diagnostics = format!(
+            "production: status={}, signal={:?}, timeout={timed_out}, stdout={:?}, stderr={:?}",
+            output.status,
+            output.status.signal(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for (name, getter, setter) in [
+            ("without explicit getter denial", true, false),
+            ("without explicit setter denial", false, true),
+            ("without both explicit denials", true, true),
+        ] {
+            let mut profile = PROFILE.to_owned();
+            if getter {
+                profile = profile.replace("(deny mach-task-special-port-get)\n", "");
+            }
+            if setter {
+                profile = profile.replace("(deny mach-task-special-port-set)\n", "");
+            }
+            let (output, timed_out) = run_profile(&profile);
+            diagnostics.push_str(&format!(
+                "\n{name}: status={}, signal={:?}, timeout={timed_out}, stdout={:?}, stderr={:?}",
+                output.status,
+                output.status.signal(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        panic!("production Seatbelt profile did not reach the native entry point\n{diagnostics}");
+    }
 
     fn check_scrub_in_fork() {
         use std::io::Read;

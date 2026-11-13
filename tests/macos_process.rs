@@ -15,7 +15,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        Self::with_root(tempfile::tempdir().unwrap()).await
+    }
+
+    async fn with_root(root: tempfile::TempDir) -> Self {
         let workspace_path = root.path().join("workspace ü with spaces");
         std::fs::create_dir(&workspace_path).unwrap();
         let probe = workspace_path.join("native probe");
@@ -79,6 +82,88 @@ impl Fixture {
     }
 }
 
+fn assert_probe_denied(output: &werk_worker::runtime::ProcessOutput, operation: &str) {
+    // Only the running probe emits this marker and exits 77. A launcher error,
+    // signal, or timeout must not count as evidence of the sandbox boundary.
+    assert_eq!(output.exit_code, Some(77), "{operation}: {output:?}");
+    assert!(
+        output.stderr.contains("probe denied/error:"),
+        "{operation}: the payload must report the denied operation: {output:?}"
+    );
+    assert!(!output.timed_out && !output.cancelled, "{output:?}");
+}
+
+#[tokio::test]
+async fn system_and_workspace_executables_start_through_canonical_and_alias_paths() {
+    // Pick a system alias explicitly; an arbitrary TMPDIR must not silently
+    // turn this into two identical paths or skip the alias regression.
+    let fixture = Fixture::with_root(tempfile::tempdir_in("/private/tmp").unwrap()).await;
+    let canonical = std::fs::canonicalize(&fixture.probe).unwrap();
+    let alias = PathBuf::from("/").join(canonical.strip_prefix("/private").unwrap());
+    assert_ne!(canonical, alias);
+    assert_eq!(std::fs::canonicalize(&alias).unwrap(), canonical);
+    let marker = "native loader reached payload";
+    let mut failures = Vec::new();
+    for (label, executable, arguments, expected_stdout) in [
+        (
+            "system",
+            PathBuf::from("/usr/bin/true"),
+            vec![],
+            String::new(),
+        ),
+        (
+            "canonical workspace",
+            canonical,
+            vec!["echo", marker],
+            format!("{}:{marker}\n", marker.len()),
+        ),
+        (
+            "aliased workspace",
+            alias,
+            vec!["echo", marker],
+            format!("{}:{marker}\n", marker.len()),
+        ),
+    ] {
+        let argv = std::iter::once(executable.to_string_lossy().into_owned())
+            .chain(arguments.iter().map(|value| (*value).to_owned()))
+            .collect::<Vec<_>>();
+        // First run the freshly built workspace executable inside. An outside
+        // execution must not warm a code-signing/loader cache before this check.
+        let inside = fixture
+            .sandbox
+            .run(
+                &fixture.workspace,
+                false,
+                &argv,
+                ".",
+                CancellationToken::new(),
+            )
+            .await;
+        let outside = Command::new(&executable)
+            .args(&arguments)
+            .current_dir(&fixture.workspace.path)
+            .output();
+        match outside {
+            Ok(output)
+                if output.status.success() && output.stdout == expected_stdout.as_bytes() => {}
+            result => failures.push(format!("{label}, outside control: {result:?}")),
+        }
+        match inside {
+            Ok(output)
+                if output.exit_code == Some(0)
+                    && output.stdout == expected_stdout
+                    && !output.timed_out
+                    && !output.cancelled => {}
+            result => failures.push(format!("{label}, inside sandbox: {result:?}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "Native startup matrix failed:\n{}",
+        failures.join("\n")
+    );
+}
+
 #[tokio::test]
 async fn native_mode_requires_explicit_trusted_host_selection() {
     let root = tempfile::tempdir().unwrap();
@@ -129,12 +214,12 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
         .execution_description(&fixture.workspace, false)
         .await
         .unwrap();
-    assert_eq!(contract["configuration_version"], 3);
+    assert_eq!(contract["configuration_version"], 4);
     assert_eq!(
         contract["host_requirements"],
         "unprivileged-uid;host-port-IKOT_HOST-only"
     );
-    for version in [1, 2] {
+    for version in [1, 2, 3] {
         let mut legacy = contract.clone();
         legacy["configuration_version"] = version.into();
         assert_eq!(
@@ -174,7 +259,7 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
         .await
         .unwrap();
     assert_eq!(output.stdout, input);
-    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(output.exit_code, Some(0), "{output:?}");
     let written = fixture
         .run(true, &["write", "created.txt", "native contents"])
         .await;
@@ -190,7 +275,7 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
     let denied = fixture
         .run(false, &["write", "created.txt", "forbidden"])
         .await;
-    assert_ne!(denied.exit_code, Some(0));
+    assert_probe_denied(&denied, "read-only write");
     assert_eq!(
         fixture.workspace.read("created.txt", 100).await.unwrap(),
         b"native contents"
@@ -208,29 +293,23 @@ async fn outside_files_network_and_host_ipc_have_positive_controls() {
     let secret = fixture.root.path().join("synthetic-host-secret");
     std::fs::write(&secret, "only a test marker").unwrap();
     let secret = secret.to_str().unwrap();
-    assert!(fixture.outside(&["read", secret]).status.success());
-    assert_ne!(
-        fixture.run(false, &["read", secret]).await.exit_code,
-        Some(0)
-    );
-    assert_ne!(
-        fixture.run(false, &["exec-read", secret]).await.exit_code,
-        Some(0)
-    );
+    for mode in ["read", "exec-read"] {
+        let outside = fixture.outside(&[mode, secret]);
+        assert!(outside.status.success(), "{mode}: {outside:?}");
+        assert_eq!(outside.stdout, b"only a test marker", "{mode}");
+        assert_probe_denied(&fixture.run(false, &[mode, secret]).await, mode);
+    }
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = tcp.local_addr().unwrap().to_string();
     assert!(fixture.outside(&["tcp", &address]).status.success());
-    assert_ne!(
-        fixture.run(false, &["tcp", &address]).await.exit_code,
-        Some(0)
-    );
+    assert_probe_denied(&fixture.run(false, &["tcp", &address]).await, "tcp");
     let socket = fixture.root.path().join("host.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let socket = socket.to_str().unwrap();
     assert!(fixture.outside(&["unix-socket", socket]).status.success());
-    assert_ne!(
-        fixture.run(false, &["unix-socket", socket]).await.exit_code,
-        Some(0)
+    assert_probe_denied(
+        &fixture.run(false, &["unix-socket", socket]).await,
+        "unix-socket",
     );
     let secret_fd = std::fs::File::open(secret).unwrap();
     // Deliberately inheritable host descriptor: the native child must close it.
@@ -240,12 +319,9 @@ async fn outside_files_network_and_host_ipc_have_positive_controls() {
     );
     let number = secret_fd.as_raw_fd().to_string();
     assert!(fixture.outside(&["inherited-fd", &number]).status.success());
-    assert_ne!(
-        fixture
-            .run(false, &["inherited-fd", &number])
-            .await
-            .exit_code,
-        Some(0)
+    assert_probe_denied(
+        &fixture.run(false, &["inherited-fd", &number]).await,
+        "inherited-fd",
     );
 }
 
@@ -294,13 +370,11 @@ async fn forks_detaches_and_posix_spawn_are_denied_before_descendant_code() {
         "positive control must prove detach/write works on host"
     );
     let marker = fixture.workspace.path.join("sandbox-detached");
-    assert_eq!(
-        fixture
-            .run(true, &["fork-detach", marker.to_str().unwrap()])
-            .await
-            .exit_code,
-        Some(77)
-    );
+    let detached = fixture
+        .run(true, &["fork-detach", marker.to_str().unwrap()])
+        .await;
+    assert_eq!(detached.exit_code, Some(77), "{detached:?}");
+    assert!(detached.stderr.contains("fork denied:"), "{detached:?}");
     assert!(!marker.exists());
     assert!(
         fixture
@@ -308,12 +382,9 @@ async fn forks_detaches_and_posix_spawn_are_denied_before_descendant_code() {
             .status
             .success()
     );
-    assert_eq!(
-        fixture
-            .run(false, &["spawn", "/usr/bin/true"])
-            .await
-            .exit_code,
-        Some(77)
+    assert_probe_denied(
+        &fixture.run(false, &["spawn", "/usr/bin/true"]).await,
+        "spawn",
     );
 }
 
@@ -324,7 +395,7 @@ async fn timeout_and_cancellation_reap_before_reporting_completion() {
     let timed = fixture
         .run(true, &["late-write", "ready", "late", "1000"])
         .await;
-    assert!(timed.timed_out && !timed.cancelled);
+    assert!(timed.timed_out && !timed.cancelled, "{timed:?}");
     assert!(!fixture.workspace.path.join("late").exists());
     fixture.sandbox.limits.timeout_ms = 10_000;
     let cancel = CancellationToken::new();
@@ -596,7 +667,8 @@ async fn custom_host_port_fixture() {
             "CI must exercise custom host-port injection; status={installed}"
         );
         assert_eq!(installed, 8, "expected KERN_NO_ACCESS from SIP");
-        assert_eq!(fixture.run(false, &["exit", "0"]).await.exit_code, Some(0));
+        let control = fixture.run(false, &["exit", "0"]).await;
+        assert_eq!(control.exit_code, Some(0), "{control:?}");
         return;
     }
 
@@ -689,7 +761,8 @@ async fn custom_host_port_fixture() {
     );
 
     // The same normal host successfully runs isolated code before tampering.
-    assert_eq!(fixture.run(false, &["exit", "0"]).await.exit_code, Some(0));
+    let control = fixture.run(false, &["exit", "0"]).await;
+    assert_eq!(control.exit_code, Some(0), "{control:?}");
     if mode == "after-fork" {
         assert_eq!(
             unsafe { libc::pthread_atfork(None, None, Some(replace_after_fork)) },

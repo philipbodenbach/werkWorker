@@ -139,7 +139,7 @@ renames or as general macOS sandbox parity.
 application API. App Sandbox entitlements are a different mechanism. Native
 tests on the supported macOS version are mandatory; no SIP or global protection
 setting is changed. Root/set-id hosts remain rejected. macOS backend
-configuration version **3** checks the actual inherited host port instead of
+configuration version **4** checks the actual inherited host port instead of
 requiring a global SIP setting: `task_get_special_port(TASK_HOST_PORT)` obtains
 the right and `mach_port_kobject` queries its kernel object type through the
 task port. Only `IKOT_HOST` (3), the ordinary unprivileged kernel host port, is
@@ -161,8 +161,8 @@ and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215
 The query returns the object type on release kernels too; the backend does not
 use the kernel address, which release kernels hide. Port failures retain the
 Mach result or unexpected object type and identify the failing stage.
-Version 1/2 approval descriptions differ and must be prepared and approved again;
-the file/network rules and one-process limit are unchanged. The supervisor still
+Version 1/2/3 approval descriptions differ and must be prepared and approved again;
+the file-content/network rules and one-process limit are unchanged. The supervisor still
 clears registered ports and verifies bootstrap/exception slots are empty before
 forking a fresh namespace for exec. Only populated bootstrap/exception slots
 need mutation; after clearing exceptions, it verifies the complete mask again.
@@ -184,7 +184,13 @@ and XNU's [user special-port getter and namespace initialization](https://github
 and [exec task creation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/kern/kern_exec.c).
 Mandatory native tests require a live outside access-port control and exact
 `KERN_DENIED` results for the inside getter and setter, including after exec.
-Native acceptance of version 3 is still pending. On abrupt host
+Version 4 additionally permits metadata on the system symlinks `/var` and `/tmp`
+and the exact ancestors of the workspace and private temporary directory.
+XNU checks [symlink reads during path lookup](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/vfs/vfs_lookup.c)
+before it can reach the already permitted canonical workspace. Apple's WebKit
+profile likewise permits metadata on those two aliases. Neither their contents
+nor sibling directories become readable. Native execution remains unconfirmed:
+version 3 passed Mach cleanup but failed to start payloads. On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
 See [Apple DTS on sandbox-exec](https://developer.apple.com/forums/thread/661939)
 and [XNU process event definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h).
@@ -382,7 +388,31 @@ Seatbelt getter/setter denial described above. The invalid dead-slot overwrite
 test is replaced by native positive/negative access tests. The remaining Mach
 cleanup diagnostics and fork-snapshot test stay active. Old approvals do not
 authorize this changed execution description. The source-level cause is now
-established; full acceptance still requires the version 3 native run.
+established; that did not establish successful payload execution.
+
+The native run of `914d313` passed all four Mach setup unit tests, but exposed
+the next startup failures: argv paths under `/var/folders` returned
+`sandbox-exec: execvp() ... Operation not permitted` (exit 71), while calls using
+canonical workspace paths sometimes ended without an exit code. The latter
+means signal termination, whose signal/reason was not retained in that log.
+The previous file/network/IPC negative test falsely accepted either startup
+failure as isolation because it checked only for a nonzero result.
+
+Version 4 corrects the alias/ancestor metadata omission. The negative tests now
+require both payload exit 77 and its operation-error marker; failed launch,
+crash and timeout cannot pass. A mandatory startup test separately runs a system
+executable, a canonical workspace executable and its `/tmp` alias. A library
+test runs the exact profile directly on a fixed, host-built echo payload and
+reports signal/status; on failure it compares the explicit special-port deny
+rules one at a time. Those controls never replace the production result.
+CI also collects narrowly filtered Sandbox denial and crash diagnostics after
+a native failure. No Cryptex or IPC permissions are added without evidence.
+The canonical-path signal termination is still unresolved until native evidence
+identifies its cause; version 4 is not a confirmed pipeline repair.
+Local version 4 checks passed on 2026-11-13: 31 real Linux integration tests,
+eight workflow/diagnostic tests, formatting, all-targets Clippy with warnings
+denied, the no-default-features library, the separate SDK consumer and the
+extracted Apple ARM64 type/Clippy checks. These checks do not execute Seatbelt.
 
 Version 3 local validation on 2026-11-13 passed: 31 Linux integration tests with
 real Bubblewrap and `REQUIRE_SANDBOX=1`, three CI-workflow tests, formatting,

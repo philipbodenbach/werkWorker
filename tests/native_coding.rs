@@ -67,9 +67,14 @@ async fn native_scripted_coding_cycle_uses_real_files_process_and_verification()
         .current_dir(&workspace.path)
         .output()
         .unwrap();
+    assert_eq!(
+        control.status.code(),
+        Some(101),
+        "The native assertion must reject the broken expression: {control:?}"
+    );
     assert!(
-        !control.status.success(),
-        "Broken source must fail the same native check before repair"
+        String::from_utf8_lossy(&control.stderr).contains("addition behavior for 2,3,5"),
+        "The expected arithmetic assertion must run before repair: {control:?}"
     );
     let native_program = if cfg!(target_os = "linux") {
         format!("/workspace/{program_name}")

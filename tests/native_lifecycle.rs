@@ -76,7 +76,7 @@ impl Fixture {
         // Positive control proves this exact binary can create both readiness
         // and completion markers before asserting sandbox cleanup denies them.
         std::fs::write(workspace.path.join("control-gate"), "go").unwrap();
-        let control = std::process::Command::new(&compiled)
+        let control = std::process::Command::new(&executable)
             .args([
                 "gated-write",
                 "control-ready",

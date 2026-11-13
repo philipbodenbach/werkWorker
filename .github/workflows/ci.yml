@@ -68,6 +68,7 @@ jobs:
           /usr/bin/csrutil status
       - name: Test native platform integration
         if: ${{ !cancelled() && runner.os != 'Linux' }}
+        id: native_integration
         # Git Bash prepends its own link.exe on Windows, hiding the MSVC linker.
         shell: python
         env:
@@ -96,6 +97,9 @@ jobs:
                   if result.returncode != 0:
                       failed = True
           sys.exit(1 if failed else 0)
+      - name: Report macOS native denial evidence
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.native_integration.outcome == 'failure' }}
+        run: python scripts/macos-native-diagnostics.py
       - name: Check native SDK and lint
         if: ${{ !cancelled() && runner.os != 'Linux' }}
         shell: python

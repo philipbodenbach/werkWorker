@@ -492,6 +492,7 @@ mod host_ports {
     unsafe extern "C" {
         pub static mach_task_self_: u32;
         pub fn mach_port_deallocate(task: u32, name: u32) -> i32;
+        pub fn mach_port_kobject(task: u32, name: u32, kind: *mut u32, address: *mut u64) -> i32;
         pub fn mach_port_allocate(task: u32, right: i32, port: *mut u32) -> i32;
         pub fn mach_port_insert_right(task: u32, name: u32, right: u32, kind: u32) -> i32;
         pub fn task_get_special_port(task: u32, which: i32, port: *mut u32) -> i32;
@@ -567,19 +568,47 @@ async fn custom_host_port_fixture() {
         return;
     }
 
-    // Positive control: an ordinary fork inherits this exact host endpoint and
-    // sends a marker. Use libc-only code before exec so no runtime can replace
-    // the special port or accidentally consume a message from the endpoint.
+    // Positive control: the installed custom slot is a working IPC endpoint in
+    // this isolated parent. Verify its type before sending a userspace message.
+    let mut custom = 0;
+    let queried = unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut custom) };
+    let mut kind = u32::MAX;
+    let mut address = 0_u64;
+    let inspected = unsafe { mach_port_kobject(task, custom, &mut kind, &mut address) };
+    let sent = if queried == 0 && inspected == 0 && kind == 0 {
+        let mut message = [19_u32, 24, custom, 0, 0, 1113];
+        unsafe { mach_msg(message.as_mut_ptr().cast(), 1 | 0x10, 24, 0, 0, 1000, 0) }
+    } else {
+        -1
+    };
+    let released = unsafe { mach_port_deallocate(task, custom) };
+
+    // BSD fork refreshes the child's security tokens and replaces its host
+    // slot with the ordinary kernel host port. Check that behavior directly;
+    // sending the userspace marker to that kernel port would trigger a fatal
+    // Mach message-type guard. The atfork negative case below injects its
+    // custom port after this kernel reset, before the supervisor validates it.
     let child = unsafe { libc::fork() };
     if child == 0 {
         unsafe {
-            let mut inherited = 0;
-            if task_get_special_port(mach_task_self_, TASK_HOST_PORT, &mut inherited) != 0 {
+            let child_task = mach_task_self_;
+            let mut child_host = 0;
+            if task_get_special_port(child_task, TASK_HOST_PORT, &mut child_host) != 0 {
                 libc::_exit(118);
             }
-            let mut message = [19_u32, 24, inherited, 0, 0, 1113];
-            let sent = mach_msg(message.as_mut_ptr().cast(), 1 | 0x10, 24, 0, 0, 1000, 0);
-            libc::_exit(if sent == 0 { 0 } else { 117 });
+            let mut child_kind = u32::MAX;
+            let mut child_address = 0_u64;
+            if mach_port_kobject(child_task, child_host, &mut child_kind, &mut child_address) != 0 {
+                libc::_exit(117);
+            }
+            if child_kind != 3 {
+                // IKOT_HOST, not the custom userspace endpoint
+                libc::_exit(116);
+            }
+            if mach_port_deallocate(child_task, child_host) != 0 {
+                libc::_exit(115);
+            }
+            libc::_exit(0);
         }
     }
     assert_eq!(
@@ -587,6 +616,28 @@ async fn custom_host_port_fixture() {
         0
     );
     assert!(child > 0);
+    let mut status = 0;
+    let waited = loop {
+        let result = unsafe { libc::waitpid(child, &mut status, 0) };
+        if result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        break result;
+    };
+    assert_eq!(waited, child);
+    let exit = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+    let signal = libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status));
+    assert_eq!(
+        exit,
+        Some(0),
+        "fork host-port control failed: exit={exit:?}, signal={signal:?}, raw_status={status}"
+    );
+    assert_eq!(queried, 0);
+    assert_eq!(custom, endpoint);
+    assert_eq!(inspected, 0);
+    assert_eq!(kind, 0, "installed host slot must be a userspace endpoint");
+    assert_eq!(sent, 0, "custom host endpoint must accept the marker");
+    assert_eq!(released, 0);
     let mut received = [0_u32; 32];
     let received_status = unsafe {
         mach_msg(
@@ -599,9 +650,6 @@ async fn custom_host_port_fixture() {
             0,
         )
     };
-    let mut status = 0;
-    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
-    assert_eq!(status, 0, "positive-control child failed");
     assert_eq!(received_status, 0);
     assert_eq!(
         received[5], 1113,

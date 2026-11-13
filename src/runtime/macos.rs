@@ -56,25 +56,45 @@ const IKOT_HOST: u32 = 3;
 
 // These tags also identify setup failures in the supervisor's fixed-size report.
 #[derive(Debug)]
-struct HostPortError {
+struct MachSetupError {
     stage: u8,
     detail: i32,
 }
 
-impl HostPortError {
+impl MachSetupError {
     fn into_worker_error(self) -> WorkerError {
+        let operation = match self.stage {
+            7 => "host-port query",
+            8 => "host-port kernel inspection",
+            9 => "host-port object type",
+            10 => "host-port reference release",
+            11 => "task-access query",
+            12 => "live task-access port cannot be revoked",
+            13 => "dead task-access port clearing",
+            14 => "task-access clearing verification",
+            15 => "registered-port clearing",
+            16 => "bootstrap query",
+            17 => "bootstrap clearing",
+            18 => "bootstrap clearing verification",
+            19 => "exception-port query",
+            20 => "exception-port clearing",
+            21 => "exception-port verification query",
+            22 => "exception query did not cover the complete mask",
+            23 => "exception ports remain after clearing",
+            _ => "unknown Mach setup operation",
+        };
         WorkerError::new(
             "sandbox_requirement_unavailable",
             format!(
-                "Native launcher requires a verified unprivileged kernel Mach host port \
-                 (stage={}, detail={}; stages: 7=get, 8=inspect, 9=object-type, 10=release)",
-                self.stage, self.detail
+                "Native launcher could not establish isolated Mach ports \
+                 (stage={}, detail={}; operation={operation}; detail is the immediate Mach result, port name, object type or exception mask)",
+                self.stage, self.detail,
             ),
         )
     }
 }
 
-unsafe fn inspect_host_port(task: u32, port: u32) -> std::result::Result<(), HostPortError> {
+unsafe fn inspect_host_port(task: u32, port: u32) -> std::result::Result<(), MachSetupError> {
     let mut kind = u32::MAX;
     let mut address = 0_u64;
     // Ask the kernel through our task port, never the possibly hostile host
@@ -83,13 +103,13 @@ unsafe fn inspect_host_port(task: u32, port: u32) -> std::result::Result<(), Hos
     // missing/dead rights, and failed queries are all rejected.
     let status = unsafe { mach_port_kobject(task, port, &mut kind, &mut address) };
     if status != 0 {
-        return Err(HostPortError {
+        return Err(MachSetupError {
             stage: 8,
             detail: status,
         });
     }
     if kind != IKOT_HOST {
-        return Err(HostPortError {
+        return Err(MachSetupError {
             stage: 9,
             detail: kind as i32,
         });
@@ -97,13 +117,13 @@ unsafe fn inspect_host_port(task: u32, port: u32) -> std::result::Result<(), Hos
     Ok(())
 }
 
-unsafe fn verify_host_port() -> std::result::Result<(), HostPortError> {
+unsafe fn verify_host_port() -> std::result::Result<(), MachSetupError> {
     #[allow(deprecated)]
     let task = unsafe { libc::mach_task_self() };
     let mut port = 0;
     let status = unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut port) };
     if status != 0 {
-        return Err(HostPortError {
+        return Err(MachSetupError {
             stage: 7,
             detail: status,
         });
@@ -112,7 +132,7 @@ unsafe fn verify_host_port() -> std::result::Result<(), HostPortError> {
     if port != 0 {
         let status = unsafe { mach_port_deallocate(task, port) };
         if status != 0 {
-            return Err(HostPortError {
+            return Err(MachSetupError {
                 stage: 10,
                 detail: status,
             });
@@ -226,7 +246,7 @@ pub(super) fn requirements(sandbox: &Sandbox) -> Result<()> {
     }
     // Preflight for approval/doctor. The supervisor repeats this on its own
     // fork snapshot, closing the gap between preparation and actual launch.
-    unsafe { verify_host_port() }.map_err(HostPortError::into_worker_error)
+    unsafe { verify_host_port() }.map_err(MachSetupError::into_worker_error)
 }
 
 pub(super) fn description(
@@ -243,7 +263,7 @@ pub(super) fn description(
         "workspace_binding": "path-filter-with-pinned-cwd-and-rename-monitor",
         "requires_trusted_external_workspace_renames": true,
         "network": "denied", "host_ipc": "denied", "fork": "denied",
-        "inherited_mach_rights": "registered-bootstrap-exception-cleared-before-second-fork;task-access-rejected;host-port-kernel-type-verified-after-fork",
+        "inherited_mach_rights": "registered-bootstrap-exception-verified-empty-before-second-fork;live-task-access-rejected;dead-task-access-cleared;host-port-kernel-type-verified-after-fork",
         "host_requirements": "unprivileged-uid;host-port-IKOT_HOST-only",
         "untrusted_processes": 1,
         "readonly_runtime": ["/System/Library", "/usr/lib", "/usr/share", "/bin",
@@ -455,24 +475,24 @@ unsafe fn monotonic_ms() -> i64 {
 // available only after checking its kernel object type in this fork snapshot.
 // Darwin's Mach stubs use stack messages and kernel IPC; mach_ports_register is
 // a fixed three-port wrapper. All symbols are resolved before the first fork.
-unsafe fn scrub_inherited_mach() -> bool {
-    #[allow(deprecated)] // local libSystem ABI avoids a second Mach binding dependency
-    let task = unsafe { libc::mach_task_self() };
-    let mut port = 0_u32;
-    if unsafe { task_get_special_port(task, TASK_ACCESS_PORT, &mut port) } != 0 || port != 0 {
-        // XNU deliberately disallows replacing an existing task-access port.
-        return false;
+fn mach_result(status: i32, stage: u8) -> std::result::Result<(), MachSetupError> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(MachSetupError {
+            stage,
+            detail: status,
+        })
     }
-    if unsafe { mach_ports_register(task, std::ptr::null_mut(), 0) } != 0
-        || unsafe { task_set_special_port(task, TASK_BOOTSTRAP_PORT, 0) } != 0
-        || unsafe { task_get_special_port(task, TASK_BOOTSTRAP_PORT, &mut port) } != 0
-        || port != 0
-        || unsafe { task_set_exception_ports(task, EXCEPTION_MASK, 0, 1, 0) } != 0
-    {
-        return false;
-    }
-    // MAC labels can prevent individual exception actions being updated even
-    // when the call completes; verify the resulting port array, not just status.
+}
+
+// Query the complete exception mask, returning the subset with non-null ports.
+// The second fork discards any names copied out by these queries. Even a dead
+// name must be cleared from its slot before that fork.
+unsafe fn exception_ports_present(
+    task: u32,
+    stage: u8,
+) -> std::result::Result<u32, MachSetupError> {
     let mut masks = [0_u32; 32];
     let mut ports = [0_u32; 32];
     let mut behaviors = [0_i32; 32];
@@ -489,7 +509,106 @@ unsafe fn scrub_inherited_mach() -> bool {
             flavors.as_mut_ptr(),
         )
     };
-    status == 0 && count <= 32 && ports[..count as usize].iter().all(|port| *port == 0)
+    mach_result(status, stage)?;
+    if count > 32 {
+        return Err(MachSetupError {
+            stage: 22,
+            detail: count as i32,
+        });
+    }
+    let mut covered = 0;
+    let mut present = 0;
+    for i in 0..count as usize {
+        covered |= masks[i];
+        if ports[i] != 0 {
+            present |= masks[i];
+        }
+    }
+    if covered != EXCEPTION_MASK {
+        return Err(MachSetupError {
+            stage: 22,
+            detail: covered as i32,
+        });
+    }
+    Ok(present)
+}
+
+unsafe fn scrub_inherited_mach() -> std::result::Result<(), MachSetupError> {
+    #[allow(deprecated)] // local libSystem ABI avoids a second Mach binding dependency
+    let task = unsafe { libc::mach_task_self() };
+    let mut port = 0_u32;
+    mach_result(
+        unsafe { task_get_special_port(task, TASK_ACCESS_PORT, &mut port) },
+        11,
+    )?;
+    if port == u32::MAX {
+        // A dead name carries no callable endpoint. A fork-copied IP_DEAD slot
+        // is replaceable; an inactive retained kernel object may still reject
+        // replacement. Propagate that failure and require a verified NULL slot.
+        mach_result(
+            unsafe { task_set_special_port(task, TASK_ACCESS_PORT, 0) },
+            13,
+        )?;
+        mach_result(
+            unsafe { task_get_special_port(task, TASK_ACCESS_PORT, &mut port) },
+            14,
+        )?;
+        if port != 0 {
+            return Err(MachSetupError {
+                stage: 14,
+                detail: port as i32,
+            });
+        }
+    } else if port != 0 {
+        // XNU deliberately disallows replacing a live task-access port.
+        return Err(MachSetupError {
+            stage: 12,
+            detail: port as i32,
+        });
+    }
+    mach_result(
+        unsafe { mach_ports_register(task, std::ptr::null_mut(), 0) },
+        15,
+    )?;
+    mach_result(
+        unsafe { task_get_special_port(task, TASK_BOOTSTRAP_PORT, &mut port) },
+        16,
+    )?;
+    if port != 0 {
+        mach_result(
+            unsafe { task_set_special_port(task, TASK_BOOTSTRAP_PORT, 0) },
+            17,
+        )?;
+        mach_result(
+            unsafe { task_get_special_port(task, TASK_BOOTSTRAP_PORT, &mut port) },
+            18,
+        )?;
+        if port != 0 {
+            return Err(MachSetupError {
+                stage: 18,
+                detail: port as i32,
+            });
+        }
+    }
+    let present = unsafe { exception_ports_present(task, 19) }?;
+    if present != 0 {
+        // Change only populated slots. Already empty slots require no mutation
+        // authority, and querying all slots still proves the required boundary.
+        mach_result(
+            unsafe { task_set_exception_ports(task, present, 0, 1, 0) },
+            20,
+        )?;
+        // MAC labels can prevent individual actions from changing even when
+        // the setter succeeds. Re-query the complete mask and fail closed.
+        let remaining = unsafe { exception_ports_present(task, 21) }?;
+        if remaining != 0 {
+            return Err(MachSetupError {
+                stage: 23,
+                detail: remaining as i32,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn resolve_mach_symbols() {
@@ -581,9 +700,10 @@ unsafe fn supervisor(
             libc::_exit(125)
         }
     }
-    if !unsafe { scrub_inherited_mach() } {
+    if let Err(error) = unsafe { scrub_inherited_mach() } {
         let mut result = [0_u8; 5];
-        result[0] = 6;
+        result[0] = error.stage;
+        result[1..].copy_from_slice(&error.detail.to_ne_bytes());
         unsafe {
             raw_write(report, &result);
             libc::_exit(125)
@@ -973,14 +1093,8 @@ pub(super) async fn run(
             "Native launcher could not establish its required descriptors or resource limits",
         ));
     }
-    if report[0] == 6 {
-        return Err(WorkerError::new(
-            "sandbox_requirement_unavailable",
-            "Native launcher could not remove inherited Mach control channels",
-        ));
-    }
-    if (7..=10).contains(&report[0]) {
-        return Err(HostPortError {
+    if (7..=23).contains(&report[0]) {
+        return Err(MachSetupError {
             stage: report[0],
             detail: status,
         }
@@ -1004,6 +1118,72 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_scrub_in_fork(dead_access: bool) {
+        use std::io::Read;
+        let (mut reader, writer) = pipe().unwrap();
+        resolve_mach_symbols();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "cannot fork Mach cleanup fixture");
+        if child == 0 {
+            // Exercise the real fork snapshot and backend routine. No host
+            // test-harness ports are changed and no Rust cleanup runs here.
+            #[allow(deprecated)]
+            let task = unsafe { libc::mach_task_self() };
+            let result = if dead_access {
+                mach_result(
+                    unsafe { task_set_special_port(task, TASK_ACCESS_PORT, u32::MAX) },
+                    13,
+                )
+                .and_then(|()| unsafe { scrub_inherited_mach() })
+            } else {
+                unsafe { scrub_inherited_mach() }
+            };
+            let mut report = [0_u8; 5];
+            if let Err(error) = result {
+                report[0] = error.stage;
+                report[1..].copy_from_slice(&error.detail.to_ne_bytes());
+            }
+            unsafe {
+                raw_write(writer.as_raw_fd(), &report);
+                libc::_exit(0);
+            }
+        }
+        drop(writer);
+        let mut report = [0_u8; 5];
+        let received = reader.read_exact(&mut report);
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(child, &mut status, 0) };
+            if waited < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, child);
+            break;
+        }
+        assert_eq!(status, 0, "Mach cleanup fixture died: wait status={status}");
+        received.unwrap();
+        if report[0] != 0 {
+            panic!(
+                "{}",
+                MachSetupError {
+                    stage: report[0],
+                    detail: i32::from_ne_bytes(report[1..].try_into().unwrap())
+                }
+                .into_worker_error()
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_mach_ports_are_cleared_in_fork_snapshot() {
+        check_scrub_in_fork(false);
+    }
+
+    #[test]
+    fn dead_access_sentinel_is_cleared_before_untrusted_fork() {
+        check_scrub_in_fork(true);
+    }
 
     #[test]
     fn actual_kernel_host_port_is_accepted() {
@@ -1035,9 +1215,11 @@ mod tests {
         // untrusted code. A selector/type mix-up fails at compile time here.
         let source = format!(
             "#include <mach/task_special_ports.h>\n\
+             #include <mach/exception_types.h>\n\
              _Static_assert(TASK_HOST_PORT == {TASK_HOST_PORT}, \"TASK_HOST_PORT\");\n\
              _Static_assert(TASK_BOOTSTRAP_PORT == {TASK_BOOTSTRAP_PORT}, \"TASK_BOOTSTRAP_PORT\");\n\
-             _Static_assert(TASK_ACCESS_PORT == {TASK_ACCESS_PORT}, \"TASK_ACCESS_PORT\");\n"
+             _Static_assert(TASK_ACCESS_PORT == {TASK_ACCESS_PORT}, \"TASK_ACCESS_PORT\");\n\
+             _Static_assert((EXC_MASK_ALL | EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY) == {EXCEPTION_MASK}, \"EXCEPTION_MASK\");\n"
         );
         let mut compiler = Command::new("/usr/bin/xcrun")
             .args([

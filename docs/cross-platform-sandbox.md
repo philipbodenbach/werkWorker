@@ -149,9 +149,13 @@ the potentially hostile host endpoint. The copied send right is released.
 
 This check runs during preparation/doctor and again in the supervisor's fork
 snapshot, before creating the untrusted child. XNU creates a fresh IPC namespace
-on fork and copies the selected special ports; changing the embedding host's
-port after that cannot replace the supervisor's checked port. See Apple's
+and copies selected special ports; the BSD fork credential update then replaces
+the host slot with the kernel host port for the child's UID. A child atfork hook
+can change it again, so the supervisor still checks its actual slot. Changing
+the embedding host's port later cannot replace that snapshot. See Apple's
 [port inheritance](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_tt.c),
+[fork credential update](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/kern/kern_fork.c),
+[host-port reset](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/task.c),
 [kernel object query](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/ipc/mach_debug.c)
 and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_kobject.h).
 The query returns the object type on release kernels too; the backend does not
@@ -159,8 +163,12 @@ use the kernel address, which release kernels hide. Port failures retain the
 Mach result or unexpected object type and identify the failing stage.
 Version 1 approval descriptions differ and must be prepared and approved again;
 the Seatbelt rules and one-process limit are unchanged. The supervisor still
-clears registered/bootstrap/exception
-Mach ports, rejects a task-access port, and forks a fresh namespace before exec;
+clears registered ports and verifies bootstrap/exception slots are empty before
+forking a fresh namespace for exec. Only populated bootstrap/exception slots
+need mutation; after clearing exceptions, it verifies the complete mask again.
+A live task-access endpoint is rejected. A dead task-access slot is cleared and
+must read back as NULL; failure to replace even a dead slot still aborts. No
+callable inherited endpoint is accepted on the basis of its origin alone;
 native Mach IPC denial tests still require an actual macOS run. On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
 See [Apple DTS on sandbox-exec](https://developer.apple.com/forums/thread/661939)
@@ -311,8 +319,8 @@ protection against custom Mach host ports required by configuration version 1.
 That gate prevented all process conformance tests from reaching Seatbelt.
 
 Configuration version 2 replaces that gate with the per-process kernel object
-check described above. `macos_process` now includes ordinary-fork positive
-controls that send a real message through an injected custom host port, followed
+check described above. `macos_process` includes a positive control sending a
+real message through the isolated parent's injected custom host port, followed
 by rejection tests before launch and after the host preflight (using a child
 atfork hook). Neither may execute the payload's marker write. The normal kernel
 port must also permit a successful isolated invocation. CI sets
@@ -333,11 +341,29 @@ against the runner's actual SDK. Runtime and fixture checks compare the selected
 right with the independent `mach_host_self()` trap. Locally, compiling against
 Apple's published header accepts the correction and rejects the old selector.
 
-This correction still needs a native macOS rerun. Linux tests and an Apple-target
-compile-only extraction cannot establish native sandbox acceptance; a passing
+Linux tests and an Apple-target compile-only extraction cannot establish full
+native sandbox acceptance; a passing
 `macos-15` integration run remains required. The complete project's Apple
 cross-build needs an Apple SDK/C toolchain unavailable on this Linux host.
 Windows' previously fixed native Python/MSVC workflow is retained.
+
+The subsequent native run for `e275a17` passes all three host-port/SDK unit tests
+and both approval-contract tests. It exposes a separate fixture bug: BSD fork
+resets the custom host slot, so sending a user-queue marker to the resulting
+kernel port triggered a Mach guard and SIGKILL. The fixture now sends the marker
+while its parent slot actually contains the synthetic endpoint; its ordinary
+fork child only verifies the restored kernel host type. See Apple's
+[Mach message policy](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/ipc/ipc_policy.c).
+
+The same run reports only a generic Mach cleanup failure, insufficient to
+identify its failing call. Cleanup now checks actual slot contents, avoids
+mutating verified empty slots, handles dead access slots only with successful
+clearing and NULL verification, and returns the individual operation plus its
+immediate Mach result or observed port/mask. The native library suite also runs
+cleanup in an isolated fork snapshot and tests clearing an explicit dead access
+sentinel. The exact failing operation on that runner, and acceptance of these
+changes, remain unconfirmed until the next native run. No security check is
+skipped to turn the job green.
 
 Validation completed locally on 2026-11-10 against the uncommitted checkout.
 Linux used Rust 1.98.0 on WSL2 kernel 6.18.58.1 with a real Bubblewrap backend.

@@ -487,8 +487,11 @@ async fn supervisor_survives_embedding_host_sigkill_and_prevents_late_write() {
 // All host-port mutations live in a separate test process. Never change the
 // ports of the parallel test harness or its embedding Tokio runtime.
 mod host_ports {
+    // mach/task_special_ports.h: selector 2, distinct from IKOT_HOST (type 3).
+    pub const TASK_HOST_PORT: i32 = 2;
     unsafe extern "C" {
         pub static mach_task_self_: u32;
+        pub fn mach_port_deallocate(task: u32, name: u32) -> i32;
         pub fn mach_port_allocate(task: u32, right: i32, port: *mut u32) -> i32;
         pub fn mach_port_insert_right(task: u32, name: u32, right: u32, kind: u32) -> i32;
         pub fn task_get_special_port(task: u32, which: i32, port: *mut u32) -> i32;
@@ -519,7 +522,7 @@ mod host_ports {
     pub extern "C" fn replace_after_fork() {
         unsafe {
             let port = endpoint();
-            if task_set_special_port(mach_task_self_, 3, port) != 0 {
+            if task_set_special_port(mach_task_self_, TASK_HOST_PORT, port) != 0 {
                 libc::_exit(119);
             }
         }
@@ -535,9 +538,21 @@ async fn custom_host_port_fixture() {
     let fixture = Fixture::new().await;
     let task = unsafe { mach_task_self_ };
     let mut normal = 0;
-    assert_eq!(unsafe { task_get_special_port(task, 3, &mut normal) }, 0);
+    assert_eq!(
+        unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut normal) },
+        0
+    );
+    #[allow(deprecated)]
+    let host_self = unsafe { libc::mach_host_self() };
+    assert_ne!(host_self, 0);
+    assert_eq!(
+        normal, host_self,
+        "fixture selector must identify the actual host port"
+    );
+    let released = unsafe { mach_port_deallocate(task, host_self) };
+    assert_eq!(released, 0);
     let endpoint = unsafe { endpoint() };
-    let installed = unsafe { task_set_special_port(task, 3, endpoint) };
+    let installed = unsafe { task_set_special_port(task, TASK_HOST_PORT, endpoint) };
     if installed != 0 {
         // A protected developer Mac must enforce the kernel's own denial.
         // Hosted CI requires the custom-port case so it cannot pass by taking
@@ -559,7 +574,7 @@ async fn custom_host_port_fixture() {
     if child == 0 {
         unsafe {
             let mut inherited = 0;
-            if task_get_special_port(mach_task_self_, 3, &mut inherited) != 0 {
+            if task_get_special_port(mach_task_self_, TASK_HOST_PORT, &mut inherited) != 0 {
                 libc::_exit(118);
             }
             let mut message = [19_u32, 24, inherited, 0, 0, 1113];
@@ -567,7 +582,10 @@ async fn custom_host_port_fixture() {
             libc::_exit(if sent == 0 { 0 } else { 117 });
         }
     }
-    assert_eq!(unsafe { task_set_special_port(task, 3, normal) }, 0);
+    assert_eq!(
+        unsafe { task_set_special_port(task, TASK_HOST_PORT, normal) },
+        0
+    );
     assert!(child > 0);
     let mut received = [0_u32; 32];
     let received_status = unsafe {
@@ -599,7 +617,10 @@ async fn custom_host_port_fixture() {
         );
     } else {
         assert_eq!(mode, "before-launch");
-        assert_eq!(unsafe { task_set_special_port(task, 3, endpoint) }, 0);
+        assert_eq!(
+            unsafe { task_set_special_port(task, TASK_HOST_PORT, endpoint) },
+            0
+        );
     }
     let argv = vec![
         fixture.probe.to_string_lossy().into_owned(),
@@ -617,7 +638,10 @@ async fn custom_host_port_fixture() {
             CancellationToken::new(),
         )
         .await;
-    assert_eq!(unsafe { task_set_special_port(task, 3, normal) }, 0);
+    assert_eq!(
+        unsafe { task_set_special_port(task, TASK_HOST_PORT, normal) },
+        0
+    );
     let error = result.unwrap_err();
     assert_eq!(error.code, "sandbox_requirement_unavailable");
     assert!(error.message.contains("stage=9, detail=0"), "{error:?}");

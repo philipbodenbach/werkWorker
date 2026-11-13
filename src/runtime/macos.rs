@@ -46,7 +46,9 @@ unsafe extern "C" {
         flavors: *mut i32,
     ) -> i32;
 }
-const TASK_HOST_PORT: i32 = 3;
+// mach/task_special_ports.h: these selectors are not kernel object types.
+// Selector 3 is TASK_NAME_PORT; IKOT_HOST below is a different enum.
+const TASK_HOST_PORT: i32 = 2;
 const TASK_BOOTSTRAP_PORT: i32 = 4;
 const TASK_ACCESS_PORT: i32 = 9;
 const EXCEPTION_MASK: u32 = 0x3ffe; // all Darwin exceptions 1..=13, including crash/corpse
@@ -1005,7 +1007,67 @@ mod tests {
 
     #[test]
     fn actual_kernel_host_port_is_accepted() {
+        #[allow(deprecated)]
+        let (task, host) = unsafe { (libc::mach_task_self(), libc::mach_host_self()) };
+        let mut selected = 0;
+        assert_eq!(
+            unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut selected) },
+            0
+        );
+        // The independent host-self trap must return the same right. A wrong
+        // special-port selector must never be hidden by loosening the type check.
+        assert_ne!(host, 0);
+        assert_eq!(selected, host);
+        unsafe { inspect_host_port(task, host) }.unwrap();
+        assert_eq!(unsafe { mach_port_deallocate(task, selected) }, 0);
+        assert_eq!(unsafe { mach_port_deallocate(task, host) }, 0);
         unsafe { verify_host_port() }.unwrap();
+    }
+
+    #[test]
+    fn special_port_selectors_match_native_sdk() {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+        // Compile against the runner's real SDK, not a second handwritten
+        // table. This test needs no linking or privileges and does not run any
+        // untrusted code. A selector/type mix-up fails at compile time here.
+        let source = format!(
+            "#include <mach/task_special_ports.h>\n\
+             _Static_assert(TASK_HOST_PORT == {TASK_HOST_PORT}, \"TASK_HOST_PORT\");\n\
+             _Static_assert(TASK_BOOTSTRAP_PORT == {TASK_BOOTSTRAP_PORT}, \"TASK_BOOTSTRAP_PORT\");\n\
+             _Static_assert(TASK_ACCESS_PORT == {TASK_ACCESS_PORT}, \"TASK_ACCESS_PORT\");\n"
+        );
+        let mut compiler = Command::new("/usr/bin/xcrun")
+            .args([
+                "--sdk",
+                "macosx",
+                "clang",
+                "-std=c11",
+                "-Werror",
+                "-fsyntax-only",
+                "-x",
+                "c",
+                "-",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("native SDK compiler must be available");
+        compiler
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(source.as_bytes())
+            .unwrap();
+        let output = compiler.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "Native Mach ABI mismatch: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

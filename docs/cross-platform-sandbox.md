@@ -322,11 +322,22 @@ kernel's `KERN_NO_ACCESS` denial and successful normal execution. No CI test is
 skipped and no SIP setting is modified. Existing file, network, IPC, fork,
 timeout, cancellation and host-death tests remain mandatory.
 
-The version 2 change has not yet run on native macOS. Local Linux tests and an
-Apple-target compile-only extraction cannot establish native sandbox
-acceptance; a passing `macos-15` integration run remains required. The complete
-project's Apple cross-build needs an Apple SDK/C toolchain unavailable on this
-Linux host. Windows' previously fixed native Python/MSVC workflow is retained.
+The subsequent native CI log for `7edc428` exposed a selector error in version
+2: the implementation and fixtures used `3` (`TASK_NAME_PORT`) where
+`TASK_HOST_PORT` is `2`. This explains both object type `20` (`IKOT_TASK_NAME`)
+and injection status `4` (`KERN_INVALID_ARGUMENT`). The selector is corrected in
+both places; `IKOT_HOST = 3` remains the required kernel object type. See Apple's
+[special-port selectors](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/mach/task_special_ports.h).
+The existing native library-test command now also compiles static assertions
+against the runner's actual SDK. Runtime and fixture checks compare the selected
+right with the independent `mach_host_self()` trap. Locally, compiling against
+Apple's published header accepts the correction and rejects the old selector.
+
+This correction still needs a native macOS rerun. Linux tests and an Apple-target
+compile-only extraction cannot establish native sandbox acceptance; a passing
+`macos-15` integration run remains required. The complete project's Apple
+cross-build needs an Apple SDK/C toolchain unavailable on this Linux host.
+Windows' previously fixed native Python/MSVC workflow is retained.
 
 Validation completed locally on 2026-11-10 against the uncommitted checkout.
 Linux used Rust 1.98.0 on WSL2 kernel 6.18.58.1 with a real Bubblewrap backend.

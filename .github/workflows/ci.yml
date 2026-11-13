@@ -82,7 +82,7 @@ jobs:
 
           commands = [
               ["cargo", "test", "--locked", "--lib", "parallel::tests"],
-              ["cargo", "test", "--locked", "--lib", "runtime::macos::tests"],
+              ["cargo", "test", "--locked", "--lib", "runtime::macos::"],
               ["cargo", "test", "--locked", "--no-fail-fast", "--test", "platform", "--test", "native_workspace", "--test", "sandbox_contract", "--test", "native_coding", "--test", "native_lifecycle", "--test", "native_policy", "--test", "contracts", "--test", "macos_process", "--test", "windows_sandbox"],
           ]
           failed = False

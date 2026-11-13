@@ -29,6 +29,7 @@ impl Fixture {
                 .unwrap_or_else(|| Sandbox::default().bubblewrap),
             native: NativeSandboxConfig {
                 macos_path_based_workspace: cfg!(target_os = "macos"),
+                macos_system_task_access: cfg!(target_os = "macos"),
             },
             limits: ProcessLimits {
                 timeout_ms: 30_000,

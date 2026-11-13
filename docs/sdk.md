@@ -87,8 +87,16 @@ for a new empty directory, then populate it. Its LPAC backend explicitly denies
 child creation and enforces a Job process cap of one. After all engines/jobs are closed,
 `remove_native_workspace_profiles(&workspace)` removes its AppContainer profiles.
 macOS's constrained mode requires explicit
-`NativeSandboxConfig { macos_path_based_workspace: true }`; it does not support
-ordinary multiprocess builds or hostile external workspace renames. See
+`NativeSandboxConfig { macos_path_based_workspace: true,
+macos_system_task_access: true }`. Both options default to false. Existing hosts
+that selected only path-based workspaces must explicitly accept the new
+authenticated system task-access exception before processes can launch. The
+exception retains a readable, usable `com.apple.taskgated` send right; the
+launcher verifies it against a privileged launchd lookup and rejects unknown
+or unverifiable endpoints. macOS backend configuration version 7 invalidates
+earlier process approval descriptions. This mode does not support ordinary
+multiprocess builds, hostile external workspace renames or complete host IPC
+isolation. See
 [native contracts and validation](cross-platform-sandbox.md) before enabling it.
 
 Prepared process calls without contract version 2 are rejected; recovery does

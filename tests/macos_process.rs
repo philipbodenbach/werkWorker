@@ -40,6 +40,7 @@ impl Fixture {
         let sandbox = Sandbox {
             native: NativeSandboxConfig {
                 macos_path_based_workspace: true,
+                macos_system_task_access: true,
             },
             // The test host already has a VM map before fork. The backend must
             // reject a requested limit it cannot lower, rather than ignore it.
@@ -182,6 +183,41 @@ async fn native_mode_requires_explicit_trusted_host_selection() {
 }
 
 #[tokio::test]
+async fn system_task_access_exception_requires_separate_host_opt_in() {
+    let mut fixture = Fixture::new().await;
+    // An existing host configuration accepts only the path/rename limitation;
+    // adding a new native exception must not silently expand that selection.
+    fixture.sandbox.native = serde_json::from_value(serde_json::json!({
+        "macos_path_based_workspace": true,
+    }))
+    .unwrap();
+    assert!(!fixture.sandbox.native.macos_system_task_access);
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "unapproved task-access exception".into(),
+    ];
+    let error = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(
+        error.message.contains("macos_system_task_access"),
+        "{error:?}"
+    );
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+}
+
+#[tokio::test]
 async fn impossible_address_space_limit_fails_before_untrusted_code() {
     let mut fixture = Fixture::new().await;
     fixture.sandbox.limits.memory_bytes = 1;
@@ -214,12 +250,25 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
         .execution_description(&fixture.workspace, false)
         .await
         .unwrap();
-    assert_eq!(contract["configuration_version"], 6);
+    assert_eq!(contract["configuration_version"], 7);
     assert_eq!(
         contract["host_requirements"],
-        "unprivileged-uid;host-port-IKOT_HOST-only"
+        "unprivileged-uid;host-port-IKOT_HOST-only;task-access-system-taskgated-only"
     );
-    for version in [1, 2, 3, 4, 5] {
+    assert_eq!(
+        contract["host_ipc"],
+        "denied-except-verified-system-task-access"
+    );
+    assert_eq!(
+        contract["task_access_exception"],
+        serde_json::json!({
+            "service": "com.apple.taskgated",
+            "registry": "privileged-bootstrap-lookup",
+            "user_getter": "retained-send-right",
+            "scope": "system-service-only",
+        })
+    );
+    for version in [1, 2, 3, 4, 5, 6] {
         let mut legacy = contract.clone();
         legacy["configuration_version"] = version.into();
         assert_eq!(
@@ -231,6 +280,29 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
                 .code,
             "sandbox_contract_changed",
             "configuration version {version} must require a new approval"
+        );
+    }
+    for change in ["changed", "missing"] {
+        let mut altered = contract.clone();
+        match change {
+            "changed" => altered["task_access_exception"]["service"] = "another-service".into(),
+            "missing" => {
+                altered
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("task_access_exception");
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            fixture
+                .sandbox
+                .verify_execution_description(&fixture.workspace, false, &altered)
+                .await
+                .unwrap_err()
+                .code,
+            "sandbox_contract_changed",
+            "{change} task-access exception must require a new approval"
         );
     }
     let echo = fixture
@@ -326,7 +398,7 @@ async fn outside_files_network_and_host_ipc_have_positive_controls() {
 }
 
 #[tokio::test]
-async fn task_access_getter_and_special_port_setter_are_denied_across_exec() {
+async fn verified_task_access_exception_and_setter_denial_survive_exec() {
     let fixture = Fixture::new().await;
     for mode in ["mach-special-ports", "exec-mach-special-ports"] {
         let outside = fixture.outside(&[mode]);
@@ -344,11 +416,12 @@ async fn task_access_getter_and_special_port_setter_are_denied_across_exec() {
         );
         let inside = fixture.run(false, &[mode]).await;
         assert_eq!(inside.exit_code, Some(0), "{mode}: {}", inside.stderr);
-        // Require the MAC policy's exact KERN_DENIED=53, not an arbitrary error,
-        // absent slot, timeout, crash, or successful access followed by cleanup.
+        // The launcher authenticates the retained taskgated endpoint before
+        // execution. This payload checks the documented getter exception and
+        // the setter's exact KERN_DENIED=53, including after a second exec.
         assert_eq!(
             inside.stdout.trim(),
-            "access_get=53;access_live=false;bootstrap_set=53",
+            "access_get=0;access_live=true;bootstrap_set=53",
             "{mode}: sandbox boundary"
         );
     }
@@ -441,6 +514,7 @@ async fn host_exit_fixture() {
     let sandbox = Sandbox {
         native: NativeSandboxConfig {
             macos_path_based_workspace: true,
+            macos_system_task_access: true,
         },
         limits: werk_worker::runtime::ProcessLimits {
             memory_bytes: 1024 * 1024 * 1024 * 1024,
@@ -517,10 +591,10 @@ async fn host_exit_fixture() {
         )
         .await
         .unwrap();
-    assert_eq!(inside_mach.exit_code, Some(0), "{}", inside_mach.stderr);
+    assert_eq!(inside_mach.exit_code, Some(0), "{inside_mach:?}");
     assert_eq!(
         inside_mach.stdout.trim(),
-        "registered=false;bootstrap=false;access_denied=true;exceptions=false"
+        "registered=false;bootstrap=false;access_retained=true;exceptions=false"
     );
     let outside = Command::new(&probe)
         .args(["env", "WERK_NATIVE_TEST_SECRET"])
@@ -838,4 +912,103 @@ fn custom_host_port_is_rejected_before_launch() {
 #[test]
 fn custom_host_port_in_fork_snapshot_is_rejected() {
     check_custom_host_port("after-fork");
+}
+
+mod bootstrap_ports {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FORK_GENERATION: AtomicUsize = AtomicUsize::new(0);
+
+    pub extern "C" fn replace_in_final_fork() {
+        // The parent and first supervisor retain the real bootstrap registry.
+        // Replace it only in the second fork, immediately before authentication
+        // of the process that would execute the untrusted payload.
+        if FORK_GENERATION.fetch_add(1, Ordering::Relaxed) != 1 {
+            return;
+        }
+        unsafe {
+            let endpoint = super::host_ports::endpoint();
+            if super::host_ports::task_set_special_port(
+                super::host_ports::mach_task_self_,
+                4, // TASK_BOOTSTRAP_PORT
+                endpoint,
+            ) != 0
+            {
+                libc::_exit(119);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn final_fork_bootstrap_fixture() {
+    if std::env::var_os("WERK_MACOS_FINAL_BOOTSTRAP_FIXTURE").is_none() {
+        return; // subprocess entry point; invoked by the mandatory parent test
+    }
+    let mut fixture = Fixture::new().await;
+    fixture.sandbox.limits.timeout_ms = 10_000;
+    let control = fixture.run(false, &["exit", "0"]).await;
+    assert_eq!(control.exit_code, Some(0), "{control:?}");
+
+    // Resolve endpoint-allocation routines before fork. This isolated host
+    // owns the receive right; no responder is created for the injected endpoint.
+    let _endpoint = unsafe { host_ports::endpoint() };
+    assert_eq!(
+        unsafe { libc::pthread_atfork(None, None, Some(bootstrap_ports::replace_in_final_fork)) },
+        0
+    );
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "escaped task-access authentication".into(),
+    ];
+    let error = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("the final fork must authenticate its actual bootstrap registry");
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(
+        error
+            .message
+            .contains("system task-access port authentication"),
+        "a timeout, crash, or unrelated setup error is not authentication rejection: {error:?}"
+    );
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+}
+
+#[test]
+fn task_access_authentication_rejects_bootstrap_replacement_in_final_fork() {
+    let mut fixture = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "final_fork_bootstrap_fixture", "--nocapture"])
+        .env("WERK_MACOS_FINAL_BOOTSTRAP_FIXTURE", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut timed_out = false;
+    while fixture.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            timed_out = true;
+            fixture.kill().unwrap();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = fixture.wait_with_output().unwrap();
+    assert!(
+        !timed_out && output.status.success(),
+        "final-fork bootstrap fixture: timeout={timed_out}, status={}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

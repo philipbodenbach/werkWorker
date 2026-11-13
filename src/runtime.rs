@@ -794,6 +794,10 @@ pub struct NativeSandboxConfig {
     /// Explicitly select the fork-denied Seatbelt mode only for workspaces
     /// without hostile external renames. Native paths are not inode mounts.
     pub macos_path_based_workspace: bool,
+    /// Accept the inherited system taskgated send right after the native
+    /// launcher authenticates it. This exception permits user-space access to
+    /// that system service; it does not permit arbitrary inherited Mach ports.
+    pub macos_system_task_access: bool,
 }
 
 #[cfg(target_os = "macos")]

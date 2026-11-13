@@ -68,15 +68,23 @@ example `/bin/sh -c ...`) and is fully visible in its concrete approval.
 | Native packages / shared SDK | Available | Available | Available |
 | Secure workspace files | `openat2` | Descriptor-relative APFS/HFS+ | Handle-relative local NTFS |
 | Persisted session / saved workspace rights | Immutable inode incarnation required | Unavailable; live sessions only | NTFS allocation-sequence identity |
-| Isolated process | Bubblewrap | Opt-in Seatbelt single-process mode, macOS 15+ | LPAC single-process mode in an explicitly provisioned workspace |
+| Isolated process | Bubblewrap | Opt-in Seatbelt single-process mode, macOS 15+; authenticated system task-access exception | LPAC single-process mode in an explicitly provisioned workspace |
 | Descendants / cleanup | PID namespace teardown | Fork/spawn denied; independent supervisor | Child creation denied; kill-on-close Job Object |
 | Resources | Per-process rlimits; UID process ceiling | Single-process rlimits | Job memory, CPU and process limits |
 | `browser.check` | Separate browser runtime | Unavailable | Unavailable |
 | Persistent browser | Separate isolated proxy/runtime | Unavailable | Unavailable |
 
 Implementation and successful native validation are different. The macOS mode
-has no local native test result and cannot provide inode-bound workspace paths
-or kernel kill-on-close supervision. It is disabled by default. Windows requires
+cannot provide inode-bound workspace paths, complete host IPC denial or kernel
+kill-on-close supervision. It is disabled by default. The trusted host must
+separately accept path-based workspaces (`macos_path_based_workspace`) and the
+system task-access exception (`macos_system_task_access`). That exception is a
+readable, usable send right to `com.apple.taskgated`, authenticated against a
+privileged launchd lookup before untrusted execution. Unknown, dead, mismatched
+or unverifiable endpoints are rejected; an arbitrary inherited send right is
+not accepted. Other registered/bootstrap/exception ports are cleared, and the
+profile continues to deny direct network and additional Mach service lookups.
+This constrained native mode is not VM isolation. Windows requires
 explicit creation of a new dedicated workspace; ordinary project ACLs are never
 silently rewritten. See [contracts, setup and actual validation results](cross-platform-sandbox.md).
 Neither backend exposes user home/cache trees as a toolchain convenience.

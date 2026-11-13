@@ -86,7 +86,8 @@ The demo is explicitly offline. A missing model connection never falls back to
 scripted replies. Linux process tools require user namespaces and Bubblewrap.
 Windows process tools run in single-process mode and require an explicitly
 provisioned local NTFS workspace;
-macOS has an opt-in Seatbelt single-process mode with additional limitations.
+macOS has an opt-in Seatbelt single-process mode that requires explicit acceptance
+of path-based workspaces and an authenticated system task-access port exception.
 macOS currently supports fresh live sessions; restoring sessions and saving
 workspace permissions requires a durable identity that this backend cannot yet provide.
 `sandbox doctor` reports file, process and browser capabilities separately.

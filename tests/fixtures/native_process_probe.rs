@@ -16,11 +16,10 @@ fn attempt(operation: impl FnOnce() -> io::Result<()>) {
 const KERN_DENIED: i32 = 53; // mach/kern_return.h; SDK-checked by the native library tests
 
 #[cfg(target_os = "macos")]
-fn mach_special_ports() {
+fn task_access_state() -> (i32, bool) {
     unsafe extern "C" {
         static mach_task_self_: u32;
         fn task_get_special_port(task: u32, which: i32, port: *mut u32) -> i32;
-        fn task_set_special_port(task: u32, which: i32, port: u32) -> i32;
         fn mach_port_type(task: u32, name: u32, kind: *mut u32) -> i32;
         fn mach_port_deallocate(task: u32, name: u32) -> i32;
     }
@@ -41,9 +40,21 @@ fn mach_special_ports() {
             std::process::exit(79);
         }
     }
+    // This observes only the right's liveness. Authentication of the retained
+    // system endpoint belongs to the trusted launcher, before this code runs.
+    (access_get, access_live)
+}
+
+#[cfg(target_os = "macos")]
+fn mach_special_ports() {
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+        fn task_set_special_port(task: u32, which: i32, port: u32) -> i32;
+    }
+    let (access_get, access_live) = task_access_state();
     // Clearing this isolated payload's bootstrap slot is a valid operation
     // outside Seatbelt. Inside, the same call must return the exact MAC denial.
-    let bootstrap_set = unsafe { task_set_special_port(task, 4, 0) };
+    let bootstrap_set = unsafe { task_set_special_port(mach_task_self_, 4, 0) };
     println!("access_get={access_get};access_live={access_live};bootstrap_set={bootstrap_set}");
 }
 
@@ -112,12 +123,8 @@ fn mach_state() {
     if bootstrap_status != 0 && bootstrap_status != KERN_DENIED {
         std::process::exit(79);
     }
-    let mut access = 0;
-    let access_status = unsafe { task_get_special_port(task, 9, &mut access) };
-    if access_status != 0 && access_status != KERN_DENIED {
-        std::process::exit(79);
-    }
-    let access_denied = access_status == KERN_DENIED && access == 0;
+    let (access_status, access_live) = task_access_state();
+    let access_retained = access_status == 0 && access_live;
     let mut masks = [0_u32; 32];
     let mut exceptions = [0_u32; 32];
     let mut behaviors = [0_i32; 32];
@@ -140,11 +147,11 @@ fn mach_state() {
     }
     let exceptional = exceptions[..count as usize].iter().any(|port| *port != 0);
     println!(
-        "registered={};bootstrap={};access_denied={access_denied};exceptions={exceptional}",
+        "registered={};bootstrap={};access_retained={access_retained};exceptions={exceptional}",
         inherited.is_some(),
         bootstrap != 0
     );
-    if inherited.is_some() || bootstrap != 0 || !access_denied || exceptional {
+    if inherited.is_some() || bootstrap != 0 || !access_retained || exceptional {
         std::process::exit(77);
     }
 }

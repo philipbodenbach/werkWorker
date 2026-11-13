@@ -23,8 +23,11 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const BACKEND: &str = "seatbelt-single-process";
 const EXECUTABLE: &str = "/usr/bin/sandbox-exec";
-const PROFILE_VERSION: u32 = 6;
+const PROFILE_VERSION: u32 = 7;
 const POLL_MS: i32 = 10;
+
+#[path = "macos_task_access.rs"]
+mod task_access;
 
 // Darwin Mach ABI, supplied by libSystem. Keep these bindings local: libc does
 // not expose the task-port routines. No library is loaded from the workspace.
@@ -80,6 +83,7 @@ impl MachSetupError {
             21 => "exception-port verification query",
             22 => "exception query did not cover the complete mask",
             23 => "exception ports remain after clearing",
+            24..=31 => "system task-access port authentication",
             _ => "unknown Mach setup operation",
         };
         WorkerError::new(
@@ -142,10 +146,9 @@ unsafe fn verify_host_port() -> std::result::Result<(), MachSetupError> {
 
 // All varying paths are -D parameters, not Scheme source or a shell string.
 // No mach-lookup, network, shared-memory, IOKit or fork permission is granted.
-// Explicitly deny special-port extraction/replacement, including target self.
-// TASK_ACCESS_PORT cannot be revoked and is required to remain kernel-only.
-// Native conformance is mandatory: on macOS 26.6.2 the getter rule still exposes
-// that slot. See docs/cross-platform-sandbox.md for the unresolved isolation gate.
+// Keep the special-port getter/setter restrictions. Seatbelt does not deny the
+// TASK_ACCESS_PORT getter: the separately selected exception authenticates that
+// retained right as system taskgated before any untrusted code executes.
 // Apple uses these operations on macOS >=14; unknown ones fail compilation.
 // dyld/libignition opens the root directory during startup. Permit only that
 // directory's entries, never a root subpath grant or descendant file contents.
@@ -190,6 +193,12 @@ pub(super) fn requirements(sandbox: &Sandbox) -> Result<()> {
         return Err(WorkerError::new(
             "sandbox_requirement_unavailable",
             "macOS requires the trusted host to select macos_path_based_workspace; Seatbelt cannot inode-pin a subtree against external renames",
+        ));
+    }
+    if !sandbox.native.macos_system_task_access {
+        return Err(WorkerError::new(
+            "sandbox_requirement_unavailable",
+            "macOS requires the trusted host to select macos_system_task_access; native execution retains a verified system taskgated send right",
         ));
     }
     let limits = &sandbox.limits;
@@ -260,9 +269,15 @@ pub(super) fn requirements(sandbox: &Sandbox) -> Result<()> {
             ),
         ));
     }
-    // Preflight for approval/doctor. The supervisor repeats this on its own
-    // fork snapshot, closing the gap between preparation and actual launch.
-    unsafe { verify_host_port() }.map_err(MachSetupError::into_worker_error)
+    // Preflight for approval/doctor. The final child repeats these checks on its
+    // own fork snapshot, closing the gap between preparation and actual launch.
+    unsafe { verify_host_port() }.map_err(MachSetupError::into_worker_error)?;
+    unsafe { verify_system_task_access() }.map_err(MachSetupError::into_worker_error)
+}
+
+unsafe fn verify_system_task_access() -> std::result::Result<(), MachSetupError> {
+    unsafe { task_access::verify_system_task_access() }
+        .map_err(|(stage, detail)| MachSetupError { stage, detail })
 }
 
 pub(super) fn description(
@@ -278,9 +293,15 @@ pub(super) fn description(
         "workspace_writable": writable, "cwd_namespace": "native-host-path",
         "workspace_binding": "path-filter-with-pinned-cwd-and-rename-monitor",
         "requires_trusted_external_workspace_renames": true,
-        "network": "denied", "host_ipc": "denied", "fork": "denied",
-        "inherited_mach_rights": "registered-bootstrap-exception-verified-empty-before-second-fork;task-access-kernel-slot-retained-with-special-port-get-set-denied;host-port-kernel-type-verified-after-fork",
-        "host_requirements": "unprivileged-uid;host-port-IKOT_HOST-only",
+        "network": "denied", "host_ipc": "denied-except-verified-system-task-access", "fork": "denied",
+        "task_access_exception": {
+            "service": "com.apple.taskgated",
+            "registry": "privileged-bootstrap-lookup",
+            "user_getter": "retained-send-right",
+            "scope": "system-service-only"
+        },
+        "inherited_mach_rights": "registered-bootstrap-exception-verified-empty-before-exec;task-access-authenticated-again-in-final-fork-snapshot;host-port-kernel-type-verified-after-fork",
+        "host_requirements": "unprivileged-uid;host-port-IKOT_HOST-only;task-access-system-taskgated-only",
         "untrusted_processes": 1,
         "readonly_runtime": ["/System/Library", "/usr/lib", "/usr/share", "/bin",
             "/usr/bin", "/usr/libexec", "/Library/Developer/CommandLineTools"],
@@ -472,9 +493,24 @@ unsafe fn raw_write(fd: RawFd, bytes: &[u8]) -> bool {
 
 unsafe fn setup_failed(fd: RawFd) -> ! {
     unsafe {
-        raw_write(fd, &[1]);
+        setup_mach_failed(
+            fd,
+            MachSetupError {
+                stage: 5,
+                detail: 0,
+            },
+        )
     }
-    unsafe { libc::_exit(125) }
+}
+
+unsafe fn setup_mach_failed(fd: RawFd, error: MachSetupError) -> ! {
+    let mut report = [0_u8; 5];
+    report[0] = error.stage;
+    report[1..].copy_from_slice(&error.detail.to_ne_bytes());
+    unsafe {
+        raw_write(fd, &report);
+        libc::_exit(125)
+    }
 }
 
 unsafe fn monotonic_ms() -> i64 {
@@ -487,11 +523,11 @@ unsafe fn monotonic_ms() -> i64 {
         .saturating_add(now.tv_nsec / 1_000_000)
 }
 
-// XNU ipc_task_init starts a NEW IPC namespace on fork, then inherits selected
-// task ports. Clear those on the supervisor before its child is forked: merely
-// clearing the slot immediately before exec would leave already-copied-out
-// send-right names in the child's namespace. The normal kernel host port stays
-// available only after checking its kernel object type in this fork snapshot.
+// XNU ipc_task_init starts a NEW IPC namespace on fork/exec, then inherits
+// selected task ports. Authenticate task-access in the final fork snapshot,
+// then clear the remaining inherited slots before exec. Exec into the trusted
+// system launcher discards names copied out during authentication and cleanup;
+// exec into the payload discards the launcher's ordinary names in turn.
 // Darwin's Mach stubs use stack messages and kernel IPC; mach_ports_register is
 // a fixed three-port wrapper. All symbols are resolved before the first fork.
 fn mach_result(status: i32, stage: u8) -> std::result::Result<(), MachSetupError> {
@@ -555,11 +591,9 @@ unsafe fn exception_ports_present(
 unsafe fn scrub_inherited_mach() -> std::result::Result<(), MachSetupError> {
     #[allow(deprecated)] // local libSystem ABI avoids a second Mach binding dependency
     let task = unsafe { libc::mach_task_self() };
-    // launchd normally supplies a live TASK_ACCESS_PORT for kernel code-signing
-    // upcalls. XNU refuses to replace it. Do not copy it into this namespace or
-    // pretend that deallocating a name revokes the kernel's retained slot.
-    // The next fork discards copied-out names; PROFILE denies the user getter
-    // and setter before untrusted code, while kernel-internal upcalls remain.
+    // The separately authenticated TASK_ACCESS_PORT remains available under
+    // the explicit system-service exception. Deallocating its copied name does
+    // not revoke the kernel's retained slot. Exec discards copied-out names.
     let mut port = 0_u32;
     mach_result(
         unsafe { mach_ports_register(task, std::ptr::null_mut(), 0) },
@@ -607,6 +641,7 @@ unsafe fn scrub_inherited_mach() -> std::result::Result<(), MachSetupError> {
 }
 
 fn resolve_mach_symbols() {
+    task_access::resolve_symbols();
     // Invalid destination 0 resolves the MIG stubs without changing host state.
     let mut value = 0;
     let mut count = 1;
@@ -695,15 +730,6 @@ unsafe fn supervisor(
             libc::_exit(125)
         }
     }
-    if let Err(error) = unsafe { scrub_inherited_mach() } {
-        let mut result = [0_u8; 5];
-        result[0] = error.stage;
-        result[1..].copy_from_slice(&error.detail.to_ne_bytes());
-        unsafe {
-            raw_write(report, &result);
-            libc::_exit(125)
-        }
-    }
     let child = unsafe { libc::fork() };
     if child < 0 {
         unsafe { libc::_exit(125) }
@@ -744,6 +770,19 @@ unsafe fn supervisor(
             };
             if unsafe { libc::setrlimit(resource, &limit) } != 0 {
                 unsafe { setup_failed(setup_write) }
+            }
+        }
+        // Authenticate after the final fork (including host atfork handlers).
+        // Keep bootstrap until this bounded, stack-only lookup has completed.
+        // The supervisor already monitors this child, including authentication,
+        // so cancellation, timeout and host death also cover setup.
+        for operation in [
+            verify_host_port,
+            verify_system_task_access,
+            scrub_inherited_mach,
+        ] {
+            if let Err(error) = unsafe { operation() } {
+                unsafe { setup_mach_failed(setup_write, error) }
             }
         }
         // sandbox-exec installs Seatbelt before it runs the requested program.
@@ -839,9 +878,34 @@ unsafe fn supervisor(
     }
     // The setup writer was CLOEXEC and not given to the program. Distinguish
     // a mandatory pre-exec setup failure from an application exiting 125.
-    let mut setup = 0_u8;
-    if unsafe { libc::read(setup_read, (&mut setup as *mut u8).cast(), 1) } > 0 {
-        reason = 5;
+    // The child is reaped, so its complete atomic report is already available.
+    // Do not wait for EOF from an unrelated host fork that inherited a writer.
+    let mut setup = [0_u8; 5];
+    let flags = unsafe { libc::fcntl(setup_read, libc::F_GETFL) };
+    let received = if flags < 0
+        || unsafe { libc::fcntl(setup_read, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        reason = 4;
+        0
+    } else {
+        loop {
+            let read = unsafe { libc::read(setup_read, setup.as_mut_ptr().cast(), setup.len()) };
+            if read < 0 && unsafe { *libc::__error() } == libc::EINTR {
+                continue;
+            }
+            if read < 0 && unsafe { *libc::__error() } != libc::EAGAIN {
+                reason = 4;
+            }
+            break read;
+        }
+    };
+    if received > 0 && reason == 0 {
+        if received == setup.len() as isize {
+            reason = setup[0];
+            status = i32::from_ne_bytes(setup[1..].try_into().unwrap());
+        } else {
+            reason = 5;
+        }
     }
     let mut result = [0_u8; 5];
     result[0] = reason;
@@ -1088,7 +1152,7 @@ pub(super) async fn run(
             "Native launcher could not establish its required descriptors or resource limits",
         ));
     }
-    if (7..=23).contains(&report[0]) {
+    if (7..=31).contains(&report[0]) {
         return Err(MachSetupError {
             stage: report[0],
             detail: status,

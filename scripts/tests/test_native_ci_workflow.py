@@ -49,6 +49,8 @@ class NativeCiFailureCollection(unittest.TestCase):
             self.assertIn("        shell: python\n", step)
             self.assertNotIn("        shell: bash\n", step)
         self.assertIn("--no-fail-fast", script_for("Test native platform integration"))
+        # Include nested authentication tests as well as the backend's direct tests.
+        self.assertIn('"runtime::macos::"', script_for("Test native platform integration"))
         self.assertIn('          REQUIRE_SANDBOX: "1"', step_for("Test native platform integration"))
         self.assertIn(
             "WERK_REQUIRE_CUSTOM_MACH_HOST_PORT: ${{ runner.os == 'macOS' && '1' || '0' }}",

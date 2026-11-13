@@ -26,7 +26,7 @@ backend. Browser isolation remains a separate capability.
 |---|---|---|---|
 | Workspace files | `openat2`, no symlinks/foreign mounts | Descriptor-relative local APFS/HFS+ | Handle-relative fixed-drive local NTFS |
 | Durable saved authority / session reopen | Validated ext4 semantics plus immutable `statx` birth time and device/inode | Unavailable; fresh live sessions only | NTFS allocation-sequence file identity |
-| Process isolation | Bubblewrap namespaces | Explicitly selected Seatbelt single-process mode, macOS 15+ | LPAC single-process mode plus Job Object; explicitly provisioned workspace |
+| Process isolation | Bubblewrap namespaces | Explicitly selected Seatbelt single-process mode, macOS 15+; authenticated system task-access exception | LPAC single-process mode plus Job Object; explicitly provisioned workspace |
 | Workspace exposed to process | Inode-bound `/workspace` mount | Native path filter and pinned CWD; external rename assumption | Native path, pinned ancestor handles and dedicated ACLs |
 | Read-only mode | Read-only mount | Seatbelt write denial | Separate read-only AppContainer SID |
 | Direct network | Isolated network namespace | Denied by profile | No network capabilities |
@@ -35,9 +35,9 @@ backend. Browser isolation remains a separate capability.
 | One-shot browser check | Existing separate Linux backend | Unavailable | Unavailable |
 | Persistent browser | Existing private network/proxy backend | Unavailable | Unavailable |
 
-Implementation is not evidence of native conformance. In particular, the macOS
-mode has not been validated by a native run in this development environment.
-Its narrower path and lifecycle contract is not Linux-equivalent isolation.
+Implementation is not evidence of native conformance. The macOS mode has a
+narrower path, IPC and lifecycle contract than the Linux backend and does not
+provide VM isolation.
 See the validation record below before treating a capability as verified.
 
 ## Native workspace access
@@ -101,7 +101,10 @@ moves. External writers are not participants in the cooperative lease protocol.
 The host must supply a native configuration file explicitly:
 
 ```json
-{"macos_path_based_workspace": true}
+{
+  "macos_path_based_workspace": true,
+  "macos_system_task_access": true
+}
 ```
 
 ```sh
@@ -109,10 +112,13 @@ ww --native-sandbox-config /trusted/native-sandbox.json sandbox doctor
 ```
 
 The SDK equivalent is `Sandbox { native: NativeSandboxConfig {
-macos_path_based_workspace: true }, ..Default::default() }`. Workspace/project
-preferences cannot enable this option. With the default configuration, process
-execution rejects the unavailable inode-bound requirement before launch;
-secure native file operations remain independently usable.
+macos_path_based_workspace: true, macos_system_task_access: true },
+..Default::default() }`. Both options default to false and are host-owned;
+workspace/project preferences cannot enable them. The first accepts the external
+rename assumption. The second accepts the authenticated system task-access port
+exception described below. A legacy configuration containing only the first
+option is rejected before payload execution. Secure native file operations
+remain independently usable.
 
 The mode uses the system `/usr/bin/sandbox-exec` with a fixed deny-default
 profile and separately supplied path parameters. It grants only the selected
@@ -139,7 +145,7 @@ renames or as general macOS sandbox parity.
 application API. App Sandbox entitlements are a different mechanism. Native
 tests on the supported macOS version are mandatory; no SIP or global protection
 setting is changed. Root/set-id hosts remain rejected. macOS backend
-configuration version **5** checks the actual inherited host port instead of
+configuration version **7** checks the actual inherited host port instead of
 requiring a global SIP setting: `task_get_special_port(TASK_HOST_PORT)` obtains
 the right and `mach_port_kobject` queries its kernel object type through the
 task port. Only `IKOT_HOST` (3), the ordinary unprivileged kernel host port, is
@@ -161,33 +167,50 @@ and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215
 The query returns the object type on release kernels too; the backend does not
 use the kernel address, which release kernels hide. Port failures retain the
 Mach result or unexpected object type and identify the failing stage.
-Version 1/2/3/4/5 approval descriptions differ and must be prepared and approved again;
-the file-content/network rules and one-process limit are unchanged. The supervisor still
-clears registered ports and verifies bootstrap/exception slots are empty before
-forking a fresh namespace for exec. Only populated bootstrap/exception slots
-need mutation; after clearing exceptions, it verifies the complete mask again.
-A `TASK_ACCESS_PORT` supplied by launchd remains in its kernel slot: XNU does
-not permit replacing a live access port, and deallocating a user-space name
-does not revoke it. Version 3 instead explicitly denies
-`mach-task-special-port-get` and `mach-task-special-port-set` for user getter/setter
-calls, including access to the process's own special ports. The supervisor does
-not extract the access port. After clearing the other inherited slots it forks a fresh IPC namespace;
-the backend never extracts the access right in that child. Exec into the payload
-creates another IPC namespace, discarding any ordinary port names cached by the
-trusted launcher while preserving the Seatbelt policy.
-The intended boundary lets the kernel perform its internal code-signing upcalls
-while denying user-space extraction of the endpoint. **Native validation on
-macOS 26.6.2 disproves that getter guarantee for this profile**: selector 9 still
-returns a live send right. This backend has not passed its required IPC isolation
-gate; successful process startup must not be interpreted as sandbox acceptance.
-XNU checks the MAC policy before servicing that getter even for the current task,
-but that hook alone does not establish which selectors Seatbelt denies. Apple's WebKit
-uses these deny operations on macOS >=14; see its
-[Seatbelt profile](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in)
-and XNU's [user special-port getter and namespace initialization](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_tt.c)
+Version 1–6 approval descriptions differ and must be prepared and approved
+again. The file-content/network rules and one-process limit are unchanged.
+
+The task-access exception is exactly the system `com.apple.taskgated` endpoint
+in `TASK_ACCESS_PORT` (selector 9). macOS does not permit revoking its live slot,
+and the Seatbelt getter rule does not reliably prevent copying out its send
+right. Version 7 therefore permits that authenticated right to remain readable
+and usable by the payload. It does **not** promise complete host IPC denial or
+equivalence to a separate VM. Workloads requiring that stronger boundary must
+use a different execution environment; no VM backend is supplied by this mode.
+
+Before accepting the exception, the launcher obtains the candidate right from
+the kernel and independently looks up the fixed service name through the
+privileged bootstrap protocol. The reply must carry a kernel-supplied Mach
+audit trailer identifying launchd (PID 1, effective UID 0), and its recipient
+PID and process incarnation must match the caller. The returned service right
+must equal the candidate in the same Mach namespace. A live send right or
+`IKOT_NONE` alone is insufficient evidence. No authentication message is sent
+to the candidate task-access endpoint. Missing/dead rights, lookup failure or
+timeout, malformed replies, untrusted reply identities and mismatched endpoints
+reject execution. A bootstrap right identical to the candidate is rejected
+before sending. Failed sends and partial receives release returned Mach rights;
+interruptions fail closed instead of restarting the timeout.
+
+The bounded lookup uses stack buffers and Mach calls, rather than XPC objects,
+so the check also runs on the final fork snapshot before untrusted execution.
+The legacy bootstrap wire interface is private: an incompatible OS reply fails
+closed rather than bypassing authentication. Apple's
+[bootstrap lookup implementation](https://github.com/apple-oss-distributions/launchd/blob/main/liblaunch/libbootstrap.c)
+describes privileged lookup authentication; the backend additionally requires
+launchd's PID and the expected reply recipient. Approval descriptions record
+the exact service exception and authentication method, so earlier approvals
+cannot silently authorize it.
+
+After authentication, the child clears registered ports and verifies that its
+bootstrap and exception slots are empty. Only populated slots need mutation;
+the complete exception mask is checked again after clearing. Exec discards
+ordinary copied-out Mach names while preserving the selected special slots and
+the Seatbelt policy. The system host-port check and explicit special-port setter
+denial remain in place. Native tests retain an outside live-right control,
+verify the allowed access right survives exec, require the setter's exact
+`KERN_DENIED`, and separately test rejection of untrusted authentication inputs.
+See XNU's [special-port handling and namespace initialization](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_tt.c)
 and [exec task creation](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/kern/kern_exec.c).
-Mandatory native tests require a live outside access-port control and exact
-`KERN_DENIED` results for the inside getter and setter, including after exec.
 Version 4 additionally permits metadata on the system symlinks `/var` and `/tmp`
 and the exact ancestors of the workspace and private temporary directory.
 XNU checks [symlink reads during path lookup](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/vfs/vfs_lookup.c)
@@ -400,12 +423,13 @@ attempted overwrite returned `KERN_NO_ACCESS` (8). This is an incompatible backe
 assumption, not a transient runner failure. Another fork, plain exec or `posix_spawn` port action cannot
 revoke that slot; those paths inherit it or call the same protected setter.
 
-Version 3 removes the impossible revocation requirement and uses the explicit
-Seatbelt getter/setter denial described above. The invalid dead-slot overwrite
-test is replaced by native positive/negative access tests. The remaining Mach
-cleanup diagnostics and fork-snapshot test stay active. Old approvals do not
-authorize this changed execution description. The source-level cause is now
-established; that did not establish successful payload execution.
+Version 3 removed the impossible revocation requirement and attempted to enforce
+the boundary with explicit Seatbelt getter/setter denials. The invalid dead-slot
+overwrite test was replaced by native positive/negative access tests. The
+remaining Mach cleanup diagnostics and fork-snapshot test stayed active. This
+established the cause of the setup failure, but did not establish successful
+payload execution or getter enforcement. Version 7 supersedes that getter
+assumption with the authenticated exception described above.
 
 The native run of `914d313` passed all four Mach setup unit tests, but exposed
 the next startup failures: argv paths under `/var/folders` returned
@@ -445,16 +469,39 @@ the process gate or cancelling it; a file marker alone did not synchronize the
 asynchronous pipe reader. An intentionally incomplete first log page exercises
 that bounded observation loop.
 
-Two native isolation tests still fail: the access-port getter test and the
-host-exit fixture's inherited-port check. Both observe a live `TASK_ACCESS_PORT`
-despite the explicit getter denial. Adding a self filter or a broader Mach deny
-does not fix that behavior. Denying the entire getter MIG routine returns
+Version 6 still failed two native isolation tests: the access-port getter test
+and the host-exit fixture's inherited-port check. Both observed a live
+`TASK_ACCESS_PORT` despite the explicit getter denial. Adding a self filter or a
+broader Mach deny did not fix that behavior. Denying the entire getter MIG routine returns
 `KERN_DENIED`, but also aborts libxpc initialization because it needs the bootstrap
 selector. Clearing the live access slot returns `KERN_NO_ACCESS`; requesting that
-clear through `posix_spawn` fails with `EINVAL`. No such workaround is installed
-and the failing conformance assertions remain mandatory. A launcher/isolation
-redesign is required before the claimed access-port boundary is accepted; this
-change does not establish a fully passing native macOS backend.
+clear through `posix_spawn` fails with `EINVAL`. No such workaround is installed.
+These results disproved version 6's complete access-port denial claim; they did
+not establish a sandbox escape.
+
+Version 7 replaces that claim with a separately selected system-service
+exception and authenticates the inherited endpoint before launch. Native
+conformance now checks the retained right, setter denial, authentication rejection
+cases and the remaining IPC cleanup boundary. The host-exit fixture must still
+reach and verify actual supervisor cleanup. Authentication and test updates are
+not evidence of a passing CI run; validation results must be recorded separately.
+
+Version 7 was validated locally on 2026-11-13 on Apple Silicon macOS 26.6.2
+with Rust 1.99.0. With `REQUIRE_SANDBOX=1`, all 45 required native integration
+tests and all 14 macOS backend unit tests passed, including both previously
+failing access-port/lifecycle cases. After the final launcher and authentication
+changes, the 16 macOS process tests and four native lifecycle tests passed again.
+Authentication tests cover the genuine service, arbitrary live endpoints,
+null/dead/kernel ports, forged replies, bounded lookup failure, repeated
+send-timeout resource cleanup, bootstrap/candidate aliasing and the final fork
+snapshot. A separate native relay probe confirmed that forwarding a reply
+right produces a launchd response bound to the relay's PID, which the recipient
+check rejects. Formatting, all-targets Clippy with warnings denied, the
+no-default-features library, separate locked SDK consumer, two parallel tests,
+two CLI configuration tests and eight CI-workflow tests also passed.
+The local host has SIP enabled; custom-host-port tests exercised the expected
+SIP-denial branch. GitHub's macOS 15 runner, including its mandatory custom-port
+injection branch, has not been rerun for version 7.
 
 Local version 4 checks passed on 2026-11-13: 31 real Linux integration tests,
 eight workflow/diagnostic tests, formatting, all-targets Clippy with warnings

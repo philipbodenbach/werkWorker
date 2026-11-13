@@ -190,8 +190,11 @@ enum Finish {
     Hold,
 }
 
+const MAX_LIVE_LOG_POLLS: usize = 32;
+
 struct LifecycleProvider {
     step: AtomicUsize,
+    live_log_polls: AtomicUsize,
     argv: Vec<String>,
     root: PathBuf,
     finish: Finish,
@@ -231,12 +234,42 @@ impl ModelProvider for LifecycleProvider {
                     "Inspect the live job and its held lease",
                     vec![
                         call("process.status", json!({"job_id":job})),
-                        call("process.log", json!({"job_id":job,"length":100})),
+                        // Force an incomplete first observation even when the
+                        // pipe drains immediately, exercising the retry path.
+                        call("process.log", json!({"job_id":job,"length":1})),
                         call("files.read", json!({"path":"source.txt"})),
                     ],
                 )
             }
             2 => {
+                // The ready file follows the payload's stdout flush, but the
+                // engine's asynchronous pipe reader may not have published it
+                // yet. Observe the live log before opening the gate or killing
+                // the process, so buffered output after exit cannot pass.
+                let live_ready = request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == Role::Tool)
+                    .filter_map(|message| serde_json::from_str::<Value>(&message.content).ok())
+                    .any(|result| {
+                        result["data"]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("native job ready"))
+                    });
+                if !live_ready {
+                    assert!(
+                        self.live_log_polls.fetch_add(1, Ordering::SeqCst) < MAX_LIVE_LOG_POLLS,
+                        "Native output was not published while the process was still running"
+                    );
+                    self.step.fetch_sub(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    return ScriptedProvider::new(vec![ScriptedTurn::calls(
+                        "Wait for the live output reader",
+                        vec![call("process.log", json!({"job_id":job,"length":100}))],
+                    )])
+                    .stream(request)
+                    .await;
+                }
                 let mut calls = Vec::new();
                 match self.finish {
                     Finish::Wait => std::fs::write(self.root.join("job-gate"), "go").unwrap(),
@@ -265,6 +298,7 @@ impl ModelProvider for LifecycleProvider {
 fn provider(fixture: &Fixture, finish: Finish) -> Arc<LifecycleProvider> {
     Arc::new(LifecycleProvider {
         step: AtomicUsize::new(0),
+        live_log_polls: AtomicUsize::new(0),
         argv: fixture.argv(),
         root: fixture.workspace.path.clone(),
         finish,
@@ -303,7 +337,12 @@ async fn background(finish: Finish) {
         .submit(
             "Exercise background lifecycle",
             "start",
-            Limits::default(),
+            Limits {
+                // This fixture deliberately waits for asynchronous live output
+                // through process.log while holding the process's gate closed.
+                max_repeated_calls: MAX_LIVE_LOG_POLLS + 2,
+                ..Limits::default()
+            },
             None,
         )
         .await
@@ -324,12 +363,13 @@ async fn background(finish: Finish) {
     };
     assert_eq!(by_name("process.status")[0].data["status"], "running");
     let logs = by_name("process.log");
-    assert!(
-        logs[0].data["text"]
+    let (finished_log, live_logs) = logs.split_last().unwrap();
+    assert!(live_logs.iter().any(|log| {
+        log.data["text"]
             .as_str()
             .unwrap()
             .contains("native job ready")
-    );
+    }));
     let reads = by_name("files.read");
     assert_eq!(reads[0].error_code.as_deref(), Some("workspace_busy"));
     assert_eq!(reads[1].data["content"], "observed source");
@@ -339,7 +379,7 @@ async fn background(finish: Finish) {
         Finish::Wait => {
             assert_eq!(waited.data["output"]["exit_code"], 0);
             assert!(
-                logs[1].data["text"]
+                finished_log.data["text"]
                     .as_str()
                     .unwrap()
                     .contains("native job finished")

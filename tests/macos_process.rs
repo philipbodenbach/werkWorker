@@ -214,12 +214,12 @@ async fn read_write_stdin_argv_and_exit_status_are_native() {
         .execution_description(&fixture.workspace, false)
         .await
         .unwrap();
-    assert_eq!(contract["configuration_version"], 5);
+    assert_eq!(contract["configuration_version"], 6);
     assert_eq!(
         contract["host_requirements"],
         "unprivileged-uid;host-port-IKOT_HOST-only"
     );
-    for version in [1, 2, 3, 4] {
+    for version in [1, 2, 3, 4, 5] {
         let mut legacy = contract.clone();
         legacy["configuration_version"] = version.into();
         assert_eq!(

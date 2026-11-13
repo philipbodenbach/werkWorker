@@ -161,7 +161,7 @@ and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215
 The query returns the object type on release kernels too; the backend does not
 use the kernel address, which release kernels hide. Port failures retain the
 Mach result or unexpected object type and identify the failing stage.
-Version 1/2/3/4 approval descriptions differ and must be prepared and approved again;
+Version 1/2/3/4/5 approval descriptions differ and must be prepared and approved again;
 the file-content/network rules and one-process limit are unchanged. The supervisor still
 clears registered ports and verifies bootstrap/exception slots are empty before
 forking a fresh namespace for exec. Only populated bootstrap/exception slots
@@ -175,9 +175,13 @@ not extract the access port. After clearing the other inherited slots it forks a
 the backend never extracts the access right in that child. Exec into the payload
 creates another IPC namespace, discarding any ordinary port names cached by the
 trusted launcher while preserving the Seatbelt policy.
-The kernel can still perform its internal code-signing upcalls, but untrusted
-code cannot copy the endpoint out through the user getter. XNU checks the MAC
-policy before servicing that getter even for the current task. Apple's WebKit
+The intended boundary lets the kernel perform its internal code-signing upcalls
+while denying user-space extraction of the endpoint. **Native validation on
+macOS 26.6.2 disproves that getter guarantee for this profile**: selector 9 still
+returns a live send right. This backend has not passed its required IPC isolation
+gate; successful process startup must not be interpreted as sandbox acceptance.
+XNU checks the MAC policy before servicing that getter even for the current task,
+but that hook alone does not establish which selectors Seatbelt denies. Apple's WebKit
 uses these deny operations on macOS >=14; see its
 [Seatbelt profile](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in)
 and XNU's [user special-port getter and namespace initialization](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_tt.c)
@@ -193,7 +197,16 @@ nor sibling directories become readable. Version 5 permits `file-read-data` on
 the literal root directory `/` for dyld/libignition startup. This exposes only
 root directory entry names, not descendant file contents or writes; it is not a
 `subpath "/"` grant. The execution description records this permission and
-invalidates earlier approvals. Native acceptance of version 5 remains pending.
+invalidates earlier approvals. Version 6 also permits the exact read-only sysctl
+`hw.pagesize_compat`. Apple's libc uses the numeric `HW_PAGESIZE` selector for
+[`getpagesize()`](https://github.com/apple-oss-distributions/Libc/blob/main/gen/FreeBSD/getpagesize.c),
+which XNU registers as `pagesize_compat` in
+[`kern_mib.c`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_mib.c).
+Allowing only the separate named `hw.pagesize` sysctl does not cover that call.
+Without this permission, `sysconf(_SC_PAGESIZE)` fails with `EPERM` and Rust's
+guard-page initialization can abort before `main`. The profile hash and version
+invalidate earlier approvals; the added rule grants no sysctl writes or wider
+sysctl reads.
 On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
 See [Apple DTS on sandbox-exec](https://developer.apple.com/forums/thread/661939)
@@ -421,6 +434,28 @@ abort, including controls with the special-port rules removed. Version 5 adds
 only the literal-root directory read described above, preserving the Mach rules
 and requiring the existing native startup/isolation tests to pass. No successful
 native macOS run of version 5 is claimed.
+
+Version 6 local validation on 2026-11-13 used macOS 26.6.2 / Apple Silicon and
+Rust 1.99.0. The version 5 startup failure reproduced with a Rust guard-page
+initialization panic. A C control measured `sysconf(_SC_PAGESIZE) = -1`, `EPERM`;
+adding only `hw.pagesize_compat` changed it to 16384 and let the Rust payload run.
+The existing exact-profile startup regression now passes. The lifecycle fixture
+also waits for its readiness text to arrive through `process.log` before opening
+the process gate or cancelling it; a file marker alone did not synchronize the
+asynchronous pipe reader. An intentionally incomplete first log page exercises
+that bounded observation loop.
+
+Two native isolation tests still fail: the access-port getter test and the
+host-exit fixture's inherited-port check. Both observe a live `TASK_ACCESS_PORT`
+despite the explicit getter denial. Adding a self filter or a broader Mach deny
+does not fix that behavior. Denying the entire getter MIG routine returns
+`KERN_DENIED`, but also aborts libxpc initialization because it needs the bootstrap
+selector. Clearing the live access slot returns `KERN_NO_ACCESS`; requesting that
+clear through `posix_spawn` fails with `EINVAL`. No such workaround is installed
+and the failing conformance assertions remain mandatory. A launcher/isolation
+redesign is required before the claimed access-port boundary is accepted; this
+change does not establish a fully passing native macOS backend.
+
 Local version 4 checks passed on 2026-11-13: 31 real Linux integration tests,
 eight workflow/diagnostic tests, formatting, all-targets Clippy with warnings
 denied, the no-default-features library, the separate SDK consumer and the

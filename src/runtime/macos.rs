@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const BACKEND: &str = "seatbelt-single-process";
 const EXECUTABLE: &str = "/usr/bin/sandbox-exec";
-const PROFILE_VERSION: u32 = 5;
+const PROFILE_VERSION: u32 = 6;
 const POLL_MS: i32 = 10;
 
 // Darwin Mach ABI, supplied by libSystem. Keep these bindings local: libc does
@@ -143,10 +143,14 @@ unsafe fn verify_host_port() -> std::result::Result<(), MachSetupError> {
 // All varying paths are -D parameters, not Scheme source or a shell string.
 // No mach-lookup, network, shared-memory, IOKit or fork permission is granted.
 // Explicitly deny special-port extraction/replacement, including target self.
-// TASK_ACCESS_PORT cannot be revoked but must remain kernel-only. Apple uses
-// these Seatbelt operations on macOS >=14; unknown operations fail compilation.
+// TASK_ACCESS_PORT cannot be revoked and is required to remain kernel-only.
+// Native conformance is mandatory: on macOS 26.6.2 the getter rule still exposes
+// that slot. See docs/cross-platform-sandbox.md for the unresolved isolation gate.
+// Apple uses these operations on macOS >=14; unknown ones fail compilation.
 // dyld/libignition opens the root directory during startup. Permit only that
 // directory's entries, never a root subpath grant or descendant file contents.
+// libc's getpagesize/sysconf uses hw.pagesize_compat on Apple Silicon. Denying
+// it breaks Rust's guard-page setup before main, even with hw.pagesize allowed.
 const PROFILE: &str = r#"(version 1)
 (deny default)
 (deny mach-task-special-port-get)
@@ -157,6 +161,7 @@ const PROFILE: &str = r#"(version 1)
 (allow process-info-pidinfo (target self))
 (allow sysctl-read
   (sysctl-name "hw.ncpu" "hw.logicalcpu" "hw.physicalcpu" "hw.pagesize"
+               "hw.pagesize_compat"
                "kern.osrelease" "kern.ostype" "kern.osversion" "kern.version"
                "sysctl.proc_translated"))
 (allow file-read* file-map-executable

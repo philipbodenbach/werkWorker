@@ -124,6 +124,27 @@ async fn impossible_address_space_limit_fails_before_untrusted_code() {
 #[tokio::test]
 async fn read_write_stdin_argv_and_exit_status_are_native() {
     let fixture = Fixture::new().await;
+    let contract = fixture
+        .sandbox
+        .execution_description(&fixture.workspace, false)
+        .await
+        .unwrap();
+    assert_eq!(contract["configuration_version"], 2);
+    assert_eq!(
+        contract["host_requirements"],
+        "unprivileged-uid;host-port-IKOT_HOST-only"
+    );
+    let mut legacy = contract.clone();
+    legacy["configuration_version"] = 1.into();
+    assert_eq!(
+        fixture
+            .sandbox
+            .verify_execution_description(&fixture.workspace, false, &legacy)
+            .await
+            .unwrap_err()
+            .code,
+        "sandbox_contract_changed"
+    );
     let echo = fixture
         .run(
             false,
@@ -461,4 +482,183 @@ async fn supervisor_survives_embedding_host_sigkill_and_prevents_late_write() {
     host.wait().unwrap();
     tokio::time::sleep(Duration::from_millis(1800)).await;
     assert!(!fixture.workspace.path.join("crash-late").exists());
+}
+
+// All host-port mutations live in a separate test process. Never change the
+// ports of the parallel test harness or its embedding Tokio runtime.
+mod host_ports {
+    unsafe extern "C" {
+        pub static mach_task_self_: u32;
+        pub fn mach_port_allocate(task: u32, right: i32, port: *mut u32) -> i32;
+        pub fn mach_port_insert_right(task: u32, name: u32, right: u32, kind: u32) -> i32;
+        pub fn task_get_special_port(task: u32, which: i32, port: *mut u32) -> i32;
+        pub fn task_set_special_port(task: u32, which: i32, port: u32) -> i32;
+        pub fn mach_msg(
+            message: *mut std::ffi::c_void,
+            options: u32,
+            send: u32,
+            receive: u32,
+            port: u32,
+            timeout: u32,
+            notify: u32,
+        ) -> i32;
+    }
+
+    pub unsafe fn endpoint() -> u32 {
+        let task = unsafe { mach_task_self_ };
+        let mut port = 0;
+        // No allocation/panic in the atfork child callback.
+        if unsafe { mach_port_allocate(task, 1, &mut port) } != 0
+            || unsafe { mach_port_insert_right(task, port, port, 20) } != 0
+        {
+            unsafe { libc::_exit(119) }
+        }
+        port
+    }
+
+    pub extern "C" fn replace_after_fork() {
+        unsafe {
+            let port = endpoint();
+            if task_set_special_port(mach_task_self_, 3, port) != 0 {
+                libc::_exit(119);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn custom_host_port_fixture() {
+    let Some(mode) = std::env::var_os("WERK_MACOS_HOST_PORT_FIXTURE") else {
+        return; // subprocess entry point; invoked by both mandatory parent tests
+    };
+    use host_ports::*;
+    let fixture = Fixture::new().await;
+    let task = unsafe { mach_task_self_ };
+    let mut normal = 0;
+    assert_eq!(unsafe { task_get_special_port(task, 3, &mut normal) }, 0);
+    let endpoint = unsafe { endpoint() };
+    let installed = unsafe { task_set_special_port(task, 3, endpoint) };
+    if installed != 0 {
+        // A protected developer Mac must enforce the kernel's own denial.
+        // Hosted CI requires the custom-port case so it cannot pass by taking
+        // this branch instead of reproducing its observed SIP configuration.
+        assert_ne!(
+            std::env::var("WERK_REQUIRE_CUSTOM_MACH_HOST_PORT").as_deref(),
+            Ok("1"),
+            "CI must exercise custom host-port injection; status={installed}"
+        );
+        assert_eq!(installed, 8, "expected KERN_NO_ACCESS from SIP");
+        assert_eq!(fixture.run(false, &["exit", "0"]).await.exit_code, Some(0));
+        return;
+    }
+
+    // Positive control: an ordinary fork inherits this exact host endpoint and
+    // sends a marker. Use libc-only code before exec so no runtime can replace
+    // the special port or accidentally consume a message from the endpoint.
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        unsafe {
+            let mut inherited = 0;
+            if task_get_special_port(mach_task_self_, 3, &mut inherited) != 0 {
+                libc::_exit(118);
+            }
+            let mut message = [19_u32, 24, inherited, 0, 0, 1113];
+            let sent = mach_msg(message.as_mut_ptr().cast(), 1 | 0x10, 24, 0, 0, 1000, 0);
+            libc::_exit(if sent == 0 { 0 } else { 117 });
+        }
+    }
+    assert_eq!(unsafe { task_set_special_port(task, 3, normal) }, 0);
+    assert!(child > 0);
+    let mut received = [0_u32; 32];
+    let received_status = unsafe {
+        mach_msg(
+            received.as_mut_ptr().cast(),
+            2 | 0x100,
+            0,
+            std::mem::size_of_val(&received) as u32,
+            endpoint,
+            1000,
+            0,
+        )
+    };
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+    assert_eq!(status, 0, "positive-control child failed");
+    assert_eq!(received_status, 0);
+    assert_eq!(
+        received[5], 1113,
+        "custom host endpoint must receive the marker"
+    );
+
+    // The same normal host successfully runs isolated code before tampering.
+    assert_eq!(fixture.run(false, &["exit", "0"]).await.exit_code, Some(0));
+    if mode == "after-fork" {
+        assert_eq!(
+            unsafe { libc::pthread_atfork(None, None, Some(replace_after_fork)) },
+            0
+        );
+    } else {
+        assert_eq!(mode, "before-launch");
+        assert_eq!(unsafe { task_set_special_port(task, 3, endpoint) }, 0);
+    }
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "escaped host port".into(),
+    ];
+    let result = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(unsafe { task_set_special_port(task, 3, normal) }, 0);
+    let error = result.unwrap_err();
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(error.message.contains("stage=9, detail=0"), "{error:?}");
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+    // No sandbox payload may send to the host's custom endpoint either.
+    assert_eq!(
+        unsafe {
+            mach_msg(
+                received.as_mut_ptr().cast(),
+                2 | 0x100,
+                0,
+                std::mem::size_of_val(&received) as u32,
+                endpoint,
+                0,
+                0,
+            )
+        },
+        0x10004003
+    ); // MACH_RCV_TIMED_OUT
+}
+
+fn check_custom_host_port(mode: &str) {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "custom_host_port_fixture", "--nocapture"])
+        .env("WERK_MACOS_HOST_PORT_FIXTURE", mode)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{mode}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn custom_host_port_is_rejected_before_launch() {
+    check_custom_host_port("before-launch");
+}
+
+#[test]
+fn custom_host_port_in_fork_snapshot_is_rejected() {
+    check_custom_host_port("after-fork");
 }

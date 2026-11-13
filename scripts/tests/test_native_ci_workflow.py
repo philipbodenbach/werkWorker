@@ -43,6 +43,10 @@ class NativeCiFailureCollection(unittest.TestCase):
             self.assertNotIn("        shell: bash\n", step)
         self.assertIn("--no-fail-fast", script_for("Test native platform integration"))
         self.assertIn('          REQUIRE_SANDBOX: "1"', step_for("Test native platform integration"))
+        self.assertIn(
+            "WERK_REQUIRE_CUSTOM_MACH_HOST_PORT: ${{ runner.os == 'macOS' && '1' || '0' }}",
+            step_for("Test native platform integration"),
+        )
 
     def check_script(self, name, count, final_check, failed_calls, spawn_error=False):
         calls = []

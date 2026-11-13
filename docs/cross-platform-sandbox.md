@@ -138,17 +138,28 @@ renames or as general macOS sandbox parity.
 `sandbox-exec` is deprecated and its profile language is not a supported
 application API. App Sandbox entitlements are a different mechanism. Native
 tests on the supported macOS version are mandatory; no SIP or global protection
-setting is changed. Root/set-id hosts and SIP configurations permitting custom
-host ports are rejected. The SIP check queries effective debugger permission
-with `csr_check`, not just the raw configuration bit: XNU also derives that
-permission from untrusted-kext or Apple-internal access. Only the documented
-syscall denial (`-1` with `errno=EPERM`) establishes the required restriction;
-an unknown result rejects execution. See Apple's
-[effective CSR check](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_csr.c)
-and [userland wrapper](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/csr.c).
-Host-requirement failures report UID/GID, the active CSR mask, query results and
-their captured error codes so a runner incompatibility can be diagnosed without
-weakening the boundary. The supervisor clears registered/bootstrap/exception
+setting is changed. Root/set-id hosts remain rejected. macOS backend
+configuration version **2** checks the actual inherited host port instead of
+requiring a global SIP setting: `task_get_special_port(TASK_HOST_PORT)` obtains
+the right and `mach_port_kobject` queries its kernel object type through the
+task port. Only `IKOT_HOST` (3), the ordinary unprivileged kernel host port, is
+accepted. User endpoints (`IKOT_NONE`), privileged host ports (`IKOT_HOST_PRIV`),
+missing/dead rights and query failures reject execution. No message is sent to
+the potentially hostile host endpoint. The copied send right is released.
+
+This check runs during preparation/doctor and again in the supervisor's fork
+snapshot, before creating the untrusted child. XNU creates a fresh IPC namespace
+on fork and copies the selected special ports; changing the embedding host's
+port after that cannot replace the supervisor's checked port. See Apple's
+[port inheritance](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_tt.c),
+[kernel object query](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/ipc/mach_debug.c)
+and [object types](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/kern/ipc_kobject.h).
+The query returns the object type on release kernels too; the backend does not
+use the kernel address, which release kernels hide. Port failures retain the
+Mach result or unexpected object type and identify the failing stage.
+Version 1 approval descriptions differ and must be prepared and approved again;
+the Seatbelt rules and one-process limit are unchanged. The supervisor still
+clears registered/bootstrap/exception
 Mach ports, rejects a task-access port, and forks a fresh namespace before exec;
 native Mach IPC denial tests still require an actual macOS run. On abrupt host
 exit, private temporary files may remain even after the supervisor reaps the child.
@@ -296,14 +307,26 @@ native run with the expanded diagnostics establishes normal UID/EUID 501 and
 GID/EGID 20, but an active CSR mask of `0x0000006f` and successful
 `csr_check(CSR_ALLOW_KERNEL_DEBUGGER)` (result 0, errno 0). The debugger bit is
 set and its effective permission is granted, so this host lacks the required
-protection against custom Mach host ports. The rejection is correct; disabling
-the check or skipping process tests would not provide sandbox acceptance.
+protection against custom Mach host ports required by configuration version 1.
+That gate prevented all process conformance tests from reaching Seatbelt.
 
-Both CSR decision-table tests now pass natively, but actual process isolation
-remains unvalidated because execution is rejected on this host. It requires a
-macOS 15+ Apple Silicon test host with the existing SIP restriction in effect.
-No suitable alternative hosted-runner label has been established, and no
-alternate label or relaxed requirement has been selected to turn the job green.
+Configuration version 2 replaces that gate with the per-process kernel object
+check described above. `macos_process` now includes ordinary-fork positive
+controls that send a real message through an injected custom host port, followed
+by rejection tests before launch and after the host preflight (using a child
+atfork hook). Neither may execute the payload's marker write. The normal kernel
+port must also permit a successful isolated invocation. CI sets
+`WERK_REQUIRE_CUSTOM_MACH_HOST_PORT=1` on macOS, requiring actual injection on the
+SIP-relaxed hosted runner. A SIP-protected developer Mac instead checks the
+kernel's `KERN_NO_ACCESS` denial and successful normal execution. No CI test is
+skipped and no SIP setting is modified. Existing file, network, IPC, fork,
+timeout, cancellation and host-death tests remain mandatory.
+
+The version 2 change has not yet run on native macOS. Local Linux tests and an
+Apple-target compile-only extraction cannot establish native sandbox
+acceptance; a passing `macos-15` integration run remains required. The complete
+project's Apple cross-build needs an Apple SDK/C toolchain unavailable on this
+Linux host. Windows' previously fixed native Python/MSVC workflow is retained.
 
 Validation completed locally on 2026-11-10 against the uncommitted checkout.
 Linux used Rust 1.98.0 on WSL2 kernel 6.18.58.1 with a real Bubblewrap backend.

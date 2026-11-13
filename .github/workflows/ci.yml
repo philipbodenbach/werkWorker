@@ -72,6 +72,9 @@ jobs:
         shell: python
         env:
           REQUIRE_SANDBOX: "1"
+          # Exercise the custom-host-port positive control on this SIP-relaxed
+          # runner; the regression must not pass via the SIP-protected branch.
+          WERK_REQUIRE_CUSTOM_MACH_HOST_PORT: ${{ runner.os == 'macOS' && '1' || '0' }}
         run: |
           import subprocess
           import sys

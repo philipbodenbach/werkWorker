@@ -23,14 +23,14 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const BACKEND: &str = "seatbelt-single-process";
 const EXECUTABLE: &str = "/usr/bin/sandbox-exec";
-const PROFILE_VERSION: u32 = 1;
+const PROFILE_VERSION: u32 = 2;
 const POLL_MS: i32 = 10;
 
 // Darwin Mach ABI, supplied by libSystem. Keep these bindings local: libc does
 // not expose the task-port routines. No library is loaded from the workspace.
 unsafe extern "C" {
-    fn csr_get_active_config(config: *mut u32) -> libc::c_int;
-    fn csr_check(mask: u32) -> libc::c_int;
+    fn mach_port_kobject(task: u32, name: u32, kind: *mut u32, address: *mut u64) -> i32;
+    fn mach_port_deallocate(task: u32, name: u32) -> i32;
     fn mach_ports_register(task: u32, ports: *mut u32, count: u32) -> libc::c_int;
     fn task_get_special_port(task: u32, which: libc::c_int, port: *mut u32) -> libc::c_int;
     fn task_set_special_port(task: u32, which: libc::c_int, port: u32) -> libc::c_int;
@@ -46,25 +46,77 @@ unsafe extern "C" {
         flavors: *mut i32,
     ) -> i32;
 }
+const TASK_HOST_PORT: i32 = 3;
 const TASK_BOOTSTRAP_PORT: i32 = 4;
 const TASK_ACCESS_PORT: i32 = 9;
 const EXCEPTION_MASK: u32 = 0x3ffe; // all Darwin exceptions 1..=13, including crash/corpse
-const CSR_ALLOW_KERNEL_DEBUGGER: u32 = 1 << 3;
+const IKOT_HOST: u32 = 3;
 
-fn sip_protects_host_ports(
-    active_result: libc::c_int,
-    active_config: u32,
-    check_result: libc::c_int,
-    check_errno: libc::c_int,
-) -> bool {
-    // XNU's csr_check also grants kernel-debugger access when untrusted-kext
-    // or Apple-internal access is enabled. Inspecting only the raw debugger
-    // bit misses those effective permissions. libSystem translates the
-    // kernel's EPERM into -1 plus errno; any other result remains unsupported.
-    active_result == 0
-        && active_config & CSR_ALLOW_KERNEL_DEBUGGER == 0
-        && check_result == -1
-        && check_errno == libc::EPERM
+// These tags also identify setup failures in the supervisor's fixed-size report.
+#[derive(Debug)]
+struct HostPortError {
+    stage: u8,
+    detail: i32,
+}
+
+impl HostPortError {
+    fn into_worker_error(self) -> WorkerError {
+        WorkerError::new(
+            "sandbox_requirement_unavailable",
+            format!(
+                "Native launcher requires a verified unprivileged kernel Mach host port \
+                 (stage={}, detail={}; stages: 7=get, 8=inspect, 9=object-type, 10=release)",
+                self.stage, self.detail
+            ),
+        )
+    }
+}
+
+unsafe fn inspect_host_port(task: u32, port: u32) -> std::result::Result<(), HostPortError> {
+    let mut kind = u32::MAX;
+    let mut address = 0_u64;
+    // Ask the kernel through our task port, never the possibly hostile host
+    // endpoint. XNU exposes the object type on release kernels too; the kernel
+    // address is deliberately ignored. IKOT_NONE (userspace), IKOT_HOST_PRIV,
+    // missing/dead rights, and failed queries are all rejected.
+    let status = unsafe { mach_port_kobject(task, port, &mut kind, &mut address) };
+    if status != 0 {
+        return Err(HostPortError {
+            stage: 8,
+            detail: status,
+        });
+    }
+    if kind != IKOT_HOST {
+        return Err(HostPortError {
+            stage: 9,
+            detail: kind as i32,
+        });
+    }
+    Ok(())
+}
+
+unsafe fn verify_host_port() -> std::result::Result<(), HostPortError> {
+    #[allow(deprecated)]
+    let task = unsafe { libc::mach_task_self() };
+    let mut port = 0;
+    let status = unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut port) };
+    if status != 0 {
+        return Err(HostPortError {
+            stage: 7,
+            detail: status,
+        });
+    }
+    let result = unsafe { inspect_host_port(task, port) };
+    if port != 0 {
+        let status = unsafe { mach_port_deallocate(task, port) };
+        if status != 0 {
+            return Err(HostPortError {
+                stage: 10,
+                detail: status,
+            });
+        }
+    }
+    result
 }
 
 // All varying paths are -D parameters, not Scheme source or a shell string.
@@ -152,8 +204,7 @@ pub(super) fn requirements(sandbox: &Sandbox) -> Result<()> {
             "sandbox-exec must be a root-owned, non-writable system executable",
         ));
     }
-    // The task host port cannot be replaced under SIP. Do not inherit a root
-    // host-privileged port or support a system allowing custom host ports.
+    // Reject root/set-id launchers independently of the Mach port check.
     let (uid, euid, gid, egid) = unsafe {
         (
             libc::getuid(),
@@ -162,40 +213,18 @@ pub(super) fn requirements(sandbox: &Sandbox) -> Result<()> {
             libc::getegid(),
         )
     };
-    let mut csr = 0_u32;
-    // Capture errno immediately after each read-only call. Reset it first so
-    // successful calls cannot report an unrelated earlier syscall's error.
-    let (csr_result, csr_errno, check_result, check_errno) = unsafe {
-        *libc::__error() = 0;
-        let csr_result = csr_get_active_config(&mut csr);
-        let csr_errno = *libc::__error();
-        *libc::__error() = 0;
-        let check_result = csr_check(CSR_ALLOW_KERNEL_DEBUGGER);
-        let check_errno = *libc::__error();
-        (csr_result, csr_errno, check_result, check_errno)
-    };
-    if euid == 0
-        || uid != euid
-        || gid != egid
-        || !sip_protects_host_ports(csr_result, csr, check_result, check_errno)
-    {
-        let active_config = if csr_result == 0 {
-            format!("0x{csr:08x}")
-        } else {
-            "unavailable".into()
-        };
+    if euid == 0 || uid != euid || gid != egid {
         return Err(WorkerError::new(
             "sandbox_requirement_unavailable",
             format!(
-                "Native execution requires an unprivileged host and SIP protection against custom Mach host ports \
-                 (uid={uid}, euid={euid}, gid={gid}, egid={egid}, \
-                 csr_get_active_config_result={csr_result}, csr_get_active_config_errno={csr_errno}, \
-                 csr_active={active_config}, csr_check_kernel_debugger_result={check_result}, \
-                 csr_check_kernel_debugger_errno={check_errno})"
+                "Native execution requires an unprivileged host \
+                 (uid={uid}, euid={euid}, gid={gid}, egid={egid})"
             ),
         ));
     }
-    Ok(())
+    // Preflight for approval/doctor. The supervisor repeats this on its own
+    // fork snapshot, closing the gap between preparation and actual launch.
+    unsafe { verify_host_port() }.map_err(HostPortError::into_worker_error)
 }
 
 pub(super) fn description(
@@ -212,8 +241,8 @@ pub(super) fn description(
         "workspace_binding": "path-filter-with-pinned-cwd-and-rename-monitor",
         "requires_trusted_external_workspace_renames": true,
         "network": "denied", "host_ipc": "denied", "fork": "denied",
-        "inherited_mach_rights": "registered-bootstrap-exception-cleared-before-second-fork;task-access-rejected",
-        "host_requirements": "unprivileged-uid;SIP-custom-host-ports-disabled",
+        "inherited_mach_rights": "registered-bootstrap-exception-cleared-before-second-fork;task-access-rejected;host-port-kernel-type-verified-after-fork",
+        "host_requirements": "unprivileged-uid;host-port-IKOT_HOST-only",
         "untrusted_processes": 1,
         "readonly_runtime": ["/System/Library", "/usr/lib", "/usr/share", "/bin",
             "/usr/bin", "/usr/libexec", "/Library/Developer/CommandLineTools"],
@@ -421,7 +450,7 @@ unsafe fn monotonic_ms() -> i64 {
 // task ports. Clear those on the supervisor before its child is forked: merely
 // clearing the slot immediately before exec would leave already-copied-out
 // send-right names in the child's namespace. The normal kernel host port stays
-// available; requirements rejects privileged/custom host-port configurations.
+// available only after checking its kernel object type in this fork snapshot.
 // Darwin's Mach stubs use stack messages and kernel IPC; mach_ports_register is
 // a fixed three-port wrapper. All symbols are resolved before the first fork.
 unsafe fn scrub_inherited_mach() -> bool {
@@ -469,6 +498,9 @@ fn resolve_mach_symbols() {
     let mut behavior = 0;
     let mut flavor = 0;
     unsafe {
+        let mut address = 0;
+        mach_port_kobject(0, 0, &mut value, &mut address);
+        mach_port_deallocate(0, 0);
         mach_ports_register(0, std::ptr::null_mut(), 0);
         task_get_special_port(0, TASK_ACCESS_PORT, &mut value);
         task_set_special_port(0, TASK_BOOTSTRAP_PORT, 0);
@@ -537,6 +569,15 @@ unsafe fn supervisor(
     // it has reaped its child. Reset this in the untrusted process before exec.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    if let Err(error) = unsafe { verify_host_port() } {
+        let mut result = [0_u8; 5];
+        result[0] = error.stage;
+        result[1..].copy_from_slice(&error.detail.to_ne_bytes());
+        unsafe {
+            raw_write(report, &result);
+            libc::_exit(125)
+        }
     }
     if !unsafe { scrub_inherited_mach() } {
         let mut result = [0_u8; 5];
@@ -936,6 +977,13 @@ pub(super) async fn run(
             "Native launcher could not remove inherited Mach control channels",
         ));
     }
+    if (7..=10).contains(&report[0]) {
+        return Err(HostPortError {
+            stage: report[0],
+            detail: status,
+        }
+        .into_worker_error());
+    }
     input_result?;
     let (stdout, stdout_truncated) = out?;
     let (stderr, stderr_truncated) = err?;
@@ -956,29 +1004,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sip_requires_an_effective_kernel_debugger_denial() {
-        assert!(sip_protects_host_ports(0, 0, -1, libc::EPERM));
-        for active_config in [0, 1 << 0, 1 << 4, CSR_ALLOW_KERNEL_DEBUGGER] {
-            assert!(
-                !sip_protects_host_ports(0, active_config, 0, libc::EPERM),
-                "effective permission must reject even with stale errno: {active_config:#x}"
-            );
-        }
-        assert!(!sip_protects_host_ports(
-            0,
-            CSR_ALLOW_KERNEL_DEBUGGER,
-            -1,
-            libc::EPERM
-        ));
+    fn actual_kernel_host_port_is_accepted() {
+        unsafe { verify_host_port() }.unwrap();
     }
 
     #[test]
-    fn sip_query_failures_do_not_establish_protection() {
-        assert!(!sip_protects_host_ports(-1, 0, -1, libc::EPERM));
-        for check_errno in [0, libc::EINVAL, libc::ENOSYS, libc::EACCES] {
-            assert!(!sip_protects_host_ports(0, 0, -1, check_errno));
-        }
-        // A kernel errno value is not the libSystem syscall return convention.
-        assert!(!sip_protects_host_ports(0, 0, libc::EPERM, libc::EPERM));
+    fn task_and_missing_ports_are_not_host_ports() {
+        #[allow(deprecated)]
+        let task = unsafe { libc::mach_task_self() };
+        let error = unsafe { inspect_host_port(task, task) }.unwrap_err();
+        assert_eq!(error.stage, 9);
+        assert_eq!(error.detail, 2); // IKOT_TASK_CONTROL
+        assert_eq!(unsafe { inspect_host_port(task, 0) }.unwrap_err().stage, 8);
     }
 }

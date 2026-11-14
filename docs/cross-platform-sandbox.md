@@ -267,9 +267,10 @@ attempts. It supports native single-process tools, not ordinary multiprocess
 compilers/build systems. A larger requested process ceiling does not enable
 children; the effective cap of one is part of the approval descriptor.
 
-The proposed Windows coding process-tree profile remains disabled. See the
-[native candidate qualification](windows-process-tree-qualification.md) for the
-LPAC/PSEC rejection evidence, MXC tier-discovery limits and remaining cleanup gates.
+The dedicated-account Windows coding process-tree profile is implemented
+separately and disabled by default. See [provisioning and native acceptance](windows-process-tree-provisioning.md)
+for the current path, and the historical [candidate qualification](windows-process-tree-qualification.md)
+for the LPAC/PSEC rejection evidence and MXC tier-discovery limits.
 
 The Job Object enforces job memory, job CPU and process-count limits;
 wall time and output are bounded by the host. Linux-specific per-file size and
@@ -321,14 +322,18 @@ report even when only file operations are available. Each entry distinguishes
 implementation, host availability and active probe results. The report lists
 which checks were actually performed; a startup probe is not proof of every
 isolation property. Browser entries are not actively probed by Doctor.
-Doctor uses private synthetic workspaces. The selected real workspace is checked
+Doctor normally uses private synthetic workspaces. The optional dedicated-account
+Windows coding profile uses its explicitly provisioned workspace for startup;
+see [provisioning and acceptance](windows-process-tree-provisioning.md).
+The selected real workspace is checked
 by session admission and process preparation, not by this generic host probe.
 Callers requiring process startup can use `require_process_backend()`.
 
 `Sandbox` gains the public `native` configuration field. Existing explicit
 struct literals should use `..Default::default()` or supply
 `NativeSandboxConfig::default()`. Existing import paths, ProcessLimits and
-ProcessOutput remain. No helper executable is added to packages or installers.
+ProcessOutput remain. The optional Windows coding profile builds separate
+`ww-windows-provision` and `ww-windows-runner` helpers; admin setup is explicit.
 Library-only builds still do not require the TUI feature.
 
 CLI hosts may load `ProcessLimits` through `--process-limits /trusted/limits.json`,

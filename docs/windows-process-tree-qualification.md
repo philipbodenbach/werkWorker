@@ -1,5 +1,11 @@
 # Windows process-tree qualification — blocked
 
+This document records the historical LPAC/PSEC/MXC investigation at `a2bed0a`,
+before the dedicated-account implementation. The current local implementation
+and its pending administrative qualification are described in
+[Windows process-tree provisioning](windows-process-tree-provisioning.md).
+The findings below remain the decision record for the rejected candidates.
+
 The proposed host-selected coding process-tree profile remains **disabled and
 unimplemented**. No Windows process-tree configuration, approval migration or
 Doctor capability is installed. The product still exposes its existing

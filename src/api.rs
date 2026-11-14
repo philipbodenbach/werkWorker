@@ -10,14 +10,14 @@ use crate::{
     skills::SkillRegistry,
     tools::{ToolContext, ToolRegistry, validate_arguments, validate_schema},
 };
-use futures_util::{Stream, StreamExt};
+use futures_util::{FutureExt, Stream, StreamExt};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::Path,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -84,6 +84,7 @@ pub(crate) struct EngineInner {
     active: Mutex<BTreeMap<String, Active>>,
     admission: Mutex<()>,
     closed: AtomicBool,
+    close_result: OnceLock<watch::Receiver<Option<Result<()>>>>,
     fatal: Mutex<BTreeMap<String, WorkerError>>,
     pub(crate) execution: crate::parallel::ExecutionConfig,
     model_slots: Arc<crate::parallel::InferenceSlots>,
@@ -200,6 +201,7 @@ impl EngineBuilder {
                 active: Mutex::new(BTreeMap::new()),
                 admission: Mutex::new(()),
                 closed: AtomicBool::new(false),
+                close_result: OnceLock::new(),
                 fatal: Mutex::new(BTreeMap::new()),
             }),
         })
@@ -690,19 +692,68 @@ impl WorkerEngine {
             .insert(session_id, Active { cancel, task });
     }
     pub async fn close(&self) -> Result<()> {
-        let _admission = self.inner.admission.lock().await;
-        if self.inner.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+        let mut finished = self
+            .inner
+            .close_result
+            .get_or_init(|| {
+                let (completion, receiver) = watch::channel(None);
+                let engine = self.clone();
+                // The task owns shutdown independently of any caller waiting
+                // for it. All callers observe the same final result.
+                tokio::spawn(async move {
+                    let result = std::panic::AssertUnwindSafe(engine.close_inner())
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(WorkerError::new(
+                                "cleanup_failed",
+                                "Engine shutdown task failed",
+                            ))
+                        });
+                    if let Err(error) = &result {
+                        engine.inner.jobs.record_cleanup_failure(error);
+                    }
+                    completion.send_replace(Some(result));
+                });
+                receiver
+            })
+            .clone();
+        loop {
+            if let Some(result) = finished.borrow().clone() {
+                return result;
+            }
+            if finished.changed().await.is_err() {
+                let error = WorkerError::new(
+                    "cleanup_failed",
+                    "Engine shutdown ended without a verified result",
+                );
+                self.inner.jobs.record_cleanup_failure(&error);
+                return Err(error);
+            }
         }
+    }
+
+    async fn close_inner(&self) -> Result<()> {
+        let _admission = self.inner.admission.lock().await;
+        self.inner.closed.store(true, Ordering::Release);
         let active = std::mem::take(&mut *self.inner.active.lock().await);
         drop(_admission);
         for job in active.values() {
             job.cancel.cancel();
         }
         for (_, job) in active {
-            job.task
-                .await
-                .map_err(|_| WorkerError::new("cleanup_failed", "Session actor failed"))?;
+            if job.task.await.is_err() {
+                self.inner.jobs.record_cleanup_failure(&WorkerError::new(
+                    "cleanup_failed",
+                    "Session actor failed",
+                ));
+            }
+        }
+        // A panicked actor may never have reached its run cleanup. Drain every
+        // remaining managed job before reporting any earlier failure.
+        let job_cleanup = self.inner.jobs.cleanup_all().await;
+        if let Err(error) = &job_cleanup {
+            self.inner.jobs.record_cleanup_failure(error);
         }
         let sessions = self
             .inner
@@ -718,7 +769,10 @@ impl WorkerEngine {
             drop(guard);
             self.inner.tools.browsers.close(Some(&session_id)).await;
         }
-        self.inner.store.close().await
+        self.inner.jobs.verify_cleanup()?;
+        job_cleanup?;
+        self.inner.store.close().await?;
+        Ok(())
     }
 }
 impl Drop for EngineInner {
@@ -4243,6 +4297,130 @@ impl RunHandle {
 #[cfg(test)]
 mod concurrency_regressions {
     use super::*;
+    #[tokio::test]
+    async fn dropped_close_caller_and_parallel_callers_wait_for_the_same_shutdown() {
+        let engine = WorkerEngine::builder(Arc::new(crate::providers::ScriptedProvider::default()))
+            .build()
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let child_cancel = cancel.clone();
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let drained = Arc::new(AtomicBool::new(false));
+        let marker = drained.clone();
+        let task = tokio::spawn(async move {
+            child_cancel.cancelled().await;
+            started.send(()).unwrap();
+            release_rx.await.unwrap();
+            marker.store(true, Ordering::Release);
+        });
+        engine
+            .inner
+            .active
+            .lock()
+            .await
+            .insert("synthetic".into(), Active { cancel, task });
+        let caller_engine = engine.clone();
+        let first = tokio::spawn(async move { caller_engine.close().await });
+        tokio::time::timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        let second = engine.close();
+        let third = engine.close();
+        tokio::pin!(second, third);
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        assert!(futures_util::poll!(third.as_mut()).is_pending());
+        assert!(!drained.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        let (second, third) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(second, third)
+        })
+        .await
+        .unwrap();
+        second.unwrap();
+        third.unwrap();
+        assert!(drained.load(Ordering::Acquire));
+        engine.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn actor_panic_still_drains_other_actors_and_orphan_jobs_and_stays_failed() {
+        let engine = WorkerEngine::builder(Arc::new(crate::providers::ScriptedProvider::default()))
+            .build()
+            .await
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        // An invalid request never launches native code. Its managed entry
+        // still requires cleanup even when its owning actor has panicked.
+        let orphan = engine
+            .inner
+            .jobs
+            .start(
+                "orphan-run",
+                Sandbox::default(),
+                Workspace::open(root.path()).await.unwrap(),
+                false,
+                Vec::new(),
+                ".".into(),
+            )
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let child_cancel = cancel.clone();
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let drained = Arc::new(AtomicBool::new(false));
+        let marker = drained.clone();
+        let finishing = tokio::spawn(async move {
+            child_cancel.cancelled().await;
+            started.send(()).unwrap();
+            release_rx.await.unwrap();
+            marker.store(true, Ordering::Release);
+        });
+        let failing = tokio::spawn(async { panic!("synthetic actor failure") });
+        for (id, cancel, task) in [
+            ("a-failure", CancellationToken::new(), failing),
+            ("b-drain", cancel, finishing),
+        ] {
+            engine
+                .inner
+                .active
+                .lock()
+                .await
+                .insert(id.into(), Active { cancel, task });
+        }
+        let caller_engine = engine.clone();
+        let close = tokio::spawn(async move { caller_engine.close().await });
+        tokio::time::timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!close.is_finished());
+        release.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), close)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err().code, "cleanup_failed");
+        assert!(drained.load(Ordering::Acquire));
+        assert_eq!(
+            engine
+                .inner
+                .jobs
+                .status("orphan-run", &orphan, false)
+                .await
+                .unwrap_err()
+                .code,
+            "unknown_job"
+        );
+        assert_eq!(engine.close().await.unwrap_err().code, "cleanup_failed");
+    }
+
     #[tokio::test]
     async fn cancellation_poll_does_not_block_a_paused_mutex_waiter() {
         let dir = tempfile::tempdir().unwrap();

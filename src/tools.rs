@@ -520,16 +520,13 @@ impl Tool for Builtin {
                 json!({"path":args["path"],"sha256":hash(content),"bytes_written":content.len(),"total_lines":content.lines().count(),"next_insert_after_line":if self.name=="files.insert"{args["next_insert_after_line"].clone()}else{json!(content.lines().count())}})
             },
             "process.run"|"process.start"=>{
+                ctx.jobs.verify_cleanup()?;
                 ctx.sandbox.verify_execution_description(&ctx.workspace,ctx.writable,&args["sandbox"]).await?;
                 let argv:Vec<String>=serde_json::from_value(args["argv"].clone())?;let cwd=args["cwd"].as_str().unwrap_or(".");
                 if self.name=="process.start"{json!({"job_id":ctx.jobs.start_managed(&ctx.run_id,ProcessJob { sandbox:ctx.sandbox.clone(),workspace:ctx.workspace.clone(),writable:ctx.writable,argv,cwd:cwd.into(),lease:ctx.workspace_lease.clone() }).await?})}
                 else{
                     let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
-                    let output = if let Some(input) = args["stdin"].as_str() {
-                        ctx.sandbox.run_with_stdin(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone(),input).await?
-                    } else {
-                        ctx.sandbox.run(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone()).await?
-                    };
+                    let output = ctx.sandbox.run_managed(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone(),args["stdin"].as_str(),ctx.workspace_lease.clone()).await.inspect_err(|error| ctx.jobs.record_cleanup_failure(error))?;
                     let mut result = serde_json::to_value(&output)?;
                     if output.exit_code != Some(0) || output.timed_out || output.cancelled {
                         result["failure_excerpt"] = json!(crate::completion::diagnostic_excerpt(

@@ -798,6 +798,16 @@ pub struct NativeSandboxConfig {
     /// launcher authenticates it. This exception permits user-space access to
     /// that system service; it does not permit arbitrary inherited Mach ports.
     pub macos_system_task_access: bool,
+    /// Opt in to the separately provisioned Windows account/process-tree backend.
+    /// Never inferred from workspace files; absent preserves single-process LPAC.
+    pub windows_process_tree: Option<WindowsProcessTreeConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsProcessTreeConfig {
+    /// Admin-provisioned manifest; its ACLs and active OS policy are revalidated.
+    pub provisioning: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
@@ -805,6 +815,28 @@ mod macos;
 mod sandbox_contract;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_process_tree;
+#[cfg(windows)]
+#[doc(hidden)]
+pub mod windows_provision;
+#[cfg(windows)]
+mod windows_tree_launcher;
+#[cfg(windows)]
+mod windows_tree_runner;
+
+#[cfg(windows)]
+#[doc(hidden)]
+pub fn windows_process_tree_runner() -> i32 {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--host-launcher")
+    {
+        windows_tree_launcher::main()
+    } else {
+        windows_tree_runner::main()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Sandbox {
@@ -874,8 +906,10 @@ impl Sandbox {
         cwd: &str,
         cancel: CancellationToken,
     ) -> Result<ProcessOutput> {
-        self.run_observed(workspace, writable, argv, cwd, cancel, None, false, None)
-            .await
+        self.run_observed(
+            workspace, writable, argv, cwd, cancel, None, false, None, None,
+        )
+        .await
     }
     /// Supply literal input to a single sandboxed command. EOF is delivered
     /// after the bounded input; cancellation and resource limits still apply.
@@ -904,6 +938,31 @@ impl Sandbox {
             None,
             false,
             Some(stdin),
+            None,
+        )
+        .await
+    }
+    /// Dispatch a host-owned invocation while its native supervisor retains the
+    /// lease through confirmed cleanup, even if the calling future is dropped.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_managed(
+        &self,
+        workspace: &Workspace,
+        writable: bool,
+        argv: &[String],
+        cwd: &str,
+        cancel: CancellationToken,
+        stdin: Option<&str>,
+        lease: Option<Arc<crate::parallel::WorkspaceLease>>,
+    ) -> Result<ProcessOutput> {
+        if stdin.is_some_and(|input| input.len() > crate::process_input::STDIN_LIMIT) {
+            return Err(WorkerError::new(
+                "invalid_stdin",
+                "Standard input exceeds 32768 bytes; use a workspace script for larger programs",
+            ));
+        }
+        self.run_observed(
+            workspace, writable, argv, cwd, cancel, None, false, stdin, lease,
         )
         .await
     }
@@ -930,6 +989,7 @@ impl Sandbox {
             None,
             true,
             Some(script),
+            None,
         )
         .await
     }
@@ -1181,7 +1241,16 @@ impl Sandbox {
         live: Option<Arc<LiveOutput>>,
         browser: bool,
         stdin: Option<&str>,
+        lease: Option<Arc<crate::parallel::WorkspaceLease>>,
     ) -> Result<ProcessOutput> {
+        let _lease = lease;
+        #[cfg(not(windows))]
+        if self.native.windows_process_tree.is_some() {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "The selected Windows process-tree profile requires native Windows",
+            ));
+        }
         if self.limits.timeout_ms == 0
             || self.limits.memory_bytes == 0
             || self.limits.cpu_seconds == 0
@@ -1203,7 +1272,16 @@ impl Sandbox {
             #[cfg(target_os = "macos")]
             return macos::run(self, workspace, writable, argv, cwd, cancel, live, stdin).await;
             #[cfg(windows)]
-            return windows::run(self, workspace, writable, argv, cwd, cancel, live, stdin).await;
+            {
+                if self.native.windows_process_tree.is_some() {
+                    return windows_process_tree::run(
+                        self, workspace, writable, argv, cwd, cancel, live, stdin, _lease,
+                    )
+                    .await;
+                }
+                return windows::run(self, workspace, writable, argv, cwd, cancel, live, stdin)
+                    .await;
+            }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
@@ -1464,9 +1542,15 @@ pub struct ProcessJob {
     pub cwd: String,
     pub lease: Option<Arc<crate::parallel::WorkspaceLease>>,
 }
+type CleanupReceiver = tokio::sync::watch::Receiver<Option<Result<()>>>;
+
 #[derive(Default)]
 pub struct JobManager {
     jobs: Mutex<BTreeMap<String, Job>>,
+    cleanup_tasks: Arc<Mutex<BTreeMap<String, CleanupReceiver>>>,
+    // A failed native cleanup can leave a reaper retaining its workspace lease.
+    // Joining the task alone must not turn that uncertainty into success.
+    cleanup_failure: Arc<std::sync::Mutex<Option<WorkerError>>>,
 }
 impl JobManager {
     pub async fn start(
@@ -1500,6 +1584,14 @@ impl JobManager {
             cwd,
             lease,
         } = job;
+        let cleanup = self.cleanup_tasks.lock().await;
+        if cleanup.contains_key(run_id) {
+            return Err(WorkerError::new(
+                "cleanup_in_progress",
+                "This run's previous process jobs are still being reaped",
+            ));
+        }
+        self.verify_cleanup()?;
         let mut jobs = self.jobs.lock().await;
         if jobs.len() >= 16 {
             return Err(WorkerError::new("job_limit", "Too many managed jobs"));
@@ -1513,6 +1605,7 @@ impl JobManager {
         let log = live.clone();
         let finished = Arc::new(tokio::sync::Notify::new());
         let wake = finished.clone();
+        let cleanup_failure = self.cleanup_failure.clone();
         let task = tokio::spawn(async move {
             let _lease = lease;
             let result = sandbox
@@ -1525,9 +1618,19 @@ impl JobManager {
                     Some(log),
                     false,
                     None,
+                    _lease.clone(),
                 )
                 .await;
-            // A finished notification also promises the workspace is released.
+            if let Err(error) = &result
+                && error.code == "cleanup_failed"
+            {
+                cleanup_failure
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(|| error.clone());
+            }
+            // Successful completion releases this owner before notification. A
+            // native reaper retains its own lease if cleanup was uncertain.
             drop(_lease);
             *sink.lock().await = Some(result);
             wake.notify_waiters();
@@ -1544,6 +1647,7 @@ impl JobManager {
                 notified: false,
             },
         );
+        drop(cleanup);
         Ok(job_id)
     }
     pub async fn status(&self, run_id: &str, job_id: &str, cancel: bool) -> Result<Value> {
@@ -1667,27 +1771,215 @@ impl JobManager {
         ids
     }
     pub async fn cleanup(&self, run_id: &str) -> Result<()> {
-        let mut jobs = self.jobs.lock().await;
-        let ids: Vec<_> = jobs
-            .iter()
-            .filter(|(_, j)| j.run_id == run_id)
-            .map(|(id, _)| id.clone())
-            .collect();
-        let mut removed = Vec::new();
-        for id in ids {
-            if let Some(mut job) = jobs.remove(&id) {
-                job.cancel.cancel();
-                if let Some(task) = job.task.take() {
-                    removed.push(task);
+        let mut pending = self.cleanup_tasks.lock().await;
+        let mut completion = if let Some(existing) = pending.get(run_id) {
+            existing.clone()
+        } else {
+            let mut jobs = self.jobs.lock().await;
+            let ids: Vec<_> = jobs
+                .iter()
+                .filter(|(_, j)| j.run_id == run_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            let mut removed = Vec::new();
+            for id in ids {
+                if let Some(mut job) = jobs.remove(&id) {
+                    job.cancel.cancel();
+                    if let Some(task) = job.task.take() {
+                        removed.push(task);
+                    }
                 }
             }
+            drop(jobs);
+            let (sender, receiver) = tokio::sync::watch::channel(None);
+            pending.insert(run_id.into(), receiver.clone());
+            let cleanup_tasks = self.cleanup_tasks.clone();
+            let cleanup_failure = self.cleanup_failure.clone();
+            let run_id = run_id.to_owned();
+            // The drain owns every removed task even if all callers drop their
+            // cleanup futures. Concurrent callers observe the same completion.
+            tokio::spawn(async move {
+                for task in removed {
+                    if task.await.is_err() {
+                        cleanup_failure.lock().unwrap().get_or_insert_with(|| {
+                            WorkerError::new("cleanup_failed", "Job cleanup task failed")
+                        });
+                    }
+                }
+                let result = match cleanup_failure.lock().unwrap().as_ref() {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(()),
+                };
+                cleanup_tasks.lock().await.remove(&run_id);
+                sender.send_replace(Some(result));
+            });
+            receiver
+        };
+        drop(pending);
+        loop {
+            if let Some(result) = completion.borrow_and_update().clone() {
+                return result;
+            }
+            if completion.changed().await.is_err() {
+                let error = WorkerError::new("cleanup_failed", "Process cleanup supervisor failed");
+                self.record_cleanup_failure(&error);
+                return Err(error);
+            }
         }
-        drop(jobs);
-        for task in removed {
-            task.await
-                .map_err(|_| WorkerError::new("cleanup_failed", "Job cleanup failed"))?;
+    }
+
+    pub(crate) async fn cleanup_all(&self) -> Result<()> {
+        let pending = self.cleanup_tasks.lock().await;
+        let mut runs: std::collections::BTreeSet<String> = pending.keys().cloned().collect();
+        runs.extend(
+            self.jobs
+                .lock()
+                .await
+                .values()
+                .map(|job| job.run_id.clone()),
+        );
+        drop(pending);
+        for run_id in runs {
+            // Always drain the other runs, including after an actor has panicked.
+            if let Err(error) = self.cleanup(&run_id).await {
+                self.record_cleanup_failure(&error);
+            }
         }
-        Ok(())
+        self.verify_cleanup()
+    }
+
+    pub(crate) fn verify_cleanup(&self) -> Result<()> {
+        match self.cleanup_failure.lock().unwrap().as_ref() {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn record_cleanup_failure(&self, error: &WorkerError) {
+        if error.code == "cleanup_failed" {
+            self.cleanup_failure
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| error.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod job_cleanup_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn failed_cleanup_still_drains_other_tasks_and_remains_an_error() {
+        let manager = JobManager::default();
+        let drained = Arc::new(AtomicBool::new(false));
+        let marker = drained.clone();
+        let failing = tokio::spawn(async { panic!("synthetic backend task failure") });
+        let finishing = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            marker.store(true, Ordering::Release);
+        });
+        for (id, task) in [("a-failure", failing), ("b-drain", finishing)] {
+            manager.jobs.lock().await.insert(
+                id.into(),
+                Job {
+                    run_id: "run".into(),
+                    cancel: CancellationToken::new(),
+                    output: Arc::new(Mutex::new(None)),
+                    task: Some(task),
+                    live: Arc::new(LiveOutput::default()),
+                    finished: Arc::new(tokio::sync::Notify::new()),
+                    notified: false,
+                },
+            );
+        }
+        assert_eq!(
+            manager.cleanup("run").await.unwrap_err().code,
+            "cleanup_failed"
+        );
+        assert!(drained.load(Ordering::Acquire));
+        assert_eq!(
+            manager.cleanup("run").await.unwrap_err().code,
+            "cleanup_failed"
+        );
+    }
+
+    #[test]
+    fn foreground_cleanup_uncertainty_is_retained_for_engine_shutdown() {
+        let manager = JobManager::default();
+        manager.record_cleanup_failure(&WorkerError::new("invalid_argv", "no process launched"));
+        manager.verify_cleanup().unwrap();
+        manager.record_cleanup_failure(&WorkerError::new("cleanup_failed", "Job query failed"));
+        manager.record_cleanup_failure(&WorkerError::new("invalid_argv", "later failure"));
+        let error = manager.verify_cleanup().unwrap_err();
+        assert_eq!(error.code, "cleanup_failed");
+        assert_eq!(error.message, "Job query failed");
+    }
+
+    #[tokio::test]
+    async fn dropping_a_cleanup_caller_does_not_detach_the_drain() {
+        let manager = Arc::new(JobManager::default());
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).await.unwrap();
+        let access = Arc::new(crate::parallel::WorkspaceAccess::default());
+        let lease = access.try_acquire(&workspace, true, "pending-job").unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate = release.clone();
+        let drained = Arc::new(AtomicBool::new(false));
+        let marker = drained.clone();
+        manager.jobs.lock().await.insert(
+            "job".into(),
+            Job {
+                run_id: "run".into(),
+                cancel: CancellationToken::new(),
+                output: Arc::new(Mutex::new(None)),
+                task: Some(tokio::spawn(async move {
+                    let _lease = lease;
+                    gate.notified().await;
+                    marker.store(true, Ordering::Release);
+                })),
+                live: Arc::new(LiveOutput::default()),
+                finished: Arc::new(tokio::sync::Notify::new()),
+                notified: false,
+            },
+        );
+        let caller = manager.clone();
+        let first = tokio::spawn(async move { caller.cleanup("run").await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !manager.jobs.lock().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), manager.cleanup("run"))
+                .await
+                .is_err()
+        );
+        assert!(!drained.load(Ordering::Acquire));
+        assert!(access.try_acquire(&workspace, true, "next-call").is_none());
+        let replacement = manager
+            .start(
+                "run",
+                Sandbox::default(),
+                workspace.clone(),
+                false,
+                Vec::new(),
+                ".".into(),
+            )
+            .await;
+        assert_eq!(replacement.unwrap_err().code, "cleanup_in_progress");
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), manager.cleanup_all())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(drained.load(Ordering::Acquire));
+        assert!(access.try_acquire(&workspace, true, "next-call").is_some());
     }
 }
 

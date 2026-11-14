@@ -10,6 +10,13 @@ impl Sandbox {
         workspace: &Workspace,
         writable: bool,
     ) -> Result<Value> {
+        #[cfg(not(windows))]
+        if self.native.windows_process_tree.is_some() {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "The selected Windows process-tree profile requires native Windows",
+            ));
+        }
         workspace.revalidate().await?;
         if self.limits.timeout_ms == 0
             || self.limits.memory_bytes == 0
@@ -57,7 +64,11 @@ impl Sandbox {
         #[cfg(target_os = "macos")]
         let mut description = macos::description(self, workspace, writable)?;
         #[cfg(windows)]
-        let mut description = windows::description(workspace, writable, &self.limits)?;
+        let mut description = if self.native.windows_process_tree.is_some() {
+            windows_process_tree::description(self, workspace, writable)?
+        } else {
+            windows::description(workspace, writable, &self.limits)?
+        };
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let mut description = {
             return Err(WorkerError::new(
@@ -197,6 +208,9 @@ impl Sandbox {
         .await;
         #[cfg(windows)]
         let process = async {
+            if self.native.windows_process_tree.is_some() {
+                return windows_process_tree::doctor(self).await;
+            }
             let workspace = windows::create_workspace(&path.join("process")).await?;
             let result = async {
                 let descriptor = self.execution_description(&workspace, false).await?;

@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-14",
+  "base_commit": "8cbefc0",
+  "windows": "Windows 11 Pro 25H2 26200.9974 x64",
+  "rustc": "1.98.1",
+  "cargo": "1.98.1",
+  "msvc": "14.51.36231",
+  "psec_result": {
+    "exit": 1,
+    "atomic_assignment_ignored": true,
+    "budget_exceeded": true,
+    "incomplete": false,
+    "cleanup_confirmed_cases": 6
+  },
+  "mxc_result": {
+    "exit": 0,
+    "tier": "base-container",
+    "needs_dacl_augmentation": false,
+    "workload_launched": false,
+    "sandbox_qualified": false
+  },
+  "source_sha256": {
+    "scripts/reproduce-windows-psec-budget.ps1": "e83889710840be71c2455f411eb0d570ed239eea418334716e05b4b6a6b9ed59",
+    "scripts/tests/windows_psec_budget.cpp": "a551cf9fa24c22cf1ad4a6fb9830223b3ca86c1c5ee674ba33aad6224482ddcf",
+    "scripts/psec-budget-repro/policy-encoder/Cargo.toml": "4bb652d47115dbe05678f68e2ab38e141c58f7a6e72d9cec3c044cf423e7aeb0",
+    "scripts/psec-budget-repro/policy-encoder/Cargo.lock": "a36cd923ce816f13e42df1f5388da975a1445d24688547c2d863ffeacfd695b5",
+    "scripts/psec-budget-repro/policy-encoder/src/main.rs": "bbcde173a4d83b8d6776c5d06fb8a8008a036f39b07e16d1e20bcbc6f78a9c34",
+    "scripts/probe-windows-mxc.ps1": "77b7cc6e6453860c232cbcff0c0c274b9b298252d3ed57e4b813c956fac6959c",
+    "scripts/psec-budget-repro/policy-encoder/src/bin/mxc-probe.rs": "b03d7bfe5d3e35f1f29cf2f4147634928dd582fd6197d257b2a3263b06354137"
+  },
+  "diagnostic_binaries_sha256": {
+    "windows-psec-budget.exe": "ac9bdedacd4905032f12771ef92c733ac184bf7c7fd5c52d48232531277420a0",
+    "mxc-probe.exe": "378a188d148be2e08bbf811495b8368da28c6d5e10f985db317e4655016a058f"
+  },
+  "evidence_sha256": {
+    "psec-native.log": "fdc5ba0e471cf03b63e2ab9f915addbce1ee5222c8b22fab6b9453a893cc578d",
+    "mxc-discovery.json": "eb8f64e95b564092b3e696284145e6537d08bf2fe6bcce6ff567c9503ffc29a7",
+    "cleanup-control.log": "da8673e1a71b06eb6b3c66e43312c9a773ae9082bff5bac1d144b3885784eaa0",
+    "cleanup-control.cpp": "c4153b99c4899add11bc63125fc1acc8759491ea1b06f4c52b905d612b3fb73f",
+    "native-validation-summary.json": "574669595c870175bffe1752258641fc205eff39887c6faed11aeb0755425cba",
+    "final-source-equivalence.json": "f4fccb684aba7eaa31b8e784491d02ced945554f9c418474dec0fd1b5dd99242"
+  },
+  "note": "Diagnostic builds only. Product Windows build and test manifest are separate; no tree profile admitted.",
+  "cleanup_failure_control": {
+    "harness_exit": 0,
+    "cleanup_accepted": false,
+    "retained_handle_signaled": true,
+    "payload_resumed": false,
+    "manifest_sha256": "ee353f9f0cd244b86710fb48eefe004a16f879a82959c22d86ccfaf1c52ecadd"
+  }
+}

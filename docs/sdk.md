@@ -46,10 +46,11 @@ run. `FullAccess` is a host-selected approval mode within existing grants.
 including actions without a static grant. It never bypasses hard denies or
 read-only workspaces. `AllowSameArguments` does not skip this mode's confirmation.
 The explicit `AllowForSession` decision stores a host-owned remembered grant:
-workspace-wide use of the named file or sandboxed process tool, or exact prepared
-arguments for other effects, bound to the tool version. Remembering `process.run`
-covers different commands but does not cover `process.start`; sandbox restrictions
-still apply. Existing argument-bound grants remain exact. The decision is available
+workspace-wide use of the named file tool, or exact prepared arguments for all
+other effects, bound to the tool version. Remembering `process.run` binds argv,
+stdin and the complete sandbox contract; a different command, backend, workspace
+identity, write mode or limit requires a new approval. It never covers
+`process.start`. Legacy unscoped process grants are ignored. The decision is available
 only on root session requests.
 `HostPolicy.tool_permissions` supports per-tool `deny`, `ask` and `allow` rules;
 hard denies and workspace writability still take precedence. An explicit deny
@@ -60,6 +61,55 @@ when resetting its rule to `ask`, as the CLI editor does.
 sessions waiting for input/approval. Active descendants still block changes;
 workspace writability cannot change during an already prepared approval.
 SDK/headless defaults remain unchanged.
+
+### Native sandbox configuration and migration
+
+`EngineBuilder::sandbox(Sandbox)` and `WorkerEngine::sandbox_doctor()` remain the
+shared host integration points. `Sandbox` now has a `native: NativeSandboxConfig`
+field; update exhaustive struct literals or use `..Default::default()`. Native
+configuration is host-owned and cannot be selected by project/model content.
+`WorkerEngine::create_session_in_workspace` accepts an already opened Workspace
+when loading host permissions before session admission. It preserves that object
+instead of reopening its path. `Project::save_in_workspace` similarly preserves
+the selected object while writing preferences.
+`Workspace`, `ProcessLimits`, `ProcessOutput` and job-control APIs retain their
+import paths. Library-only consumers still use `default-features = false`.
+
+Doctor returns schema version 2 with separate `capabilities.files`, `process`,
+`browser_check` and `browser_control` entries, even if a process backend is
+unavailable. Check `available`, `probe_verified` and `verified` for each entry;
+`Ok(report)` alone no longer means processes are usable. Call
+`Sandbox::require_process_backend().await` for that gate. Browser probes are
+separate from Doctor's process startup probe.
+
+Windows hosts explicitly call `Sandbox::create_native_workspace(path).await`
+for a new empty directory, then populate it. Its LPAC backend explicitly denies
+child creation and enforces a Job process cap of one. After all engines/jobs are closed,
+`remove_native_workspace_profiles(&workspace)` removes its AppContainer profiles.
+macOS's constrained mode requires explicit
+`NativeSandboxConfig { macos_path_based_workspace: true,
+macos_system_task_access: true }`. Both options default to false. Existing hosts
+that selected only path-based workspaces must explicitly accept the new
+authenticated system task-access exception before processes can launch. The
+exception retains a readable, usable `com.apple.taskgated` send right; the
+launcher verifies it against a privileged launchd lookup and rejects unknown
+or unverifiable endpoints. macOS backend configuration version 7 invalidates
+earlier process approval descriptions. This mode does not support ordinary
+multiprocess builds, hostile external workspace renames or complete host IPC
+isolation. See
+[native contracts and validation](cross-platform-sandbox.md) before enabling it.
+
+Prepared process calls without contract version 2 are rejected; recovery does
+not replay an unknown execution. Saved CLI permissions use versioned object
+identity keys and do not import legacy path-keyed rights. Linux identity now
+includes immutable `statx` birth time; legacy `dev:ino` sessions require a fresh
+session. Check `Workspace::supports_persistent_identity()` before retaining
+authority across host restarts. macOS currently lacks this durable proof and
+rejects persisted session reopen / permission saving; fresh live sessions remain
+available. Filesystems without Linux birth time have the same conservative limit.
+File grants remain
+separate from process grants. No new helper binary or installer dependency is
+introduced.
 
 `ModelRequest.reasoning_tier` captures an optional session override before token
 counting. `None` inherits the connection; `Some("default")` explicitly follows

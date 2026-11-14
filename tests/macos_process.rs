@@ -1,0 +1,1014 @@
+//! Real Apple Silicon tests of the explicitly limited Seatbelt mode.
+//! These tests never skip a failed isolation probe; run natively on macOS 15+.
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+
+use std::{os::fd::AsRawFd, path::PathBuf, process::Command, time::Duration};
+use tokio_util::sync::CancellationToken;
+use werk_worker::runtime::{NativeSandboxConfig, Sandbox, Workspace};
+
+struct Fixture {
+    root: tempfile::TempDir,
+    workspace: Workspace,
+    probe: PathBuf,
+    sandbox: Sandbox,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        Self::with_root(tempfile::tempdir().unwrap()).await
+    }
+
+    async fn with_root(root: tempfile::TempDir) -> Self {
+        let workspace_path = root.path().join("workspace ü with spaces");
+        std::fs::create_dir(&workspace_path).unwrap();
+        let probe = workspace_path.join("native probe");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/native_process_probe.rs");
+        let built = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .args(["--edition=2024", "-C", "debuginfo=0"])
+            .arg(source)
+            .arg("-o")
+            .arg(&probe)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let workspace = Workspace::open(&workspace_path).await.unwrap();
+        let sandbox = Sandbox {
+            native: NativeSandboxConfig {
+                macos_path_based_workspace: true,
+                macos_system_task_access: true,
+            },
+            // The test host already has a VM map before fork. The backend must
+            // reject a requested limit it cannot lower, rather than ignore it.
+            limits: werk_worker::runtime::ProcessLimits {
+                memory_bytes: 1024 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        Self {
+            root,
+            workspace,
+            probe,
+            sandbox,
+        }
+    }
+
+    async fn run(&self, writable: bool, arguments: &[&str]) -> werk_worker::runtime::ProcessOutput {
+        let argv: Vec<_> = std::iter::once(self.probe.to_string_lossy().into_owned())
+            .chain(arguments.iter().map(|value| (*value).to_owned()))
+            .collect();
+        self.sandbox
+            .run(
+                &self.workspace,
+                writable,
+                &argv,
+                ".",
+                CancellationToken::new(),
+            )
+            .await
+            .expect("native sandbox must be available and enforce required limits")
+    }
+
+    fn outside(&self, arguments: &[&str]) -> std::process::Output {
+        Command::new(&self.probe)
+            .args(arguments)
+            .current_dir(&self.workspace.path)
+            .output()
+            .unwrap()
+    }
+}
+
+fn assert_probe_denied(output: &werk_worker::runtime::ProcessOutput, operation: &str) {
+    // Only the running probe emits this marker and exits 77. A launcher error,
+    // signal, or timeout must not count as evidence of the sandbox boundary.
+    assert_eq!(output.exit_code, Some(77), "{operation}: {output:?}");
+    assert!(
+        output.stderr.contains("probe denied/error:"),
+        "{operation}: the payload must report the denied operation: {output:?}"
+    );
+    assert!(!output.timed_out && !output.cancelled, "{output:?}");
+}
+
+#[tokio::test]
+async fn system_and_workspace_executables_start_through_canonical_and_alias_paths() {
+    // Pick a system alias explicitly; an arbitrary TMPDIR must not silently
+    // turn this into two identical paths or skip the alias regression.
+    let fixture = Fixture::with_root(tempfile::tempdir_in("/private/tmp").unwrap()).await;
+    let canonical = std::fs::canonicalize(&fixture.probe).unwrap();
+    let alias = PathBuf::from("/").join(canonical.strip_prefix("/private").unwrap());
+    assert_ne!(canonical, alias);
+    assert_eq!(std::fs::canonicalize(&alias).unwrap(), canonical);
+    let marker = "native loader reached payload";
+    let mut failures = Vec::new();
+    for (label, executable, arguments, expected_stdout) in [
+        (
+            "system",
+            PathBuf::from("/usr/bin/true"),
+            vec![],
+            String::new(),
+        ),
+        (
+            "canonical workspace",
+            canonical,
+            vec!["echo", marker],
+            format!("{}:{marker}\n", marker.len()),
+        ),
+        (
+            "aliased workspace",
+            alias,
+            vec!["echo", marker],
+            format!("{}:{marker}\n", marker.len()),
+        ),
+    ] {
+        let argv = std::iter::once(executable.to_string_lossy().into_owned())
+            .chain(arguments.iter().map(|value| (*value).to_owned()))
+            .collect::<Vec<_>>();
+        // First run the freshly built workspace executable inside. An outside
+        // execution must not warm a code-signing/loader cache before this check.
+        let inside = fixture
+            .sandbox
+            .run(
+                &fixture.workspace,
+                false,
+                &argv,
+                ".",
+                CancellationToken::new(),
+            )
+            .await;
+        let outside = Command::new(&executable)
+            .args(&arguments)
+            .current_dir(&fixture.workspace.path)
+            .output();
+        match outside {
+            Ok(output)
+                if output.status.success() && output.stdout == expected_stdout.as_bytes() => {}
+            result => failures.push(format!("{label}, outside control: {result:?}")),
+        }
+        match inside {
+            Ok(output)
+                if output.exit_code == Some(0)
+                    && output.stdout == expected_stdout
+                    && !output.timed_out
+                    && !output.cancelled => {}
+            result => failures.push(format!("{label}, inside sandbox: {result:?}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "Native startup matrix failed:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn native_mode_requires_explicit_trusted_host_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(root.path()).await.unwrap();
+    let error = Sandbox::default()
+        .run(
+            &workspace,
+            false,
+            &["/usr/bin/true".into()],
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+}
+
+#[tokio::test]
+async fn system_task_access_exception_requires_separate_host_opt_in() {
+    let mut fixture = Fixture::new().await;
+    // An existing host configuration accepts only the path/rename limitation;
+    // adding a new native exception must not silently expand that selection.
+    fixture.sandbox.native = serde_json::from_value(serde_json::json!({
+        "macos_path_based_workspace": true,
+    }))
+    .unwrap();
+    assert!(!fixture.sandbox.native.macos_system_task_access);
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "unapproved task-access exception".into(),
+    ];
+    let error = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(
+        error.message.contains("macos_system_task_access"),
+        "{error:?}"
+    );
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+}
+
+#[tokio::test]
+async fn impossible_address_space_limit_fails_before_untrusted_code() {
+    let mut fixture = Fixture::new().await;
+    fixture.sandbox.limits.memory_bytes = 1;
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "escaped setup failure".into(),
+    ];
+    let error = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+}
+
+#[tokio::test]
+async fn read_write_stdin_argv_and_exit_status_are_native() {
+    let fixture = Fixture::new().await;
+    let contract = fixture
+        .sandbox
+        .execution_description(&fixture.workspace, false)
+        .await
+        .unwrap();
+    assert_eq!(contract["configuration_version"], 7);
+    assert_eq!(
+        contract["host_requirements"],
+        "unprivileged-uid;host-port-IKOT_HOST-only;task-access-system-taskgated-only"
+    );
+    assert_eq!(
+        contract["host_ipc"],
+        "denied-except-verified-system-task-access"
+    );
+    assert_eq!(
+        contract["task_access_exception"],
+        serde_json::json!({
+            "service": "com.apple.taskgated",
+            "registry": "privileged-bootstrap-lookup",
+            "user_getter": "retained-send-right",
+            "scope": "system-service-only",
+        })
+    );
+    for version in [1, 2, 3, 4, 5, 6] {
+        let mut legacy = contract.clone();
+        legacy["configuration_version"] = version.into();
+        assert_eq!(
+            fixture
+                .sandbox
+                .verify_execution_description(&fixture.workspace, false, &legacy)
+                .await
+                .unwrap_err()
+                .code,
+            "sandbox_contract_changed",
+            "configuration version {version} must require a new approval"
+        );
+    }
+    for change in ["changed", "missing"] {
+        let mut altered = contract.clone();
+        match change {
+            "changed" => altered["task_access_exception"]["service"] = "another-service".into(),
+            "missing" => {
+                altered
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("task_access_exception");
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            fixture
+                .sandbox
+                .verify_execution_description(&fixture.workspace, false, &altered)
+                .await
+                .unwrap_err()
+                .code,
+            "sandbox_contract_changed",
+            "{change} task-access exception must require a new approval"
+        );
+    }
+    let echo = fixture
+        .run(
+            false,
+            &["echo", "", "space value", "Grüße 世界", "$(not-a-shell)"],
+        )
+        .await;
+    assert_eq!(echo.exit_code, Some(0), "{}", echo.stderr);
+    assert_eq!(
+        echo.stdout,
+        "0:\n11:space value\n14:Grüße 世界\n14:$(not-a-shell)\n"
+    );
+    let argv = vec![fixture.probe.to_string_lossy().into_owned(), "stdin".into()];
+    let input = "literal stdin\n'\"$(); 世界";
+    let output = fixture
+        .sandbox
+        .run_with_stdin(
+            &fixture.workspace,
+            false,
+            &argv,
+            ".",
+            CancellationToken::new(),
+            input,
+        )
+        .await
+        .unwrap();
+    assert_eq!(output.stdout, input);
+    assert_eq!(output.exit_code, Some(0), "{output:?}");
+    let written = fixture
+        .run(true, &["write", "created.txt", "native contents"])
+        .await;
+    assert_eq!(written.exit_code, Some(0), "{}", written.stderr);
+    assert_eq!(
+        fixture.workspace.read("created.txt", 100).await.unwrap(),
+        b"native contents"
+    );
+    assert_eq!(
+        fixture.run(false, &["read", "created.txt"]).await.stdout,
+        "native contents"
+    );
+    let denied = fixture
+        .run(false, &["write", "created.txt", "forbidden"])
+        .await;
+    assert_probe_denied(&denied, "read-only write");
+    assert_eq!(
+        fixture.workspace.read("created.txt", 100).await.unwrap(),
+        b"native contents"
+    );
+    // 125 is a valid application exit, distinct from the supervisor's setup pipe.
+    assert_eq!(
+        fixture.run(false, &["exit", "125"]).await.exit_code,
+        Some(125)
+    );
+}
+
+#[tokio::test]
+async fn outside_files_network_and_host_ipc_have_positive_controls() {
+    let fixture = Fixture::new().await;
+    let secret = fixture.root.path().join("synthetic-host-secret");
+    std::fs::write(&secret, "only a test marker").unwrap();
+    let secret = secret.to_str().unwrap();
+    for mode in ["read", "exec-read"] {
+        let outside = fixture.outside(&[mode, secret]);
+        assert!(outside.status.success(), "{mode}: {outside:?}");
+        assert_eq!(outside.stdout, b"only a test marker", "{mode}");
+        assert_probe_denied(&fixture.run(false, &[mode, secret]).await, mode);
+    }
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = tcp.local_addr().unwrap().to_string();
+    assert!(fixture.outside(&["tcp", &address]).status.success());
+    assert_probe_denied(&fixture.run(false, &["tcp", &address]).await, "tcp");
+    let socket = fixture.root.path().join("host.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let socket = socket.to_str().unwrap();
+    assert!(fixture.outside(&["unix-socket", socket]).status.success());
+    assert_probe_denied(
+        &fixture.run(false, &["unix-socket", socket]).await,
+        "unix-socket",
+    );
+    let secret_fd = std::fs::File::open(secret).unwrap();
+    // Deliberately inheritable host descriptor: the native child must close it.
+    assert_eq!(
+        unsafe { libc::fcntl(secret_fd.as_raw_fd(), libc::F_SETFD, 0) },
+        0
+    );
+    let number = secret_fd.as_raw_fd().to_string();
+    assert!(fixture.outside(&["inherited-fd", &number]).status.success());
+    assert_probe_denied(
+        &fixture.run(false, &["inherited-fd", &number]).await,
+        "inherited-fd",
+    );
+}
+
+#[tokio::test]
+async fn verified_task_access_exception_and_setter_denial_survive_exec() {
+    let fixture = Fixture::new().await;
+    for mode in ["mach-special-ports", "exec-mach-special-ports"] {
+        let outside = fixture.outside(&[mode]);
+        assert!(
+            outside.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&outside.stderr)
+        );
+        // A real live send right proves the getter works on this native host;
+        // no message is sent to the system taskgated endpoint.
+        assert_eq!(
+            String::from_utf8(outside.stdout).unwrap().trim(),
+            "access_get=0;access_live=true;bootstrap_set=0",
+            "{mode}: positive control"
+        );
+        let inside = fixture.run(false, &[mode]).await;
+        assert_eq!(inside.exit_code, Some(0), "{mode}: {}", inside.stderr);
+        // The launcher authenticates the retained taskgated endpoint before
+        // execution. This payload checks the documented getter exception and
+        // the setter's exact KERN_DENIED=53, including after a second exec.
+        assert_eq!(
+            inside.stdout.trim(),
+            "access_get=0;access_live=true;bootstrap_set=53",
+            "{mode}: sandbox boundary"
+        );
+    }
+}
+
+#[tokio::test]
+async fn forks_detaches_and_posix_spawn_are_denied_before_descendant_code() {
+    let fixture = Fixture::new().await;
+    let positive = fixture.workspace.path.join("outside-detached");
+    assert!(
+        fixture
+            .outside(&["fork-detach", positive.to_str().unwrap()])
+            .status
+            .success()
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        positive.exists(),
+        "positive control must prove detach/write works on host"
+    );
+    let marker = fixture.workspace.path.join("sandbox-detached");
+    let detached = fixture
+        .run(true, &["fork-detach", marker.to_str().unwrap()])
+        .await;
+    assert_eq!(detached.exit_code, Some(77), "{detached:?}");
+    assert!(detached.stderr.contains("fork denied:"), "{detached:?}");
+    assert!(!marker.exists());
+    assert!(
+        fixture
+            .outside(&["spawn", "/usr/bin/true"])
+            .status
+            .success()
+    );
+    assert_probe_denied(
+        &fixture.run(false, &["spawn", "/usr/bin/true"]).await,
+        "spawn",
+    );
+}
+
+#[tokio::test]
+async fn timeout_and_cancellation_reap_before_reporting_completion() {
+    let mut fixture = Fixture::new().await;
+    fixture.sandbox.limits.timeout_ms = 100;
+    let timed = fixture
+        .run(true, &["late-write", "ready", "late", "1000"])
+        .await;
+    assert!(timed.timed_out && !timed.cancelled, "{timed:?}");
+    assert!(!fixture.workspace.path.join("late").exists());
+    fixture.sandbox.limits.timeout_ms = 10_000;
+    let cancel = CancellationToken::new();
+    let child_cancel = cancel.clone();
+    let ready = fixture.workspace.path.join("cancel-ready");
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "late-write".into(),
+        "cancel-ready".into(),
+        "cancel-late".into(),
+        "1000".into(),
+    ];
+    let monitor = async {
+        for _ in 0..500 {
+            if ready.exists() {
+                cancel.cancel();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("native probe never started");
+    };
+    let (output, _) = tokio::join!(
+        fixture
+            .sandbox
+            .run(&fixture.workspace, true, &argv, ".", child_cancel),
+        monitor
+    );
+    let output = output.unwrap();
+    assert!(output.cancelled && !output.timed_out);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert!(!fixture.workspace.path.join("cancel-late").exists());
+    assert!(!fixture.workspace.path.join("late").exists());
+}
+
+#[tokio::test]
+async fn host_exit_fixture() {
+    let Some(root) = std::env::var_os("WERK_MACOS_HOST_EXIT_FIXTURE") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let workspace = Workspace::open(&root).await.unwrap();
+    let sandbox = Sandbox {
+        native: NativeSandboxConfig {
+            macos_path_based_workspace: true,
+            macos_system_task_access: true,
+        },
+        limits: werk_worker::runtime::ProcessLimits {
+            memory_bytes: 1024 * 1024 * 1024 * 1024,
+            timeout_ms: 10_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // This embedding-host subprocess receives the synthetic secret, while its
+    // sandboxed process must receive only the backend's fixed environment.
+    assert_eq!(
+        std::env::var("WERK_NATIVE_TEST_SECRET").unwrap(),
+        "synthetic environment marker"
+    );
+    let probe = root.join("native probe");
+    // Register an actual synthetic Mach send right in this isolated host.
+    // A regular child must inherit it and send the marker to our receive right.
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+        fn mach_port_allocate(task: u32, right: i32, port: *mut u32) -> i32;
+        fn mach_port_insert_right(task: u32, name: u32, right: u32, kind: u32) -> i32;
+        fn mach_ports_register(task: u32, ports: *mut u32, count: u32) -> i32;
+        fn mach_msg(
+            message: *mut std::ffi::c_void,
+            option: u32,
+            send_size: u32,
+            receive_limit: u32,
+            receive_name: u32,
+            timeout: u32,
+            notify: u32,
+        ) -> i32;
+    }
+    let task = unsafe { mach_task_self_ };
+    let mut host_port = 0;
+    assert_eq!(unsafe { mach_port_allocate(task, 1, &mut host_port) }, 0);
+    assert_eq!(
+        unsafe { mach_port_insert_right(task, host_port, host_port, 20) },
+        0
+    );
+    assert_eq!(unsafe { mach_ports_register(task, &mut host_port, 1) }, 0);
+    let outside_mach = Command::new(&probe).arg("mach-state").output().unwrap();
+    assert_eq!(outside_mach.status.code(), Some(77));
+    assert!(
+        String::from_utf8(outside_mach.stdout)
+            .unwrap()
+            .contains("registered=true")
+    );
+    let mut received = [0_u32; 32];
+    assert_eq!(
+        unsafe {
+            mach_msg(
+                received.as_mut_ptr().cast(),
+                2 | 0x100,
+                0,
+                std::mem::size_of_val(&received) as u32,
+                host_port,
+                1000,
+                0,
+            )
+        },
+        0
+    );
+    assert_eq!(
+        received[5], 1112,
+        "positive control did not reach host Mach endpoint"
+    );
+    let inside_mach = sandbox
+        .run(
+            &workspace,
+            false,
+            &[probe.to_string_lossy().into_owned(), "mach-state".into()],
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inside_mach.exit_code, Some(0), "{inside_mach:?}");
+    assert_eq!(
+        inside_mach.stdout.trim(),
+        "registered=false;bootstrap=false;access_retained=true;exceptions=false"
+    );
+    let outside = Command::new(&probe)
+        .args(["env", "WERK_NATIVE_TEST_SECRET"])
+        .output()
+        .unwrap();
+    assert_eq!(outside.status.code(), Some(77));
+    assert_eq!(
+        String::from_utf8(outside.stdout).unwrap().trim(),
+        "synthetic environment marker"
+    );
+    let inside = sandbox
+        .run(
+            &workspace,
+            false,
+            &[
+                probe.to_string_lossy().into_owned(),
+                "env".into(),
+                "WERK_NATIVE_TEST_SECRET".into(),
+            ],
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inside.exit_code, Some(0), "{}", inside.stderr);
+    assert!(inside.stdout.is_empty());
+    let argv = vec![
+        root.join("native probe").to_string_lossy().into_owned(),
+        "late-write".into(),
+        "crash-ready".into(),
+        "crash-late".into(),
+        "1500".into(),
+    ];
+    sandbox
+        .run(&workspace, true, &argv, ".", CancellationToken::new())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn supervisor_survives_embedding_host_sigkill_and_prevents_late_write() {
+    let fixture = Fixture::new().await;
+    let mut host = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "host_exit_fixture", "--nocapture"])
+        .env("WERK_MACOS_HOST_EXIT_FIXTURE", &fixture.workspace.path)
+        .env("WERK_NATIVE_TEST_SECRET", "synthetic environment marker")
+        .spawn()
+        .unwrap();
+    let ready = fixture.workspace.path.join("crash-ready");
+    for _ in 0..500 {
+        if ready.exists() {
+            break;
+        }
+        assert!(
+            host.try_wait().unwrap().is_none(),
+            "fixture host failed before starting a process"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(ready.exists());
+    host.kill().unwrap();
+    host.wait().unwrap();
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    assert!(!fixture.workspace.path.join("crash-late").exists());
+}
+
+// All host-port mutations live in a separate test process. Never change the
+// ports of the parallel test harness or its embedding Tokio runtime.
+mod host_ports {
+    // mach/task_special_ports.h: selector 2, distinct from IKOT_HOST (type 3).
+    pub const TASK_HOST_PORT: i32 = 2;
+    unsafe extern "C" {
+        pub static mach_task_self_: u32;
+        pub fn mach_port_deallocate(task: u32, name: u32) -> i32;
+        pub fn mach_port_kobject(task: u32, name: u32, kind: *mut u32, address: *mut u64) -> i32;
+        pub fn mach_port_allocate(task: u32, right: i32, port: *mut u32) -> i32;
+        pub fn mach_port_insert_right(task: u32, name: u32, right: u32, kind: u32) -> i32;
+        pub fn task_get_special_port(task: u32, which: i32, port: *mut u32) -> i32;
+        pub fn task_set_special_port(task: u32, which: i32, port: u32) -> i32;
+        pub fn mach_msg(
+            message: *mut std::ffi::c_void,
+            options: u32,
+            send: u32,
+            receive: u32,
+            port: u32,
+            timeout: u32,
+            notify: u32,
+        ) -> i32;
+    }
+
+    pub unsafe fn endpoint() -> u32 {
+        let task = unsafe { mach_task_self_ };
+        let mut port = 0;
+        // No allocation/panic in the atfork child callback.
+        if unsafe { mach_port_allocate(task, 1, &mut port) } != 0
+            || unsafe { mach_port_insert_right(task, port, port, 20) } != 0
+        {
+            unsafe { libc::_exit(119) }
+        }
+        port
+    }
+
+    pub extern "C" fn replace_after_fork() {
+        unsafe {
+            let port = endpoint();
+            if task_set_special_port(mach_task_self_, TASK_HOST_PORT, port) != 0 {
+                libc::_exit(119);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn custom_host_port_fixture() {
+    let Some(mode) = std::env::var_os("WERK_MACOS_HOST_PORT_FIXTURE") else {
+        return; // subprocess entry point; invoked by both mandatory parent tests
+    };
+    use host_ports::*;
+    let fixture = Fixture::new().await;
+    let task = unsafe { mach_task_self_ };
+    let mut normal = 0;
+    assert_eq!(
+        unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut normal) },
+        0
+    );
+    #[allow(deprecated)]
+    let host_self = unsafe { libc::mach_host_self() };
+    assert_ne!(host_self, 0);
+    assert_eq!(
+        normal, host_self,
+        "fixture selector must identify the actual host port"
+    );
+    let released = unsafe { mach_port_deallocate(task, host_self) };
+    assert_eq!(released, 0);
+    let endpoint = unsafe { endpoint() };
+    let installed = unsafe { task_set_special_port(task, TASK_HOST_PORT, endpoint) };
+    if installed != 0 {
+        // A protected developer Mac must enforce the kernel's own denial.
+        // Hosted CI requires the custom-port case so it cannot pass by taking
+        // this branch instead of reproducing its observed SIP configuration.
+        assert_ne!(
+            std::env::var("WERK_REQUIRE_CUSTOM_MACH_HOST_PORT").as_deref(),
+            Ok("1"),
+            "CI must exercise custom host-port injection; status={installed}"
+        );
+        assert_eq!(installed, 8, "expected KERN_NO_ACCESS from SIP");
+        let control = fixture.run(false, &["exit", "0"]).await;
+        assert_eq!(control.exit_code, Some(0), "{control:?}");
+        return;
+    }
+
+    // Positive control: the installed custom slot is a working IPC endpoint in
+    // this isolated parent. Verify its type before sending a userspace message.
+    let mut custom = 0;
+    let queried = unsafe { task_get_special_port(task, TASK_HOST_PORT, &mut custom) };
+    let mut kind = u32::MAX;
+    let mut address = 0_u64;
+    let inspected = unsafe { mach_port_kobject(task, custom, &mut kind, &mut address) };
+    let sent = if queried == 0 && inspected == 0 && kind == 0 {
+        let mut message = [19_u32, 24, custom, 0, 0, 1113];
+        unsafe { mach_msg(message.as_mut_ptr().cast(), 1 | 0x10, 24, 0, 0, 1000, 0) }
+    } else {
+        -1
+    };
+    let released = unsafe { mach_port_deallocate(task, custom) };
+
+    // BSD fork refreshes the child's security tokens and replaces its host
+    // slot with the ordinary kernel host port. Check that behavior directly;
+    // sending the userspace marker to that kernel port would trigger a fatal
+    // Mach message-type guard. The atfork negative case below injects its
+    // custom port after this kernel reset, before the supervisor validates it.
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        unsafe {
+            let child_task = mach_task_self_;
+            let mut child_host = 0;
+            if task_get_special_port(child_task, TASK_HOST_PORT, &mut child_host) != 0 {
+                libc::_exit(118);
+            }
+            let mut child_kind = u32::MAX;
+            let mut child_address = 0_u64;
+            if mach_port_kobject(child_task, child_host, &mut child_kind, &mut child_address) != 0 {
+                libc::_exit(117);
+            }
+            if child_kind != 3 {
+                // IKOT_HOST, not the custom userspace endpoint
+                libc::_exit(116);
+            }
+            if mach_port_deallocate(child_task, child_host) != 0 {
+                libc::_exit(115);
+            }
+            libc::_exit(0);
+        }
+    }
+    assert_eq!(
+        unsafe { task_set_special_port(task, TASK_HOST_PORT, normal) },
+        0
+    );
+    assert!(child > 0);
+    let mut status = 0;
+    let waited = loop {
+        let result = unsafe { libc::waitpid(child, &mut status, 0) };
+        if result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        break result;
+    };
+    assert_eq!(waited, child);
+    let exit = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+    let signal = libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status));
+    assert_eq!(
+        exit,
+        Some(0),
+        "fork host-port control failed: exit={exit:?}, signal={signal:?}, raw_status={status}"
+    );
+    assert_eq!(queried, 0);
+    assert_eq!(custom, endpoint);
+    assert_eq!(inspected, 0);
+    assert_eq!(kind, 0, "installed host slot must be a userspace endpoint");
+    assert_eq!(sent, 0, "custom host endpoint must accept the marker");
+    assert_eq!(released, 0);
+    let mut received = [0_u32; 32];
+    let received_status = unsafe {
+        mach_msg(
+            received.as_mut_ptr().cast(),
+            2 | 0x100,
+            0,
+            std::mem::size_of_val(&received) as u32,
+            endpoint,
+            1000,
+            0,
+        )
+    };
+    assert_eq!(received_status, 0);
+    assert_eq!(
+        received[5], 1113,
+        "custom host endpoint must receive the marker"
+    );
+
+    // The same normal host successfully runs isolated code before tampering.
+    let control = fixture.run(false, &["exit", "0"]).await;
+    assert_eq!(control.exit_code, Some(0), "{control:?}");
+    if mode == "after-fork" {
+        assert_eq!(
+            unsafe { libc::pthread_atfork(None, None, Some(replace_after_fork)) },
+            0
+        );
+    } else {
+        assert_eq!(mode, "before-launch");
+        assert_eq!(
+            unsafe { task_set_special_port(task, TASK_HOST_PORT, endpoint) },
+            0
+        );
+    }
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "escaped host port".into(),
+    ];
+    let result = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        unsafe { task_set_special_port(task, TASK_HOST_PORT, normal) },
+        0
+    );
+    let error = result.unwrap_err();
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(error.message.contains("stage=9, detail=0"), "{error:?}");
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+    // No sandbox payload may send to the host's custom endpoint either.
+    assert_eq!(
+        unsafe {
+            mach_msg(
+                received.as_mut_ptr().cast(),
+                2 | 0x100,
+                0,
+                std::mem::size_of_val(&received) as u32,
+                endpoint,
+                0,
+                0,
+            )
+        },
+        0x10004003
+    ); // MACH_RCV_TIMED_OUT
+}
+
+fn check_custom_host_port(mode: &str) {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "custom_host_port_fixture", "--nocapture"])
+        .env("WERK_MACOS_HOST_PORT_FIXTURE", mode)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{mode}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn custom_host_port_is_rejected_before_launch() {
+    check_custom_host_port("before-launch");
+}
+
+#[test]
+fn custom_host_port_in_fork_snapshot_is_rejected() {
+    check_custom_host_port("after-fork");
+}
+
+mod bootstrap_ports {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FORK_GENERATION: AtomicUsize = AtomicUsize::new(0);
+
+    pub extern "C" fn replace_in_final_fork() {
+        // The parent and first supervisor retain the real bootstrap registry.
+        // Replace it only in the second fork, immediately before authentication
+        // of the process that would execute the untrusted payload.
+        if FORK_GENERATION.fetch_add(1, Ordering::Relaxed) != 1 {
+            return;
+        }
+        unsafe {
+            let endpoint = super::host_ports::endpoint();
+            if super::host_ports::task_set_special_port(
+                super::host_ports::mach_task_self_,
+                4, // TASK_BOOTSTRAP_PORT
+                endpoint,
+            ) != 0
+            {
+                libc::_exit(119);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn final_fork_bootstrap_fixture() {
+    if std::env::var_os("WERK_MACOS_FINAL_BOOTSTRAP_FIXTURE").is_none() {
+        return; // subprocess entry point; invoked by the mandatory parent test
+    }
+    let mut fixture = Fixture::new().await;
+    fixture.sandbox.limits.timeout_ms = 10_000;
+    let control = fixture.run(false, &["exit", "0"]).await;
+    assert_eq!(control.exit_code, Some(0), "{control:?}");
+
+    // Resolve endpoint-allocation routines before fork. This isolated host
+    // owns the receive right; no responder is created for the injected endpoint.
+    let _endpoint = unsafe { host_ports::endpoint() };
+    assert_eq!(
+        unsafe { libc::pthread_atfork(None, None, Some(bootstrap_ports::replace_in_final_fork)) },
+        0
+    );
+    let argv = vec![
+        fixture.probe.to_string_lossy().into_owned(),
+        "write".into(),
+        "must-not-run".into(),
+        "escaped task-access authentication".into(),
+    ];
+    let error = fixture
+        .sandbox
+        .run(
+            &fixture.workspace,
+            true,
+            &argv,
+            ".",
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("the final fork must authenticate its actual bootstrap registry");
+    assert_eq!(error.code, "sandbox_requirement_unavailable");
+    assert!(
+        error
+            .message
+            .contains("system task-access port authentication"),
+        "a timeout, crash, or unrelated setup error is not authentication rejection: {error:?}"
+    );
+    assert!(!fixture.workspace.path.join("must-not-run").exists());
+}
+
+#[test]
+fn task_access_authentication_rejects_bootstrap_replacement_in_final_fork() {
+    let mut fixture = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "final_fork_bootstrap_fixture", "--nocapture"])
+        .env("WERK_MACOS_FINAL_BOOTSTRAP_FIXTURE", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut timed_out = false;
+    while fixture.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            timed_out = true;
+            fixture.kill().unwrap();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = fixture.wait_with_output().unwrap();
+    assert!(
+        !timed_out && output.status.success(),
+        "final-fork bootstrap fixture: timeout={timed_out}, status={}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

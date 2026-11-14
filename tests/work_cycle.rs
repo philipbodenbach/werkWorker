@@ -117,7 +117,7 @@ async fn fixture(
 
 #[tokio::test]
 async fn wandering_reads_are_redirected_then_real_review_and_repair_finish() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -242,7 +242,7 @@ async fn wandering_reads_are_redirected_then_real_review_and_repair_finish() {
 
 #[tokio::test]
 async fn repair_cycle_bounds_changing_failures_but_allows_a_verified_correction() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -326,7 +326,7 @@ async fn repair_cycle_bounds_changing_failures_but_allows_a_verified_correction(
 
 #[tokio::test]
 async fn declared_syntax_and_inspection_remain_diagnostics_until_behavior_is_exercised() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -489,7 +489,7 @@ async fn investigation_before_any_implementation_does_not_force_edits() {
 
 #[tokio::test]
 async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -629,7 +629,7 @@ async fn repeated_initial_reads_restore_context_without_forcing_analysis_to_edit
 
 #[tokio::test]
 async fn repeated_small_edits_cannot_postpone_a_behavioral_check() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -831,7 +831,7 @@ async fn check_phase_refusals_keep_the_existing_repetition_limit() {
 
 #[tokio::test]
 async fn unknown_context_limit_recovers_once_from_checkpoint_with_smaller_input() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -906,7 +906,7 @@ fn read_counter() -> ScriptedTurn {
 
 #[tokio::test]
 async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1013,7 +1013,7 @@ async fn failed_review_bounds_investigation_then_repairs_and_finishes() {
 
 #[tokio::test]
 async fn passing_receipt_without_recovery_action_does_not_reopen_exploration() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1054,7 +1054,7 @@ async fn passing_receipt_without_recovery_action_does_not_reopen_exploration() {
 
 #[tokio::test]
 async fn recovery_can_replace_a_complete_version_without_copying_the_old_anchor() {
-    if let Err(error) = sandbox().doctor().await {
+    if let Err(error) = sandbox().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }

@@ -1,5 +1,8 @@
 # Local validation — 2026-10-19
 
+For the later native sandbox implementation, see the separate
+[2026-11-10 validation record and remaining gaps](cross-platform-sandbox.md#validation-record).
+
 This report covers the initial local implementation, using Rust/Cargo 1.98.0
 on Linux 6.18.54.1-microsoft-standard-WSL2. The declared minimum Rust version
 is 1.88; that older compiler was not separately exercised. No package or Git

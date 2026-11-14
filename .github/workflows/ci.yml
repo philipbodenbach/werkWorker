@@ -44,9 +44,8 @@ jobs:
           targets: ${{ matrix.target }}
       - name: MSVC x64 environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+        shell: pwsh
+        run: ./scripts/setup-msvc.ps1
       - name: Cache Cargo dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
@@ -60,9 +59,71 @@ jobs:
           fallback: none
       - name: Test release tooling and installers
         run: python -m unittest discover -s scripts/tests
+      - name: Report native macOS host requirements
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          uname -m
+          id
+          /usr/bin/csrutil status
       - name: Test native platform integration
-        if: runner.os != 'Linux'
-        run: cargo test --locked --test platform
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        id: native_integration
+        # Git Bash prepends its own link.exe on Windows, hiding the MSVC linker.
+        shell: python
+        env:
+          REQUIRE_SANDBOX: "1"
+          # Exercise the custom-host-port positive control on this SIP-relaxed
+          # runner; the regression must not pass via the SIP-protected branch.
+          WERK_REQUIRE_CUSTOM_MACH_HOST_PORT: ${{ runner.os == 'macOS' && '1' || '0' }}
+        run: |
+          import subprocess
+          import sys
+
+          commands = [
+              ["cargo", "test", "--locked", "--lib", "parallel::tests"],
+              ["cargo", "test", "--locked", "--lib", "runtime::macos::"],
+              ["cargo", "test", "--locked", "--no-fail-fast", "--test", "platform", "--test", "native_workspace", "--test", "sandbox_contract", "--test", "native_coding", "--test", "native_lifecycle", "--test", "native_policy", "--test", "contracts", "--test", "macos_process", "--test", "windows_sandbox"],
+          ]
+          failed = False
+          for command in commands:
+              print("+ " + " ".join(command), flush=True)
+              try:
+                  result = subprocess.run(command, check=False)
+              except OSError as error:
+                  print(f"Cannot start {command[0]}: {error}", file=sys.stderr, flush=True)
+                  failed = True
+              else:
+                  if result.returncode != 0:
+                      failed = True
+          sys.exit(1 if failed else 0)
+      - name: Report macOS native denial evidence
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.native_integration.outcome == 'failure' }}
+        run: python scripts/macos-native-diagnostics.py
+      - name: Check native SDK and lint
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        shell: python
+        run: |
+          import subprocess
+          import sys
+
+          commands = [
+              ["cargo", "test", "--locked", "--bin", "ww", "cli_config::tests"],
+              ["cargo", "check", "--locked", "--no-default-features", "--lib"],
+              ["cargo", "clippy", "--locked", "--all-targets", "--", "-D", "warnings"],
+              ["cargo", "check", "--locked", "--manifest-path", "examples/sdk-consumer/Cargo.toml"],
+          ]
+          failed = False
+          for command in commands:
+              print("+ " + " ".join(command), flush=True)
+              try:
+                  result = subprocess.run(command, check=False)
+              except OSError as error:
+                  print(f"Cannot start {command[0]}: {error}", file=sys.stderr, flush=True)
+                  failed = True
+              else:
+                  if result.returncode != 0:
+                      failed = True
+          sys.exit(1 if failed else 0)
       - name: Prepare real namespace backend
         if: runner.os == 'Linux'
         run: |

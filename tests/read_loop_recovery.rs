@@ -878,7 +878,7 @@ async fn successful_edit_retains_current_head_and_tail_without_rereading() {
 
 #[tokio::test]
 async fn read_recovery_supports_edit_and_verified_completion() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1164,7 +1164,7 @@ async fn read_recovery_keeps_reads_when_no_edit_or_check_is_requestable() {
 
 #[tokio::test]
 async fn bounded_read_recovery_can_verify_without_forcing_an_edit() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1435,7 +1435,7 @@ fn failing_check(n: usize) -> ScriptedTurn {
 
 #[tokio::test]
 async fn repeated_failure_survives_searches_new_reads_noop_edits_compaction_and_resume() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1549,7 +1549,7 @@ async fn repeated_failure_survives_searches_new_reads_noop_edits_compaction_and_
 
 #[tokio::test]
 async fn actual_file_change_rearms_failure_recovery() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1594,7 +1594,7 @@ async fn actual_file_change_rearms_failure_recovery() {
 
 #[tokio::test]
 async fn new_diagnostic_results_restore_reads_without_requiring_file_changes() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1667,7 +1667,7 @@ async fn continuous_read_loop_stops_and_preserves_the_last_receipt() {
 
 #[tokio::test]
 async fn fresh_repeated_reads_restore_content_then_recover_to_verified_completion() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }

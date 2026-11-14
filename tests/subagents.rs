@@ -1336,7 +1336,10 @@ impl ModelProvider for CodingReviewProbe {
 #[tokio::test]
 async fn coding_review_uses_verified_spare_capacity_but_cannot_replace_tests() {
     use werk_worker::policy::ToolPermission;
-    if let Err(error) = werk_worker::runtime::Sandbox::default().doctor().await {
+    if let Err(error) = werk_worker::runtime::Sandbox::default()
+        .require_process_backend()
+        .await
+    {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }
@@ -1763,7 +1766,10 @@ async fn reviews_continue_with_progress_then_report_stagnation_and_deliver_parti
 #[tokio::test]
 async fn code_created_only_by_a_child_process_requires_parent_verification() {
     use werk_worker::policy::ToolPermission;
-    if let Err(error) = werk_worker::runtime::Sandbox::default().doctor().await {
+    if let Err(error) = werk_worker::runtime::Sandbox::default()
+        .require_process_backend()
+        .await
+    {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }

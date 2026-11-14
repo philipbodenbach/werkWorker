@@ -33,7 +33,7 @@ fn process(argv: &[&str]) -> ScriptedTurn {
     call("process.run", json!({"argv":argv}))
 }
 async fn sandbox() -> bool {
-    if let Err(e) = runtime::Sandbox::default().doctor().await {
+    if let Err(e) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{e}");
         return false;
     }

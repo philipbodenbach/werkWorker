@@ -279,9 +279,8 @@ jobs:
           targets: ${{ matrix.target }}
       - name: MSVC x64 environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+        shell: pwsh
+        run: ./scripts/setup-msvc.ps1
       - name: Cache Cargo dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:

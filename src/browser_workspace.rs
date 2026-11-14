@@ -1,5 +1,6 @@
 //! Static workspace pages served inside the existing browser broker. No host
-//! listener or filesystem mount is exposed to the page; reads use openat2.
+//! listener or filesystem mount is exposed to the page; reads use the pinned
+//! native Workspace backend. This does not enable a native browser launcher.
 use crate::{core::*, runtime::Workspace};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};

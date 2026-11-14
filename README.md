@@ -41,7 +41,9 @@ Install a prebuilt package from the [latest published GitHub release](https://gi
 The installers select the matching platform archive, verify its SHA256 checksum
 and install both `ww` and `werk-worker`. No Rust toolchain or repository checkout
 is needed. Supported packages target Linux x86_64, Windows x86_64 and macOS
-Apple Silicon; file/process isolation currently requires Linux.
+Apple Silicon. This checkout adds native workspace access and constrained
+process backends; published archives contain the capabilities of their tagged
+source. See the [platform requirements and validation status](docs/cross-platform-sandbox.md).
 
 Linux or macOS:
 
@@ -81,9 +83,17 @@ ww sandbox doctor
 ```
 
 The demo is explicitly offline. A missing model connection never falls back to
-scripted replies. Process tools require Linux user namespaces, a usable
-Bubblewrap installation and the kernel interfaces described in
-[the sandbox matrix](docs/security.md). Missing isolation fails closed.
+scripted replies. Linux process tools require user namespaces and Bubblewrap.
+Windows process tools run in single-process mode and require an explicitly
+provisioned local NTFS workspace;
+macOS has an opt-in Seatbelt single-process mode that requires explicit acceptance
+of path-based workspaces and an authenticated system task-access port exception.
+macOS currently supports fresh live sessions; restoring sessions and saving
+workspace permissions requires a durable identity that this backend cannot yet provide.
+`sandbox doctor` reports file, process and browser capabilities separately.
+See [the sandbox matrix](docs/security.md) and
+[native setup and limitations](docs/cross-platform-sandbox.md). Missing isolation
+fails closed; native browser isolation remains unavailable.
 
 With no arguments, `ww` opens an interactive setup: choose a Werk server, enter
 its API key in a masked field, discover models, and select token budgets, reasoning effort,
@@ -319,8 +329,10 @@ This is an initial local single-host implementation. SQLite snapshots favor
 clear atomic boundaries over high-throughput event storage. Tools execute
 serially (concurrency bound one); independent sessions may run concurrently.
 Filesystem search is bounded and nonrecursive. Sandbox resource limits are
-Linux rlimits, not aggregate cgroup quotas. These limitations are explicit in
-the security documentation. No live-model quality or benchmark parity is claimed.
+platform-specific: Linux uses rlimits rather than aggregate cgroup quotas,
+Windows uses Job Object limits, and macOS's constrained mode denies subprocesses.
+These limitations are explicit in the security documentation. No live-model
+quality or benchmark parity is claimed.
 
 ## What’s new in v0.3.3
 

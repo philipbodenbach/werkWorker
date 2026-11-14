@@ -38,6 +38,12 @@ pub(crate) fn definition() -> ToolDefinition {
         },"required":["path","actions"],"additionalProperties":false}), timeout_ms:60000, output_limit:8192, concurrency_safe:true }
 }
 pub(crate) async fn prepare(mut args: Value, ctx: &ToolContext) -> Result<Value> {
+    if !cfg!(target_os = "linux") {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "browser.check requires the Linux browser isolation backend; native process support does not enable it",
+        ));
+    }
     args["path"] = json!(crate::policy::workspace_path(
         args["path"].as_str().unwrap_or("")
     )?);

@@ -175,7 +175,10 @@ async fn nested_children_keep_the_configured_model() {
 
 #[tokio::test]
 async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissions() {
-    if let Err(error) = werk_worker::runtime::Sandbox::default().doctor().await {
+    if let Err(error) = werk_worker::runtime::Sandbox::default()
+        .require_process_backend()
+        .await
+    {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         return;
     }

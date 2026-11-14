@@ -953,7 +953,7 @@ impl ModelProvider for PollingProvider {
 
 #[tokio::test]
 async fn active_owned_job_polling_does_not_require_workspace_writes() {
-    if let Err(error) = runtime::Sandbox::default().doctor().await {
+    if let Err(error) = runtime::Sandbox::default().require_process_backend().await {
         assert!(std::env::var_os("REQUIRE_SANDBOX").is_none(), "{error}");
         eprintln!("SKIP real sandbox: {error}");
         return;

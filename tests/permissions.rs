@@ -205,7 +205,7 @@ fn explicit_permissions_and_remembered_actions_respect_denials_and_exact_scope()
     let registry = ToolRegistry::builtins().unwrap();
     let process = registry.get("process.run").unwrap().definition();
     let write = registry.get("files.write").unwrap().definition();
-    let args = json!({"argv":["echo","allowed"],"cwd":"."});
+    let args = json!({"argv":["echo","allowed"],"cwd":".","sandbox":{"contract_version":2,"backend":"test-contract"}});
     assert!(!HostPolicy::default().can_request(&process));
     assert!(!HostPolicy::default().can_request(&write));
     let mut policy = HostPolicy {
@@ -709,9 +709,9 @@ fn request_mode_never_bypasses_hard_denies_paths_or_read_only_workers() {
 }
 
 #[tokio::test]
-async fn remembered_process_approval_covers_new_commands_and_session_restart() {
+async fn remembered_process_approval_binds_commands_and_survives_session_restart() {
     let sandbox = Sandbox::default();
-    if let Err(error) = sandbox.doctor().await {
+    if let Err(error) = sandbox.require_process_backend().await {
         if std::env::var_os("REQUIRE_SANDBOX").is_some() {
             panic!("Required real sandbox unavailable: {error}");
         }
@@ -721,7 +721,7 @@ async fn remembered_process_approval_covers_new_commands_and_session_restart() {
     let workspace = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     let mut session_id: Option<String> = None;
-    for commands in [["first", "second"], ["after-restart", "another-command"]] {
+    for commands in [["first", "second"], ["first", "second"]] {
         let resumed = session_id.is_some();
         let provider = Arc::new(ScriptedProvider::new(vec![
             call("process.run", json!({"argv":["/bin/echo",commands[0]]})),
@@ -769,18 +769,31 @@ async fn remembered_process_approval_covers_new_commands_and_session_restart() {
             .await
             .unwrap();
         if !resumed {
-            let request = approval(&run, 0).await;
-            run.respond_to_approval(
-                &request.request_id,
-                ApprovalDecision::AllowForSession,
-                "remember-process",
-            )
-            .await
-            .unwrap();
+            let mut events = run.events(0);
+            for _ in 0..2 {
+                let request = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let EventKind::ApprovalRequested { request } =
+                            events.next().await.unwrap().unwrap().event
+                        {
+                            break request;
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                run.respond_to_approval(
+                    &request.request_id,
+                    ApprovalDecision::AllowForSession,
+                    &id("remember-process"),
+                )
+                .await
+                .unwrap();
+            }
         }
         let completed = tokio::time::timeout(Duration::from_secs(5), run.wait())
             .await
-            .expect("Remembered process access must not ask again for a different command")
+            .expect("The same fully prepared commands should retain their approvals")
             .unwrap();
         assert_eq!(completed.status, RunStatus::Completed);
         let completed = run.status().await.unwrap();
@@ -791,7 +804,7 @@ async fn remembered_process_approval_covers_new_commands_and_session_restart() {
                 .iter()
                 .filter(|i| i.approval.is_some())
                 .count(),
-            usize::from(!resumed)
+            2 * usize::from(!resumed)
         );
         for (invocation, output) in completed.invocations.iter().zip(commands) {
             let result = invocation.result.as_ref().unwrap();
@@ -805,11 +818,11 @@ async fn remembered_process_approval_covers_new_commands_and_session_restart() {
         let grant = &policy.remembered_grants[0];
         assert_eq!(grant.tool, "process.run");
         assert_eq!(grant.resource, "workspace");
-        assert!(grant.arguments_hash.is_none());
+        assert!(grant.arguments_hash.is_some());
         let registry = ToolRegistry::builtins().unwrap();
         let process = registry.get("process.run").unwrap().definition();
         let args = json!({"argv":["/bin/echo","new arguments"]});
-        assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Allow);
+        assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Ask);
         assert_eq!(
             policy.evaluate(
                 &registry.get("process.start").unwrap().definition(),
@@ -839,7 +852,7 @@ async fn remembered_process_approval_covers_new_commands_and_session_restart() {
 #[tokio::test]
 async fn explicit_process_approval_runs_in_the_real_workspace_sandbox() {
     let sandbox = Sandbox::default();
-    if let Err(error) = sandbox.doctor().await {
+    if let Err(error) = sandbox.require_process_backend().await {
         if std::env::var_os("REQUIRE_SANDBOX").is_some() {
             panic!("Required real sandbox unavailable: {error}");
         }

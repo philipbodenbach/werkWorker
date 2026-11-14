@@ -82,7 +82,10 @@ fn bundled_profile_tool_skill_references_and_cli_help_are_consistent() {
         methods,
         &METHODS.iter().map(|m| json!(m)).collect::<Vec<_>>()
     );
-    assert!(include_str!("../LICENSE").starts_with("Elastic License 2.0\n"));
+    assert_eq!(
+        include_str!("../LICENSE").lines().next(),
+        Some("Elastic License 2.0")
+    );
     assert!(include_str!("../Cargo.toml").contains("license = \"Elastic-2.0\""));
 }
 #[tokio::test]

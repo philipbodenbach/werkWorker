@@ -267,6 +267,10 @@ attempts. It supports native single-process tools, not ordinary multiprocess
 compilers/build systems. A larger requested process ceiling does not enable
 children; the effective cap of one is part of the approval descriptor.
 
+The proposed Windows coding process-tree profile remains disabled. See the
+[native candidate qualification](windows-process-tree-qualification.md) for the
+LPAC/PSEC rejection evidence, MXC tier-discovery limits and remaining cleanup gates.
+
 The Job Object enforces job memory, job CPU and process-count limits;
 wall time and output are bounded by the host. Linux-specific per-file size and
 descriptor-count rlimits are not claimed on Windows. LPAC access to operating

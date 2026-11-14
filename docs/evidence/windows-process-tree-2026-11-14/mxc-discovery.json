@@ -1,0 +1,67 @@
+{
+  "exact_base_container_prerequisite": true,
+  "probe": {
+    "needsDaclAugmentation": false,
+    "probes": {
+      "baseContainerApiPresent": true,
+      "baseContainerSupportsDenyPaths": true,
+      "baseContainerSupportsEnumeratePaths": true,
+      "baseContainerSupportsIdentitylessLoopbackProxy": true,
+      "baseContainerSupportsIngressHostLoopbackAllow": true,
+      "bfsCompiledIn": false,
+      "bfscfgPresent": false,
+      "guardedCaptureAvailable": false,
+      "hyperlightAvailable": false,
+      "isolationSessionAvailable": false,
+      "nativeCaptureAvailable": true,
+      "uiCapabilities": {
+        "canBlockClipboardRead": true,
+        "canBlockClipboardWrite": true,
+        "canBlockDesktopSwitching": true,
+        "canBlockDisplaySettingsChanges": true,
+        "canBlockExternalUiObjects": true,
+        "canBlockGlobalUiNamespace": true,
+        "canBlockInputInjection": true,
+        "canBlockInputMethodChanges": true,
+        "canBlockLogoffOrShutdown": true,
+        "canBlockSystemParameterChanges": true
+      }
+    },
+    "tier": "base-container",
+    "warnings": []
+  },
+  "probe_only": true,
+  "request": {
+    "containment": "ProcessContainer",
+    "deny": [
+      "C:\\"
+    ],
+    "environment": [],
+    "explicit_capabilities": [],
+    "inherit_default_environment": false,
+    "network": {
+      "egress": "deny",
+      "host_loopback": "deny",
+      "ingress": "deny"
+    },
+    "readonly": [
+      "C:\\Users\\Philip Bodenbach\\AppData\\Local\\Temp\\werkworker-mxc-probe-4a74552e13c94095bcb411b4bb346354\\runtime",
+      "C:\\WINDOWS\\System32"
+    ],
+    "readwrite": [
+      "C:\\Users\\Philip Bodenbach\\AppData\\Local\\Temp\\werkworker-mxc-probe-4a74552e13c94095bcb411b4bb346354\\workspace",
+      "C:\\Users\\Philip Bodenbach\\AppData\\Local\\Temp\\werkworker-mxc-probe-4a74552e13c94095bcb411b4bb346354\\scratch"
+    ],
+    "ui_disabled": true
+  },
+  "sandbox_qualified": false,
+  "sdk": "mxc-sdk=1.0.1",
+  "sdk_default_features": false,
+  "unmet_supported_api_contract": [
+    "caller-owned Job before execution",
+    "finite aggregate process/CPU/memory limits",
+    "before-resume verification",
+    "confirmed whole-Job cleanup"
+  ],
+  "workload_launched": false
+}

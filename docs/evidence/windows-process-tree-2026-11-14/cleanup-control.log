@@ -1,0 +1,5 @@
+CONTROL suspended=1 member=0 resumed=0 retained_creation_handle=1
+CLEANUP_ROOT wait=258 win32=0
+CLEANUP_FALLBACK retained_handle=1 terminated=1 win32=0 wait=0 qualification_failed=1
+CLEANUP active=0 confirmed=0
+HARNESS_RESULT cleanup_accepted=0 retained_handle_signaled=1 exit_code=91 payload_resumed=0

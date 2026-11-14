@@ -1,0 +1,95 @@
+HOST_CONHOST_OPEN read_error=0 execute_error=0
+ROOT_CREATE pid=129624 flags=0x8 budget=1 success=1 error=0
+ROOT_JOB psec=0 atomic_assignment=1 query_success=1 member=1 suspended=1
+ROOT_CONTAINMENT atomic_job=1 member=1 suspended=1 stdio_handle_list=1 job_inherited=0
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+ATOMIC_JOB_CONTROL passed=1 payload_resumed=0
+CASE name=psec-atomic-job
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+ROOT_CREATE pid=160060 flags=0x8 budget=1 success=1 error=0
+ROOT_JOB psec=1 atomic_assignment=1 query_success=1 member=0 suspended=1
+ATOMIC_ASSIGNMENT_IGNORED observed=1 payload_resumed=0
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+CASE name=detached-initial-control
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+ROOT_CREATE pid=160272 flags=0x8 budget=1 success=1 error=0
+ROOT_JOB psec=1 atomic_assignment=0 query_success=1 member=1 suspended=1
+ROOT_CONTAINMENT atomic_job=0 member=1 suspended=1 stdio_handle_list=1 job_inherited=0
+JOB configured=1 active=1 flags=0x220c
+OWNED_PROCESS pid=160272 member=1 access=0x101000 image=C:\Users\Philip Bodenbach\AppData\Local\Temp\werkworker-psec-budget-d2dc4c5d6d044f198ed92570ff0233ca\runtime\windows-psec-budget.exe
+TOKEN pid=160272 appcontainer=1 elevated=0 package=S-1-15-2-901801409-119249815-4154563460-2002062589-3602967965-4167824455-4172306398
+BUDGET_VIOLATION observed=0
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+TOKEN pid=160272 appcontainer=1 elevated=0 package=S-1-15-2-901801409-119249815-4154563460-2002062589-3602967965-4167824455-4172306398
+
+READY pid=160272
+
+CASE name=headless-initial
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+ROOT_CREATE pid=158424 flags=0x8000000 budget=1 success=1 error=0
+ROOT_JOB psec=1 atomic_assignment=0 query_success=1 member=1 suspended=1
+ROOT_CONTAINMENT atomic_job=0 member=1 suspended=1 stdio_handle_list=1 job_inherited=0
+JOB configured=1 active=2 flags=0x220c
+OWNED_PROCESS pid=158424 member=1 access=0x101000 image=C:\Users\Philip Bodenbach\AppData\Local\Temp\werkworker-psec-budget-d2dc4c5d6d044f198ed92570ff0233ca\runtime\windows-psec-budget.exe
+TOKEN pid=158424 appcontainer=1 elevated=0 package=S-1-15-2-3815582988-3638934797-2941678472-3535762455-160080357-3907996124-2262023516
+OWNED_PROCESS pid=158004 member=1 access=0x101000 image=C:\Windows\System32\conhost.exe
+TOKEN pid=158004 appcontainer=1 elevated=0 package=S-1-15-2-3815582988-3638934797-2941678472-3535762455-160080357-3907996124-2262023516
+BUDGET_VIOLATION observed=1
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+TOKEN pid=158424 appcontainer=1 elevated=0 package=S-1-15-2-3815582988-3638934797-2941678472-3535762455-160080357-3907996124-2262023516
+
+READY pid=158424
+
+CASE name=detached-root-headless-child
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+ROOT_CREATE pid=157236 flags=0x8 budget=2 success=1 error=0
+ROOT_JOB psec=1 atomic_assignment=0 query_success=1 member=1 suspended=1
+ROOT_CONTAINMENT atomic_job=0 member=1 suspended=1 stdio_handle_list=1 job_inherited=0
+JOB configured=2 active=3 flags=0x220c
+OWNED_PROCESS pid=157236 member=1 access=0x101000 image=C:\Users\Philip Bodenbach\AppData\Local\Temp\werkworker-psec-budget-d2dc4c5d6d044f198ed92570ff0233ca\runtime\windows-psec-budget.exe
+TOKEN pid=157236 appcontainer=1 elevated=0 package=S-1-15-2-1342592961-1654443154-1632534815-2929365803-683198845-3433622106-3079793176
+OWNED_PROCESS pid=153044 member=1 access=0x101000 image=C:\Users\Philip Bodenbach\AppData\Local\Temp\werkworker-psec-budget-d2dc4c5d6d044f198ed92570ff0233ca\runtime\windows-psec-budget.exe
+TOKEN pid=153044 appcontainer=1 elevated=0 package=S-1-15-2-1342592961-1654443154-1632534815-2929365803-683198845-3433622106-3079793176
+OWNED_PROCESS pid=156692 member=1 access=0x101000 image=C:\Windows\System32\conhost.exe
+TOKEN pid=156692 appcontainer=1 elevated=0 package=S-1-15-2-1342592961-1654443154-1632534815-2929365803-683198845-3433622106-3079793176
+BUDGET_VIOLATION observed=1
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+TOKEN pid=157236 appcontainer=1 elevated=0 package=S-1-15-2-1342592961-1654443154-1632534815-2929365803-683198845-3433622106-3079793176
+
+CHILD_CREATE creator=157236 child=153044 flags=CREATE_NO_WINDOW success=1 error=0
+
+TOKEN pid=153044 appcontainer=1 elevated=0 package=S-1-15-2-1342592961-1654443154-1632534815-2929365803-683198845-3433622106-3079793176
+
+READY pid=153044
+
+CASE name=conhost-denied-headless-child
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+ROOT_CREATE pid=159444 flags=0x8 budget=2 success=1 error=0
+ROOT_JOB psec=1 atomic_assignment=0 query_success=1 member=1 suspended=1
+ROOT_CONTAINMENT atomic_job=0 member=1 suspended=1 stdio_handle_list=1 job_inherited=0
+JOB configured=2 active=3 flags=0x220c
+OWNED_PROCESS pid=159444 member=1 access=0x101000 image=C:\Users\Philip Bodenbach\AppData\Local\Temp\werkworker-psec-budget-d2dc4c5d6d044f198ed92570ff0233ca\runtime\windows-psec-budget.exe
+TOKEN pid=159444 appcontainer=1 elevated=0 package=S-1-15-2-2139403496-2581454977-2109367678-1311077143-976744777-2757755818-1829460890
+OWNED_PROCESS pid=155248 member=1 access=0x101000 image=C:\Users\Philip Bodenbach\AppData\Local\Temp\werkworker-psec-budget-d2dc4c5d6d044f198ed92570ff0233ca\runtime\windows-psec-budget.exe
+TOKEN pid=155248 appcontainer=1 elevated=0 package=S-1-15-2-2139403496-2581454977-2109367678-1311077143-976744777-2757755818-1829460890
+OWNED_PROCESS pid=160188 member=1 access=0x101000 image=C:\Windows\System32\conhost.exe
+TOKEN pid=160188 appcontainer=1 elevated=0 package=S-1-15-2-2139403496-2581454977-2109367678-1311077143-976744777-2757755818-1829460890
+BUDGET_VIOLATION observed=1
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+TOKEN pid=159444 appcontainer=1 elevated=0 package=S-1-15-2-2139403496-2581454977-2109367678-1311077143-976744777-2757755818-1829460890
+
+FILE_DENY read_error=5 execute_error=5
+
+CHILD_CREATE creator=159444 child=155248 flags=CREATE_NO_WINDOW success=1 error=0
+
+TOKEN pid=155248 appcontainer=1 elevated=0 package=S-1-15-2-2139403496-2581454977-2109367678-1311077143-976744777-2757755818-1829460890
+
+READY pid=155248
+
+RESULT atomic_assignment_ignored=1 budget_exceeded=1 incomplete=0

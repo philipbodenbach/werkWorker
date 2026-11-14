@@ -1,0 +1,8 @@
+{
+  "copied_file": "Cargo.toml",
+  "baseline_sha256": "d603c525baf0ec7b817b669690e80b9b2c4029d5377e556e5a9b53d052583292",
+  "final_sha256": "16a579d5252a0b92adabdd029aab9dc6c4e85b33cf495f42c9f7f7e5838d5a27",
+  "code_equivalence_files": 126,
+  "different_code_files": [],
+  "packaging_only_change": true
+}

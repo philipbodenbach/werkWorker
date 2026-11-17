@@ -13,8 +13,9 @@ The existing single-process LPAC mode remains the default.
 
 **The process-tree profile is not qualified and is technically disabled.**
 Native tests reproduce a DNS-broker escape from network denial, `AllocConsole`
-creating a third Job member despite an active-process limit of two, and a Cargo
-jobserver semaphore failure. An explicit selection, even with valid
+creating a third Job member despite an active-process limit of two. The Cargo
+jobserver semaphore fix now passes a selected real-tool case, but the complete
+mandatory suite and installed profile acceptance have not passed. An explicit selection, even with valid
 provisioning, returns `sandbox_unqualified` before workspace admission or
 execution; Doctor cannot report this profile available. There is no environment,
 debug or feature-flag bypass. The setup contract below describes the candidate;
@@ -107,11 +108,28 @@ runtime effect. Offline Cargo must also prove compatibility with the RPC denial.
 
 Setup requests the maximum sublayer priority, but BFE may assign the closest
 available value ([Microsoft's provider-installation example](https://learn.microsoft.com/en-us/windows/win32/fwp/installing-a-provider)).
-Manifest schema 3 requires all seven filters and records the actual
+Manifest schema 4 requires all seven filters, the session-scoped named-object
+namespace receipt described below, and records the actual
 `network_sublayer_weight` read back after
 installation. The host-approved descriptor and Doctor expose it, and every
-launch must match that exact protected value. Older six-filter receipts and receipts without this field are rejected. The assigned weight is not a claim that this is the host's highest
+launch must match that exact protected value. Older receipts, including schema 3 and receipts without the namespace receipt, are rejected. The assigned weight is not a claim that this is the host's highest
 priority sublayer; the mandatory native network controls remain required.
+
+Setup also opens the current interactive session's
+`\Sessions\<session>\BaseNamedObjects\Restricted` directory and adds exactly
+two non-inheriting grants: `0x000f` (query, traverse, create object and create
+subdirectory) for the new sandbox account, and `0x00020003` (query, traverse,
+read-control) for the individual host. The sandbox account receives no ACL/owner
+mutation rights. The parent namespace and existing object ACLs are unchanged.
+KernelBase requires all four directory rights even for Rustc's named jobserver
+semaphore; create-object-only is insufficient. The ordinary loader rechecks the
+trusted owner, exact grants, unsafe mutation grants and receipt session before
+holding a read-only Directory handle through the invocation. It never repairs
+the namespace. Setup serializes its own provisioners and attempts exact rollback
+on failure without overwriting a detected foreign administrator edit. Other
+administrator edits must be coordinated separately; Windows provides no atomic
+DACL compare-and-swap. Session zero is rejected. Session change or reboot
+requires a fresh explicit provision; an old JSON receipt is not sufficient.
 
 The payload uses a restricted primary token of the dedicated account, with
 maximum privileges disabled and write-restricting SIDs limited to that account
@@ -317,6 +335,22 @@ require signaled handles without a cleanup grace period. Abrupt host termination
 is a separate case with a bounded observation deadline and a required persistent
 cleanup marker. See [the recorded validation status](windows-process-tree-validation.md)
 for completed checks and any outstanding qualification blocker.
+
+The checked-in `scripts/test-windows-process-tree.ps1 -EvidenceRoot <new-dir>
+-BindAddress <assigned-nonloopback-ip>` automates package build, fresh install,
+provisioning and the two acceptance stages. Provisioning requires an already
+elevated token in the intended nonzero interactive session. Native tests and the
+installed CLI then run as the same user's verified Medium token, with no UAC
+prompt, inherited token handle or inherited Job handle. If the normal linked
+host logon cannot be established, acceptance fails explicitly. When necessary,
+the launcher reads only the same user's pinned system Explorer token and checks
+its exact SID, session and linked-logon identity before duplication; it never
+changes privileges. An owner-held outer kill-on-close Job drains the trusted
+test-host tree, independently of each actual sandbox Job and its unchanged
+limits. Product and diagnostic source builds use separate output directories.
+After the mandatory suite's deliberate crash case, the actual installed startup
+uses another fresh provision; the retained crash receipt is never erased to
+make an acceptance test pass.
 
 ## Cleanup and interrupted-host recovery
 

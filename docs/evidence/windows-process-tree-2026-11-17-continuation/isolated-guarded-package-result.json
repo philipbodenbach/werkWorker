@@ -1,0 +1,67 @@
+{
+  "build_type": "native debug; exclusively isolated Cargo target; product source guard enabled",
+  "profile_qualified": false,
+  "source_inputs_unchanged": true,
+  "doctor": {
+    "capabilities": {
+      "browser_check": {
+        "available": false,
+        "implemented": false,
+        "probe_verified": false,
+        "reason": "Native process isolation does not implement isolated browser proxy/network transport"
+      },
+      "browser_control": {
+        "available": false,
+        "implemented": false,
+        "probe_verified": false,
+        "reason": "Native process isolation does not implement isolated browser proxy/network transport"
+      },
+      "files": {
+        "available": true,
+        "identity": "win-v1:2363b23dce6d19ba:e9762000000023000000000000000000",
+        "implemented": true,
+        "persistent_identity": true,
+        "probe_verified": true,
+        "verified": [
+          "create-only write",
+          "bounded read",
+          "listing",
+          "traversal rejection"
+        ]
+      },
+      "process": {
+        "available": false,
+        "error": {
+          "code": "sandbox_unqualified",
+          "message": "The Windows process-tree profile is unqualified and disabled: native tests show DNS Client broker queries escaping network denial and AllocConsole exceeding the active-process limit. Complete native isolation, resource-limit, lifecycle, offline Cargo and fresh-install acceptance must pass before this profile can be enabled.",
+          "retry_after_ms": null,
+          "retryable": false
+        },
+        "implemented": true,
+        "probe_verified": false
+      }
+    },
+    "resource_limits": {
+      "browser_processes": 512,
+      "browser_session_cpu_seconds": 300,
+      "browser_session_memory_bytes": 2147483648,
+      "cpu_seconds": 30,
+      "memory_bytes": 1073741824,
+      "output_bytes": 1048576,
+      "processes": 128,
+      "timeout_ms": 30000
+    },
+    "schema_version": 2
+  },
+  "archive": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-guarded-debug-package\\werkWorker-v0.3.3-windows-x86_64.zip",
+  "sha256": "6e17443bbfa54b6a526dbcb5c32e2ed7cca704f94524d202c215d9d3d9da8781",
+  "files": {
+    "werk-worker.exe": "8fb5dd56c4bfc701ec0c1a0acff74b2b10c78dd48985244608e33c290f7de0b6",
+    "ww.exe": "20c6530faefb864cf1ad9bebaa8caa018fb32727cf3c6fae0d6322d83bcc0f21",
+    "ww-windows-provision.exe": "5c17d18ef71d021d99d72467b26614196cce70ea4bef9dd86f7d59e782d18396",
+    "ww-windows-runner.exe": "bd57248dba656102f9f0a1a7ed848dab03b3c9ffb6bd045b20da1a392af2e9fb",
+    "README.md": "a995dd151a0f4ec6151f44c4bd136e6a41198a4a6bde0252869aef9243ec578c",
+    "LICENSE": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+    "NOTICE": "c52ea2ed9a6c11811c1ea2e40ab9208987103de4559112ab7f3e14dcc383fca4"
+  }
+}

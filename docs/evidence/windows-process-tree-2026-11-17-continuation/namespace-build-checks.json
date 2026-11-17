@@ -1,0 +1,51 @@
+{
+  "source_sha256": "cf80ddeb755877bf7394e9f789c7706e87af61287b4a1791a9255cb9fe7b2f6c",
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "F:\\werkWorker\\target\\windows-process-tree-20261117\\candidate-namespace-src\\Cargo.toml",
+        "--test",
+        "windows_process_tree",
+        "--",
+        "diagnose_native_process_tree_case",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\ns4-cargo-diagnostic-dynamic.log",
+      "sha256": "ba19c71eba36306201907b848a7ca171ba35afbf348a4aaf1f2e99e62c6b8079"
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\namespace-clippy-final-dynamic.log",
+      "sha256": "5ea4a2a6d4b34e9370834f01ff995d470a3c52dccc07f98ec2c9c2d397e0d082"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\namespace-fmt-final-dynamic.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

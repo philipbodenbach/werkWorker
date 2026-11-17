@@ -169,6 +169,7 @@ pub(super) fn description(
         "backend":"windows-account-job-tree", "version":3,
         "provisioning":config.provisioning, "provisioning_sha256":p.manifest_digest,
         "account_sid":p.manifest.user_sid, "workspace":p.manifest.workspace,
+        "named_object_namespace":p.manifest.named_object_namespace,
         "toolchains":p.manifest.toolchain_roots, "environment":p.manifest.toolchain_environment,
         "temporary":p.manifest.private_temp, "runner":p.manifest.runner,
         "network_enforcement":"persistent WFP SID blocks: connect, receive/accept and resource assignment, IPv4 and IPv6 including loopback; RPC calls denied by client account",

@@ -1,22 +1,180 @@
 # Windows process-tree validation — 2026-11-17
 
-**The process-tree profile is technically disabled until its isolation
-guarantees are met.** The frozen diagnostic implementation starts on Windows 11,
-and selected real-tool UI and three-generation boundary checks pass. Native
-checks nevertheless demonstrate a DNS-broker leak, console allocation exceeding
-the process limit and a failing Windows offline Cargo build. The mandatory run
-has not passed. A separate historical diagnostic now passes abrupt host death
-and persistent workspace refusal after the crash. The final
-installed CLI refuses both `process.run` and `process.start` requests during
-preparation/admission with `sandbox_unqualified`, even with the previously valid
-D provisioning. No payload executes. The Windows package and ordinary
-installation smoke pass; those results do not qualify the disabled feature.
+**The process-tree profile remains technically disabled.** The Rustc jobserver
+failure is corrected in the backend and demonstrated through real `process.run`
+from a fresh schema-4 provision. DNS broker isolation and the console process
+ceiling are still unresolved. The complete mandatory acceptance has not passed;
+`sandbox_unqualified` remains unconditional. No commit, push, remote PR edit or
+hosted CI result is claimed for this continuation.
 
-Work remains local and uncommitted on `feat/windows-child-process` at
-`2398f9f15ca8aa092312938bb683989f2f6423b2`. No commit or push was made; the
-existing Draft PR description is maintained separately. The earlier
-LPAC/PSEC/MXC findings from `ca8d664` are decision
-evidence, not acceptance of this dedicated-account backend.
+## Current continuation on `feat/windows-child-process`
+
+The namespace fix provisions a non-inheriting, account-only `0x000f` grant on
+the current session's `BaseNamedObjects\Restricted` directory. KernelBase needs
+query, traverse, create-object **and create-subdirectory** when opening that
+directory for a named semaphore. The earlier create-object-only experiments
+therefore did not provide the required access. The ordinary host receives only
+query/traverse/read-control (`0x00020003`) for exact launch-time verification.
+The parent `BaseNamedObjects` directory is unchanged; no Everyone/Users creation
+grant or sandbox WRITE_DAC/WRITE_OWNER is added. Setup serializes cooperating
+provisioners, verifies owner/ACEs, and retains the original descriptor for failed
+setup rollback. Ordinary launch only verifies and pins the namespace. Schema 4
+binds this prerequisite and its session identity into the protected manifest and
+the approval descriptor; session zero is unsupported and a new session/reboot
+requires explicit fresh provisioning.
+
+The native [Cargo result](evidence/windows-process-tree-2026-11-17-continuation/cargo-result.json)
+and [complete selected-case log](evidence/windows-process-tree-2026-11-17-continuation/cargo-native.log)
+record exit 0, `OFFLINE_NATIVE_CARGO_OK`, one passing dependency-free test,
+the expected text artifact and a generated Windows executable. All four live
+members of the concrete Job (runner, Cargo, test executable and Conhost) were
+retained at the approved limit of 32; their zero-time wait results are all
+signaled immediately at tool return. Cargo's harness no longer assumes exactly
+three members: it verifies every actual member, all three required executable
+identities and the unchanged approved ceiling. The separate full-budget console
+checks remain strict. This is an explicitly identified diagnostic snapshot,
+with only its separate source snapshot's qualification guard removed; the
+delivered source has no bypass. These selected commands ran under an elevated
+build controller with the dedicated payload token independently checked. They
+are not ordinary-host or complete profile qualification. Native namespace
+security units (2), provisioning units (4), final all-target Clippy with warnings
+denied, formatting, the no-default-feature library and external SDK checks all
+pass. All ten existing native integration targets compile; compilation is not
+execution. See the [build checks](evidence/windows-process-tree-2026-11-17-continuation/namespace-build-checks.json)
+and [SDK/compilation record](evidence/windows-process-tree-2026-11-17-continuation/sdk-native-compile-checks.json).
+
+The freshly provisioned account still sends mediated DNS queries through the
+Windows service despite the seven WFP blocks. Both `DnsQuery_W` and
+`DnsQueryEx` return access denied with zero independent server arrivals under
+full restricting thread tokens without Everyone/Restricted Code; host controls
+before and after succeed. Those thread-token controls do not establish
+compatible process startup or fix product isolation. See the
+[account matrix](evidence/windows-process-tree-2026-11-17-continuation/dns-dedicated-token-controls.jsonl).
+Adding Builtin Users as a full restricting SID could additionally admit Users
+write grants and must not silently be represented as the existing write policy.
+
+Zero-capability LPAC is also insufficient for the console ceiling. The
+[C++](evidence/windows-process-tree-2026-11-17-continuation/console-lpac-cpp-live.log)
+and [Rust](evidence/windows-process-tree-2026-11-17-continuation/console-lpac-rust-live.log)
+controls retain both the payload and Conhost, verify membership in the exact Job
+and observe both unsignaled at limit one, even though `AllocConsole` returns
+access denied. All retained processes are subsequently signaled and the fresh
+per-user AppContainer profiles are deleted. The prepared temporary KnownDlls
+read-grant control has not run. The user explicitly declined KnownDlls changes;
+this route is closed and no approval remains pending. No KnownDlls, DNS service
+or registry permission change is part of the product patch.
+
+CI now includes an unconditional `windows-process-tree` job. Its checked-in
+`scripts/test-windows-process-tree.ps1` builds/installs the package, provisions
+with the installed helpers, requires the entire native suite with a controlled
+non-loopback witness, and creates a **second** fresh provision for the real
+installed CLI/Cargo start. The suite's deliberately retained host-death receipt
+is preserved. `scripts/validate-windows-process-tree.py` rejects missing evidence
+markers and optional NOT RUN results and verifies the actual installed tool
+result, output and Windows artifact. The job is expected to fail while the
+qualification guard or remaining defects are present. The existing LPAC checks
+remain independent.
+
+The [bounded evidence summary and hashes](evidence/windows-process-tree-2026-11-17-continuation/summary.json)
+identify this continuation. The sections below preserve the earlier checkout's
+source identities, schema-3 provisions and historical results; their old local
+target paths are not results from the current workspace.
+
+## Final native checks in this continuation
+
+The complete mandatory process-tree command was invoked with
+`REQUIRE_WINDOWS_PROCESS_TREE=1` from the actual same-user Medium token, with
+no administrative elevation. All six lifecycle scenarios pass, then the strict
+console assertion fails: runner, payload and Conhost are simultaneously live in
+the exact Job at approved limit **two**. Failure cleanup is confirmed. The
+[unfiltered suite result](evidence/windows-process-tree-2026-11-17-continuation/mandatory-medium-suite-result.json)
+and [log](evidence/windows-process-tree-2026-11-17-continuation/mandatory-medium-suite.log)
+are a failed qualification, not a partial pass for the full feature.
+
+A separate [actual DNS tool case](evidence/windows-process-tree-2026-11-17-continuation/dns-medium-native-result.json)
+using the installed helper and the same Medium host also fails: the synthetic
+server receives the sandbox nonce once. Host controls before and after both
+succeed; all four retained process objects are signaled immediately at tool
+return. The service-mediated gap is still present in the product design.
+
+The independent existing baseline and security checks pass under the verified
+Medium token: **54 distinct top-level tests**, zero failures and five deliberate
+subprocess-fixture ignores. This comprises 35 integration tests, nine
+cleanup/shutdown/parallel/CLI tests, eight pre-existing Windows runtime/security
+units, and two new namespace-security units. The
+[integration](evidence/windows-process-tree-2026-11-17-continuation/native-baseline-result.json),
+[control](evidence/windows-process-tree-2026-11-17-continuation/native-control-units-result.json)
+and [Windows unit](evidence/windows-process-tree-2026-11-17-continuation/windows-runtime-security-units-result.json)
+records retain executable/source hashes and actual host-token/Job-drain evidence.
+The original detached-child positive control exposed an integration race: it
+closed its creation handles and polled files for only 2.5 seconds. It now retains
+the original child handle, waits asynchronously for actual exit zero, verifies
+both marker contents and cleans up that exact child on timeout/panic. Host-only
+stdio is valid and explicitly allowlisted; the sandbox denial still reaches
+`CreateProcessW` without an earlier NUL/attribute failure.
+
+The acceptance launcher has separately passed a real
+[abort control](evidence/windows-process-tree-2026-11-17-continuation/acceptance-host-abort-result.json):
+its noninherited outer kill-on-close Job terminates the native command tree,
+both retained creation handles are signaled and the Job is empty. It imposes no
+UI or resource limits. The [Medium Cargo control](evidence/windows-process-tree-2026-11-17-continuation/cargo-medium-result.json)
+still observes the actual product Job's UI mask `0xff`, approved limit 32,
+Windows artifact and immediate all-member cleanup. Refusal diagnostics append
+at EOF so they preserve the original native log.
+
+The first manual debug package accidentally used mixed top-level EXEs from a
+shared Cargo target directory. Its [product provenance is invalidated](evidence/windows-process-tree-2026-11-17-continuation/invalidated-mixed-package.json)
+and those local archives are named `INVALID-PRODUCT-DIAGNOSTIC`. Their enabled
+diagnostic execution is not accepted as a delivered-product result. The corrected
+product build uses an exclusive output directory and verifies identical build
+input hashes before/after. Its new debug ZIP has SHA-256
+`6e17443bbfa54b6a526dbcb5c32e2ed7cca704f94524d202c215d9d3d9da8781`.
+The [fresh installer smoke](evidence/windows-process-tree-2026-11-17-continuation/fresh-install-smoke-result.json)
+matches every installed executable to that archive. A new provision from those
+exact installed helpers and the
+[real installed coding-profile start](evidence/windows-process-tree-2026-11-17-continuation/installed-profile-refusal-result.json)
+confirm `process.run` returns `sandbox_unqualified`, `executed=false`, and no
+Windows artifact. CLI exit zero alone is deliberately insufficient: the
+acceptance helper rejects the failed tool result. The installed script follows
+the real `task.plan`, input-read, behavior-verification and completion cycle.
+
+CI's product builds now have an exclusive Cargo output directory; source
+snapshots also use their own test target. The existing native CI additionally
+runs `runtime::windows` so all Windows namespace/provisioning/runner units are
+covered. The CI-orchestration tests (eight), installer tests (five passed with
+seven platform skips), acceptance-script syntax and diff whitespace checks pass.
+The broader Python discovery is not green on this Python 3.10 host because the
+pre-existing release tooling imports Python 3.11's `tomllib`; CI installs Python
+3.12. No hosted CI run, remote PR update or Git mutation occurred.
+
+The user explicitly answered **"Keine KnownDlls-Änderungen"** on 17 November
+2026. The prepared four-object KnownDlls control has not run and must not run
+under this authorization. There is no outstanding request for KnownDlls approval.
+The earlier automatic rejection remains historical context, not a reason to
+request the same permission again. Source and installed product remain gated.
+
+A subsequent read-only audit found no established supported replacement within
+the existing backend that preserves ordinary Cargo child creation and the strict
+live-process ceiling. The documented [child-process mitigation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_process_mitigation_child_process_policy)
+also denies needed ordinary children. The [general syscall filter](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_process_mitigation_system_call_filter_policy)
+is explicitly unsupported, while the [FSCTL restriction](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_system_call_disable_policy)
+does not provide a general ConDrv device-access policy. A pre-attached console
+or ConPTY is not an allocation prohibition: [FreeConsole](https://learn.microsoft.com/en-us/windows/console/freeconsole)
+allows detachment and subsequent allocation. [Private object namespaces](https://learn.microsoft.com/en-us/windows/win32/sync/object-namespaces)
+do not establish a private device view for the absolute ConDrv path used by
+[Microsoft's console implementation](https://github.com/microsoft/terminal/blob/main/src/server/DeviceHandle.cpp).
+
+For DNS, [application settings](https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnssetapplicationsettings)
+select servers rather than enforce a sandbox boundary; [DnsQueryEx requests](https://learn.microsoft.com/en-us/windows/win32/api/windns/ns-windns-dns_query_request)
+can supply their own server list. [AppContainer network configuration](https://learn.microsoft.com/en-us/windows/win32/api/networkisolation/nf-networkisolation-networkisolationsetappcontainerconfig)
+manages loopback exceptions for actual AppContainers, not a mandatory broker
+denial for the ordinary dedicated account. Microsoft currently documents
+[thread compartment selection](https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-setcurrentthreadcompartmentid)
+as reserved and not for use. [WFP connect redirection](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/using-bind-or-connect-redirection)
+requires a callout/proxy design and is not evidence that the original ALPC
+request is denied. No new system probe or permission change was performed.
+These findings do not prove impossibility; the DNS and console defects remain
+unresolved and full feature qualification has not been achieved.
 
 ## Host and evidence identity
 

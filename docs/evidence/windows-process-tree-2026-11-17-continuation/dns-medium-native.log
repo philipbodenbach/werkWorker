@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.68s
+     Running tests\windows_process_tree.rs (target\debug\deps\windows_process_tree-8b20d90c66391e81.exe)
+
+running 1 test
+test diagnose_native_process_tree_case ... NATIVE_TREE_WFP_WEIGHT_RECEIPT_OK {"effective_weight":65529,"rejected_weight":65528}
+NATIVE_TREE_DIAGNOSTIC_ONLY_BEGIN dns; full required acceptance remains separate
+SYNTHETIC_DNS_HOST_CONTROL server=127.0.0.1:53 name=before-5a88d846f2d24d6083efb175ff3aaab5.ww-tree.test. arrivals=1
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-406dec3e$\\werk-tree-d827fd1a-b2ba-43ce-bb22-1286ed08d7bd","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[167512,72312,143652,63164],"runner_pid":167512}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394152767769191,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\guarded-installed-runtime\\ww-windows-runner.exe","pid":167512,"wait_result":258,"wait_timeout_ms":0},{"created":134394152771471984,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\guarded-installed-workspace\\ww-tree-test-MuZsnF\\probe.exe","pid":72312,"wait_result":258,"wait_timeout_ms":0},{"created":134394152773709282,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\guarded-installed-workspace\\ww-tree-test-MuZsnF\\probe.exe","pid":143652,"wait_result":258,"wait_timeout_ms":0},{"created":134394152775058104,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\guarded-installed-workspace\\ww-tree-test-MuZsnF\\probe.exe","pid":63164,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-406dec3e$\\werk-tree-d827fd1a-b2ba-43ce-bb22-1286ed08d7bd","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[167512,72312,143652,63164],"runner_pid":167512}}
+NATIVE_TREE_TOOL_RETURN {"result":{"Ok":{"artifacts":[],"data":{"cancelled":false,"exit_code":0,"stderr":"","stdout":"\nrunning 1 test\nTREE_GENERATION_0\n\nrunning 1 test\nTREE_GENERATION_1\n\nrunning 1 test\nTREE_GENERATION_2\ntest process_tree_payload ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.09s\n\ntest process_tree_payload ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.19s\n\ntest process_tree_payload ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.33s\n\n","timed_out":false,"truncated":false},"error_code":null,"status":"succeeded","truncated":false}},"tool":"process.run"}
+NATIVE_TREE_IMMEDIATE_RETURN_OK {"handle_states":[0,0,0,0],"tool":"process.run","wait_timeout_ms":0}
+SYNTHETIC_DNS_HOST_CONTROL server=127.0.0.1:53 name=after-5a88d846f2d24d6083efb175ff3aaab5.ww-tree.test. arrivals=1
+
+thread 'diagnose_native_process_tree_case' (159168) panicked at tests\windows_process_tree.rs:1874:9:
+assertion `left == right` failed: DnsQueryEx transmitted the sandbox nonce through a DNS service or direct socket despite network denial: generation 0, result {"record":true,"status":0}
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    diagnose_native_process_tree_case
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 5.62s
+
+error: test failed, to rerun pass `--test windows_process_tree`

@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     process::Command,
     time::Duration,
 };
@@ -223,10 +224,12 @@ fn sandbox_payload() {
             // Denial is a declared native mode, including ordinary, detached,
             // and breakaway attempts; it is not a failed cleanup claim.
             for flags in [0, 0x00000008 | 0x00000200, 0x01000000 | 0x00000008] {
-                assert!(
-                    spawn_detached(flags, None).is_err(),
-                    "child creation unexpectedly succeeded"
-                );
+                let attempt = spawn_detached(flags, None);
+                let denied = attempt.is_err();
+                // An unexpected success must be reclaimed through its original
+                // creation handle before reporting a failed denial assertion.
+                drop(attempt);
+                assert!(denied, "child creation unexpectedly succeeded");
             }
             println!("PAYLOAD_CHILD_CREATION_DENIED");
         }
@@ -234,7 +237,139 @@ fn sandbox_payload() {
     }
 }
 
-fn spawn_detached(flags: u32, cwd: Option<&std::path::Path>) -> std::io::Result<()> {
+struct DetachedChild {
+    process: OwnedHandle,
+}
+impl DetachedChild {
+    async fn wait(&self, timeout: Duration) -> std::io::Result<u32> {
+        use windows_sys::Win32::{Foundation::*, System::Threading::*};
+        tokio::time::timeout(timeout, async {
+            loop {
+                match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } {
+                    WAIT_OBJECT_0 => {
+                        let mut code = 0;
+                        if unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) }
+                            == 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        return Ok(code);
+                    }
+                    WAIT_TIMEOUT => tokio::time::sleep(Duration::from_millis(10)).await,
+                    _ => return Err(std::io::Error::last_os_error()),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Detached host control did not exit before its bounded deadline",
+            ))
+        })
+    }
+}
+impl Drop for DetachedChild {
+    fn drop(&mut self) {
+        use windows_sys::Win32::{Foundation::*, System::Threading::*};
+        let handle = self.process.as_raw_handle();
+        let mut waited = unsafe { WaitForSingleObject(handle, 0) };
+        if waited == WAIT_TIMEOUT {
+            // Only this retained CreateProcess handle confers cleanup authority;
+            // never reopen a PID or terminate an unrelated console/helper.
+            unsafe { TerminateProcess(handle, 125) };
+            // A failed termination can race normal exit. In either case retain
+            // ownership until this exact process object is confirmed stopped.
+            waited = unsafe { WaitForSingleObject(handle, INFINITE) };
+        }
+        if waited != WAIT_OBJECT_0 {
+            let error = std::io::Error::last_os_error();
+            if std::thread::panicking() {
+                eprintln!("Detached host control cleanup is unconfirmed: {error}");
+            } else {
+                panic!("Detached host control cleanup is unconfirmed: {error}");
+            }
+        }
+    }
+}
+
+// The Medium host launcher deliberately has no inherited console or handles.
+// Give only the unsandboxed positive control valid NUL stdio; the sandbox denial
+// branch below must reach CreateProcess without a fallible NUL/attribute setup.
+struct HostChildStdio {
+    null: OwnedHandle,
+    _handles: Vec<windows_sys::Win32::Foundation::HANDLE>,
+    _storage: Vec<usize>,
+    list: windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST,
+}
+impl HostChildStdio {
+    fn new() -> std::io::Result<Self> {
+        use windows_sys::Win32::{
+            Foundation::*, Security::SECURITY_ATTRIBUTES, Storage::FileSystem::*,
+            System::Threading::*,
+        };
+        let name: Vec<_> = "NUL".encode_utf16().chain([0]).collect();
+        let security = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: 1,
+        };
+        let null = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                &security,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if null == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let null = unsafe { OwnedHandle::from_raw_handle(null) };
+        let mut bytes = 0;
+        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut bytes) };
+        if bytes == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut storage = vec![0usize; bytes.div_ceil(std::mem::size_of::<usize>())];
+        let list = storage.as_mut_ptr().cast();
+        if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut bytes) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let handles = vec![null.as_raw_handle()];
+        let result = Self {
+            null,
+            _handles: handles,
+            _storage: storage,
+            list,
+        };
+        if unsafe {
+            UpdateProcThreadAttribute(
+                result.list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                result._handles.as_ptr().cast(),
+                std::mem::size_of::<HANDLE>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(result)
+    }
+}
+impl Drop for HostChildStdio {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::System::Threading::DeleteProcThreadAttributeList(self.list) };
+    }
+}
+
+fn spawn_detached(flags: u32, cwd: Option<&std::path::Path>) -> std::io::Result<DetachedChild> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::*};
     let program: Vec<u16> = std::env::current_exe()?
@@ -246,6 +381,7 @@ fn spawn_detached(flags: u32, cwd: Option<&std::path::Path>) -> std::io::Result<
         .encode_utf16()
         .chain(Some(0))
         .collect();
+    let host_stdio = cwd.map(|_| HostChildStdio::new()).transpose()?;
     let cwd = cwd.map(|value| {
         value
             .as_os_str()
@@ -253,8 +389,19 @@ fn spawn_detached(flags: u32, cwd: Option<&std::path::Path>) -> std::io::Result<
             .chain(Some(0))
             .collect::<Vec<_>>()
     });
-    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut extra_flags = 0;
+    if let Some(stdio) = &host_stdio {
+        startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.StartupInfo.wShowWindow = 0; // SW_HIDE for host-only console controls.
+        startup.StartupInfo.hStdInput = stdio.null.as_raw_handle();
+        startup.StartupInfo.hStdOutput = stdio.null.as_raw_handle();
+        startup.StartupInfo.hStdError = stdio.null.as_raw_handle();
+        startup.lpAttributeList = stdio.list;
+        extra_flags = EXTENDED_STARTUPINFO_PRESENT;
+    }
     let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     if unsafe {
         CreateProcessW(
@@ -262,22 +409,22 @@ fn spawn_detached(flags: u32, cwd: Option<&std::path::Path>) -> std::io::Result<
             argv.as_mut_ptr(),
             std::ptr::null(),
             std::ptr::null(),
-            0,
-            flags,
+            i32::from(host_stdio.is_some()),
+            flags | extra_flags,
             std::ptr::null(),
             cwd.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
-            &startup,
+            &startup.StartupInfo,
             &mut process,
         )
     } == 0
     {
         return Err(std::io::Error::last_os_error());
     }
-    unsafe {
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-    }
-    Ok(())
+    let child = DetachedChild {
+        process: unsafe { OwnedHandle::from_raw_handle(process.hProcess) },
+    };
+    unsafe { CloseHandle(process.hThread) };
+    Ok(child)
 }
 
 #[test]
@@ -593,15 +740,20 @@ async fn timeout_cancel_and_child_process_denial_are_enforced() {
     // The exact child fixture runs successfully outside the LPAC, including
     // a detached process group, so sandbox denial has a positive host control.
     for flags in [0, 0x00000008 | 0x00000200] {
-        spawn_detached(flags, Some(&fixture.workspace.path)).unwrap();
-        for _ in 0..250 {
-            if fixture.workspace.path.join("detached-write.txt").exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(fixture.workspace.path.join("detached-ready.txt").exists());
-        assert!(fixture.workspace.path.join("detached-write.txt").exists());
+        let child = spawn_detached(flags, Some(&fixture.workspace.path)).unwrap();
+        assert_eq!(
+            child.wait(Duration::from_millis(30_500)).await.unwrap(),
+            0,
+            "The exact detached fixture must complete successfully outside LPAC"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.workspace.path.join("detached-ready.txt")).unwrap(),
+            "started"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.workspace.path.join("detached-write.txt")).unwrap(),
+            "host child completed"
+        );
         std::fs::remove_file(fixture.workspace.path.join("detached-ready.txt")).unwrap();
         std::fs::remove_file(fixture.workspace.path.join("detached-write.txt")).unwrap();
     }

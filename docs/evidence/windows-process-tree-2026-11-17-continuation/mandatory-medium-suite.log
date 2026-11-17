@@ -1,0 +1,298 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling cfg-if v1.0.5
+   Compiling windows-link v0.2.1
+   Compiling smallvec v1.16.3
+   Compiling itoa v1.0.18
+   Compiling parking_lot_core v0.9.12
+   Compiling serde_core v1.0.229
+   Compiling stable_deref_trait v1.2.1
+   Compiling scopeguard v1.2.0
+   Compiling find-msvc-tools v0.1.15
+   Compiling shlex v2.0.1
+   Compiling autocfg v1.5.1
+   Compiling pin-project-lite v0.2.17
+   Compiling version_check v0.9.5
+   Compiling bytes v1.12.1
+   Compiling futures-core v0.3.34
+   Compiling once_cell v1.21.4
+   Compiling bitflags v2.13.2
+   Compiling writeable v0.6.4
+   Compiling serde v1.0.229
+   Compiling litemap v0.8.3
+   Compiling foldhash v0.2.0
+   Compiling utf8_iter v1.0.4
+   Compiling allocator-api2 v0.2.21
+   Compiling icu_normalizer_data v2.3.0
+   Compiling percent-encoding v2.3.2
+   Compiling equivalent v1.0.3
+   Compiling unicode-segmentation v1.13.3
+   Compiling strsim v0.11.1
+   Compiling icu_properties_data v2.3.0
+   Compiling rustversion v1.0.23
+   Compiling memchr v2.8.3
+   Compiling heck v0.5.0
+   Compiling ryu v1.0.23
+   Compiling zeroize v1.9.1
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling thiserror v2.0.21
+   Compiling winapi v0.3.9
+   Compiling ident_case v1.0.1
+   Compiling getrandom v0.4.3
+   Compiling zmij v1.0.23
+   Compiling httparse v1.10.1
+   Compiling untrusted v0.9.0
+   Compiling either v1.19.0
+   Compiling unicode-width v0.2.2
+   Compiling windows-sys v0.61.2
+   Compiling getrandom v0.2.17
+   Compiling simd-adler32 v0.3.8
+   Compiling rustls v0.23.46
+   Compiling lock_api v0.4.14
+   Compiling getrandom v0.3.4
+   Compiling libc v0.2.191
+   Compiling tower-service v0.3.3
+   Compiling static_assertions v1.1.0
+   Compiling crc32fast v1.5.0
+   Compiling base64 v0.22.1
+   Compiling serde_json v1.0.154
+   Compiling typenum v1.20.1
+   Compiling ref-cast v1.0.27
+   Compiling try-lock v0.2.5
+   Compiling generic-array v0.14.7
+   Compiling zerocopy v0.8.63
+   Compiling ahash v0.8.12
+   Compiling rustls-pki-types v1.15.1
+   Compiling form_urlencoded v1.2.2
+   Compiling cc v1.9.0
+   Compiling num-traits v0.2.19
+   Compiling tracing-core v0.1.36
+   Compiling adler2 v2.0.1
+   Compiling vcpkg v0.2.15
+   Compiling litrs v1.0.1
+   Compiling indoc v2.0.8
+   Compiling hashbrown v0.17.1
+   Compiling subtle v2.6.1
+   Compiling anstyle v1.0.14
+   Compiling http v1.5.0
+   Compiling convert_case v0.10.0
+   Compiling itertools v0.14.0
+   Compiling atomic-waker v1.1.2
+   Compiling utf8parse v0.2.2
+   Compiling regex-syntax v0.8.11
+   Compiling pkg-config v0.3.34
+   Compiling once_cell_polyfill v1.70.2
+   Compiling futures-channel v0.3.34
+   Compiling aho-corasick v1.1.5
+   Compiling sync_wrapper v1.0.2
+   Compiling bit-vec v0.8.0
+   Compiling want v0.3.2
+   Compiling borrow-or-share v0.2.4
+   Compiling colorchoice v1.0.5
+   Compiling ipnet v2.12.2
+   Compiling tower-layer v0.3.3
+   Compiling base64 v0.23.1
+   Compiling tracing v0.1.44
+   Compiling miniz_oxide v0.8.9
+   Compiling foldhash v0.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling webpki-roots v1.0.9
+   Compiling document-features v0.2.12
+   Compiling lru v0.18.5
+   Compiling fdeflate v0.3.7
+   Compiling line-clipping v0.3.8
+   Compiling anstyle-parse v1.0.0
+   Compiling futures-sink v0.3.34
+   Compiling ring v0.17.14
+   Compiling http-body v1.1.0
+   Compiling pxfm v0.1.29
+   Compiling libsqlite3-sys v0.35.0
+   Compiling clap_lex v1.1.1
+   Compiling outref v0.5.2
+   Compiling lazy_static v1.5.1
+   Compiling unicode-truncate v2.0.1
+   Compiling parking_lot v0.12.5
+   Compiling bit-set v0.8.0
+   Compiling vsimd v0.8.0
+   Compiling regex-automata v0.4.18
+   Compiling winnow v1.0.4
+   Compiling zune-core v0.5.1
+   Compiling indexmap v2.14.2
+   Compiling toml_writer v1.1.3+spec-1.1.0
+   Compiling cpufeatures v0.2.17
+   Compiling winnow v0.7.15
+   Compiling num-cmp v0.1.0
+   Compiling hashbrown v0.15.5
+   Compiling fallible-iterator v0.3.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling log v0.4.34
+   Compiling byteorder-lite v0.1.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling bytecount v0.6.9
+   Compiling http-body-util v0.1.5
+   Compiling bytemuck v1.25.2
+   Compiling fastrand v2.5.0
+   Compiling flate2 v1.1.9
+   Compiling syn v3.0.9
+   Compiling syn v2.0.119
+   Compiling zune-jpeg v0.5.15
+   Compiling castaway v0.2.4
+   Compiling compact_str v0.9.1
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling png v0.18.1
+   Compiling uuid v1.26.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling serde_spanned v1.1.2
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling hashlink v0.10.0
+   Compiling num-integer v0.1.47
+   Compiling num-complex v0.4.6
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling num-bigint v0.4.8
+   Compiling num-iter v0.1.46
+   Compiling uuid-simd v0.8.0
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling crossterm_winapi v0.9.1
+   Compiling fs2 v0.4.3
+   Compiling moxcms v0.7.11
+   Compiling num-rational v0.4.2
+   Compiling num v0.4.3
+   Compiling fraction v0.15.4
+   Compiling regex v1.13.1
+   Compiling fancy-regex v0.16.2
+   Compiling rusqlite v0.37.0
+   Compiling strum_macros v0.28.0
+   Compiling derive_more-impl v2.1.1
+   Compiling async-stream-impl v0.3.6
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle-wincon v3.0.11
+   Compiling tempfile v3.27.0
+   Compiling async-stream v0.3.6
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling anstream v1.0.0
+   Compiling derive_more v2.1.1
+   Compiling crossterm v0.29.0
+   Compiling clap_builder v4.6.7
+   Compiling rustls-webpki v0.103.15
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling ref-cast-impl v1.0.27
+   Compiling clap_derive v4.6.7
+   Compiling async-trait v0.1.92
+   Compiling strum v0.28.0
+   Compiling tokio v1.53.3
+   Compiling futures-util v0.3.34
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling kasuari v0.4.13
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling darling_macro v0.24.1
+   Compiling ratatui-core v0.1.2
+   Compiling clap v4.6.7
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling image v0.25.9
+   Compiling icu_collections v2.3.0
+   Compiling darling v0.24.1
+   Compiling icu_locale_core v2.3.0
+   Compiling instability v0.3.14
+   Compiling ratatui-widgets v0.3.2
+   Compiling ratatui-crossterm v0.1.2
+   Compiling icu_provider v2.3.1
+   Compiling fluent-uri v0.3.2
+   Compiling email_address v0.2.9
+   Compiling serde_urlencoded v0.7.1
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling referencing v0.33.0
+   Compiling ratatui v0.30.2
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling hyper v1.12.0
+   Compiling tokio-rustls v0.26.6
+   Compiling tower v0.5.3
+   Compiling tokio-util v0.7.20
+   Compiling url v2.5.8
+   Compiling jsonschema v0.33.0
+   Compiling tower-http v0.6.11
+   Compiling hyper-util v0.1.21
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.12.28
+   Compiling werk-worker v0.3.3 (F:\werkWorker\target\windows-process-tree-20261117\candidate-namespace-src)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 51s
+     Running tests\windows_process_tree.rs (target\debug\deps\windows_process_tree-8b20d90c66391e81.exe)
+
+running 8 tests
+test diagnose_native_process_tree_case ... ignored, selected native diagnostic only; never substitutes for the complete required acceptance
+test diagnose_thread_identity_host_network ... ignored, normal-host thread identity controls only; never qualifies the sandbox profile
+test missing_or_malformed_provision_cannot_fall_back_to_single_process ... ok
+test native_dns_control_uses_only_explicit_loopback_server ... SYNTHETIC_DNS_HOST_CONTROL server=127.0.0.1:53 name=host-442f7164ca814f64acc2c55d4cbc125b.ww-tree.test. arrivals=1
+NATIVE_DNS_SYNTHETIC_HOST_CONTROL_OK
+ok
+test process_tree_host_payload ... ignored, trusted subprocess fixture for abrupt host-death qualification
+test process_tree_payload ... ignored, native sandbox payload, launched only by the qualification harness
+test process_tree_ui_observer ... ignored, ordinary host observer for the process-tree private USER-object tests
+test required_native_process_tree_acceptance ... NATIVE_TREE_WFP_WEIGHT_RECEIPT_OK {"effective_weight":65530,"rejected_weight":65531}
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-3f71b7c2$\\werk-tree-216c37d7-6d86-4210-9560-74e54dddb7b0","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[148280,153404,174640,106528],"runner_pid":148280}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394139711982586,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":148280,"wait_result":258,"wait_timeout_ms":0},{"created":134394139715075525,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-dAJgxF\\probe.exe","pid":153404,"wait_result":258,"wait_timeout_ms":0},{"created":134394139717538228,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-dAJgxF\\probe.exe","pid":174640,"wait_result":258,"wait_timeout_ms":0},{"created":134394139718907874,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-dAJgxF\\probe.exe","pid":106528,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-3f71b7c2$\\werk-tree-216c37d7-6d86-4210-9560-74e54dddb7b0","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[148280,153404,174640,106528],"runner_pid":148280}}
+NATIVE_TREE_TOOL_RETURN {"result":{"Ok":{"artifacts":[],"data":{"cancelled":false,"exit_code":0,"stderr":"","stdout":"\nrunning 1 test\nTREE_GENERATION_0\n\nrunning 1 test\nTREE_GENERATION_1\n\nrunning 1 test\nTREE_GENERATION_2\ntest process_tree_payload ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.07s\n\ntest process_tree_payload ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.19s\n\ntest process_tree_payload ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.33s\n\n","timed_out":false,"truncated":false},"error_code":null,"status":"succeeded","truncated":false}},"tool":"process.run"}
+NATIVE_TREE_IMMEDIATE_RETURN_OK {"handle_states":[0,0,0,0],"tool":"process.run","wait_timeout_ms":0}
+NATIVE_TREE_LIFECYCLE_OK normal
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-3f72d0c1$\\werk-tree-9c0eae9f-4e49-4e9a-91b0-8a3147f6e99b","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[92016,166708,162868,101184],"runner_pid":92016}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394139753255209,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":92016,"wait_result":258,"wait_timeout_ms":0},{"created":134394139756315765,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-aZTRk0\\probe.exe","pid":166708,"wait_result":258,"wait_timeout_ms":0},{"created":134394139758916183,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-aZTRk0\\probe.exe","pid":162868,"wait_result":258,"wait_timeout_ms":0},{"created":134394139760142131,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-aZTRk0\\probe.exe","pid":101184,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-3f72d0c1$\\werk-tree-9c0eae9f-4e49-4e9a-91b0-8a3147f6e99b","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[92016,166708,162868,101184],"runner_pid":92016}}
+NATIVE_TREE_TOOL_RETURN {"result":{"Ok":{"artifacts":[],"data":{"cancelled":false,"exit_code":0,"stderr":"","stdout":"\nrunning 1 test\nTREE_GENERATION_0\n\nrunning 1 test\nTREE_GENERATION_1\n\nrunning 1 test\nTREE_GENERATION_2\n","timed_out":false,"truncated":false},"error_code":null,"status":"succeeded","truncated":false}},"tool":"process.run"}
+NATIVE_TREE_IMMEDIATE_RETURN_OK {"handle_states":[0,0,0,0],"tool":"process.run","wait_timeout_ms":0}
+NATIVE_TREE_PARENT_EXIT_LIVE_DESCENDANTS {"child_pid":162868,"child_state":258,"grandchild_pid":101184,"grandchild_state":258}
+NATIVE_TREE_LIFECYCLE_OK parent-exit
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-3f736477$\\werk-tree-df6a3bd3-f3d9-4864-a17f-344b5e497f81","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[158532,164516,174084,174372],"runner_pid":158532}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394139794131478,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":158532,"wait_result":258,"wait_timeout_ms":0},{"created":134394139797042834,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-XSTfxu\\probe.exe","pid":164516,"wait_result":258,"wait_timeout_ms":0},{"created":134394139799483697,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-XSTfxu\\probe.exe","pid":174084,"wait_result":258,"wait_timeout_ms":0},{"created":134394139800865242,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-XSTfxu\\probe.exe","pid":174372,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-3f736477$\\werk-tree-df6a3bd3-f3d9-4864-a17f-344b5e497f81","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[158532,164516,174084,174372],"runner_pid":158532}}
+NATIVE_TREE_TOOL_RETURN {"result":{"Ok":{"artifacts":[],"data":{"cancelled":false,"exit_code":1,"failure_excerpt":"\nrunning 1 test\nTREE_GENERATION_0\n\nrunning 1 test\nTREE_GENERATION_1\n\nrunning 1 test\nTREE_GENERATION_2\n","stderr":"","stdout":"\nrunning 1 test\nTREE_GENERATION_0\n\nrunning 1 test\nTREE_GENERATION_1\n\nrunning 1 test\nTREE_GENERATION_2\n","timed_out":true,"truncated":false},"error_code":null,"status":"succeeded","truncated":false}},"tool":"process.run"}
+NATIVE_TREE_IMMEDIATE_RETURN_OK {"handle_states":[0,0,0,0],"tool":"process.run","wait_timeout_ms":0}
+NATIVE_TREE_LIFECYCLE_OK timeout
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-3f7526ba$\\werk-tree-962bccfd-893b-4a96-8361-2538a27553fb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[98908,174244,165528,99412],"runner_pid":98908}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394139867462312,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":98908,"wait_result":258,"wait_timeout_ms":0},{"created":134394139871212835,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-Fv6x72\\probe.exe","pid":174244,"wait_result":258,"wait_timeout_ms":0},{"created":134394139873812196,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-Fv6x72\\probe.exe","pid":165528,"wait_result":258,"wait_timeout_ms":0},{"created":134394139874989818,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-Fv6x72\\probe.exe","pid":99412,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-3f7526ba$\\werk-tree-962bccfd-893b-4a96-8361-2538a27553fb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[98908,174244,165528,99412],"runner_pid":98908}}
+NATIVE_TREE_TOOL_RETURN {"result":{"Ok":{"artifacts":[],"data":{"job_id":"job_8c9e9bb1-5697-4494-b541-a6dd2bc06ee7","output":{"cancelled":true,"exit_code":1,"hint":"Use process.log for bounded stdout/stderr pages","timed_out":false,"truncated":false},"status":"finished"},"error_code":null,"status":"succeeded","truncated":false}},"tool":"process.wait"}
+NATIVE_TREE_IMMEDIATE_RETURN_OK {"handle_states":[0,0,0,0],"tool":"process.wait","wait_timeout_ms":0}
+NATIVE_TREE_LIFECYCLE_OK cancel
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-3f764728$\\werk-tree-ab924d11-1a15-42b2-94e9-49ab99580ec4","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[134308,105660,72276,126828],"runner_pid":134308}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394139908923672,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":134308,"wait_result":258,"wait_timeout_ms":0},{"created":134394139912272948,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-kbMCCU\\probe.exe","pid":105660,"wait_result":258,"wait_timeout_ms":0},{"created":134394139914622319,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-kbMCCU\\probe.exe","pid":72276,"wait_result":258,"wait_timeout_ms":0},{"created":134394139915904920,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-kbMCCU\\probe.exe","pid":126828,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-3f764728$\\werk-tree-ab924d11-1a15-42b2-94e9-49ab99580ec4","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[134308,105660,72276,126828],"runner_pid":134308}}
+NATIVE_TREE_LIFECYCLE_OK abort
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":4,"desktop":"Service-0x1-3f770c02$\\werk-tree-514c8fae-5e39-451f-ba24-dff9010e23e3","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[147560,120452,151648,51056],"runner_pid":147560}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":4,"min":4},"observations":[{"created":134394139941471670,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":147560,"wait_result":258,"wait_timeout_ms":0},{"created":134394139945264833,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-z1zdqb\\probe.exe","pid":120452,"wait_result":258,"wait_timeout_ms":0},{"created":134394139947343766,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-z1zdqb\\probe.exe","pid":151648,"wait_result":258,"wait_timeout_ms":0},{"created":134394139948567541,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-z1zdqb\\probe.exe","pid":51056,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":4,"desktop":"Service-0x1-3f770c02$\\werk-tree-514c8fae-5e39-451f-ba24-dff9010e23e3","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":4,"ui_restrictions":255},"membership_verified":true,"process_ids":[147560,120452,151648,51056],"runner_pid":147560}}
+NATIVE_TREE_LIFECYCLE_OK engine-close
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":2,"desktop":"Service-0x1-3f780615$\\werk-tree-a9c3aa07-1273-487f-86e6-d252b21e29bb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":2,"ui_restrictions":255},"membership_verified":true,"process_ids":[130660,35688],"runner_pid":130660}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":2,"min":2},"observations":[{"created":134394139974191800,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":130660,"wait_result":258,"wait_timeout_ms":0},{"created":134394139977534242,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-XB5212\\probe.exe","pid":35688,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":2,"desktop":"Service-0x1-3f780615$\\werk-tree-a9c3aa07-1273-487f-86e6-d252b21e29bb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":2,"ui_restrictions":255},"membership_verified":true,"process_ids":[130660,35688],"runner_pid":130660}}
+NATIVE_TREE_CONSOLE_BUDGET_OBSERVATION {"account_sid":"S-1-5-21-4275439644-3620842777-1714106797-1011","attempt":{"allocated":true,"error":null},"mode":"console-alloc","new_console_helpers":[{"created":134394139980988878,"image":"conhost.exe","parent_pid":35688,"pid":107876,"query_error":"Zugriff verweigert (os error 5)","wait_result":258,"wait_timeout_ms":0}]}
+NATIVE_TREE_JOB_SNAPSHOT {"active_processes":3,"desktop":"Service-0x1-3f780615$\\werk-tree-a9c3aa07-1273-487f-86e6-d252b21e29bb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":2,"ui_restrictions":255},"membership_verified":true,"process_ids":[130660,35688,107876],"runner_pid":130660}
+NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {"expected_members":{"max":2,"min":2},"observations":[{"created":134394139974191800,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\ww-windows-runner.exe","pid":130660,"wait_result":258,"wait_timeout_ms":0},{"created":134394139977534242,"exit_code":259,"exited":0,"image":"F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-XB5212\\probe.exe","pid":35688,"wait_result":258,"wait_timeout_ms":0},{"created":134394139980988878,"exit_code":259,"exited":0,"image":"C:\\Windows\\System32\\conhost.exe","pid":107876,"wait_result":258,"wait_timeout_ms":0}],"snapshot":{"active_processes":3,"desktop":"Service-0x1-3f780615$\\werk-tree-a9c3aa07-1273-487f-86e6-d252b21e29bb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":2,"ui_restrictions":255},"membership_verified":true,"process_ids":[130660,35688,107876],"runner_pid":130660}}
+
+thread 'required_native_process_tree_acceptance' (62636) panicked at tests\windows_process_tree.rs:470:9:
+Unexpected Job member count (expected 2..=2): {"active_processes":3,"desktop":"Service-0x1-3f780615$\\werk-tree-a9c3aa07-1273-487f-86e6-d252b21e29bb","limits":{"breakaway":false,"cpu_seconds":10,"kill_on_close":true,"memory_bytes":536870912,"processes":2,"ui_restrictions":255},"membership_verified":true,"process_ids":[130660,35688,107876],"runner_pid":130660}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+NATIVE_TREE_TOOL_RETURN {"result":{"Ok":{"artifacts":[],"data":{"cancelled":false,"exit_code":77,"failure_excerpt":"\nrunning 1 test\nCONSOLE_BUDGET_PAYLOAD_READY\n","stderr":"","stdout":"\nrunning 1 test\nCONSOLE_BUDGET_PAYLOAD_READY\n","timed_out":false,"truncated":false},"error_code":null,"status":"succeeded","truncated":false}},"tool":"process.run"}
+NATIVE_TREE_SNAPSHOT_FAILURE_CLEANUP {"cancel_error":null,"cleanup_confirmed":true,"close_error":null}
+FAILED
+
+failures:
+
+failures:
+    required_native_process_tree_acceptance
+
+test result: FAILED. 2 passed; 1 failed; 5 ignored; 0 measured; 0 filtered out; finished in 31.87s
+
+error: test failed, to rerun pass `--test windows_process_tree`

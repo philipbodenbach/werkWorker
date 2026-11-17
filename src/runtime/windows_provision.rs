@@ -1,5 +1,7 @@
 //! Explicit administrator provisioning for the dedicated-account process tree.
 //! Loading is read-only and fails closed: a JSON receipt is not proof of WFP policy.
+use super::windows_tree_namespace;
+pub use super::windows_tree_namespace::Receipt as NamedObjectNamespace;
 use crate::core::{Result, WorkerError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,7 +30,7 @@ use windows_sys::{
     core::GUID,
 };
 
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 // ACCESS_ALLOWED_ACE_TYPE from winnt.h; no object/callback ACE is accepted.
 const ALLOW_ACE: u8 = 0;
 const ADMIN: &str = "S-1-5-32-544";
@@ -95,6 +97,7 @@ pub struct ProvisionManifest {
     /// Bind that effective priority to the protected receipt and recheck it.
     pub network_sublayer_weight: u16,
     pub network_filter_keys: Vec<String>,
+    pub named_object_namespace: NamedObjectNamespace,
     pub credential_file: String,
 }
 
@@ -106,6 +109,7 @@ pub struct Provisioning {
     crash_barrier: CrashBarrier,
     // Deny delete/write sharing on trusted files and delete sharing on ancestors.
     _guards: Vec<File>,
+    _namespace: windows_tree_namespace::Pin,
 }
 
 /// A successful normal drain removes this receipt. Process termination cannot
@@ -843,6 +847,11 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
     trusted_acl(invocation_lock.as_raw_handle(), &host, None)?;
     validate_account(&manifest)?;
     verify_network(&manifest)?;
+    let namespace = windows_tree_namespace::verify(
+        &manifest.named_object_namespace,
+        &manifest.host_sid,
+        &manifest.user_sid,
+    )?;
     Ok(Provisioning {
         manifest,
         manifest_digest: format!("{:x}", Sha256::digest(&bytes)),
@@ -853,6 +862,7 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
             marker: std::sync::Mutex::new(None),
         },
         _guards: guards,
+        _namespace: namespace,
     })
 }
 impl Provisioning {
@@ -1184,6 +1194,7 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
     status("Create disabled sandbox account", unsafe {
         NetUserAdd(null(), 1, (&info as *const USER_INFO_1).cast(), null_mut())
     })?;
+    let mut namespace_installation: Option<windows_tree_namespace::Installation> = None;
     let result = (|| {
         let user_sid = account_sid(&username)?;
         add_standard_user_membership(&user_sid)?;
@@ -1222,6 +1233,9 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
                 *value = value.replace(&format!("{{toolchain{index}}}"), &root.to_string_lossy());
             }
         }
+        let namespace = windows_tree_namespace::install(&request.host_sid, &user_sid)?;
+        let named_object_namespace = namespace.receipt();
+        namespace_installation = Some(namespace);
         let mut manifest = ProvisionManifest {
             schema_version: SCHEMA,
             host_sid: request.host_sid.clone(),
@@ -1238,6 +1252,7 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
             network_filter_keys: (0..DENY_FILTERS.len())
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect(),
+            named_object_namespace,
             credential_file: SECRET_FILE.into(),
         };
         validate_environment(&manifest)?;
@@ -1299,12 +1314,19 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
         // Setup must not report success for an account that normal launch would
         // immediately reject (including missing or unexpected group membership).
         validate_account(&manifest)?;
+        if let Some(namespace) = namespace_installation.take() {
+            namespace.commit();
+        }
         Ok(path)
     })();
     if let Err(error) = result {
         let disabled = enable_account(&username, false);
+        let namespace_cleanup = namespace_installation
+            .as_mut()
+            .map(|namespace| namespace.rollback())
+            .transpose();
         return Err(fail(format!(
-            "Provisioning incomplete for {username}; retained root {}. Account disable result: {}. {error}",
+            "Provisioning incomplete for {username}; retained root {}. Account disable result: {}. Namespace cleanup: {namespace_cleanup:?}. {error}",
             request.provisioning_root.display(),
             if disabled.is_ok() {
                 "confirmed"
@@ -1348,6 +1370,11 @@ mod tests {
                 .iter()
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect(),
+            named_object_namespace: NamedObjectNamespace {
+                session_id: 1,
+                path: r"\Sessions\1\BaseNamedObjects\Restricted".into(),
+                owner_sid: SYSTEM.into(),
+            },
             credential_file: String::new(),
         };
         let error = verify_network(&manifest).unwrap_err();

@@ -276,7 +276,7 @@ impl Fixture {
             .execution_description(&workspace, true)
             .await
             .unwrap();
-        assert_eq!(provision["schema_version"], 3);
+        assert_eq!(provision["schema_version"], 4);
         let weight = u16::try_from(
             provision["network_sublayer_weight"]
                 .as_u64()
@@ -361,6 +361,14 @@ impl Fixture {
         json!({"argv":argv,"cwd":directory.strip_prefix(&self.workspace.path).unwrap().to_string_lossy()})
     }
     fn snapshot(&self, directory: &Path, expected: usize) -> Pinned {
+        self.snapshot_range(directory, expected..=expected, expected == 4)
+    }
+    fn snapshot_range(
+        &self,
+        directory: &Path,
+        expected: std::ops::RangeInclusive<usize>,
+        check_generation_receipts: bool,
+    ) -> Pinned {
         let snapshot = self
             .sandbox
             .windows_process_tree_snapshot(&self.workspace)
@@ -432,8 +440,7 @@ impl Fixture {
         // Emit the complete unfiltered report before any expectations can panic.
         // The native --nocapture log survives fixture directory cleanup.
         println!("NATIVE_TREE_JOB_SNAPSHOT {snapshot}");
-        let diagnostics =
-            json!({"snapshot":snapshot,"expected_members":expected,"observations":observations});
+        let diagnostics = json!({"snapshot":snapshot,"expected_members":{"min":expected.start(),"max":expected.end()},"observations":observations});
         println!("NATIVE_TREE_JOB_MEMBER_DIAGNOSTICS {diagnostics}");
         write_json(
             directory.join("host-snapshot-diagnostics.json"),
@@ -457,15 +464,18 @@ impl Fixture {
         assert_eq!(snapshot["limits"]["ui_restrictions"], 0xff, "{snapshot}");
         assert_eq!(
             ids.iter().collect::<BTreeSet<_>>().len(),
-            expected,
-            "Unexpected unique Job members: {snapshot}; observations: {observations:?}"
-        );
-        assert_eq!(
             ids.len(),
-            expected,
-            "Trusted runner plus all payload generations must be counted: {snapshot}"
+            "Duplicate Job members: {snapshot}; observations: {observations:?}"
         );
-        assert_eq!(snapshot["active_processes"], expected, "{snapshot}");
+        assert!(
+            expected.contains(&ids.len()),
+            "Unexpected Job member count (expected {expected:?}): {snapshot}"
+        );
+        assert!(
+            ids.len() <= self.sandbox.limits.processes as usize,
+            "Live Job members exceed the approved process limit: {snapshot}"
+        );
+        assert_eq!(snapshot["active_processes"], ids.len(), "{snapshot}");
         assert_eq!(
             pinned.0.len(),
             ids.len(),
@@ -477,7 +487,7 @@ impl Fixture {
                 "Fixture exited before pinning: {observation}"
             );
         }
-        if expected == 4 {
+        if check_generation_receipts {
             pinned.assert_receipts(&ids, directory);
         }
         // This receipt is also the abrupt-host-death synchronization gate. Do
@@ -2819,7 +2829,45 @@ fn native_behavior() {
     // The trusted runner, Cargo and the just-compiled native test executable are
     // held at a gate so their original handles remain available at tool return.
     let pinned = fixture
-        .snapshot_with_cleanup(directory.path(), 3, &run, &engine)
+        .assert_with_cleanup(&run, &engine, || {
+            // Native toolchains can own a console helper. Pin every live member
+            // and enforce the approved ceiling, including all such helpers.
+            let pinned = fixture.snapshot_range(
+                directory.path(),
+                3..=fixture.sandbox.limits.processes as usize,
+                false,
+            );
+            let report = read_json(directory.path().join("host-snapshot-diagnostics.json"));
+            let names: Vec<_> = report["observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|member| {
+                    Path::new(
+                        member["image"]
+                            .as_str()
+                            .expect("Missing native image identity"),
+                    )
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                })
+                .collect();
+            assert!(
+                names.iter().any(|name| name == "ww-windows-runner.exe"),
+                "{report}"
+            );
+            assert!(names.iter().any(|name| name == "cargo.exe"), "{report}");
+            assert!(
+                names
+                    .iter()
+                    .any(|name| name.starts_with("tree_offline_acceptance-")
+                        && name.ends_with(".exe")),
+                "{report}"
+            );
+            pinned
+        })
         .await;
     provider.completion.pin(&pinned);
     fs::write(directory.path().join("cargo-exit-gate"), b"finish").unwrap();

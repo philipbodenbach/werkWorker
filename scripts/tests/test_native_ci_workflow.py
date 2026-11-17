@@ -16,7 +16,7 @@ WORKFLOW = (
     Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
 ).read_text()
 STEPS = (
-    ("Test native platform integration", 3, "windows_sandbox"),
+    ("Test native platform integration", 4, "windows_sandbox"),
     ("Check native SDK and lint", 4, "examples/sdk-consumer/Cargo.toml"),
 )
 DIAGNOSTICS_PATH = Path(__file__).resolve().parents[1] / "macos-native-diagnostics.py"

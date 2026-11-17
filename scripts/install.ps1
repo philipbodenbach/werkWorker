@@ -16,6 +16,7 @@ if ($VersionInput -eq 'latest') {
 }
 if ($VersionInput -notmatch '^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid stable release version' }
 $Version = $VersionInput -replace '^v', ''
+$Binaries = @('werk-worker.exe', 'ww.exe', 'ww-windows-provision.exe', 'ww-windows-runner.exe')
 $Name = "werkWorker-v$Version-windows-x86_64.zip"
 $Url = "https://github.com/$Repo/releases/download/v$Version/$Name"
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) ('werkWorker-install-' + [guid]::NewGuid().ToString('N'))
@@ -35,7 +36,7 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
-        $Expected = @('LICENSE', 'NOTICE', 'README.md', 'werk-worker.exe', 'ww.exe')
+        $Expected = @($Binaries + @('LICENSE', 'NOTICE', 'README.md') | Sort-Object)
         $Names = @($Zip.Entries | ForEach-Object { $_.FullName } | Sort-Object)
         if (($Names -join '|') -cne ($Expected -join '|')) { throw 'Unexpected archive entries' }
         foreach ($Entry in $Zip.Entries) {
@@ -44,10 +45,13 @@ try {
         }
     } finally { $Zip.Dispose() }
     Expand-Archive -LiteralPath $Archive -DestinationPath (Join-Path $TempDir 'extracted')
-    New-Item $InstallDir -ItemType Directory -Force | Out-Null
-    foreach ($Binary in @('werk-worker.exe', 'ww.exe')) {
+    foreach ($Binary in $Binaries) {
         $Destination = Join-Path $InstallDir $Binary
         if (Test-Path $Destination -PathType Container) { throw "Destination is a directory: $Destination" }
+    }
+    New-Item $InstallDir -ItemType Directory -Force | Out-Null
+    foreach ($Binary in $Binaries) {
+        $Destination = Join-Path $InstallDir $Binary
         $Staged = Join-Path $InstallDir ('.werkWorker-' + [guid]::NewGuid().ToString('N'))
         try {
             Copy-Item (Join-Path $TempDir "extracted/$Binary") $Staged
@@ -62,5 +66,5 @@ try {
         [Environment]::SetEnvironmentVariable('Path', "$UserPath;$InstallDir".Trim(';'), 'User')
         Write-Host 'Added to user PATH. Open a new terminal.'
     }
-    Write-Host "Installed werk-worker and ww in $InstallDir. Run: ww"
+    Write-Host "Installed werk-worker, ww and both Windows sandbox helpers in $InstallDir. Run: ww"
 } finally { Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue }

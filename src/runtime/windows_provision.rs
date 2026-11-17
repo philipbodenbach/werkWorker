@@ -28,21 +28,39 @@ use windows_sys::{
     core::GUID,
 };
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 3;
 // ACCESS_ALLOWED_ACE_TYPE from winnt.h; no object/callback ACE is accepted.
 const ALLOW_ACE: u8 = 0;
 const ADMIN: &str = "S-1-5-32-544";
 const SYSTEM: &str = "S-1-5-18";
+const USERS: &str = "S-1-5-32-545";
 const SECRET_FILE: &str = "credential.dpapi";
 const SANDBOX_RX: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 const SANDBOX_MODIFY: u32 = 0x1301bf;
-const LAYERS: [GUID; 6] = [
-    FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-    FWPM_LAYER_ALE_AUTH_CONNECT_V6,
-    FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-    FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-    FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4,
-    FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6,
+// Socket attribution does not cover service-brokered DNS: native DnsQueryEx
+// reached the controlled server despite all six ALE account blocks. Deny RPC
+// calls by the same dedicated account as well, without changing other users'
+// networking or relying on a private DNS interface UUID.
+const DENY_FILTERS: [(GUID, GUID); 7] = [
+    (FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_CONDITION_ALE_USER_ID),
+    (FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_CONDITION_ALE_USER_ID),
+    (
+        FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+        FWPM_CONDITION_ALE_USER_ID,
+    ),
+    (
+        FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+        FWPM_CONDITION_ALE_USER_ID,
+    ),
+    (
+        FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4,
+        FWPM_CONDITION_ALE_USER_ID,
+    ),
+    (
+        FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6,
+        FWPM_CONDITION_ALE_USER_ID,
+    ),
+    (FWPM_LAYER_RPC_UM, FWPM_CONDITION_REMOTE_USER_TOKEN),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,6 +91,9 @@ pub struct ProvisionManifest {
     pub toolchain_roots: Vec<PathBuf>,
     pub toolchain_environment: BTreeMap<String, String>,
     pub network_sublayer_key: String,
+    /// BFE may assign the closest available weight instead of the requested one.
+    /// Bind that effective priority to the protected receipt and recheck it.
+    pub network_sublayer_weight: u16,
     pub network_filter_keys: Vec<String>,
     pub credential_file: String,
 }
@@ -306,6 +327,62 @@ fn account_sid(name: &str) -> Result<String> {
     }
     sid_text(sid.as_mut_ptr().cast())
 }
+fn add_standard_user_membership(user_sid: &str) -> Result<()> {
+    // NetUserAdd does not establish local Users membership. Resolve the built-in
+    // group by SID because its name is localized (for example, "Benutzer").
+    let users = parse_sid(USERS)?;
+    let mut name_size = 0;
+    let mut domain_size = 0;
+    let mut usage = 0;
+    unsafe {
+        LookupAccountSidW(
+            null(),
+            users.0,
+            null_mut(),
+            &mut name_size,
+            null_mut(),
+            &mut domain_size,
+            &mut usage,
+        );
+    }
+    if name_size == 0 || name_size > 65536 || domain_size > 65536 {
+        return Err(last("Find built-in Users group"));
+    }
+    let mut name = vec![0u16; name_size as usize];
+    let mut domain = vec![0u16; domain_size as usize];
+    if unsafe {
+        LookupAccountSidW(
+            null(),
+            users.0,
+            name.as_mut_ptr(),
+            &mut name_size,
+            domain.as_mut_ptr(),
+            &mut domain_size,
+            &mut usage,
+        )
+    } == 0
+    {
+        return Err(last("Resolve built-in Users group"));
+    }
+    if usage != SidTypeAlias {
+        return Err(fail("Built-in Users SID is not a local group"));
+    }
+    let user = parse_sid(user_sid)?;
+    let member = LOCALGROUP_MEMBERS_INFO_0 { lgrmi0_sid: user.0 };
+    let result = unsafe {
+        NetLocalGroupAddMembers(
+            null(),
+            name.as_ptr(),
+            0,
+            (&member as *const LOCALGROUP_MEMBERS_INFO_0).cast(),
+            1,
+        )
+    };
+    if result != ERROR_MEMBER_IN_ALIAS {
+        status("Add sandbox account to built-in Users", result)?;
+    }
+    Ok(())
+}
 fn validate_account(manifest: &ProvisionManifest) -> Result<()> {
     if !manifest.username.starts_with("wwbox_")
         || manifest.username.len() != 18
@@ -322,16 +399,18 @@ fn validate_account(manifest: &ProvisionManifest) -> Result<()> {
         return Err(fail("Empty local account record"));
     }
     let user = unsafe { &*info.cast::<USER_INFO_1>() };
-    let okay = user.usri1_priv == USER_PRIV_USER
-        && user.usri1_flags & (UF_ACCOUNTDISABLE | UF_PASSWD_NOTREQD) == 0
-        && user.usri1_flags & UF_NORMAL_ACCOUNT != 0;
+    let privilege = user.usri1_priv;
+    let flags = user.usri1_flags;
+    let okay = privilege == USER_PRIV_USER
+        && flags & (UF_ACCOUNTDISABLE | UF_PASSWD_NOTREQD) == 0
+        && flags & UF_NORMAL_ACCOUNT != 0;
     unsafe {
         NetApiBufferFree(info.cast());
     }
     if !okay {
-        return Err(fail(
-            "Sandbox account is disabled, privileged, or has no password requirement",
-        ));
+        return Err(fail(format!(
+            "Sandbox account is not an enabled, password-required standard user: privilege {privilege}, flags {flags:#x}"
+        )));
     }
     let mut groups = null_mut();
     let mut read = 0;
@@ -370,7 +449,7 @@ fn validate_account(manifest: &ProvisionManifest) -> Result<()> {
             let name = String::from_utf16_lossy(unsafe {
                 std::slice::from_raw_parts(group.lgrui0_name, len)
             });
-            if account_sid(&name)? != "S-1-5-32-545" {
+            if account_sid(&name)? != USERS {
                 return Err(fail("Sandbox account belongs to an unexpected local group"));
             }
         }
@@ -542,33 +621,47 @@ impl Drop for Engine {
 fn user_condition(user_sid: &str) -> Result<Local> {
     descriptor(&format!("D:(A;;0x1;;;{user_sid})"))
 }
-fn verify_network(manifest: &ProvisionManifest) -> Result<()> {
-    if manifest.network_filter_keys.len() != LAYERS.len() {
-        return Err(fail("Incomplete network filter receipt"));
-    }
-    let engine = Engine::open()?;
-    let sublayer = guid(&manifest.network_sublayer_key)?;
+fn network_sublayer_weight(engine: &Engine, sublayer: GUID) -> Result<u16> {
     let mut actual_sublayer = null_mut();
     status("Read required network sublayer", unsafe {
         FwpmSubLayerGetByKey0(engine.0, &sublayer, &mut actual_sublayer)
     })?;
-    let sublayer_okay = !actual_sublayer.is_null()
-        && unsafe {
-            same_guid((*actual_sublayer).subLayerKey, sublayer)
-                && (*actual_sublayer).flags == FWPM_SUBLAYER_FLAG_PERSISTENT
-                && (*actual_sublayer).weight == u16::MAX
-        };
+    let actual = unsafe { actual_sublayer.as_ref() }.map(|value| {
+        (
+            same_guid(value.subLayerKey, sublayer),
+            value.flags,
+            value.weight,
+        )
+    });
     unsafe {
         FwpmFreeMemory0((&mut actual_sublayer as *mut *mut FWPM_SUBLAYER0).cast());
     }
-    if !sublayer_okay {
-        return Err(fail("Required network sublayer changed"));
+    match actual {
+        Some((true, FWPM_SUBLAYER_FLAG_PERSISTENT, weight)) => Ok(weight),
+        Some((same_key, flags, weight)) => Err(fail(format!(
+            "Required network sublayer changed: same key {same_key}, flags {flags:#x}, weight {weight}"
+        ))),
+        None => Err(fail("Required network sublayer is empty")),
+    }
+}
+fn verify_network(manifest: &ProvisionManifest) -> Result<()> {
+    if manifest.network_filter_keys.len() != DENY_FILTERS.len() {
+        return Err(fail("Incomplete network filter receipt"));
+    }
+    let engine = Engine::open()?;
+    let sublayer = guid(&manifest.network_sublayer_key)?;
+    let weight = network_sublayer_weight(&engine, sublayer)?;
+    if weight != manifest.network_sublayer_weight {
+        return Err(fail(format!(
+            "Required network sublayer weight changed: expected {}, observed {weight}",
+            manifest.network_sublayer_weight
+        )));
     }
     let expected_sd = user_condition(&manifest.user_sid)?;
     let expected_size = unsafe { GetSecurityDescriptorLength(expected_sd.0) } as usize;
     let expected_bytes =
         unsafe { std::slice::from_raw_parts(expected_sd.0.cast::<u8>(), expected_size) };
-    for (text, layer) in manifest.network_filter_keys.iter().zip(LAYERS) {
+    for (text, (layer, condition_key)) in manifest.network_filter_keys.iter().zip(DENY_FILTERS) {
         let key = guid(text)?;
         let mut filter = null_mut();
         status("Read required account network deny", unsafe {
@@ -592,7 +685,7 @@ fn verify_network(manifest: &ProvisionManifest) -> Result<()> {
                 return Err(fail("Required WFP deny filter changed"));
             }
             let c = unsafe { &*f.filterCondition };
-            if !same_guid(c.fieldKey, FWPM_CONDITION_ALE_USER_ID)
+            if !same_guid(c.fieldKey, condition_key)
                 || c.matchType != FWP_MATCH_EQUAL
                 || c.conditionValue.r#type != FWP_SECURITY_DESCRIPTOR_TYPE
             {
@@ -772,6 +865,17 @@ impl Provisioning {
             )
         })
     }
+    /// Requires the owned invocation lock. Even a stopped tree remains blocked
+    /// after host death until explicit trusted recovery confirms all cleanup.
+    pub fn require_confirmed_cleanup(&self) -> Result<()> {
+        match std::fs::symlink_metadata(&self.crash_barrier.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(WorkerError::new(
+                "cleanup_required",
+                "Workspace access is blocked by an unconfirmed cleanup receipt; explicit trusted recovery is required",
+            )),
+        }
+    }
     /// Call while holding the invocation lock, immediately before first spawn.
     pub fn begin_invocation(&self) -> Result<()> {
         self.crash_barrier.begin()
@@ -913,7 +1017,7 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn install_network(manifest: &ProvisionManifest) -> Result<()> {
+fn install_network(manifest: &mut ProvisionManifest) -> Result<()> {
     let engine = Engine::open()?;
     status("Begin network policy transaction", unsafe {
         FwpmTransactionBegin0(engine.0, 0)
@@ -955,7 +1059,10 @@ fn install_network(manifest: &ProvisionManifest) -> Result<()> {
                 Anonymous: FWP_CONDITION_VALUE0_0 { sd: &mut blob },
             },
         };
-        for (filter_key, layer) in manifest.network_filter_keys.iter().zip(LAYERS) {
+        for (filter_key, (layer, condition_key)) in
+            manifest.network_filter_keys.iter().zip(DENY_FILTERS)
+        {
+            condition.fieldKey = condition_key;
             let mut filter: FWPM_FILTER0 = unsafe { zeroed() };
             filter.filterKey = guid(filter_key)?;
             filter.displayData.name = name.as_ptr().cast_mut();
@@ -981,6 +1088,12 @@ fn install_network(manifest: &ProvisionManifest) -> Result<()> {
         }
     }
     result?;
+    // The requested weight is a preference, not an Add/Get invariant. Capture
+    // BFE's effective assignment only during explicit administrator setup;
+    // ordinary launch must match this exact protected receipt without repair.
+    // https://learn.microsoft.com/en-us/windows/win32/fwp/installing-a-provider
+    manifest.network_sublayer_weight =
+        network_sublayer_weight(&engine, guid(&manifest.network_sublayer_key)?)?;
     verify_network(manifest)
 }
 fn enable_account(username: &str, enabled: bool) -> Result<()> {
@@ -1073,6 +1186,7 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
     })?;
     let result = (|| {
         let user_sid = account_sid(&username)?;
+        add_standard_user_membership(&user_sid)?;
         let private_temp = request.provisioning_root.join("private-temp");
         let writable = format!(
             "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{})(A;OICI;0x1301bf;;;{user_sid})",
@@ -1108,7 +1222,7 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
                 *value = value.replace(&format!("{{toolchain{index}}}"), &root.to_string_lossy());
             }
         }
-        let manifest = ProvisionManifest {
+        let mut manifest = ProvisionManifest {
             schema_version: SCHEMA,
             host_sid: request.host_sid.clone(),
             username: username.clone(),
@@ -1120,7 +1234,8 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
             toolchain_roots,
             toolchain_environment: environment,
             network_sublayer_key: uuid::Uuid::new_v4().to_string(),
-            network_filter_keys: (0..LAYERS.len())
+            network_sublayer_weight: u16::MAX,
+            network_filter_keys: (0..DENY_FILTERS.len())
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect(),
             credential_file: SECRET_FILE.into(),
@@ -1163,7 +1278,7 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
                 std::slice::from_raw_parts(output.pbData, output.cbData as usize)
             })?;
         drop(memory);
-        install_network(&manifest)?;
+        install_network(&mut manifest)?;
         let lock_path = request.provisioning_root.join("invocation.lock");
         OpenOptions::new()
             .write(true)
@@ -1181,6 +1296,9 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
         set_acl(&path, &trusted)?;
         set_acl(&request.provisioning_root.join(SECRET_FILE), &trusted)?;
         enable_account(&username, true)?;
+        // Setup must not report success for an account that normal launch would
+        // immediately reject (including missing or unexpected group membership).
+        validate_account(&manifest)?;
         Ok(path)
     })();
     if let Err(error) = result {
@@ -1214,7 +1332,7 @@ mod tests {
         );
         assert!(filter.is_null());
         let manifest = ProvisionManifest {
-            schema_version: 1,
+            schema_version: SCHEMA,
             host_sid: current_sid().unwrap(),
             username: String::new(),
             user_sid: "S-1-1-0".into(),
@@ -1225,7 +1343,8 @@ mod tests {
             toolchain_roots: Vec::new(),
             toolchain_environment: BTreeMap::new(),
             network_sublayer_key: uuid::Uuid::new_v4().to_string(),
-            network_filter_keys: LAYERS
+            network_sublayer_weight: u16::MAX,
+            network_filter_keys: DENY_FILTERS
                 .iter()
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect(),

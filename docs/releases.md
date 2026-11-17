@@ -76,7 +76,8 @@ workflow performs those operations.
 
 After preparation, three native build jobs check out the exact commit emitted
 for the release tag. They use the same package scripts as local builds, then
-run the native installer smoke test for both commands. No checkout of a moving
+run the native installer smoke test for both commands and, on Windows, both
+sandbox helpers. No checkout of a moving
 branch is used for these packages.
 
 | Release build | Runner | Archive suffix |
@@ -162,7 +163,8 @@ action. Platform assets are built and attached automatically before publication.
 
 The build entrypoints follow werk1112's native-build pattern: check the host,
 native Rust toolchain, C compiler and Python before building; use the locked
-release Cargo alias; run both command versions; and validate CLI reference
+release Cargo alias; run both command versions and Windows helper startup
+refusals; and validate CLI reference
 generation in a temporary directory without rewriting `docs/cli.md`. They work
 from outside the checkout and respect `CARGO_TARGET_DIR`. Windows accepts the
 `py -3` launcher as well as `python` or `python3` and requires the x64 MSVC
@@ -174,14 +176,21 @@ is needed.
 
 Archives are `releases/werkWorker-v<VERSION>-<suffix>` with adjacent `.sha256`.
 Each contains both commands (`werk-worker` and `ww`, `.exe` on Windows), README,
-LICENSE and NOTICE. Skills/profiles are embedded. Build on the target OS/CPU;
+LICENSE and NOTICE. Windows additionally contains `ww-windows-provision.exe`
+and `ww-windows-runner.exe`; its exact ZIP allowlist has seven regular files.
+Skills/profiles are embedded. Build on the target OS/CPU;
 Rust target installation alone is not a cross toolchain. Native Rust stable,
-a C compiler and Python 3.11+ are needed (MSVC + Windows SDK on Windows,
-Xcode command-line tools on macOS). These are the only three published binary
+a C compiler and Python are needed (MSVC + Windows SDK on Windows,
+Xcode command-line tools on macOS; supported Python versions are below). These are the only three published binary
 targets. There is no CUDA/toolkit/GPU dependency: Strix Halo uses the generic
 Linux x86_64 archive. Linux ARM64 systems, including DGX Spark, require a source
 build (`cargo install --path . --locked` from this checkout); the installer
 reports this instead of requesting an unpublished ARM64 archive.
+
+The standalone Windows build/package scripts and installer smoke also support
+Python 3.10 and Windows PowerShell 5.1; the release automation still uses Python
+3.11+ for its version/metadata tooling. The build script checks both helper EXEs
+with inert startup requests. It does not provision an account or request UAC.
 
 The Release workflow builds and uploads these archives automatically. The
 manual commands below remain available for native local builds and controlled
@@ -222,8 +231,8 @@ fi
 gh release upload "$VERSION" "$ARCHIVE" "$ARCHIVE.sha256" --repo philipbodenbach/werkWorker
 ```
 
-On Windows x86_64, use x64 Developer PowerShell with Python 3.11+ and PowerShell
-7 (`pwsh`, needed by the installer smoke test):
+On Windows x86_64, use x64 Developer PowerShell with Python 3.10+ and native
+Windows PowerShell or PowerShell 7:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -302,10 +311,26 @@ path and set `WERK_WORKER_VERSION`; the adjacent checksum is mandatory. This
 also supports offline installation tests. Checksums and an exact archive member
 allowlist are validated before replacing commands. Session state is untouched.
 
+The Windows installer installs both sandbox helpers beside the CLI commands.
+It requires both helpers in the ZIP and neither runs provisioning nor changes
+the selected sandbox profile. `scripts/smoke-install.py ARCHIVE --retain NEW_DIR`
+creates a fresh, retained installation, verifies all four installed EXEs against
+the archive, exercises the CLIs and checks inert helper refusal. An existing
+`NEW_DIR` is rejected. Use the retained installed provisioner and runner for the
+separate administrator setup, then run the installed `ww` as the normal host
+user with its explicit native configuration. This installation/start acceptance
+is separate from the packaging smoke and is described in
+[Windows process-tree provisioning](windows-process-tree-provisioning.md).
+The current process-tree profile is technically disabled with
+`sandbox_unqualified` because native isolation and process-limit checks failed.
+Installing or provisioning the helpers does not enable it; the existing LPAC
+profile remains available. See the [measured results](windows-process-tree-validation.md).
+
 Installers do not install a Rust toolchain, models or Bubblewrap. Native package
 availability is separate from sandbox support. This checkout adds native file
-access plus constrained macOS and Windows process backends without another
-helper executable; published archives reflect their tagged source. Windows
+access plus constrained macOS and Windows process backends; the optional Windows
+process-tree backend uses the two installed helpers. Published archives reflect
+their tagged source. Windows
 workspace provisioning and macOS opt-in remain explicit host operations after
 installation. Native browser isolation remains unavailable. See the
 [platform contracts and actual validation status](cross-platform-sandbox.md).

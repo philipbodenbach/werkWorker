@@ -26,6 +26,25 @@ pub struct ToolContext {
     pub skills: BTreeMap<String, Skill>,
     pub native_jobs: Vec<String>,
 }
+#[cfg(windows)]
+impl ToolContext {
+    /// Engine calls retain this guard from preparation through approval and
+    /// execution. Direct builtin callers reacquire it for each entry point.
+    pub(crate) fn admit_workspace(&self) -> Result<Self> {
+        let mut context = self.clone();
+        if context.sandbox.native.windows_process_tree.is_some() {
+            let lease = context.workspace_lease.get_or_insert_with(|| {
+                Arc::new(crate::parallel::WorkspaceAccess::default())
+                    .try_acquire(&context.workspace, true, &context.invocation_id)
+                    .expect("A new local workspace admission has no competing leases")
+            });
+            context
+                .sandbox
+                .admit_windows_workspace(&context.workspace, lease)?;
+        }
+        Ok(context)
+    }
+}
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
@@ -274,7 +293,7 @@ impl Tool for Builtin {
             ),
             "process.run" => (
                 Effect::Process,
-                "Sandboxed literal argv, no implicit shell or network. When the interpreter is available, use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. Workspace files persist. Linux exposes /workspace and a fresh /tmp; native platforms use real workspace paths and private OS temporary storage. Use CWD-relative file paths; argv and stdin are never rewritten. Native modes deny child creation.",
+                "Sandboxed literal argv, no implicit shell or network. When the interpreter is available, use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. Workspace files persist. Linux exposes /workspace and a fresh /tmp; native platforms use real workspace paths and private OS temporary storage. Use CWD-relative file paths; argv and stdin are never rewritten. Child creation follows the host-approved sandbox profile.",
                 object(
                     json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"stdin":{"type":"string","maxLength":32768,"description":"Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files."},"cwd":{"type":"string"},"verification":{"type":"object","properties":{"kind":{"type":"string","enum":["behavior","syntax","inspection"]},"replaces":{"type":"string","minLength":1,"maxLength":128},"criteria":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}},"paths":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":string()}},"required":["criteria","paths"],"additionalProperties":false}}),
                     &["argv"],
@@ -282,7 +301,7 @@ impl Tool for Builtin {
             ),
             "process.start" => (
                 Effect::Process,
-                "Sandboxed argv, no network or implicit shell. Keep cross-call files in the workspace. Linux exposes /workspace and fresh /tmp; native platforms use real paths and private OS temporary storage. Use CWD-relative file paths. Native modes deny child creation. Shell argv needs explicit approval",
+                "Sandboxed argv, no network or implicit shell. Keep cross-call files in the workspace. Linux exposes /workspace and fresh /tmp; native platforms use real paths and private OS temporary storage. Use CWD-relative file paths. Child creation follows the host-approved sandbox profile. Shell argv needs explicit approval",
                 object(
                     json!({"argv":{"type":"array","items":string(),"minItems":1,"maxItems":128},"cwd":{"type":"string","description":"Relative to workspace; /workspace paths also accepted"},"read_only":{"type":"boolean","description":"Expose workspace read-only; other readers may proceed. Prefer for inspection/watchers. Writers still wait for this job; use process.wait or cancel."}}),
                     &["argv"],
@@ -372,6 +391,19 @@ impl Tool for Builtin {
         }
     }
     async fn prepare(&self, mut args: Value, ctx: &ToolContext) -> Result<Value> {
+        #[cfg(windows)]
+        let admitted = if self.name.starts_with("files.")
+            || matches!(
+                self.name.as_str(),
+                "process.run" | "process.start" | "browser.check"
+            ) {
+            ctx.admit_workspace()?
+        } else {
+            ctx.clone()
+        };
+        #[cfg(windows)]
+        let ctx = &admitted;
+
         if matches!(
             self.name.as_str(),
             "files.read"
@@ -484,6 +516,19 @@ impl Tool for Builtin {
         Ok(args)
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
+        #[cfg(windows)]
+        let admitted = if self.name.starts_with("files.")
+            || matches!(
+                self.name.as_str(),
+                "process.run" | "process.start" | "browser.check"
+            ) {
+            ctx.admit_workspace()?
+        } else {
+            ctx.clone()
+        };
+        #[cfg(windows)]
+        let ctx = &admitted;
+
         let value=match self.name.as_str(){
             "files.read"=>{
                 let path=field(&args,"path")?;let bytes=ctx.workspace.read(path,1_048_576).await?;

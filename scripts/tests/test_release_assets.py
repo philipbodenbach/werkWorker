@@ -27,10 +27,12 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def archive_bytes(windows=False, marker=b"fixture", extra=None, symlink=False, version="0.3.1"):
+def archive_bytes(windows=False, marker=b"fixture", extra=None, symlink=False, version="0.3.1", omit=None):
     output = io.BytesIO()
-    names = ["werk-worker.exe", "ww.exe"] if windows else ["werk-worker", "ww"]
+    names = ["werk-worker.exe", "ww.exe", "ww-windows-provision.exe", "ww-windows-runner.exe"] if windows else ["werk-worker", "ww"]
     names += ["README.md", "LICENSE", "NOTICE"]
+    if omit:
+        names.remove(omit)
     if extra:
         names.append(extra)
     readme = f"WerkWorker SDK and both CLI commands share release version **{version}**.\n".encode()
@@ -190,6 +192,17 @@ class ReleaseAssetTests(unittest.TestCase):
                 with self.subTest(name=name, options=options):
                     self.write_archive(name, **options)
                     with self.assertRaisesRegex(ValueError, "members"):
+                        self.run_upload()
+                    self.assertEqual(self.client.calls, [])
+                    self.write_archive(name)
+
+    def test_windows_helpers_are_mandatory_and_cannot_be_duplicated(self):
+        name = self.names[2]
+        for helper in ('ww-windows-provision.exe', 'ww-windows-runner.exe'):
+            for options in ({'omit': helper}, {'extra': helper}):
+                with self.subTest(options=options):
+                    self.write_archive(name, **options)
+                    with self.assertRaisesRegex(ValueError, 'members'):
                         self.run_upload()
                     self.assertEqual(self.client.calls, [])
                     self.write_archive(name)

@@ -284,6 +284,8 @@ impl WorkspaceScope {
     }
 }
 pub struct WorkspaceLease {
+    #[cfg(windows)]
+    pub(crate) windows_tree: Mutex<Option<Arc<crate::runtime::windows_provision::Provisioning>>>,
     id: String,
     access: Arc<WorkspaceAccess>,
 }
@@ -305,6 +307,8 @@ impl WorkspaceAccess {
         let id = id("lease");
         leases.push((id.clone(), scope, write, owner.into()));
         Some(Arc::new(WorkspaceLease {
+            #[cfg(windows)]
+            windows_tree: Mutex::new(None),
             id,
             access: self.clone(),
         }))

@@ -3526,6 +3526,17 @@ impl SessionHandle {
                     invocation_id,
                 ) {
                     context.workspace_lease = Some(lease);
+                    #[cfg(windows)]
+                    {
+                        context = match context.admit_workspace() {
+                            Ok(context) => context,
+                            Err(error) => {
+                                let mut result = ToolResult::error(Outcome::Failed, &error.code);
+                                result.data = json!({"message":error.message,"executed":false});
+                                return self.outcome(run_id, invocation_id, result).await;
+                            }
+                        };
+                    }
                     break;
                 }
                 let jobs = self.engine.inner.jobs.running(run_id).await;
@@ -3958,13 +3969,24 @@ impl SessionHandle {
             }
         };
         if def.name == "process.run" {
-            let after = crate::working_state::capture(&data, run, &context.workspace).await;
-            outcome.data["workspace_changes"] = crate::working_state::changes(&before, after);
-            outcome.data["workspace_changed"] = json!(
-                outcome.data["workspace_changes"]
-                    .as_object()
-                    .is_some_and(|v| !v.is_empty())
-            );
+            // A cleanup_failed result may arrive while the independent native
+            // supervisor still owns a live tree. Never inspect its workspace
+            // merely because the asynchronous tool call has returned.
+            #[cfg(windows)]
+            let may_capture = context.admit_workspace().is_ok();
+            #[cfg(not(windows))]
+            let may_capture = true;
+            if may_capture {
+                let after = crate::working_state::capture(&data, run, &context.workspace).await;
+                outcome.data["workspace_changes"] = crate::working_state::changes(&before, after);
+                outcome.data["workspace_changed"] = json!(
+                    outcome.data["workspace_changes"]
+                        .as_object()
+                        .is_some_and(|v| !v.is_empty())
+                );
+            } else {
+                outcome.data["workspace_changes_unavailable"] = json!("cleanup_unconfirmed");
+            }
             if !context.writable && preliminary.policy.workspace_writable {
                 outcome.data["repair_protection"] = json!(
                     "Workspace mounted read-only during file repair. Fix the rejected files.edit/files.write using its error receipt. Existing work was preserved; shell deletion/rewrite is not a repair."

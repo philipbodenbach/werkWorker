@@ -50,8 +50,8 @@ impl Server {
                 let Some((name, question_end)) = question(packet) else {
                     continue;
                 };
-                // Only this test's nonce names are answered. A bind to an
-                // ephemeral loopback port cannot become a public DNS service.
+                // Only this test's nonce names are answered. The socket binds
+                // exclusively to loopback, never a public network interface.
                 if !name.ends_with(".ww-tree.test") {
                     continue;
                 }

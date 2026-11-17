@@ -29,9 +29,9 @@ foreach ($Candidate in @('py', 'python', 'python3')) {
         break
     }
 }
-if (-not $Python) { throw 'Python 3.11+ is required (py, python or python3 on PATH).' }
-& $Python @PythonArgs -c 'import sys; sys.exit(sys.version_info < (3, 11))'
-if ($LASTEXITCODE -ne 0) { throw 'A working Python 3.11+ installation is required.' }
+if (-not $Python) { throw 'Python 3.10+ is required (py, python or python3 on PATH).' }
+& $Python @PythonArgs -c 'import sys; sys.exit(sys.version_info < (3, 10))'
+if ($LASTEXITCODE -ne 0) { throw 'A working Python 3.10+ installation is required.' }
 cargo build-windows
 if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }
 $BuildRoot = Join-Path $RepoRoot 'target'
@@ -49,6 +49,29 @@ foreach ($Binary in @('werk-worker.exe', 'ww.exe')) {
     & $BinaryPath --version
     if ($LASTEXITCODE -ne 0) { throw "Binary smoke failed: $Binary" }
 }
+foreach ($Helper in @(
+    @{ Name = 'ww-windows-provision.exe'; Refusal = 2 },
+    @{ Name = 'ww-windows-runner.exe'; Refusal = 125 }
+)) {
+    $BinaryPath = Join-Path $Build $Helper.Name
+    if (-not (Test-Path $BinaryPath -PathType Leaf)) { throw "Expected helper not found: $BinaryPath" }
+    # An inert invocation must load and refuse. This performs no provisioning,
+    # works with elevated/non-elevated build users and never requests UAC.
+    $Probe = New-Object System.Diagnostics.Process
+    try {
+        $Probe.StartInfo.FileName = $BinaryPath
+        $Probe.StartInfo.UseShellExecute = $false
+        $Probe.StartInfo.RedirectStandardOutput = $true
+        $Probe.StartInfo.RedirectStandardError = $true
+        if (-not $Probe.Start()) { throw "Could not start helper: $($Helper.Name)" }
+        $Output = $Probe.StandardOutput.ReadToEnd()
+        $ErrorOutput = $Probe.StandardError.ReadToEnd()
+        $Probe.WaitForExit()
+        if ($Probe.ExitCode -ne $Helper.Refusal) {
+            throw "Helper refusal failed: $($Helper.Name), exit $($Probe.ExitCode): $Output $ErrorOutput"
+        }
+    } finally { $Probe.Dispose() }
+}
 $Reference = Join-Path ([IO.Path]::GetTempPath()) ('werkWorker-reference-' + [guid]::NewGuid().ToString('N'))
 try {
     New-Item $Reference -ItemType Directory | Out-Null
@@ -57,4 +80,4 @@ try {
 } finally {
     Remove-Item $Reference -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host "Built and validated $Build/werk-worker.exe and $Build/ww.exe"
+Write-Host "Built and validated both CLI commands and Windows sandbox helpers in $Build"

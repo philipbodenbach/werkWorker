@@ -16,19 +16,18 @@ if ($env:CARGO_TARGET_DIR) {
     }
 }
 $Build = Join-Path $BuildRoot 'x86_64-pc-windows-msvc/release'
+$Binaries = @('werk-worker.exe', 'ww.exe', 'ww-windows-provision.exe', 'ww-windows-runner.exe')
 $Staging = Join-Path ([IO.Path]::GetTempPath()) ('werkWorker-package-' + [guid]::NewGuid().ToString('N'))
 try {
     New-Item $Staging -ItemType Directory | Out-Null
-    foreach ($Binary in @('werk-worker.exe', 'ww.exe')) {
-        & (Join-Path $Build $Binary) --version
-        if ($LASTEXITCODE -ne 0) { throw "Binary smoke failed: $Binary" }
+    foreach ($Binary in $Binaries) {
         Copy-Item (Join-Path $Build $Binary) $Staging
     }
     foreach ($Name in @('README.md', 'LICENSE', 'NOTICE')) { Copy-Item $Name $Staging }
     New-Item releases -ItemType Directory -Force | Out-Null
     $Name = "werkWorker-v$Version-windows-x86_64.zip"
     $Artifact = Join-Path $RepoRoot "releases/$Name"
-    $Files = @('werk-worker.exe', 'ww.exe', 'README.md', 'LICENSE', 'NOTICE') | ForEach-Object { Join-Path $Staging $_ }
+    $Files = @($Binaries + @('README.md', 'LICENSE', 'NOTICE')) | ForEach-Object { Join-Path $Staging $_ }
     Compress-Archive -Path $Files -DestinationPath $Artifact -Force
     $Hash = (Get-FileHash $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()
     "$Hash  $Name" | Set-Content "$Artifact.sha256" -Encoding ascii

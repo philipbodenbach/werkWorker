@@ -20,24 +20,63 @@ use windows_sys::Win32::{
     Security::{Authorization::*, *},
     Storage::FileSystem::*,
     System::{
-        Diagnostics::ToolHelp::*, JobObjects::*, Pipes::GetNamedPipeServerProcessId,
-        SystemServices::PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY, Threading::*,
+        Diagnostics::ToolHelp::*, JobObjects::*, Pipes::GetNamedPipeServerProcessId, Threading::*,
     },
 };
 
 const CONTROL_LIMIT: usize = 64 * 1024;
+#[cfg(test)]
 const WIN32K_SYSTEM_CALL_DISABLE: u64 = 1 << 28;
 const RUNNER_ERROR: i32 = 125;
 const LOGON_ID: u32 = 0xc000_0000;
+const SE_GROUP_ENABLED: u32 = 0x4;
+const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x10;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Request {
     pub version: u32,
     pub host_sid: String,
+    pub desktop_nonce: String,
+    pub user_sid: String,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
     pub environment: BTreeMap<String, String>,
+}
+
+/// Only the retained trusted runner can connect to these host-authenticated
+/// pipes. Both stages require host acknowledgement before payload execution.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "stage", deny_unknown_fields)]
+pub(super) enum Ready {
+    Objects {
+        version: u32,
+        desktop: String,
+        station_handle: u64,
+        desktop_handle: u64,
+    },
+    Payload {
+        version: u32,
+        pid: u32,
+        process_handle: u64,
+        thread_handle: u64,
+    },
+}
+
+fn handoff(reply: &mut File, ack: &mut File, ready: &Ready, expected: u8) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(ready).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    if bytes.len() > 8192 {
+        return Err(invalid("Runner handoff exceeds its transport bound"));
+    }
+    reply.write_all(&bytes)?;
+    reply.flush()?;
+    let mut value = [0];
+    ack.read_exact(&mut value)?;
+    if value != [expected] {
+        return Err(invalid("Host did not acknowledge verified runner stage"));
+    }
+    Ok(())
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -161,35 +200,13 @@ fn verify_host_containment() -> io::Result<()> {
     if member == 0 {
         return Err(invalid("Runner was not assigned to a Job before execution"));
     }
-    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-    if unsafe {
-        QueryInformationJobObject(
-            null_mut(),
-            JobObjectExtendedLimitInformation,
-            (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            null_mut(),
-        )
-    } == 0
-    {
-        return Err(native_error("Inspect runner Job limits"));
-    }
-    let required = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-        | JOB_OBJECT_LIMIT_JOB_MEMORY
-        | JOB_OBJECT_LIMIT_JOB_TIME;
-    let basic = &limits.BasicLimitInformation;
-    if basic.LimitFlags & required != required
-        || basic.LimitFlags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)
-            != 0
-        || basic.ActiveProcessLimit < 2
-        || limits.JobMemoryLimit == 0
-        || basic.PerJobUserTimeLimit <= 0
-    {
-        return Err(invalid(
-            "Runner Job lacks mandatory finite non-breakaway limits",
-        ));
-    }
+    // QueryInformationJobObject(NULL) describes the immediate job, which may be
+    // a different job in the logon-created hierarchy. Native cross-account
+    // startup returned zero limits there while the host verified this same
+    // process in its finite, non-breakaway, kill-on-close owned Job. The host
+    // checks that exact Job's limits and this suspended runner's membership
+    // before resuming it. Do not pass a Job handle here to repeat those checks:
+    // a handle held by the tree would defeat kill-on-close on abrupt host exit.
     Ok(())
 }
 
@@ -214,7 +231,7 @@ fn read_request(control: OwnedHandle) -> io::Result<Request> {
     drop(control);
     let request: Request = serde_json::from_slice(&bytes)
         .map_err(|_| invalid("Malformed native runner control request"))?;
-    if request.version != 1
+    if request.version != 3
         || request.host_sid.len() > 184
         || request.host_sid.is_empty()
         || request.argv.is_empty()
@@ -297,9 +314,6 @@ struct Attributes {
     pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
 }
 impl Attributes {
-    fn new() -> io::Result<Self> {
-        Self::with_capacity(2)
-    }
     fn with_capacity(count: u32) -> io::Result<Self> {
         let mut size = 0;
         unsafe {
@@ -438,8 +452,30 @@ fn verify_restricted_token(token: HANDLE) -> io::Result<()> {
         return Err(invalid("Payload token lacks restricting SIDs"));
     }
     let groups = token_information(token, TokenRestrictedSids)?;
-    if token_groups(&groups)?.len() != 3 {
+    if token_groups(&groups)?.len() != 2 {
         return Err(invalid("Payload token has unexpected restricting SIDs"));
+    }
+    let user = token_information(token, TokenUser)?;
+    let user = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let everyone = parse_sid("S-1-1-0")?;
+    for sid in [user, everyone.0] {
+        if !token_groups(&groups)?
+            .iter()
+            .any(|entry| unsafe { EqualSid(entry.Sid, sid) } != 0)
+        {
+            return Err(invalid(
+                "Payload restricting SIDs differ from account and Everyone",
+            ));
+        }
+    }
+    let ordinary = token_information(token, TokenGroups)?;
+    for entry in token_groups(&ordinary)? {
+        if entry.Attributes & LOGON_ID == LOGON_ID
+            && (entry.Attributes & SE_GROUP_ENABLED != 0
+                || entry.Attributes & SE_GROUP_USE_FOR_DENY_ONLY == 0)
+        {
+            return Err(invalid("Payload retained an enabled inherited logon SID"));
+        }
     }
     let elevation = token_information(token, TokenElevation)?;
     if unsafe { *elevation.as_ptr().cast::<u32>() } != 0 {
@@ -503,14 +539,23 @@ fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
     let user = token_information(raw(&base), TokenUser)?;
     let user_sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
     let groups = token_information(raw(&base), TokenGroups)?;
-    let logon_sid = token_groups(&groups)?
+    // CreateProcessWithLogonW(NULL desktop) can copy the host's interactive
+    // logon SID into this trusted bootstrap. Mandatory groups may be disabled
+    // with CreateRestrictedToken: none may grant authority to the payload.
+    let disabled: Vec<_> = token_groups(&groups)?
         .iter()
-        .find(|entry| entry.Attributes & LOGON_ID == LOGON_ID)
-        .map(|entry| entry.Sid)
-        .ok_or_else(|| invalid("Runner token has no logon SID"))?;
-    let logon_text = sid_text(logon_sid)?;
+        .filter(|entry| entry.Attributes & LOGON_ID == LOGON_ID)
+        .map(|entry| SID_AND_ATTRIBUTES {
+            Sid: entry.Sid,
+            Attributes: 0,
+        })
+        .collect();
+    if disabled.is_empty() {
+        return Err(invalid("Runner token has no logon SID"));
+    }
+    let user_text = sid_text(user_sid)?;
     let everyone = parse_sid("S-1-1-0")?;
-    let restrictions = [user_sid, logon_sid, everyone.0].map(|sid| SID_AND_ATTRIBUTES {
+    let restrictions = [user_sid, everyone.0].map(|sid| SID_AND_ATTRIBUTES {
         Sid: sid,
         Attributes: 0,
     });
@@ -522,8 +567,8 @@ fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
         CreateRestrictedToken(
             raw(&base),
             FLAGS,
-            0,
-            null(),
+            disabled.len() as u32,
+            disabled.as_ptr(),
             0,
             null(),
             restrictions.len() as u32,
@@ -536,10 +581,10 @@ fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
     }
     let token = unsafe { owned(token)? };
     // OWNER RIGHTS removes the shared account owner's implicit WRITE_DAC.
-    // The creating logon retains full access. The trusted host can inspect,
+    // The sandbox account retains access to its own payload objects. The host can inspect,
     // synchronize and terminate descendants without receiving sandbox handles.
     let descriptor = wide(format!(
-        "D:(A;;GA;;;{logon_text})(A;;0x101001;;;{host})(A;;RC;;;OW)"
+        "D:(A;;GA;;;{user_text})(A;;0x101001;;;{host})(A;;RC;;;OW)"
     ))?;
     let mut sd = null_mut();
     if unsafe {
@@ -767,7 +812,7 @@ fn seal_current_runner(host_sid: &str, payload_token: HANDLE) -> io::Result<()> 
     let token = unsafe { owned(token)? };
     // Set this before the thread snapshot: any thread created concurrently or
     // later starts protected. The separately derived payload token retains its
-    // own dedicated-account/logon default DACL.
+    // own dedicated-account default DACL.
     let (_default_sd, default_acl) =
         object_dacl(&format!("D:(A;;GA;;;SY)(A;;GA;;;{host})(A;;RC;;;OW)"))?;
     let default_dacl = TOKEN_DEFAULT_DACL {
@@ -819,7 +864,34 @@ fn execute(
     input: OwnedHandle,
     output: OwnedHandle,
     errors: &File,
+    reply: &mut File,
+    ack: &mut File,
 ) -> io::Result<i32> {
+    // Only trusted bootstrap code runs before this barrier. The host owns the
+    // finite Job already, pulls these new objects and installs their exact ACLs
+    // plus UI restrictions before acknowledging any untrusted execution.
+    let resources = super::windows_tree_desktop::BootstrapResources::create(
+        &request.desktop_nonce,
+        &request.host_sid,
+        &request.user_sid,
+    )
+    .map_err(io::Error::other)?;
+    let qualified = resources.qualified_name().map_err(io::Error::other)?;
+    handoff(
+        reply,
+        ack,
+        &Ready::Objects {
+            version: 1,
+            desktop: qualified.clone(),
+            station_handle: resources.station_raw() as usize as u64,
+            desktop_handle: resources.desktop_raw() as usize as u64,
+        },
+        1,
+    )?;
+    resources
+        .verify_hardened(&qualified, &request.host_sid, &request.user_sid)
+        .map_err(io::Error::other)?;
+    let mut desktop = wide(&qualified)?;
     let token = restricted_payload_token(&request.host_sid)?;
     seal_current_runner(&request.host_sid, raw(&token))?;
     let executable = wide(&request.argv[0])?;
@@ -837,15 +909,12 @@ fn execute(
         return Err(invalid("Native command line exceeds 32767 UTF-16 units"));
     }
     let handles = [raw(&input), raw(&output), errors.as_raw_handle()];
-    let mut attributes = Attributes::new()?;
+    let mut attributes = Attributes::with_capacity(1)?;
     attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)?;
-    attributes.set(
-        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-        &WIN32K_SYSTEM_CALL_DISABLE,
-    )?;
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.lpDesktop = desktop.as_mut_ptr();
     startup.StartupInfo.hStdInput = handles[0];
     startup.StartupInfo.hStdOutput = handles[1];
     startup.StartupInfo.hStdError = handles[2];
@@ -885,21 +954,17 @@ fn execute(
     if member == 0 {
         return Err(invalid("Suspended payload did not inherit a Job"));
     }
-    let mut mitigation: PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY = unsafe { zeroed() };
-    if unsafe {
-        GetProcessMitigationPolicy(
-            raw(&payload.process),
-            ProcessSystemCallDisablePolicy,
-            (&mut mitigation as *mut PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY).cast(),
-            size_of::<PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY>(),
-        )
-    } == 0
-    {
-        return Err(native_error("Verify suspended payload mitigation"));
-    }
-    if unsafe { mitigation.Anonymous.Flags } & 1 == 0 {
-        return Err(invalid("Suspended payload lacks Win32k lockdown"));
-    }
+    handoff(
+        reply,
+        ack,
+        &Ready::Payload {
+            version: 1,
+            pid: info.dwProcessId,
+            process_handle: raw(&payload.process) as usize as u64,
+            thread_handle: raw(&payload.thread) as usize as u64,
+        },
+        2,
+    )?;
     if unsafe { ResumeThread(raw(&payload.thread)) } != 1 {
         return Err(native_error("Resume verified native payload"));
     }
@@ -929,8 +994,17 @@ fn run(stderr: &mut Option<File>) -> io::Result<i32> {
     let input = open_pipe(&prefix, "stdin", GENERIC_READ, true, host)?;
     let output = open_pipe(&prefix, "stdout", GENERIC_WRITE, true, host)?;
     let control = open_pipe(&prefix, "control", GENERIC_READ, false, host)?;
+    let mut reply = File::from(open_pipe(&prefix, "ready", GENERIC_WRITE, false, host)?);
+    let mut ack = File::from(open_pipe(&prefix, "ack", GENERIC_READ, false, host)?);
     let request = read_request(control)?;
-    execute(request, input, output, stderr.as_ref().unwrap())
+    execute(
+        request,
+        input,
+        output,
+        stderr.as_ref().unwrap(),
+        &mut reply,
+        &mut ack,
+    )
 }
 
 pub(super) fn main() -> i32 {
@@ -971,7 +1045,16 @@ mod restricted_token_tests {
             .collect();
         assert!(sids.contains(&host_sid));
         assert!(sids.contains(&"S-1-1-0".to_owned()));
-        assert!(sids.iter().any(|sid| sid.starts_with("S-1-5-5-")));
+        assert!(!sids.iter().any(|sid| sid.starts_with("S-1-5-5-")));
+        let groups = token_information(raw(&token), TokenGroups).unwrap();
+        for entry in token_groups(&groups)
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.Attributes & LOGON_ID == LOGON_ID)
+        {
+            assert_eq!(entry.Attributes & SE_GROUP_ENABLED, 0);
+            assert_ne!(entry.Attributes & SE_GROUP_USE_FOR_DENY_ONLY, 0);
+        }
         let dacl = token_information(raw(&token), TokenDefaultDacl).unwrap();
         let dacl = unsafe { (*dacl.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl };
         assert!(!dacl.is_null());
@@ -987,7 +1070,7 @@ mod restricted_token_tests {
                 assert_eq!(ace.Mask, READ_CONTROL);
                 owner_rights = true;
             }
-            if sid == host_sid {
+            if sid == host_sid && ace.Mask != GENERIC_ALL {
                 assert_eq!(ace.Mask, 0x101001);
                 host_observer = true;
             }

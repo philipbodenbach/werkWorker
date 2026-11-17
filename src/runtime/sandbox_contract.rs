@@ -17,6 +17,10 @@ impl Sandbox {
                 "The selected Windows process-tree profile requires native Windows",
             ));
         }
+        #[cfg(windows)]
+        if self.native.windows_process_tree.is_some() {
+            windows_process_tree::require_qualified_profile()?;
+        }
         workspace.revalidate().await?;
         if self.limits.timeout_ms == 0
             || self.limits.memory_bytes == 0

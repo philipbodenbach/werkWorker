@@ -821,7 +821,11 @@ mod windows_process_tree;
 #[doc(hidden)]
 pub mod windows_provision;
 #[cfg(windows)]
+mod windows_tree_desktop;
+#[cfg(windows)]
 mod windows_tree_launcher;
+#[cfg(windows)]
+mod windows_tree_members;
 #[cfg(windows)]
 mod windows_tree_runner;
 

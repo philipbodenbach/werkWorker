@@ -21,8 +21,9 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
+    Security::*,
     Storage::FileSystem::*,
-    System::{JobObjects::*, Pipes::*, Threading::*},
+    System::{JobObjects::*, Pipes::*, SystemInformation::GetSystemDirectoryW, Threading::*},
 };
 
 const MAX_REQUEST: usize = 65536;
@@ -36,6 +37,9 @@ pub(super) struct Request {
     pub manifest_digest: String,
     pub workspace: PathBuf,
     pub pipe_prefix: String,
+    // Retained for launcher wire compatibility. The trusted runner must not use
+    // payload search paths before sealing itself; its separate authenticated
+    // payload request still supplies the intended execution environment.
     pub environment: BTreeMap<String, String>,
 }
 #[derive(Serialize, Deserialize)]
@@ -46,6 +50,7 @@ pub(super) enum Reply {
         pid: u32,
         process_handle: u64,
         thread_handle: u64,
+        token_handle: u64,
     },
     Failed {
         version: u32,
@@ -65,6 +70,14 @@ fn wide(value: impl AsRef<OsStr>) -> Result<Vec<u16>> {
     }
     value.push(0);
     Ok(value)
+}
+fn system_directory() -> Result<PathBuf> {
+    let mut data = vec![0u16; 32768];
+    let size = unsafe { GetSystemDirectoryW(data.as_mut_ptr(), data.len() as u32) } as usize;
+    if size == 0 || size >= data.len() {
+        return Err(failure("GetSystemDirectoryW for trusted runner"));
+    }
+    Ok(PathBuf::from(String::from_utf16_lossy(&data[..size])))
 }
 fn raw(value: &OwnedHandle) -> HANDLE {
     value.as_raw_handle()
@@ -222,6 +235,49 @@ impl Drop for Child {
         }
     }
 }
+fn query_child_token(
+    process: HANDLE,
+    username: &[u16],
+    domain: &[u16],
+    password: *const u16,
+) -> Result<OwnedHandle> {
+    // A private-desktop logon token need not grant the ordinary host TOKEN_QUERY.
+    // Use explicit credentials only in this short-lived trusted launcher. Open
+    // the actual suspended child's token, never substitute the new logon token.
+    let mut login = null_mut();
+    if unsafe {
+        LogonUserW(
+            username.as_ptr(),
+            domain.as_ptr(),
+            password,
+            LOGON32_LOGON_INTERACTIVE,
+            LOGON32_PROVIDER_DEFAULT,
+            &mut login,
+        )
+    } == 0
+    {
+        return Err(failure("Log on for suspended runner token query"));
+    }
+    let login = unsafe { own(login)? };
+    if unsafe { ImpersonateLoggedOnUser(raw(&login)) } == 0 {
+        return Err(failure("Impersonate for suspended runner token query"));
+    }
+    // No fallible Rust operation, I/O, allocation or reply occurs while
+    // impersonating. An unsuccessful revert must end this launcher; the host
+    // independently owns the Job and confirms cleanup of every member.
+    let mut token = null_mut();
+    let opened = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) };
+    let error = unsafe { GetLastError() };
+    if unsafe { RevertToSelf() } == 0 {
+        unsafe { ExitProcess(125) };
+    }
+    if opened == 0 {
+        return Err(invalid(format!(
+            "Open suspended runner token under its account: Windows error {error}"
+        )));
+    }
+    unsafe { own(token) }
+}
 fn launch(
     request: Request,
     host: &OwnedHandle,
@@ -229,7 +285,7 @@ fn launch(
     reply: &mut File,
     ack: &OwnedHandle,
 ) -> Result<()> {
-    if request.version != 1 {
+    if request.version != 4 {
         return Err(invalid("Unsupported launcher request version"));
     }
     let suffix = request
@@ -261,9 +317,22 @@ fn launch(
     }
     let username = wide(&provision.manifest.username)?;
     let domain = wide(".")?;
-    let cwd = wide(&request.workspace)?;
+    // DLL initialization precedes runner token/object sealing. Keep the
+    // writable workspace and payload PATH out of this trusted process's search
+    // path, just as for the host-account bootstrap. Payload cwd/environment are
+    // supplied independently over the runner's authenticated control pipe.
+    let system = system_directory()?;
+    let windows = system
+        .parent()
+        .ok_or_else(|| invalid("Missing Windows directory for trusted runner"))?;
+    let cwd = wide(&system)?;
+    let runner_environment = BTreeMap::from([
+        ("SystemRoot", windows.to_string_lossy().into_owned()),
+        ("WINDIR", windows.to_string_lossy().into_owned()),
+        ("PATH", system.to_string_lossy().into_owned()),
+    ]);
     let mut environment = Vec::new();
-    for (name, value) in &request.environment {
+    for (name, value) in &runner_environment {
         if name.is_empty() || name.contains('=') {
             return Err(invalid("Invalid launcher environment name"));
         }
@@ -279,6 +348,9 @@ fn launch(
     let password = provision.password()?;
     let mut startup: STARTUPINFOW = unsafe { zeroed() };
     startup.cb = size_of::<STARTUPINFOW>() as u32;
+    // Only this trusted, hash-pinned bootstrap inherits the logon desktop.
+    // It creates a new private station before any restricted payload starts.
+    startup.lpDesktop = null_mut();
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
     if unsafe {
         CreateProcessWithLogonW(
@@ -298,20 +370,22 @@ fn launch(
     {
         return Err(failure("Create suspended dedicated-account runner"));
     }
-    drop(password);
     let mut child = Child {
         process: unsafe { own(info.hProcess)? },
         thread: unsafe { own(info.hThread)? },
         released: false,
     };
+    let token = query_child_token(raw(&child.process), &username, &domain, password.as_ptr())?;
+    drop(password);
     // The authenticated host pulls copies through its retained launcher handle.
     // Keeping the originals alive until ACK avoids both PID races and leaked
     // remote handles if either duplication or transport fails.
     let ready = Reply::Ready {
-        version: 1,
+        version: 4,
         pid: info.dwProcessId,
         process_handle: raw(&child.process) as usize as u64,
         thread_handle: raw(&child.thread) as usize as u64,
+        token_handle: raw(&token) as usize as u64,
     };
     let mut bytes = serde_json::to_vec(&ready)?;
     bytes.push(b'\n');
@@ -373,7 +447,7 @@ fn execute() -> Result<()> {
     })();
     if let Err(error) = &result {
         let response = Reply::Failed {
-            version: 1,
+            version: 4,
             message: error.to_string(),
         };
         if let Ok(mut bytes) = serde_json::to_vec(&response) {

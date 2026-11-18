@@ -1,5 +1,30 @@
 # Windows process-tree validation
 
+## Release package after broker and inference-routing changes
+
+The fresh package built from the local patch on `0d61dcb` has SHA-256
+`e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc`.
+All four release executables matched their ZIP entries and installed copies.
+Both fresh provisions succeeded. The 139 recorded build and acceptance inputs
+had identical hashes before and after the run.
+
+Under a verified non-elevated Medium token, the unfiltered Rust harness ended
+with exit 101. Two tests passed, the mandatory acceptance test failed with
+`sandbox_unqualified`, and five diagnostics or subprocess fixtures were marked
+ignored. The independent DNS host control delivered one query. The refused
+tree never exercised the three-generation network matrix or either two-member
+console case. On the separately provisioned installation, the identical Rust
+`--list` probe and both calls to offline Cargo returned `executed=false`.
+Cargo produced zero test artifacts. Each CLI host Job drained to zero.
+[Package, invocation and provider evidence](evidence/windows-process-tree-2026-11-18/sovereign-native-acceptance.json)
+
+Six broker regressions, seven existing single-process LPAC tests and nine
+approval tests passed under a normal Windows token. The matched historical
+startup-failure repeat recorded three retained processes, zero active members
+and restored namespace permissions. The original `111dd` run lacks a verified
+restoration. The process-tree release gate stays closed.
+[Broker controls and historical evidence](evidence/windows-process-tree-2026-11-18/sovereign-broker-controls.json)
+
 ## Native Job acceptance with the Werk Protocol client
 
 The tested Windows ZIP has SHA-256

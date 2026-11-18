@@ -65,7 +65,7 @@ unsafe fn own(handle: HANDLE) -> Result<OwnedHandle> {
     }
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
-fn system_directory() -> Result<PathBuf> {
+pub(super) fn system_directory() -> Result<PathBuf> {
     let mut data = vec![0u16; 32768];
     let n = unsafe { GetSystemDirectoryW(data.as_mut_ptr(), data.len() as u32) } as usize;
     if n == 0 || n >= data.len() {
@@ -865,7 +865,7 @@ fn supervise(
         host_sid: p.manifest.host_sid.clone(),
         argv,
         cwd: current,
-        environment: env.clone(),
+        environment: env,
     })?;
     if request.len() > MAX_REQUEST || input.len() > 1024 * 1024 {
         return Err(WorkerError::new(
@@ -894,7 +894,7 @@ fn supervise(
         manifest_digest: p.manifest_digest.clone(),
         workspace: workspace.path.clone(),
         pipe_prefix: prefix,
-        environment: env,
+        environment: BTreeMap::new(),
     })?;
     if launch_bytes.len() > MAX_REQUEST {
         return Err(WorkerError::new(

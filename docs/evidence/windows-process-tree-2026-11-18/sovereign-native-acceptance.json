@@ -1,0 +1,380 @@
+{
+  "worker_base": "0d61dcb50889c9eb40a7b1803ea800ce8a6ab67f",
+  "worker_branch": "feat/windows-child-process",
+  "werk1112_base": "a9888e0fd2e9b7a076fd5a9514b555baee5b2bfb",
+  "workload_transport": "scripted offline CLI using process.run with its native Job supervisor",
+  "package": {
+    "archive": "F:\\werkWorker\\target\\sovereign-job-0d61dcb-02\\built-package\\werkWorker-v0.3.3-windows-x86_64.zip",
+    "sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+    "verified_build_archive_install": {
+      "ww.exe": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+      "werk-worker.exe": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c",
+      "ww-windows-runner.exe": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e",
+      "ww-windows-provision.exe": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86"
+    },
+    "inputs_sha256": "259c9f60ef9b4943273f59c17630d6558218a075a41a83b59739ad730e605390",
+    "inputs_count": 139,
+    "listed_inputs_identical_after_acceptance": true
+  },
+  "provisions": {
+    "runtime": {
+      "manifest_sha256": "00345300ef4a179641b2de2171a0204752ad4f6e8cd45f120323b94afcf8a747",
+      "schema_version": 5,
+      "runner_sha256": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e"
+    },
+    "installed-runtime": {
+      "manifest_sha256": "d8c7cffbf52df1ca24e83c8128fb3d9d896c1277e1097d5da9290e1b54748a5a",
+      "schema_version": 5,
+      "runner_sha256": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e"
+    }
+  },
+  "wrapper": {
+    "archive_sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+    "suite_setup_exit": 0,
+    "mandatory_suite_exit": 1,
+    "installed_setup_exit": 0,
+    "installed_start_exit": 1,
+    "qualified": false
+  },
+  "required_suite": {
+    "host": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "verified_before_resume": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "harness_exit": 101,
+    "summary": "test result: FAILED. 2 passed; 1 failed; 5 ignored; 0 measured; 0 filtered out",
+    "missing_markers": [
+      "NATIVE_TREE_LIFECYCLE_OK normal",
+      "NATIVE_TREE_LIFECYCLE_OK parent-exit",
+      "NATIVE_TREE_LIFECYCLE_OK timeout",
+      "NATIVE_TREE_LIFECYCLE_OK cancel",
+      "NATIVE_TREE_LIFECYCLE_OK abort",
+      "NATIVE_TREE_LIFECYCLE_OK engine-close",
+      "NATIVE_TREE_CONSOLE_BUDGET_OK console-alloc",
+      "NATIVE_TREE_CONSOLE_BUDGET_OK console-child",
+      "NATIVE_TREE_UI_BOUNDARIES_OK",
+      "NATIVE_TREE_DNS_BROKER_DENIED_OK",
+      "NATIVE_TREE_THREAD_IDENTITY_NETWORK_MATRIX_OK",
+      "NATIVE_TREE_HOST_LOGON_SID_BOUNDARY_OK",
+      "NATIVE_TREE_FILE_REGISTRY_NETWORK_IPC_HANDLES_OK",
+      "NATIVE_TREE_INBOUND_LOOPBACK_OK",
+      "NATIVE_TREE_RESOURCE_OK memory",
+      "NATIVE_TREE_RESOURCE_OK cpu",
+      "NATIVE_TREE_BOUNDED_OUTPUT_AND_DRAIN_OK",
+      "NATIVE_TREE_OFFLINE_CARGO_OK",
+      "NATIVE_TREE_CRASH_WORKSPACE_BARRIER_OK",
+      "NATIVE_TREE_HOST_DEATH_AND_RESTART_DENIAL_OK"
+    ],
+    "log_sha256": "2e9283d3d036552bfe5ac15a44f8aa3769cdcc91f923244f486f481647805c1b",
+    "failed_test_names": [
+      "required_native_process_tree_acceptance"
+    ]
+  },
+  "installed_rust_list": {
+    "host": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "verified_before_resume": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "cli_exit": 0,
+    "probe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+    "cli_sha256": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+    "tool_status": "failed",
+    "error_code": "sandbox_unqualified",
+    "executed": false,
+    "workload_exit": null,
+    "invocation_id": "invocation_495b8366-889e-44d7-91b1-dc12d20af914"
+  },
+  "installed_offline_cargo": {
+    "host": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "verified_before_resume": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "cli_exit": 0,
+    "artifact_count": 0,
+    "qualified_invocations": 0,
+    "log_sha256": "ee5f6cd88eff1425bc42d7d3a8d8439ddf9d76692a8105a485fe6b2e6c1746a0",
+    "tool_status": "failed",
+    "error_code": "sandbox_unqualified",
+    "executed": false,
+    "workload_exit": null,
+    "invocation_id": "invocation_6591edc0-2338-4695-9487-7664e63436af"
+  },
+  "offline_cargo_repeated_after_list": {
+    "host": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "verified_before_resume": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "cli_exit": 0,
+    "artifact_count": 0,
+    "qualified_invocations": 0,
+    "log_sha256": "a0e3d32b189665c164b6e087e84666f1c06411c65adaa1bdafe9674b73daf15e",
+    "tool_status": "failed",
+    "error_code": "sandbox_unqualified",
+    "executed": false,
+    "workload_exit": null,
+    "invocation_id": "invocation_f58f878c-3b45-4a94-8a3f-dc3bec147a15"
+  },
+  "dns_three_generations": {
+    "measured": false,
+    "reason": "admission refused before the three-generation workload and its two bracketing host controls",
+    "independent_host_control": {
+      "receiver": "127.0.0.1:53",
+      "arrivals": 1,
+      "passed": true
+    }
+  },
+  "both_console_cases_maximum_two_live_job_members": {
+    "measured": false,
+    "reason": "admission refused before console cases"
+  },
+  "reproduction": {
+    "command": "scripts/test-windows-process-tree.ps1 -EvidenceRoot <new-directory> -BindAddress <assigned-controlled-IPv4>",
+    "offline": true,
+    "standalone_rust_probe_argument": "--list",
+    "installed_cargo_command": "cargo test --offline"
+  },
+  "installed_provider_routing": {
+    "utc": "2026-11-18T16:11:54.714928+00:00",
+    "cli": "F:\\werkWorker\\target\\sovereign-job-0d61dcb-02\\installation\\bin\\ww.exe",
+    "sha256": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+    "loopback_only": true,
+    "synthetic_inputs": true,
+    "runs": {
+      "single": {
+        "checks": {
+          "cli_run_exit_zero": true,
+          "acknowledgment_in_cli_output": true,
+          "blocked_zero_requests": true,
+          "primary_received_no_canary_or_vendor_credential": true,
+          "selected_received_canary_and_credential": true,
+          "route_order_correct": true
+        },
+        "receivers": {
+          "unavailable": {
+            "requests": 0,
+            "catalog_gets": 0,
+            "chat_posts": 0,
+            "requests_containing_canary": 0,
+            "requests_using_fixture_credential": 0
+          },
+          "blocked": {
+            "requests": 0,
+            "catalog_gets": 0,
+            "chat_posts": 0,
+            "requests_containing_canary": 0,
+            "requests_using_fixture_credential": 0
+          },
+          "compatible": {
+            "requests": 3,
+            "catalog_gets": 2,
+            "chat_posts": 1,
+            "requests_containing_canary": 1,
+            "requests_using_fixture_credential": 3
+          }
+        },
+        "selected": "explicit compatible",
+        "attempts": []
+      },
+      "fallback": {
+        "checks": {
+          "cli_run_exit_zero": true,
+          "acknowledgment_in_cli_output": true,
+          "blocked_zero_requests": true,
+          "primary_received_no_canary_or_vendor_credential": true,
+          "selected_received_canary_and_credential": true,
+          "route_order_correct": true
+        },
+        "receivers": {
+          "unavailable": {
+            "requests": 2,
+            "catalog_gets": 2,
+            "chat_posts": 0,
+            "requests_containing_canary": 0,
+            "requests_using_fixture_credential": 0
+          },
+          "blocked": {
+            "requests": 0,
+            "catalog_gets": 0,
+            "chat_posts": 0,
+            "requests_containing_canary": 0,
+            "requests_using_fixture_credential": 0
+          },
+          "compatible": {
+            "requests": 3,
+            "catalog_gets": 2,
+            "chat_posts": 1,
+            "requests_containing_canary": 1,
+            "requests_using_fixture_credential": 3
+          }
+        },
+        "selected": "compatible",
+        "attempts": [
+          {
+            "candidate": "unavailable",
+            "status": "provider_unavailable"
+          },
+          {
+            "candidate": "blocked",
+            "status": "disclosure_denied"
+          },
+          {
+            "candidate": "compatible",
+            "status": "selected"
+          }
+        ]
+      }
+    },
+    "passed": true
+  },
+  "worker_regressions": {
+    "raw_path": "F:\\werkWorker\\target\\sovereign-worker-regressions-02\\regressions.json",
+    "targets": {
+      "format": {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit": 0,
+        "seconds": 7.14,
+        "summary": [],
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "python-ci": {
+        "command": [
+          "C:\\Users\\Philip Bodenbach\\AppData\\Roaming\\uv\\python\\cpython-3.12.11-windows-x86_64-none\\python.exe",
+          "-B",
+          "-X",
+          "utf8",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts/tests"
+        ],
+        "exit": 0,
+        "seconds": 15.25,
+        "summary": [
+          "Ran 121 tests in 14.477s",
+          "OK (skipped=51)"
+        ],
+        "sha256": "9b2e0817479135cd6d3538afff78dc5dd4dfdeee187613bc899776a1ca9f1d0c"
+      },
+      "provider-policy": {
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--no-fail-fast",
+          "--test",
+          "provider_transport",
+          "--test",
+          "provider_execution_policy",
+          "--test",
+          "provider_routing",
+          "--test",
+          "subagent_models"
+        ],
+        "exit": 0,
+        "seconds": 74.92,
+        "summary": [
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s",
+          "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.02s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.98s"
+        ],
+        "sha256": "191c1e78fa4c820359d6dccdec6cc536552d65af84f3080958698dcae1d7e342"
+      },
+      "lint": {
+        "command": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--offline",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit": 0,
+        "seconds": 55.14,
+        "summary": [],
+        "sha256": "444a0f838af9a604fbae18f12bef3347886d29cd5d544aa82606bda7ca0958fe"
+      },
+      "lib-minimal": {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--no-default-features",
+          "--lib"
+        ],
+        "exit": 0,
+        "seconds": 20.67,
+        "summary": [],
+        "sha256": "8b8a2f384a6a5548d101328acb4eae01d45c03b1b69d757a364691c4d946aed3"
+      },
+      "sdk-consumer": {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "--manifest-path",
+          "examples/sdk-consumer/Cargo.toml"
+        ],
+        "exit": 0,
+        "seconds": 52.52,
+        "summary": [],
+        "sha256": "3442d1440185b3b6d6621fc64e74009230ea43744f4ed5576eb8418c959fd48a"
+      }
+    }
+  },
+  "same_installed_cli_inference": {
+    "backend_repository_evidence": "docs/development/werk-worker-cpu-interop.json",
+    "evidence_sha256": "c52b15fe41eb565d83de1c8f739417e31bc8d821fc881b678345a9b59629bb89",
+    "worker_sha256": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+    "server_sha256": "139a8e4b6ecf7870b4bc52f0ed85ef9591c04f57a2a112464c1e10e0ced30187",
+    "worker_json": "OK",
+    "worker_sse": "OK",
+    "worker_run_cancel_json": {
+      "local_run": "cancelled",
+      "inference": "cancelled"
+    },
+    "worker_run_cancel_sse": {
+      "local_run": "cancelled",
+      "inference": "cancelled"
+    }
+  }
+}

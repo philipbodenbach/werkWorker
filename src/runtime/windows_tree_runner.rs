@@ -289,6 +289,45 @@ fn quote_arg(value: &OsStr) -> Vec<u16> {
     quoted.push(b'"' as u16);
     quoted
 }
+fn approved_environment_temp<'a>(
+    values: &'a BTreeMap<String, String>,
+    windows: &Path,
+) -> io::Result<&'a Path> {
+    for (name, value) in values {
+        if !super::windows_provision::is_toolchain_environment_key(name)
+            && !matches!(
+                name.as_str(),
+                "SystemRoot" | "WINDIR" | "TEMP" | "TMP" | "HOME" | "USERPROFILE"
+            )
+        {
+            return Err(invalid("Unapproved payload environment variable"));
+        }
+        if value.is_empty() {
+            return Err(invalid("Empty payload environment variable"));
+        }
+    }
+    for name in ["SystemRoot", "WINDIR"] {
+        if values.get(name).map(Path::new) != Some(windows) {
+            return Err(invalid(
+                "Payload system path differs from the Windows directory",
+            ));
+        }
+    }
+    let temp = values
+        .get("TEMP")
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| invalid("Missing absolute private TEMP directory"))?;
+    for name in ["TMP", "HOME", "USERPROFILE"] {
+        if values.get(name).map(Path::new) != Some(temp) {
+            return Err(invalid(
+                "Payload profile and temp paths must use the same private directory",
+            ));
+        }
+    }
+    Ok(temp)
+}
+
 fn environment(values: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
     let mut entries: Vec<_> = values.iter().collect();
     entries.sort_by_key(|(name, _)| name.to_ascii_uppercase());
@@ -976,6 +1015,25 @@ fn execute(
     unsafe {
         SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS);
     }
+    // Validate the authenticated request before creating objects for its SIDs.
+    let system = super::windows_process_tree::system_directory().map_err(io::Error::other)?;
+    let windows = system
+        .parent()
+        .ok_or_else(|| invalid("Missing Windows directory"))?;
+    let temp = approved_environment_temp(&request.environment, windows)?.to_owned();
+    let local_app_data = super::windows_provision::verified_runner_local_app_data(
+        &request.user_sid,
+        &request.appcontainer_sid,
+        &temp,
+    )
+    .map_err(io::Error::other)?
+    .into_os_string()
+    .into_string()
+    .map_err(|_| invalid("Dedicated LocalAppData must be Unicode"))?;
+    request
+        .environment
+        .insert("LOCALAPPDATA".into(), local_app_data);
+    let environment = environment(&request.environment)?;
     // Only trusted bootstrap code runs before this barrier. The host owns the
     // finite Job already, pulls these new objects and installs their exact ACLs
     // plus UI restrictions before acknowledging any untrusted execution.
@@ -1019,43 +1077,9 @@ fn execute(
         CapabilityCount: 0,
         Reserved: 0,
     };
-    // AppContainer creation needs this base in the child environment. Resolve
-    // it from the verified dedicated OS profile and host-pinned package temp.
-    if request
-        .environment
-        .keys()
-        .any(|key| key.eq_ignore_ascii_case("LOCALAPPDATA"))
-    {
-        return Err(invalid("LocalAppData is reserved for the trusted runner"));
-    }
-    let temp = request
-        .environment
-        .get("TEMP")
-        .map(PathBuf::from)
-        .ok_or_else(|| invalid("Missing approved private TEMP directory"))?;
-    if !temp.is_absolute() || request.environment.get("TMP").map(Path::new) != Some(temp.as_path())
-    {
-        return Err(invalid(
-            "TEMP and TMP must identify the same approved private directory",
-        ));
-    }
-    let local_app_data = super::windows_provision::verified_runner_local_app_data(
-        &request.user_sid,
-        &request.appcontainer_sid,
-        &temp,
-    )
-    .map_err(io::Error::other)?;
-    let local_app_data = local_app_data
-        .into_os_string()
-        .into_string()
-        .map_err(|_| invalid("Dedicated LocalAppData must be Unicode"))?;
-    request
-        .environment
-        .insert("LOCALAPPDATA".into(), local_app_data);
     seal_current_runner(&request.host_sid, raw(&token))?;
     let executable = wide(&request.argv[0])?;
     let cwd = wide(&request.cwd)?;
-    let environment = environment(&request.environment)?;
     let mut command = Vec::new();
     for (index, argument) in request.argv.iter().enumerate() {
         if index != 0 {
@@ -1213,6 +1237,75 @@ mod restricted_token_tests {
     use super::*;
     const TEST_PACKAGE: &str = "S-1-15-2-1-2-3-4-5-6-7";
     const TEST_WRITER: &str = "S-1-5-21-3987231234-3987231235-3987231236-212345";
+    #[test]
+    fn receiver_checks_approved_payload_environment_before_bootstrap() {
+        let windows = Path::new(r"C:\Windows");
+        let temp = r"C:\private\AC\Temp";
+        let mut values: BTreeMap<String, String> = [
+            ("SystemRoot", r"C:\Windows"),
+            ("WINDIR", r"C:\Windows"),
+            ("TEMP", temp),
+            ("TMP", temp),
+            ("HOME", temp),
+            ("USERPROFILE", temp),
+            ("PATH", r"C:\Toolchain\bin"),
+            ("LIB", r"C:\Toolchain\lib"),
+            ("INCLUDE", r"C:\Toolchain\include"),
+            ("LIBPATH", r"C:\Toolchain\lib"),
+            ("RUSTUP_HOME", r"C:\Toolchain\rust"),
+            ("CARGO_HOME", r"C:\Toolchain\cargo"),
+            ("RUSTC", r"C:\Toolchain\bin\rustc.exe"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        assert_eq!(
+            approved_environment_temp(&values, windows).unwrap(),
+            Path::new(temp)
+        );
+        for name in [
+            "LOCALAPPDATA",
+            "RUSTC_WRAPPER",
+            "HTTP_PROXY",
+            "Path",
+            "Windir",
+        ] {
+            values.insert(name.into(), "unapproved".into());
+            assert!(
+                approved_environment_temp(&values, windows).is_err(),
+                "{name}"
+            );
+            values.remove(name);
+        }
+        for name in ["SystemRoot", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE"] {
+            let expected = values.remove(name).unwrap();
+            assert!(
+                approved_environment_temp(&values, windows).is_err(),
+                "{name}"
+            );
+            values.insert(name.into(), r"C:\unapproved".into());
+            assert!(
+                approved_environment_temp(&values, windows).is_err(),
+                "{name}"
+            );
+            values.insert(name.into(), expected);
+        }
+    }
+
+    #[test]
+    fn bootstrap_rejects_an_identity_different_from_its_primary_token() {
+        let error = super::super::windows_provision::verified_runner_local_app_data(
+            "S-1-0-0",
+            TEST_PACKAGE,
+            Path::new(r"C:\private\AC\Temp"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Dedicated profile token or package identity differs")
+        );
+    }
     #[test]
     fn native_token_restricts_privileges_and_default_objects() {
         let mut base = null_mut();

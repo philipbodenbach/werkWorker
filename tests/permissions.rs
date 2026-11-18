@@ -708,6 +708,65 @@ fn request_mode_never_bypasses_hard_denies_paths_or_read_only_workers() {
     );
 }
 
+struct ProcessApprovalWorkspace {
+    workspace: werk_worker::runtime::Workspace,
+    probe: String,
+    _root: tempfile::TempDir,
+}
+
+impl ProcessApprovalWorkspace {
+    async fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let workspace = Sandbox::default()
+            .create_native_workspace(root.path().join("workspace"))
+            .await
+            .unwrap();
+        #[cfg(not(windows))]
+        let workspace = werk_worker::runtime::Workspace::open(root.path())
+            .await
+            .unwrap();
+
+        let name = if cfg!(windows) { "probe.exe" } else { "probe" };
+        let executable = workspace.path.join(name);
+        let probe = if cfg!(target_os = "linux") {
+            format!("/workspace/{name}")
+        } else {
+            executable.to_str().unwrap().to_owned()
+        };
+        let fixture = Self {
+            workspace,
+            probe,
+            _root: root,
+        };
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/native_process_probe.rs");
+        let compilation =
+            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .args(["--edition=2024", "-C", "debuginfo=0"])
+                .arg(source)
+                .arg("-o")
+                .arg(&executable)
+                .output()
+                .unwrap();
+        assert!(
+            compilation.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compilation.stderr)
+        );
+        fixture
+    }
+}
+
+impl Drop for ProcessApprovalWorkspace {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        Sandbox::default()
+            .remove_native_workspace_profiles(&self.workspace)
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn remembered_process_approval_binds_commands_and_survives_session_restart() {
     let sandbox = Sandbox::default();
@@ -718,16 +777,20 @@ async fn remembered_process_approval_binds_commands_and_survives_session_restart
         eprintln!("SKIP real sandbox: {error}");
         return;
     }
-    let workspace = tempfile::tempdir().unwrap();
+    let fixture = ProcessApprovalWorkspace::new().await;
     let storage = tempfile::tempdir().unwrap();
     let mut session_id: Option<String> = None;
     for commands in [["first", "second"], ["first", "second"]] {
         let resumed = session_id.is_some();
+        std::fs::write(fixture.workspace.path.join("first.txt"), commands[0]).unwrap();
         let provider = Arc::new(ScriptedProvider::new(vec![
-            call("process.run", json!({"argv":["/bin/echo",commands[0]]})),
             call(
                 "process.run",
-                json!({"argv":["/bin/sh","-c",format!("printf {}", commands[1])],"cwd":"."}),
+                json!({"argv":[fixture.probe,"read","first.txt"]}),
+            ),
+            call(
+                "process.run",
+                json!({"argv":[fixture.probe,"stdin"],"stdin":commands[1],"cwd":"."}),
             ),
             ScriptedTurn::text("done"),
         ]));
@@ -751,7 +814,7 @@ async fn remembered_process_approval_binds_commands_and_survives_session_restart
             engine
                 .create_session(
                     AgentProfile::bundled("coding-basic").unwrap(),
-                    workspace.path(),
+                    &fixture.workspace.path,
                     HostPolicy {
                         request_approvals: true,
                         workspace_writable: true,
@@ -821,7 +884,7 @@ async fn remembered_process_approval_binds_commands_and_survives_session_restart
         assert!(grant.arguments_hash.is_some());
         let registry = ToolRegistry::builtins().unwrap();
         let process = registry.get("process.run").unwrap().definition();
-        let args = json!({"argv":["/bin/echo","new arguments"]});
+        let args = json!({"argv":[fixture.probe,"read","new arguments"]});
         assert_eq!(policy.evaluate(&process, &args, &[]), PolicyDecision::Ask);
         assert_eq!(
             policy.evaluate(
@@ -859,11 +922,11 @@ async fn explicit_process_approval_runs_in_the_real_workspace_sandbox() {
         eprintln!("SKIP real sandbox: {error}");
         return;
     }
-    let workspace = tempfile::tempdir().unwrap();
+    let fixture = ProcessApprovalWorkspace::new().await;
     let provider = Arc::new(ScriptedProvider::new(vec![
         call(
             "process.run",
-            json!({"argv":["/bin/sh","-c","printf verified > process-proof; printf process-ok"],"cwd":"."}),
+            json!({"argv":[fixture.probe,"write","process-proof","verified"],"cwd":"."}),
         ),
         ScriptedTurn::text("done"),
     ]));
@@ -879,7 +942,7 @@ async fn explicit_process_approval_runs_in_the_real_workspace_sandbox() {
     let session = engine
         .create_session(
             AgentProfile::bundled("general-readonly").unwrap(),
-            workspace.path(),
+            &fixture.workspace.path,
             HostPolicy::default(),
             Value::Null,
         )
@@ -899,11 +962,11 @@ async fn explicit_process_approval_runs_in_the_real_workspace_sandbox() {
         request.description["arguments"]["sandbox"]["workspace_writable"],
         true
     );
-    assert!(!workspace.path().join("process-proof").exists());
+    assert!(!fixture.workspace.path.join("process-proof").exists());
     answer(&run, &request, true).await;
     assert_eq!(run.wait().await.unwrap().status, RunStatus::Completed);
     assert_eq!(
-        std::fs::read_to_string(workspace.path().join("process-proof")).unwrap(),
+        std::fs::read_to_string(fixture.workspace.path.join("process-proof")).unwrap(),
         "verified"
     );
     assert_eq!(

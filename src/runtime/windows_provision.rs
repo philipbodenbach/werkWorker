@@ -752,21 +752,15 @@ fn verify_network(manifest: &ProvisionManifest) -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn is_toolchain_environment_key(name: &str) -> bool {
+    matches!(
+        name,
+        "PATH" | "LIB" | "INCLUDE" | "LIBPATH" | "CARGO_HOME" | "RUSTUP_HOME" | "RUSTC"
+    )
+}
 fn validate_environment(manifest: &ProvisionManifest) -> Result<()> {
     for (name, value) in &manifest.toolchain_environment {
-        if ![
-            "PATH",
-            "LIB",
-            "INCLUDE",
-            "LIBPATH",
-            "CARGO_HOME",
-            "RUSTUP_HOME",
-            "RUSTC",
-        ]
-        .contains(&name.as_str())
-            || value.is_empty()
-            || value.contains('\0')
-        {
+        if !is_toolchain_environment_key(name) || value.is_empty() || value.contains('\0') {
             return Err(fail("Unexpected toolchain environment entry"));
         }
         for part in value.split(';') {

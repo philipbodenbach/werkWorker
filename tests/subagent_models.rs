@@ -306,9 +306,14 @@ async fn project_model_routes_children_only_and_survives_reopen() {
         )
         .unwrap();
         let project = Project::load(root.path()).await.unwrap();
-        let provider = WerkProvider::connect(config(&server.origin), Some("fixture-secret".into()))
-            .await
-            .unwrap();
+        let provider = WerkProvider::connect_explicit(
+            werk_worker::providers::ProviderTransport::Werk,
+            config(&server.origin),
+            Some("fixture-secret".into()),
+            Some("FIXTURE_KEY"),
+        )
+        .await
+        .unwrap();
         let store = Arc::new(
             SqliteStore::open(storage.path().join("sessions.sqlite"))
                 .await
@@ -417,9 +422,14 @@ async fn project_model_routes_children_only_and_survives_reopen() {
             r#"{"subagent_model":"missing"}"#,
         )
         .unwrap();
-        let provider = WerkProvider::connect(config(&server.origin), Some("fixture-secret".into()))
-            .await
-            .unwrap();
+        let provider = WerkProvider::connect_explicit(
+            werk_worker::providers::ProviderTransport::Werk,
+            config(&server.origin),
+            Some("fixture-secret".into()),
+            Some("FIXTURE_KEY"),
+        )
+        .await
+        .unwrap();
         let engine = WorkerEngine::builder(Arc::new(provider))
             .store(Arc::new(
                 SqliteStore::open(storage.path().join("sessions.sqlite"))

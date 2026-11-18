@@ -360,6 +360,7 @@ impl WorkerEngine {
             revision: 0,
             workspace: workspace.path.clone(),
             workspace_identity: workspace.identity.clone(),
+            inference_disclosure_binding: self.inner.provider.disclosure_binding(),
             sandbox_id: id("sandbox"),
             principal: self.inner.principal.clone(),
             profile_hash: fingerprint(&profile),
@@ -560,6 +561,12 @@ impl WorkerEngine {
             return Err(WorkerError::new(
                 "principal_conflict",
                 "Stored session belongs to another host principal",
+            ));
+        }
+        if data.inference_disclosure_binding != self.inner.provider.disclosure_binding() {
+            return Err(WorkerError::new(
+                "provider_disclosure_denied",
+                "Stored history is not authorized for this inference connection. Inspect or export it locally with 'ww sessions', or start a new session.",
             ));
         }
         let workspace = Workspace::open(&data.workspace).await?;

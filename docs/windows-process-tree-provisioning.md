@@ -216,8 +216,17 @@ expanded. This follows the documented
 and [explicit-credential impersonation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-impersonateloggedonuser).
 
 Both trusted startup stages use System32 as their working directory and a minimal
-system environment. The payload receives its separately approved toolchain
-environment and workspace directory. For programs such as `cmd.exe`, a verbatim
+system environment. The host sends approved toolchain values only to the
+dedicated runner. Provisioning checks the values against the allowed roots.
+Before creating private USER objects the runner checks each environment name
+against the same toolchain allowlist or one of the six fixed host fields. It
+checks SystemRoot and WINDIR against the native Windows directory. TEMP, TMP,
+HOME and USERPROFILE must all identify the dedicated package temp. The
+runner checks its own primary token's user SID, the derived package SID and
+the temp directory's file identity, then supplies LOCALAPPDATA from that
+account's Windows profile.
+
+The payload receives the approved workspace directory. For programs such as `cmd.exe`, a verbatim
 drive path is converted to DOS spelling only after that spelling resolves back
 to the identical canonical workspace path; a mismatch refuses execution.
 

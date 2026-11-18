@@ -67,6 +67,9 @@ tool calling and streaming according to the selected model. This connection
 uses the provider's model list and chat completion API. Each run keeps its
 selected origin and credential. A failed Werk request stays on the Werk connection.
 
+For ordered, host-authorized provider selection and disclosure limits, see
+[Inference routing](provider-routing.md).
+
 ## Controls and reconnecting
 
 Tab/Shift-Tab or Up/Down selects a field; Left/Right changes a choice. Enter moves

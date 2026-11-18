@@ -5,6 +5,8 @@ installed as `werk-worker` and `ww`, both sharing the same implementation.
 The starting repository had only Cargo's hello-world program.
 Keep all changes local. Product name: werkWorker. License: Elastic-2.0.
 
+The [inference and execution decision](inference-and-execution-adr.md) describes provider selection, disclosure authorization and the native Windows release gate.
+
 Dependencies flow from CLI/transport to the public SDK, then to contracts,
 providers, store, policy and runtime. Tools implement an explicit trait; core
 does not know ticket or Git semantics. Skills are immutable data. Profiles

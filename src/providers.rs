@@ -11,6 +11,9 @@ use std::{
     time::Duration,
 };
 
+mod routing;
+pub use routing::{Disclosure, InferenceCapability, ProviderRoute, ProviderRouting};
+
 pub type ModelStream = Pin<Box<dyn Stream<Item = Result<ModelDelta>> + Send>>;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +71,10 @@ pub enum ModelDelta {
 pub trait ModelProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     fn identity(&self) -> String;
+    /// Host-owned routing authorization persisted with a session, never sent to inference.
+    fn disclosure_binding(&self) -> Option<String> {
+        None
+    }
     /// Model selector on this connection, when supported. Not a provider identity.
     fn model_id(&self) -> Option<&str> {
         None
@@ -557,15 +564,29 @@ impl SecretResolver for EnvironmentSecrets {
         Ok(std::env::var(reference).ok())
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ProviderTransport {
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProviderTransport {
+    #[serde(rename = "werk_protocol")]
     Werk,
+    #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
+}
+
+fn is_literal_loopback(base: &reqwest::Url) -> bool {
+    base.host_str().is_some_and(|host| {
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    })
 }
 
 #[derive(Clone)]
 pub struct WerkClient {
     transport: ProviderTransport,
+    route_binding: Option<String>,
+    /// An environment/principal reference or a connection-local identity for an opaque key.
+    credential_identity: Option<String>,
     client: reqwest::Client,
     base: reqwest::Url,
     secret: Option<Arc<String>>,
@@ -582,11 +603,23 @@ impl std::fmt::Debug for WerkClient {
 }
 impl WerkClient {
     pub fn new(config: &WerkConfig, secret: Option<String>) -> Result<Self> {
+        Self::for_transport(config, secret, ProviderTransport::Werk)
+    }
+
+    fn for_transport(
+        config: &WerkConfig,
+        secret: Option<String>,
+        transport: ProviderTransport,
+    ) -> Result<Self> {
+        if transport == ProviderTransport::OpenAiCompatible && config.deployment.is_some() {
+            return Err(WorkerError::new(
+                "invalid_deployment",
+                "Werk deployment selection requires the Werk transport",
+            ));
+        }
         let base = reqwest::Url::parse(&config.base_url)
             .map_err(|_| WorkerError::new("invalid_url", "Invalid Werk base URL"))?;
-        let local = base
-            .host_str()
-            .is_some_and(|h| h.parse::<std::net::IpAddr>().is_ok_and(|a| a.is_loopback()));
+        let local = is_literal_loopback(&base);
         if !(base.scheme() == "https" || (base.scheme() == "http" && local))
             || !base.username().is_empty()
             || base.password().is_some()
@@ -618,7 +651,9 @@ impl WerkClient {
             .build()
             .map_err(|_| WorkerError::new("http_client", "Cannot construct Werk client"))?;
         Ok(Self {
-            transport: ProviderTransport::Werk,
+            transport,
+            route_binding: None,
+            credential_identity: secret.as_ref().map(|_| id("connection-key")),
             client,
             base,
             secret: secret.map(Arc::new),
@@ -690,6 +725,8 @@ impl WerkClient {
         request.send().await.map_err(|e| {
             if e.is_timeout() {
                 WorkerError::transient("timeout")
+            } else if e.is_connect() && is_connection_unavailable(&e) {
+                WorkerError::transient("provider_unavailable")
             } else {
                 WorkerError::transient("network_error")
             }
@@ -888,10 +925,34 @@ impl WerkClient {
         bounded_body(response, self.max_body).await
     }
 }
+fn is_connection_unavailable(error: &reqwest::Error) -> bool {
+    // A TLS/identity failure can also be reported as a connect error. Only a
+    // definite network-level refusal/unreachability may advance routing.
+    use std::error::Error;
+    use std::io::ErrorKind;
+    let mut cause = error.source();
+    while let Some(err) = cause {
+        if let Some(io) = err.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::NotConnected
+            )
+        {
+            return true;
+        }
+        cause = err.source();
+    }
+    false
+}
+
 fn http_error(status: u16) -> WorkerError {
     let code = match status {
         401 | 403 => "auth_error",
         429 => "rate_limit",
+        502..=504 => "provider_unavailable",
         300..=399 => "redirect_denied",
         400 | 404 | 422 => "invalid_request",
         _ => "server_error",
@@ -1064,8 +1125,7 @@ impl WerkProvider {
         Ok(body)
     }
     pub async fn connect(config: WerkConfig, secret: Option<String>) -> Result<Self> {
-        let client = WerkClient::new(&config, secret)?;
-        Self::connect_client(config, client).await
+        Self::connect_explicit(ProviderTransport::Werk, config, secret, None).await
     }
 
     /// Use an explicitly selected third-party OpenAI-compatible origin.
@@ -1073,14 +1133,30 @@ impl WerkProvider {
         config: WerkConfig,
         secret: Option<String>,
     ) -> Result<Self> {
-        if config.deployment.is_some() {
-            return Err(WorkerError::new(
-                "invalid_deployment",
-                "Werk deployment selection requires the Werk transport",
-            ));
+        Self::connect_explicit(ProviderTransport::OpenAiCompatible, config, secret, None).await
+    }
+
+    /// A trusted, stable credential reference names one principal. Key material is never persisted.
+    /// Supplying a raw key without a reference authorizes this connection's lifetime only.
+    pub async fn connect_explicit(
+        transport: ProviderTransport,
+        config: WerkConfig,
+        secret: Option<String>,
+        credential_reference: Option<&str>,
+    ) -> Result<Self> {
+        if let Some(reference) = credential_reference {
+            validate_id(reference)?;
+            if secret.as_deref().is_none_or(str::is_empty) {
+                return Err(WorkerError::new(
+                    "auth_error",
+                    "Configured provider credential is unavailable",
+                ));
+            }
         }
-        let mut client = WerkClient::new(&config, secret)?;
-        client.transport = ProviderTransport::OpenAiCompatible;
+        let mut client = WerkClient::for_transport(&config, secret, transport)?;
+        if let Some(reference) = credential_reference {
+            client.credential_identity = Some(format!("reference:{reference}"));
+        }
         Self::connect_client(config, client).await
     }
 
@@ -1405,6 +1481,17 @@ impl ModelProvider for WerkProvider {
         Some(&self.config.model)
     }
     async fn for_model(&self, model: &str) -> Result<Arc<dyn ModelProvider>> {
+        if self.client.route_binding.is_some() {
+            if model != self.config.model {
+                return Err(WorkerError::new(
+                    "provider_disclosure_denied",
+                    "Model change is outside this provider route's disclosure grant",
+                ));
+            }
+            return Ok(Arc::new(
+                Self::connect_client(self.config.clone(), self.client.clone()).await?,
+            ));
+        }
         let mut config = self.config.clone();
         config.model = model.into();
         // The parent's deployment pin, token ceiling and effort belong to its
@@ -1563,6 +1650,18 @@ impl ModelProvider for WerkProvider {
         let limit = self.context_limit.load(std::sync::atomic::Ordering::SeqCst);
         caps.context_tokens = (limit > 0).then_some(limit);
         caps
+    }
+    fn disclosure_binding(&self) -> Option<String> {
+        Some(self.client.route_binding.clone().unwrap_or_else(|| {
+            fingerprint(&(
+                "explicit-provider-v1",
+                self.client.transport,
+                self.client.origin(),
+                &self.config.model,
+                &self.config.deployment,
+                &self.client.credential_identity,
+            ))
+        }))
     }
     fn identity(&self) -> String {
         match self.client.transport {

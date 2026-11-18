@@ -1,5 +1,12 @@
 # Trust boundaries and sandbox matrix
 
+Werk Protocol carries native inference and model-generated tool intents. The
+host also supports a directly selected compatible API and an explicitly
+authorized routing policy. Every selection reaches the same local registry,
+approval checks, workspace rules and process supervisor.
+[Trust-boundary decision](inference-and-execution-adr.md) and
+[provider routing and disclosure](provider-routing.md).
+
 The host principal owns engine setup, provider secrets, installed Rust tools,
 grants and the control channel. Model replies, skills, workspace instructions,
 documents, HTTP responses and tool output are untrusted data. A skill cannot

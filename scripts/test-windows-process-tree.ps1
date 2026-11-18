@@ -71,22 +71,39 @@ Write-JsonFile $Request @{
         LIB = '{toolchain2};{toolchain3};{toolchain4}'
     }
 }
-& (Join-Path $InstalledBin 'ww-windows-provision.exe') --request $Request
-if ($LASTEXITCODE -ne 0) { throw 'Fresh provisioning from the installed helpers failed.' }
-$Provision = Join-Path $Runtime 'provisioning.json'
-$Acceptance = Join-Path $PSScriptRoot 'validate-windows-process-tree.py'
-& $Python $Acceptance suite --source $RepoRoot --manifest $Provision --evidence (Join-Path $EvidenceRoot 'suite') --bind-address $BindAddress
-if ($LASTEXITCODE -ne 0) { throw 'The mandatory native process-tree suite failed; the profile is not qualified.' }
-# The suite deliberately retains its crash receipt. Use another freshly
-# provisioned installation workspace; never erase that evidence to admit a run.
-$InstalledRequest = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
-$InstalledRequest.provisioning_root = Join-Path $EvidenceRoot 'installed-runtime'
-$InstalledRequest.workspace = Join-Path $EvidenceRoot 'installed-workspace'
-$InstalledRequestFile = Join-Path $EvidenceRoot 'installed-setup-request.json'
-Write-JsonFile $InstalledRequestFile $InstalledRequest
-& (Join-Path $InstalledBin 'ww-windows-provision.exe') --request $InstalledRequestFile
-if ($LASTEXITCODE -ne 0) { throw 'Separate fresh installed-start provisioning failed.' }
-$InstalledProvision = Join-Path $EvidenceRoot 'installed-runtime/provisioning.json'
-& $Python $Acceptance installed-start --source $RepoRoot --manifest $InstalledProvision --evidence (Join-Path $EvidenceRoot 'installed-start') --installed-bin $InstalledBin
-if ($LASTEXITCODE -ne 0) { throw 'The real installed profile startup/offline Cargo acceptance failed.' }
+$Result = [ordered]@{
+    archive_sha256 = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    suite_setup_exit = $null
+    mandatory_suite_exit = $null
+    installed_setup_exit = $null
+    installed_start_exit = $null
+    qualified = $false
+}
+try {
+    & (Join-Path $InstalledBin 'ww-windows-provision.exe') --request $Request
+    $Result.suite_setup_exit = $LASTEXITCODE
+    if ($Result.suite_setup_exit -ne 0) { throw 'Fresh provisioning from the installed helpers failed.' }
+    $Provision = Join-Path $Runtime 'provisioning.json'
+    $Acceptance = Join-Path $PSScriptRoot 'validate-windows-process-tree.py'
+    & $Python $Acceptance suite --source $RepoRoot --manifest $Provision --evidence (Join-Path $EvidenceRoot 'suite') --bind-address $BindAddress
+    $Result.mandatory_suite_exit = $LASTEXITCODE
+    # Use another fresh workspace so the suite retains its crash receipt.
+    $InstalledRequest = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
+    $InstalledRequest.provisioning_root = Join-Path $EvidenceRoot 'installed-runtime'
+    $InstalledRequest.workspace = Join-Path $EvidenceRoot 'installed-workspace'
+    $InstalledRequestFile = Join-Path $EvidenceRoot 'installed-setup-request.json'
+    Write-JsonFile $InstalledRequestFile $InstalledRequest
+    & (Join-Path $InstalledBin 'ww-windows-provision.exe') --request $InstalledRequestFile
+    $Result.installed_setup_exit = $LASTEXITCODE
+    if ($Result.installed_setup_exit -ne 0) { throw 'Separate fresh installed-start provisioning failed.' }
+    $InstalledProvision = Join-Path $EvidenceRoot 'installed-runtime/provisioning.json'
+    & $Python $Acceptance installed-start --source $RepoRoot --manifest $InstalledProvision --evidence (Join-Path $EvidenceRoot 'installed-start') --installed-bin $InstalledBin
+    $Result.installed_start_exit = $LASTEXITCODE
+    $Result.qualified = $Result.mandatory_suite_exit -eq 0 -and $Result.installed_start_exit -eq 0
+} finally {
+    Write-JsonFile (Join-Path $EvidenceRoot 'qualification-result.json') $Result
+}
+if (-not $Result.qualified) {
+    throw "Process-tree qualification failed. Mandatory suite exit $($Result.mandatory_suite_exit), installed offline Cargo acceptance exit $($Result.installed_start_exit). Evidence: $EvidenceRoot"
+}
 Write-Host "Mandatory native tree suite and freshly installed profile passed. Evidence: $EvidenceRoot"

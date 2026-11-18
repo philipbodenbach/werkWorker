@@ -1,0 +1,43 @@
+{
+  "archive_sha256": "b7de7d62d90902b0d6883d8bb4ad5073114cce27eadb4f42fd9bc46718458aa1",
+  "suite_setup_exit": 0,
+  "mandatory_suite_exit": 1,
+  "installed_setup_exit": 0,
+  "installed_start_exit": 1,
+  "qualified": false,
+  "run": "F:\\werkWorker\\target\\tree-schema5-1118-branch-run01b",
+  "branch": "feat/windows-child-process",
+  "source_basis": "5a9ddff plus the local guarded schema-5 changes at the time of this build",
+  "installed_build_and_archive_match": true,
+  "executable_sha256": {
+    "werk-worker.exe": "c30499ecd13fab5eca127b150e0a42016d9428f10a6801505829d1c2da9d1ac1",
+    "ww-windows-provision.exe": "9fd077a2a9efb47db4779a05bd8d3f8c56181aa9cc6a6ab5c9a2631b73c55d7a",
+    "ww-windows-runner.exe": "39542cacee9c5b7f91251402d5308a275d5faed00ed91842f0f418f55e1921cf",
+    "ww.exe": "45178e02fcdc06e24e704529882a8c7892c3f3eb454f88aec50b5d0b5fdb19c5"
+  },
+  "mandatory_suite": {
+    "cargo_exit": 101,
+    "passed_tests": 2,
+    "failed_tests": 1,
+    "ignored_tests": 5,
+    "blocker": "sandbox_unqualified",
+    "host_integrity_rid": 8192,
+    "outer_job_drained": true
+  },
+  "installed_start": {
+    "cli_exit": 0,
+    "process_run_error": "sandbox_unqualified",
+    "executed": false,
+    "qualified_invocations": 0,
+    "windows_artifacts": [],
+    "host_integrity_rid": 8192,
+    "outer_job_drained": true
+  },
+  "original_evidence_sha256": {
+    "suite/mandatory-suite-result.json": "6448281403c16a257a872818a6aa973973f8e487cebc52fbab90a3a7b1ef3f41",
+    "suite/mandatory-suite.log": "c4404d5d73894b94c98da4c3e2dd7b274a799472d31f7eb559fb19d88931f122",
+    "installed-start/installed-start-result.json": "876e53ca7a602c6d07e633a25a1b613eeb4e295421c0dce6c8a3ba551a66ba64",
+    "installed-start/installed-start.log": "629c8844c0b75def1568d641ebf7edbae100ce440dc2f3b4067e882751ab86bc",
+    "qualification-result.json": "36907c39200dcf3df94de72202533e515fe03b731f1d9160b6b043effb57219a"
+  }
+}

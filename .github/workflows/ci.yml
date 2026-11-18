@@ -228,4 +228,5 @@ jobs:
             ${{ runner.temp }}/windows-process-tree/installed-start/*.log
             ${{ runner.temp }}/windows-process-tree/installed-start/*-result.json
             ${{ runner.temp }}/windows-process-tree/installation/smoke-result.json
+            ${{ runner.temp }}/windows-process-tree/qualification-result.json
           if-no-files-found: warn

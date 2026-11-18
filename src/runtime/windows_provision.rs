@@ -1,8 +1,10 @@
 //! Explicit administrator provisioning for the dedicated-account process tree.
 //! Loading is read-only and fails closed: a JSON receipt is not proof of WFP policy.
-use super::windows_tree_namespace;
-pub use super::windows_tree_namespace::Receipt as NamedObjectNamespace;
+#[path = "windows_appcontainer_storage.rs"]
+mod appcontainer;
 use crate::core::{Result, WorkerError};
+pub(super) use appcontainer::verified_runner_local_app_data;
+pub use appcontainer::{setup_account_package, verify_appcontainer_storage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -30,7 +32,7 @@ use windows_sys::{
     core::GUID,
 };
 
-const SCHEMA: u32 = 4;
+const SCHEMA: u32 = 5;
 // ACCESS_ALLOWED_ACE_TYPE from winnt.h; no object/callback ACE is accepted.
 const ALLOW_ACE: u8 = 0;
 const ADMIN: &str = "S-1-5-32-544";
@@ -86,6 +88,8 @@ pub struct ProvisionManifest {
     pub host_sid: String,
     pub username: String,
     pub user_sid: String,
+    pub appcontainer_sid: String,
+    pub writer_sid: String,
     pub workspace: PathBuf,
     pub private_temp: PathBuf,
     pub runner: PathBuf,
@@ -97,7 +101,7 @@ pub struct ProvisionManifest {
     /// Bind that effective priority to the protected receipt and recheck it.
     pub network_sublayer_weight: u16,
     pub network_filter_keys: Vec<String>,
-    pub named_object_namespace: NamedObjectNamespace,
+    pub session_id: u32,
     pub credential_file: String,
 }
 
@@ -109,7 +113,6 @@ pub struct Provisioning {
     crash_barrier: CrashBarrier,
     // Deny delete/write sharing on trusted files and delete sharing on ancestors.
     _guards: Vec<File>,
-    _namespace: windows_tree_namespace::Pin,
 }
 
 /// A successful normal drain removes this receipt. Process termination cannot
@@ -246,38 +249,50 @@ fn parse_sid(value: &str) -> Result<Local> {
     }
     Ok(Local(sid))
 }
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn ProcessIdToSessionId(pid: u32, session: *mut u32) -> i32;
+}
+fn current_session() -> Result<u32> {
+    let mut session = 0;
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 || session == 0 {
+        return Err(fail("Dedicated package requires an interactive session"));
+    }
+    Ok(session)
+}
 fn current_sid() -> Result<String> {
     let mut token = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(last("Open host identity"));
     }
-    let result = (|| {
-        let mut bytes = 0;
-        unsafe {
-            GetTokenInformation(token, TokenUser, null_mut(), 0, &mut bytes);
-        }
-        if bytes == 0 || bytes > 65536 {
-            return Err(fail("Invalid host token information size"));
-        }
-        let mut storage = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
-        if unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                storage.as_mut_ptr().cast(),
-                bytes,
-                &mut bytes,
-            )
-        } == 0
-        {
-            return Err(last("Read host identity"));
-        }
-        sid_text(unsafe { (*storage.as_ptr().cast::<TOKEN_USER>()).User.Sid })
-    })();
+    let result = token_user_sid(token);
     unsafe {
         CloseHandle(token);
     }
     result
+}
+fn token_user_sid(token: HANDLE) -> Result<String> {
+    let mut bytes = 0;
+    unsafe {
+        GetTokenInformation(token, TokenUser, null_mut(), 0, &mut bytes);
+    }
+    if bytes == 0 || bytes > 65536 {
+        return Err(fail("Invalid host token information size"));
+    }
+    let mut storage = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(last("Read host identity"));
+    }
+    sid_text(unsafe { (*storage.as_ptr().cast::<TOKEN_USER>()).User.Sid })
 }
 /// Checked before input reads or mutations by the setup helper.
 pub fn require_administrator() -> Result<()> {
@@ -464,7 +479,7 @@ fn validate_account(manifest: &ProvisionManifest) -> Result<()> {
     }
     result
 }
-fn trusted_acl(handle: HANDLE, host_sid: &str, sandbox: Option<(&str, u32)>) -> Result<()> {
+fn trusted_acl(handle: HANDLE, host_sid: &str, sandbox: &[(&str, u32)]) -> Result<()> {
     let mut owner = null_mut();
     let mut dacl = null_mut();
     let mut sd = null_mut();
@@ -487,7 +502,7 @@ fn trusted_acl(handle: HANDLE, host_sid: &str, sandbox: Option<(&str, u32)>) -> 
     if unsafe { (*dacl).AceCount } == 0 {
         return Err(fail("Provisioning ACL is empty"));
     }
-    let mut sandbox_mask = 0;
+    let mut granted = vec![0; sandbox.len()];
     for index in 0..unsafe { (*dacl).AceCount } as u32 {
         let mut ace = null_mut();
         if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
@@ -501,17 +516,24 @@ fn trusted_acl(handle: HANDLE, host_sid: &str, sandbox: Option<(&str, u32)>) -> 
         let sid = std::ptr::addr_of!(allow.SidStart).cast_mut().cast();
         let principal = sid_text(sid)?;
         if ![host_sid, ADMIN, SYSTEM].contains(&principal.as_str()) {
-            let (expected_sid, allowed) =
-                sandbox.ok_or_else(|| fail("Provisioning assets grant unexpected access"))?;
-            if principal != expected_sid || allow.Mask & !allowed != 0 {
+            let (index, (_, allowed)) = sandbox
+                .iter()
+                .enumerate()
+                .find(|(_, (sid, _))| *sid == principal)
+                .ok_or_else(|| fail("Provisioning assets grant unexpected access"))?;
+            if allow.Mask & !allowed != 0 {
                 return Err(fail("Provisioning assets grant unexpected access"));
             }
             if header.AceFlags & INHERIT_ONLY_ACE as u8 == 0 {
-                sandbox_mask |= allow.Mask;
+                granted[index] |= allow.Mask;
             }
         }
     }
-    if sandbox.is_some_and(|(_, expected)| sandbox_mask != expected) {
+    if sandbox
+        .iter()
+        .zip(granted)
+        .any(|((_, mask), actual)| *mask != actual)
+    {
         return Err(fail(
             "Provisioned sandbox access grant is missing or incomplete",
         ));
@@ -536,7 +558,9 @@ fn pin_chain(path: &Path, guards: &mut Vec<File>) -> Result<PathBuf> {
     paths.reverse();
     for item in paths {
         let file = OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL)
+            .access_mode(
+                FILE_READ_ATTRIBUTES | READ_CONTROL | if item != path { FILE_TRAVERSE } else { 0 },
+            )
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(item)?;
@@ -550,7 +574,7 @@ fn pin_chain(path: &Path, guards: &mut Vec<File>) -> Result<PathBuf> {
 fn trusted_file(
     path: &Path,
     host: &str,
-    sandbox: Option<(&str, u32)>,
+    sandbox: &[(&str, u32)],
     guards: &mut Vec<File>,
 ) -> Result<File> {
     pin_chain(
@@ -574,10 +598,19 @@ fn trusted_file(
 fn pin_directory(
     path: &Path,
     host: &str,
-    sandbox: Option<(&str, u32)>,
+    sandbox: &[(&str, u32)],
     guards: &mut Vec<File>,
 ) -> Result<PathBuf> {
     let canonical = pin_chain(path, guards)?;
+    // Open the actual directory with traversal access so its share mask participates
+    // in the I/O manager's sharing checks throughout this provisioning lease.
+    guards.push(
+        OpenOptions::new()
+            .access_mode(FILE_TRAVERSE | READ_CONTROL | FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?,
+    );
     let file = guards
         .last()
         .ok_or_else(|| fail("Missing pinned directory"))?;
@@ -585,6 +618,9 @@ fn pin_directory(
         return Err(fail("Expected a provisioned directory"));
     }
     trusted_acl(file.as_raw_handle(), host, sandbox)?;
+    if sandbox.iter().any(|(_, mask)| *mask == SANDBOX_MODIFY) {
+        appcontainer::verify_low_directory(file.as_raw_handle())?;
+    }
     Ok(canonical)
 }
 fn guid(text: &str) -> Result<GUID> {
@@ -760,8 +796,8 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
     let provisioning_root = path
         .parent()
         .ok_or_else(|| fail("Missing provisioning directory"))?;
-    pin_directory(provisioning_root, &host, None, &mut guards)?;
-    let mut manifest_file = trusted_file(path, &host, None, &mut guards)?;
+    pin_directory(provisioning_root, &host, &[], &mut guards)?;
+    let mut manifest_file = trusted_file(path, &host, &[], &mut guards)?;
     if manifest_file.metadata()?.len() > 1024 * 1024 {
         return Err(fail("Oversized provisioning manifest"));
     }
@@ -777,11 +813,21 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
             "Provisioning version/host/credential identity mismatch",
         ));
     }
+    if appcontainer::package_sid(&manifest.user_sid)? != manifest.appcontainer_sid {
+        return Err(fail(
+            "Provisioned package identity is not bound to its account",
+        ));
+    }
+    appcontainer::verify_writer(&manifest.username, &manifest.writer_sid)?;
     let pinned_workspace = pin_chain(workspace, &mut guards)?;
     if pin_directory(
         &manifest.workspace,
         &host,
-        Some((&manifest.user_sid, SANDBOX_MODIFY)),
+        &[
+            (&manifest.user_sid, SANDBOX_MODIFY),
+            (&manifest.appcontainer_sid, SANDBOX_MODIFY),
+            (&manifest.writer_sid, SANDBOX_MODIFY),
+        ],
         &mut guards,
     )? != pinned_workspace
     {
@@ -790,14 +836,21 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
     pin_directory(
         &manifest.private_temp,
         &host,
-        Some((&manifest.user_sid, SANDBOX_MODIFY)),
+        &[
+            (&manifest.user_sid, SANDBOX_MODIFY),
+            (&manifest.appcontainer_sid, SANDBOX_MODIFY),
+            (&manifest.writer_sid, SANDBOX_MODIFY),
+        ],
         &mut guards,
     )?;
     for toolchain in &manifest.toolchain_roots {
         pin_directory(
             toolchain,
             &host,
-            Some((&manifest.user_sid, SANDBOX_RX)),
+            &[
+                (&manifest.user_sid, SANDBOX_RX),
+                (&manifest.appcontainer_sid, SANDBOX_RX),
+            ],
             &mut guards,
         )?;
     }
@@ -805,7 +858,7 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
     let mut runner = trusted_file(
         &manifest.runner,
         &host,
-        Some((&manifest.user_sid, SANDBOX_RX)),
+        &[(&manifest.user_sid, SANDBOX_RX)],
         &mut guards,
     )?;
     let mut hash = Sha256::new();
@@ -828,7 +881,7 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
             .ok_or_else(|| fail("Missing provisioning directory"))?
             .join(SECRET_FILE),
         &host,
-        None,
+        &[],
         &mut guards,
     )?;
     if credential.metadata()?.len() > 65536 {
@@ -844,14 +897,14 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
     {
         return Err(fail("Invocation lock is not an ordinary protected file"));
     }
-    trusted_acl(invocation_lock.as_raw_handle(), &host, None)?;
+    trusted_acl(invocation_lock.as_raw_handle(), &host, &[])?;
     validate_account(&manifest)?;
     verify_network(&manifest)?;
-    let namespace = windows_tree_namespace::verify(
-        &manifest.named_object_namespace,
-        &manifest.host_sid,
-        &manifest.user_sid,
-    )?;
+    if current_session()? != manifest.session_id {
+        return Err(fail(
+            "Provisioning belongs to a different interactive session",
+        ));
+    }
     Ok(Provisioning {
         manifest,
         manifest_digest: format!("{:x}", Sha256::digest(&bytes)),
@@ -862,7 +915,6 @@ pub fn load(path: &Path, workspace: &Path) -> Result<Provisioning> {
             marker: std::sync::Mutex::new(None),
         },
         _guards: guards,
-        _namespace: namespace,
     })
 }
 impl Provisioning {
@@ -1128,6 +1180,7 @@ fn enable_account(username: &str, enabled: bool) -> Result<()> {
 /// account and protected diagnostics; no failed receipt can pass `load`.
 pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
     require_administrator()?;
+    let session_id = current_session()?;
     let host = parse_sid(&request.host_sid)?;
     drop(host);
     if request.host_sid == ADMIN || request.host_sid == SYSTEM {
@@ -1194,17 +1247,24 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
     status("Create disabled sandbox account", unsafe {
         NetUserAdd(null(), 1, (&info as *const USER_INFO_1).cast(), null_mut())
     })?;
-    let mut namespace_installation: Option<windows_tree_namespace::Installation> = None;
+    let mut writer_created = None;
+    let mut profile_created = None;
     let result = (|| {
         let user_sid = account_sid(&username)?;
+        let appcontainer_sid = appcontainer::package_sid(&user_sid)?;
+        let writer = appcontainer::WriterGroup::create(&username)?;
+        let writer_sid = writer.sid.clone();
+        writer_created = Some(writer);
         add_standard_user_membership(&user_sid)?;
-        let private_temp = request.provisioning_root.join("private-temp");
+        let profile = appcontainer::FreshProfile::create(&username, &user_sid)?;
+        let private_temp = profile.private_temp(&user_sid)?;
+        profile_created = Some(profile);
         let writable = format!(
-            "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{})(A;OICI;0x1301bf;;;{user_sid})",
+            "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{})(A;OICI;0x1301bf;;;{user_sid})(A;OICI;0x1301bf;;;{appcontainer_sid})(A;OICI;0x1301bf;;;{writer_sid})S:(ML;OICI;NW;;;LW)",
             request.host_sid
         );
         directory(&request.workspace, &writable)?;
-        directory(&private_temp, &writable)?;
+
         let runner = request.provisioning_root.join("ww-windows-runner.exe");
         copy_tree(&source_runner, &runner)?;
         let runner_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&runner)?));
@@ -1221,7 +1281,8 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
         for (index, source) in request.toolchain_sources.iter().enumerate() {
             let target = toolchain_dir.join(index.to_string());
             copy_tree(source, &target)?;
-            set_acl(&target, &executable)?;
+            let package_rx = format!("{executable}(A;OICI;FRFX;;;{appcontainer_sid})");
+            set_acl(&target, &package_rx)?;
             toolchain_roots.push(target);
         }
         let mut environment = request.toolchain_environment.clone();
@@ -1233,14 +1294,13 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
                 *value = value.replace(&format!("{{toolchain{index}}}"), &root.to_string_lossy());
             }
         }
-        let namespace = windows_tree_namespace::install(&request.host_sid, &user_sid)?;
-        let named_object_namespace = namespace.receipt();
-        namespace_installation = Some(namespace);
         let mut manifest = ProvisionManifest {
             schema_version: SCHEMA,
             host_sid: request.host_sid.clone(),
             username: username.clone(),
             user_sid,
+            appcontainer_sid,
+            writer_sid,
             workspace: request.workspace.clone(),
             private_temp,
             runner,
@@ -1252,7 +1312,7 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
             network_filter_keys: (0..DENY_FILTERS.len())
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect(),
-            named_object_namespace,
+            session_id,
             credential_file: SECRET_FILE.into(),
         };
         validate_environment(&manifest)?;
@@ -1302,31 +1362,45 @@ pub fn provision(request: ProvisionRequest) -> Result<PathBuf> {
             .sync_all()?;
         set_acl(&lock_path, &trusted)?;
         let path = request.provisioning_root.join("provisioning.json");
+        let pending = request.provisioning_root.join("provisioning.pending");
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)?;
+            .open(&pending)?;
         file.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| fail(e.to_string()))?)?;
         file.sync_all()?;
-        set_acl(&path, &trusted)?;
+        drop(file);
+        set_acl(&pending, &trusted)?;
         set_acl(&request.provisioning_root.join(SECRET_FILE), &trusted)?;
         enable_account(&username, true)?;
-        // Setup must not report success for an account that normal launch would
-        // immediately reject (including missing or unexpected group membership).
         validate_account(&manifest)?;
-        if let Some(namespace) = namespace_installation.take() {
-            namespace.commit();
-        }
+        appcontainer::verify_writer(&username, &manifest.writer_sid)?;
+        appcontainer::run_setup(&manifest, &password)?;
+        let profile = profile_created
+            .as_ref()
+            .ok_or_else(|| fail("Missing newly created profile"))?;
+        profile.bind_private_temp(&manifest, &writable)?;
+        std::fs::rename(&pending, &path)?;
         Ok(path)
     })();
     if let Err(error) = result {
         let disabled = enable_account(&username, false);
-        let namespace_cleanup = namespace_installation
-            .as_mut()
-            .map(|namespace| namespace.rollback())
+        let profile_cleanup = if disabled.is_ok() {
+            profile_created
+                .as_ref()
+                .map(|profile| profile.rollback())
+                .transpose()
+        } else {
+            Err(fail(
+                "Retained new profile because account disable was not confirmed",
+            ))
+        };
+        let writer_cleanup = writer_created
+            .as_ref()
+            .map(|writer| writer.rollback())
             .transpose();
         return Err(fail(format!(
-            "Provisioning incomplete for {username}; retained root {}. Account disable result: {}. Namespace cleanup: {namespace_cleanup:?}. {error}",
+            "Provisioning incomplete for {username}; retained root {}. Account disable result: {}. New profile cleanup: {profile_cleanup:?}. Writer group cleanup: {writer_cleanup:?}. {error}",
             request.provisioning_root.display(),
             if disabled.is_ok() {
                 "confirmed"
@@ -1358,6 +1432,8 @@ mod tests {
             host_sid: current_sid().unwrap(),
             username: String::new(),
             user_sid: "S-1-1-0".into(),
+            writer_sid: String::new(),
+            appcontainer_sid: String::new(),
             workspace: PathBuf::new(),
             private_temp: PathBuf::new(),
             runner: PathBuf::new(),
@@ -1370,11 +1446,7 @@ mod tests {
                 .iter()
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect(),
-            named_object_namespace: NamedObjectNamespace {
-                session_id: 1,
-                path: r"\Sessions\1\BaseNamedObjects\Restricted".into(),
-                owner_sid: SYSTEM.into(),
-            },
+            session_id: 1,
             credential_file: String::new(),
         };
         let error = verify_network(&manifest).unwrap_err();
@@ -1433,10 +1505,10 @@ mod tests {
                 .open(&path)
                 .unwrap();
             assert_eq!(
-                trusted_acl(file.as_raw_handle(), &host, Some(("S-1-1-0", SANDBOX_RX))).is_ok(),
+                trusted_acl(file.as_raw_handle(), &host, &[("S-1-1-0", SANDBOX_RX)]).is_ok(),
                 expected
             );
-            assert!(trusted_acl(file.as_raw_handle(), &host, None).is_err());
+            assert!(trusted_acl(file.as_raw_handle(), &host, &[]).is_err());
         }
     }
 }

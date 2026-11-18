@@ -827,7 +827,7 @@ mod windows_tree_launcher;
 #[cfg(windows)]
 mod windows_tree_members;
 #[cfg(windows)]
-mod windows_tree_namespace;
+mod windows_tree_package_namespace;
 #[cfg(windows)]
 mod windows_tree_runner;
 

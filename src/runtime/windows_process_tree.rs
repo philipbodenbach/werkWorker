@@ -106,16 +106,11 @@ fn environment(values: &BTreeMap<String, String>) -> Result<Vec<u16>> {
     result.push(0);
     Ok(result)
 }
-// Native Windows 11 acceptance demonstrated DNS Client broker traffic escaping
-// network denial and AllocConsole exceeding the active-process limit. Keep every
-// host entry point disabled, including
-// explicit opt-in. Remove this gate only after the complete mandatory native
-// isolation/lifecycle/Cargo suite and fresh-install acceptance have passed.
-// There is deliberately no environment, debug, feature or diagnostic bypass.
+// The delivered profile requires passing native tree and installed Cargo acceptance.
 pub(super) fn require_qualified_profile() -> Result<()> {
     Err(WorkerError::new(
         "sandbox_unqualified",
-        "The Windows process-tree profile is unqualified and disabled: native tests show DNS Client broker queries escaping network denial and AllocConsole exceeding the active-process limit. Complete native isolation, resource-limit, lifecycle, offline Cargo and fresh-install acceptance must pass before this profile can be enabled.",
+        "The Windows process-tree profile is disabled pending complete native isolation, process-limit, lifecycle and installed offline Cargo qualification.",
     ))
 }
 
@@ -166,18 +161,19 @@ pub(super) fn description(
         })?;
     let p = windows_provision::load(&config.provisioning, &workspace.path)?;
     Ok(json!({
-        "backend":"windows-account-job-tree", "version":3,
+        "backend":"windows-account-job-tree", "version":4,
         "provisioning":config.provisioning, "provisioning_sha256":p.manifest_digest,
         "account_sid":p.manifest.user_sid, "workspace":p.manifest.workspace,
-        "named_object_namespace":p.manifest.named_object_namespace,
+        "appcontainer_sid":p.manifest.appcontainer_sid, "appcontainer_capabilities":[], "writer_sid":p.manifest.writer_sid,
+        "session_id":p.manifest.session_id,
         "toolchains":p.manifest.toolchain_roots, "environment":p.manifest.toolchain_environment,
         "temporary":p.manifest.private_temp, "runner":p.manifest.runner,
-        "network_enforcement":"persistent WFP SID blocks: connect, receive/accept and resource assignment, IPv4 and IPv6 including loopback; RPC calls denied by client account",
+        "network_enforcement":"zero-capability AppContainer with account-scoped WFP filters for IPv4, IPv6 and RPC",
         "network_sublayer_key":p.manifest.network_sublayer_key,
         "network_sublayer_weight":p.manifest.network_sublayer_weight,
         "ipc":"dedicated account and object ACLs; account-scoped RPC denial; private noninteractive window station and desktop with exact host-owned ACLs; full Job UI restrictions; private authenticated stdio pipes",
         "inheritance":"atomic host-owned Job; exact three-stdio handle allowlist; no breakaway; inherited logon SIDs deny-only",
-        "payload_token":"dedicated account; User SID and Everyone write restrictions; traversal privilege only",
+        "payload_token":"zero-capability AppContainer on the write-restricted dedicated account",
         "cleanup":"trusted supervisor retains workspace admission and invocation lock until the complete process-handle ledger matches the Job lifetime count, every recorded process is signaled, the Job is empty and private USER handles are closed; crash receipt blocks subsequent workspace tools pending trusted recovery",
         "effective_process_limit":sandbox.limits.processes, "trusted_runner_processes":1,
         "process_history_limit":windows_tree_members::MAX_TRACKED_PROCESSES,
@@ -439,6 +435,7 @@ struct Tree {
     process: OwnedHandle,
     auxiliary: Mutex<Vec<OwnedHandle>>,
     desktop: Mutex<Option<windows_tree_desktop::HostResources>>,
+    namespace: Mutex<Option<super::windows_tree_package_namespace::PackageNamespaceGuard>>,
     desktop_name: Mutex<String>,
     completion: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<ProcessOutput>>>>>,
     pid: u32,
@@ -485,6 +482,14 @@ impl Tree {
             TerminateJobObject(raw(&self.job), 1);
         }
     }
+    fn restore_namespace(&self) -> Result<()> {
+        let mut namespace = self.namespace.lock().unwrap();
+        if let Some(guard) = namespace.as_mut() {
+            guard.restore()?;
+            namespace.take();
+        }
+        Ok(())
+    }
     fn close_desktop(&self) -> Result<()> {
         let mut desktop = self.desktop.lock().unwrap();
         if let Some(resource) = desktop.as_mut() {
@@ -504,6 +509,7 @@ impl Tree {
             // The final accounting query follows all signal observations. A
             // bare ActiveProcesses==0 can precede process-object signaling.
             && self.members.confirmed_drain().unwrap_or(false)
+            && self.restore_namespace().is_ok()
             && self.close_desktop().is_ok()
     }
 }
@@ -850,7 +856,10 @@ fn supervise(
         .or_insert_with(|| system.to_string_lossy().into_owned());
     let desktop_nonce = format!("werk-tree-{}", uuid::Uuid::new_v4());
     let request = serde_json::to_vec(&windows_tree_runner::Request {
-        version: 3,
+        version: 4,
+        approved_process_limit: sandbox.limits.processes,
+        appcontainer_sid: p.manifest.appcontainer_sid.clone(),
+        writer_sid: p.manifest.writer_sid.clone(),
         desktop_nonce: desktop_nonce.clone(),
         user_sid: p.manifest.user_sid.clone(),
         host_sid: p.manifest.host_sid.clone(),
@@ -1011,6 +1020,7 @@ fn supervise(
         process: unsafe { OwnedHandle::from_raw_handle(info.hProcess) },
         auxiliary: Mutex::new(Vec::new()),
         desktop: Mutex::new(None),
+        namespace: Mutex::new(None),
         desktop_name: Mutex::new(String::new()),
         completion: completion.clone(),
         pid: info.dwProcessId,
@@ -1342,6 +1352,8 @@ fn supervise(
                                 &desktop,
                                 &tree._provision.manifest.host_sid,
                                 &expected_user,
+                                &tree._provision.manifest.appcontainer_sid,
+                                &tree._provision.manifest.writer_sid,
                             )?;
                             *tree.desktop_name.lock().unwrap() = desktop;
                             enforce_ui_restrictions(raw(&tree.job))?;
@@ -1350,7 +1362,9 @@ fn supervise(
                         (
                             1,
                             windows_tree_runner::Ready::Payload {
-                                version: 1,
+                                version: 2,
+                                token_handle,
+                                namespace_handle,
                                 pid,
                                 process_handle,
                                 thread_handle,
@@ -1383,6 +1397,19 @@ fn supervise(
                             }
                             tree.members.register_known(process_raw)?;
                             verify_job_limits(raw(&tree.job), &sandbox)?;
+                            let payload_token = pull(token_handle, TOKEN_QUERY)?;
+                            let directory = pull(namespace_handle, READ_CONTROL | WRITE_DAC)?;
+                            let manifest = &tree._provision.manifest;
+                            let mut namespace = tree.namespace.lock().unwrap();
+                            namespace.insert(super::windows_tree_package_namespace::PackageNamespaceGuard::prepare(
+                                directory,
+                                manifest.session_id,
+                                &manifest.host_sid,
+                                &expected_user,
+                                &manifest.appcontainer_sid,
+                                &manifest.writer_sid,
+                                raw(&payload_token),
+                            )?).apply()?;
                             stage = 2;
                         }
                         _ => {
@@ -1452,19 +1479,31 @@ fn supervise(
     if stderr.connected {
         stderr.drain_until_empty(&mut err, &live, true)?;
     }
-    let output = result.map(|exit_code| ProcessOutput {
+    let exit_code = result?;
+    if stage < 2 && !timed_out && !cancelled {
+        // Before the authenticated payload handoff only the trusted runner can write stderr.
+        let detail = String::from_utf8_lossy(&err.bytes[..err.bytes.len().min(512)]);
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            format!(
+                "Runner exited with code {exit_code} before payload admission. {}",
+                detail.trim()
+            ),
+        ));
+    }
+    let output = ProcessOutput {
         exit_code: Some(exit_code),
         stdout: String::from_utf8_lossy(&out.bytes).into_owned(),
         stderr: String::from_utf8_lossy(&err.bytes).into_owned(),
         truncated: out.truncated || err.truncated,
         timed_out,
         cancelled,
-    });
+    };
     // Release the native owner and lease after confirmed drain. The outer
     // supervisor thread publishes this result only after the remaining pipe,
     // thread and bootstrap handles have also left this function's scope.
     drop(tree);
-    output
+    Ok(output)
 }
 
 struct CancelOnDrop(CancellationToken);

@@ -357,7 +357,7 @@ fn launch(
             username.as_ptr(),
             domain.as_ptr(),
             password.as_ptr(),
-            0,
+            LOGON_WITH_PROFILE,
             image.as_ptr(),
             command.as_mut_ptr(),
             CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,

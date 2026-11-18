@@ -37,6 +37,9 @@ const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x10;
 pub(super) struct Request {
     pub version: u32,
     pub host_sid: String,
+    pub appcontainer_sid: String,
+    pub writer_sid: String,
+    pub approved_process_limit: u64,
     pub desktop_nonce: String,
     pub user_sid: String,
     pub argv: Vec<String>,
@@ -60,6 +63,8 @@ pub(super) enum Ready {
         pid: u32,
         process_handle: u64,
         thread_handle: u64,
+        token_handle: u64,
+        namespace_handle: u64,
     },
 }
 
@@ -231,9 +236,12 @@ fn read_request(control: OwnedHandle) -> io::Result<Request> {
     drop(control);
     let request: Request = serde_json::from_slice(&bytes)
         .map_err(|_| invalid("Malformed native runner control request"))?;
-    if request.version != 3
+    if request.version != 4
+        || !(2..=4096).contains(&request.approved_process_limit)
         || request.host_sid.len() > 184
         || request.host_sid.is_empty()
+        || request.appcontainer_sid.len() > 184
+        || request.writer_sid.len() > 184
         || request.argv.is_empty()
         || request.argv.len() > 128
         || request
@@ -314,6 +322,18 @@ struct Attributes {
     pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
 }
 impl Attributes {
+    fn for_payload(other_attributes: u32, process_limit: u64) -> io::Result<Self> {
+        use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+        // UpdateProcThreadAttribute can retain its value until process creation.
+        static DENY_CHILDREN: u32 = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+        // The trusted runner stays alive until the root payload exits.
+        let full = process_limit == 2;
+        let mut attributes = Self::with_capacity(other_attributes + u32::from(full))?;
+        if full {
+            attributes.set(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &DENY_CHILDREN)?;
+        }
+        Ok(attributes)
+    }
     fn with_capacity(count: u32) -> io::Result<Self> {
         let mut size = 0;
         unsafe {
@@ -357,6 +377,26 @@ impl Drop for Attributes {
         }
     }
 }
+fn child_processes_blocked(process: HANDLE) -> io::Result<bool> {
+    use windows_sys::Win32::System::SystemServices::PROCESS_MITIGATION_CHILD_PROCESS_POLICY;
+    let mut policy = PROCESS_MITIGATION_CHILD_PROCESS_POLICY::default();
+    if unsafe {
+        GetProcessMitigationPolicy(
+            process,
+            ProcessChildProcessPolicy,
+            (&mut policy as *mut PROCESS_MITIGATION_CHILD_PROCESS_POLICY).cast(),
+            size_of::<PROCESS_MITIGATION_CHILD_PROCESS_POLICY>(),
+        )
+    } == 0
+    {
+        return Err(native_error("Read suspended payload child-process policy"));
+    }
+    // Named winnt.h bitfields are exposed as a flags word by windows-sys.
+    const NO_CHILD_PROCESS_CREATION: u32 = 1;
+    const ALLOW_SECURE_PROCESS_CREATION: u32 = 1 << 2;
+    let flags = unsafe { policy.Anonymous.Flags };
+    Ok(flags & NO_CHILD_PROCESS_CREATION != 0 && flags & ALLOW_SECURE_PROCESS_CREATION == 0)
+}
 struct Payload {
     process: OwnedHandle,
     thread: OwnedHandle,
@@ -383,7 +423,10 @@ impl Drop for LocalAllocation {
         }
     }
 }
-fn token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<usize>> {
+pub(super) fn token_information(
+    token: HANDLE,
+    class: TOKEN_INFORMATION_CLASS,
+) -> io::Result<Vec<usize>> {
     let mut bytes = 0;
     unsafe {
         GetTokenInformation(token, class, null_mut(), 0, &mut bytes);
@@ -399,7 +442,7 @@ fn token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Resul
     }
     Ok(storage)
 }
-fn token_groups(storage: &[usize]) -> io::Result<&[SID_AND_ATTRIBUTES]> {
+pub(super) fn token_groups(storage: &[usize]) -> io::Result<&[SID_AND_ATTRIBUTES]> {
     let count = unsafe { *storage.as_ptr().cast::<u32>() } as usize;
     let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
     if count > 4096
@@ -447,29 +490,24 @@ fn change_notify_privilege() -> io::Result<LUID> {
     }
     Ok(luid)
 }
-fn verify_restricted_token(token: HANDLE) -> io::Result<()> {
+fn verify_restricted_token(token: HANDLE, writer_sid: &str) -> io::Result<()> {
     if unsafe { IsTokenRestricted(token) } == 0 {
         return Err(invalid("Payload token lacks restricting SIDs"));
     }
-    let groups = token_information(token, TokenRestrictedSids)?;
-    if token_groups(&groups)?.len() != 2 {
-        return Err(invalid("Payload token has unexpected restricting SIDs"));
-    }
-    let user = token_information(token, TokenUser)?;
-    let user = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let everyone = parse_sid("S-1-1-0")?;
-    for sid in [user, everyone.0] {
-        if !token_groups(&groups)?
-            .iter()
-            .any(|entry| unsafe { EqualSid(entry.Sid, sid) } != 0)
-        {
-            return Err(invalid(
-                "Payload restricting SIDs differ from account and Everyone",
-            ));
-        }
+    let storage = token_information(token, TokenRestrictedSids)?;
+    let restricted = token_groups(&storage)?;
+    if restricted.len() != 1 || sid_text(restricted[0].Sid)? != writer_sid {
+        return Err(invalid(
+            "Payload lacks its exclusive provisioned write restriction",
+        ));
     }
     let ordinary = token_information(token, TokenGroups)?;
     for entry in token_groups(&ordinary)? {
+        if sid_text(entry.Sid)? == writer_sid {
+            return Err(invalid(
+                "The write-restricting group also grants ordinary account access",
+            ));
+        }
         if entry.Attributes & LOGON_ID == LOGON_ID
             && (entry.Attributes & SE_GROUP_ENABLED != 0
                 || entry.Attributes & SE_GROUP_USE_FOR_DENY_ONLY == 0)
@@ -515,11 +553,24 @@ fn verify_restricted_token(token: HANDLE) -> io::Result<()> {
     }
     Ok(())
 }
-/// Codex-style write restriction for a dedicated account. Ordinary ACL read
-/// grants and Everyone write grants remain effective; this is not a read allowlist.
-fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
+/// Only objects provisioned for the separate write-restricting group or created
+/// inside this invocation can pass the extra write access check.
+fn restricted_payload_token(
+    host_sid: &str,
+    package_sid: &str,
+    writer_sid: &str,
+) -> io::Result<OwnedHandle> {
     let host = parse_sid(host_sid)?;
     let host = sid_text(host.0)?;
+    let package = parse_sid(package_sid)?;
+    if !package_sid.starts_with("S-1-15-2-")
+        || unsafe { *GetSidSubAuthorityCount(package.0) } != 8
+        || sid_text(package.0)? != package_sid
+    {
+        return Err(invalid(
+            "Expected one canonical individual AppContainer SID",
+        ));
+    }
     let mut base = null_mut();
     if unsafe {
         OpenProcessToken(
@@ -554,11 +605,21 @@ fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
         return Err(invalid("Runner token has no logon SID"));
     }
     let user_text = sid_text(user_sid)?;
-    let everyone = parse_sid("S-1-1-0")?;
-    let restrictions = [user_sid, everyone.0].map(|sid| SID_AND_ATTRIBUTES {
-        Sid: sid,
+    let writer = parse_sid(writer_sid)?;
+    if !writer_sid.starts_with("S-1-5-21-")
+        || unsafe { *GetSidSubAuthorityCount(writer.0) } != 5
+        || sid_text(writer.0)? != writer_sid
+        || writer_sid == user_text
+        || writer_sid == host
+    {
+        return Err(invalid(
+            "Expected an independent local write-restriction group",
+        ));
+    }
+    let restrictions = [SID_AND_ATTRIBUTES {
+        Sid: writer.0,
         Attributes: 0,
-    });
+    }];
     let mut token = null_mut();
     // Values are defined by CreateRestrictedToken / winnt.h. WRITE_RESTRICTED
     // restricts write checks only; native tests must not mistake it for LPAC.
@@ -584,7 +645,7 @@ fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
     // The sandbox account retains access to its own payload objects. The host can inspect,
     // synchronize and terminate descendants without receiving sandbox handles.
     let descriptor = wide(format!(
-        "D:(A;;GA;;;{user_text})(A;;0x101001;;;{host})(A;;RC;;;OW)"
+        "D:(A;;GA;;;{user_text})(A;;GA;;;{package_sid})(A;;GA;;;{writer_sid})(A;;0x101001;;;{host})(A;;RC;;;OW)"
     ))?;
     let mut sd = null_mut();
     if unsafe {
@@ -635,18 +696,13 @@ fn restricted_payload_token(host_sid: &str) -> io::Result<OwnedHandle> {
     {
         return Err(native_error("Enable payload traversal privilege"));
     }
-    verify_restricted_token(raw(&token))?;
+    verify_restricted_token(raw(&token), writer_sid)?;
     Ok(token)
 }
-fn verify_payload_token(process: HANDLE, expected: HANDLE) -> io::Result<()> {
-    let mut token = null_mut();
-    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
-        return Err(native_error("Inspect suspended payload token"));
-    }
-    let token = unsafe { owned(token)? };
-    verify_restricted_token(raw(&token))?;
+fn verify_payload_token(token: HANDLE, expected: HANDLE, writer_sid: &str) -> io::Result<()> {
+    verify_restricted_token(token, writer_sid)?;
     let expected_user = token_information(expected, TokenUser)?;
-    let actual_user = token_information(raw(&token), TokenUser)?;
+    let actual_user = token_information(token, TokenUser)?;
     if unsafe {
         EqualSid(
             (*expected_user.as_ptr().cast::<TOKEN_USER>()).User.Sid,
@@ -659,7 +715,7 @@ fn verify_payload_token(process: HANDLE, expected: HANDLE) -> io::Result<()> {
         ));
     }
     let expected_groups = token_information(expected, TokenRestrictedSids)?;
-    let actual_groups = token_information(raw(&token), TokenRestrictedSids)?;
+    let actual_groups = token_information(token, TokenRestrictedSids)?;
     for expected in token_groups(&expected_groups)? {
         if !token_groups(&actual_groups)?
             .iter()
@@ -667,6 +723,51 @@ fn verify_payload_token(process: HANDLE, expected: HANDLE) -> io::Result<()> {
         {
             return Err(invalid("Suspended payload restricting SID differs"));
         }
+    }
+    Ok(())
+}
+
+/// Verify the effective broker-facing identity before allowing payload code.
+fn open_payload_token(process: HANDLE) -> io::Result<OwnedHandle> {
+    let mut token = null_mut();
+    // The runner impersonates this primary token only to inspect its package registry.
+    // The host duplicates only TOKEN_QUERY and no payload inherits this handle.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY | TOKEN_DUPLICATE, &mut token) } == 0 {
+        return Err(native_error("Read suspended AppContainer token"));
+    }
+    unsafe { owned(token) }
+}
+
+pub(super) fn verify_appcontainer_token(
+    token: HANDLE,
+    user: &str,
+    package: &str,
+    writer: &str,
+) -> io::Result<()> {
+    verify_restricted_token(token, writer)?;
+    let account = token_information(token, TokenUser)?;
+    let account = unsafe { (*account.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let appcontainer = token_information(token, TokenIsAppContainer)?;
+    let identity = token_information(token, TokenAppContainerSid)?;
+    let actual =
+        unsafe { (*identity.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>()).TokenAppContainer };
+    let capabilities = token_information(token, TokenCapabilities)?;
+    let integrity = token_information(token, TokenIntegrityLevel)?;
+    let label = unsafe {
+        (*integrity.as_ptr().cast::<TOKEN_MANDATORY_LABEL>())
+            .Label
+            .Sid
+    };
+    if unsafe { *appcontainer.as_ptr().cast::<u32>() } != 1
+        || actual.is_null()
+        || sid_text(actual)? != package
+        || sid_text(account)? != user
+        || !token_groups(&capabilities)?.is_empty()
+        || sid_text(label)? != "S-1-16-4096"
+    {
+        return Err(invalid(
+            "The suspended payload lacks its required Low AppContainer identity or has capabilities",
+        ));
     }
     Ok(())
 }
@@ -860,13 +961,21 @@ fn seal_current_runner(host_sid: &str, payload_token: HANDLE) -> io::Result<()> 
     Ok(())
 }
 fn execute(
-    request: Request,
+    mut request: Request,
     input: OwnedHandle,
     output: OwnedHandle,
     errors: &File,
     reply: &mut File,
     ack: &mut File,
 ) -> io::Result<i32> {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        GetErrorMode, SEM_FAILCRITICALERRORS, SetErrorMode,
+    };
+    // This single-use runner and its descendants run on a noninteractive desktop.
+    // Return loader failures to the supervisor instead of waiting for a dialog.
+    unsafe {
+        SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS);
+    }
     // Only trusted bootstrap code runs before this barrier. The host owns the
     // finite Job already, pulls these new objects and installs their exact ACLs
     // plus UI restrictions before acknowledging any untrusted execution.
@@ -889,10 +998,60 @@ fn execute(
         1,
     )?;
     resources
-        .verify_hardened(&qualified, &request.host_sid, &request.user_sid)
+        .verify_hardened(
+            &qualified,
+            &request.host_sid,
+            &request.user_sid,
+            &request.appcontainer_sid,
+            &request.writer_sid,
+        )
         .map_err(io::Error::other)?;
     let mut desktop = wide(&qualified)?;
-    let token = restricted_payload_token(&request.host_sid)?;
+    let token = restricted_payload_token(
+        &request.host_sid,
+        &request.appcontainer_sid,
+        &request.writer_sid,
+    )?;
+    let package = parse_sid(&request.appcontainer_sid)?;
+    let capabilities = SECURITY_CAPABILITIES {
+        AppContainerSid: package.0,
+        Capabilities: null_mut(),
+        CapabilityCount: 0,
+        Reserved: 0,
+    };
+    // AppContainer creation needs this base in the child environment. Resolve
+    // it from the verified dedicated OS profile and host-pinned package temp.
+    if request
+        .environment
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case("LOCALAPPDATA"))
+    {
+        return Err(invalid("LocalAppData is reserved for the trusted runner"));
+    }
+    let temp = request
+        .environment
+        .get("TEMP")
+        .map(PathBuf::from)
+        .ok_or_else(|| invalid("Missing approved private TEMP directory"))?;
+    if !temp.is_absolute() || request.environment.get("TMP").map(Path::new) != Some(temp.as_path())
+    {
+        return Err(invalid(
+            "TEMP and TMP must identify the same approved private directory",
+        ));
+    }
+    let local_app_data = super::windows_provision::verified_runner_local_app_data(
+        &request.user_sid,
+        &request.appcontainer_sid,
+        &temp,
+    )
+    .map_err(io::Error::other)?;
+    let local_app_data = local_app_data
+        .into_os_string()
+        .into_string()
+        .map_err(|_| invalid("Dedicated LocalAppData must be Unicode"))?;
+    request
+        .environment
+        .insert("LOCALAPPDATA".into(), local_app_data);
     seal_current_runner(&request.host_sid, raw(&token))?;
     let executable = wide(&request.argv[0])?;
     let cwd = wide(&request.cwd)?;
@@ -909,8 +1068,9 @@ fn execute(
         return Err(invalid("Native command line exceeds 32767 UTF-16 units"));
     }
     let handles = [raw(&input), raw(&output), errors.as_raw_handle()];
-    let mut attributes = Attributes::with_capacity(1)?;
+    let mut attributes = Attributes::for_payload(2, request.approved_process_limit)?;
     attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)?;
+    attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &capabilities)?;
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -946,7 +1106,31 @@ fn execute(
         thread: unsafe { owned(info.hThread)? },
         finished: false,
     };
-    verify_payload_token(raw(&payload.process), raw(&token))?;
+    let payload_token = open_payload_token(raw(&payload.process))?;
+    verify_payload_token(raw(&payload_token), raw(&token), &request.writer_sid)?;
+    if request.approved_process_limit == 2 && !child_processes_blocked(raw(&payload.process))? {
+        return Err(invalid(
+            "Child creation is allowed at the full process budget",
+        ));
+    }
+    verify_appcontainer_token(
+        raw(&payload_token),
+        &request.user_sid,
+        &request.appcontainer_sid,
+        &request.writer_sid,
+    )?;
+    super::windows_provision::verify_appcontainer_storage(
+        raw(&payload_token),
+        &request.user_sid,
+        &request.appcontainer_sid,
+        &temp,
+    )
+    .map_err(io::Error::other)?;
+    let namespace = super::windows_tree_package_namespace::open_for_payload(
+        raw(&payload_token),
+        &request.appcontainer_sid,
+    )
+    .map_err(io::Error::other)?;
     let mut member = 0;
     if unsafe { IsProcessInJob(raw(&payload.process), null_mut(), &mut member) } == 0 {
         return Err(native_error("Verify suspended payload Job membership"));
@@ -958,10 +1142,12 @@ fn execute(
         reply,
         ack,
         &Ready::Payload {
-            version: 1,
+            version: 2,
             pid: info.dwProcessId,
             process_handle: raw(&payload.process) as usize as u64,
             thread_handle: raw(&payload.thread) as usize as u64,
+            token_handle: raw(&payload_token) as usize as u64,
+            namespace_handle: raw(&namespace) as usize as u64,
         },
         2,
     )?;
@@ -1025,6 +1211,8 @@ pub(super) fn main() -> i32 {
 #[cfg(test)]
 mod restricted_token_tests {
     use super::*;
+    const TEST_PACKAGE: &str = "S-1-15-2-1-2-3-4-5-6-7";
+    const TEST_WRITER: &str = "S-1-5-21-3987231234-3987231235-3987231236-212345";
     #[test]
     fn native_token_restricts_privileges_and_default_objects() {
         let mut base = null_mut();
@@ -1035,16 +1223,15 @@ mod restricted_token_tests {
         let base = unsafe { owned(base).unwrap() };
         let user = token_information(raw(&base), TokenUser).unwrap();
         let host_sid = sid_text(unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid }).unwrap();
-        let token = restricted_payload_token(&host_sid).unwrap();
-        verify_restricted_token(raw(&token)).unwrap();
+        let token = restricted_payload_token(&host_sid, TEST_PACKAGE, TEST_WRITER).unwrap();
+        verify_restricted_token(raw(&token), TEST_WRITER).unwrap();
         let restricted = token_information(raw(&token), TokenRestrictedSids).unwrap();
         let sids: Vec<_> = token_groups(&restricted)
             .unwrap()
             .iter()
             .map(|entry| sid_text(entry.Sid).unwrap())
             .collect();
-        assert!(sids.contains(&host_sid));
-        assert!(sids.contains(&"S-1-1-0".to_owned()));
+        assert_eq!(sids, [TEST_WRITER]);
         assert!(!sids.iter().any(|sid| sid.starts_with("S-1-5-5-")));
         let groups = token_information(raw(&token), TokenGroups).unwrap();
         for entry in token_groups(&groups)
@@ -1058,14 +1245,24 @@ mod restricted_token_tests {
         let dacl = token_information(raw(&token), TokenDefaultDacl).unwrap();
         let dacl = unsafe { (*dacl.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl };
         assert!(!dacl.is_null());
-        assert_eq!(unsafe { (*dacl).AceCount }, 3);
+        assert_eq!(unsafe { (*dacl).AceCount }, 5);
+        let mut writer_grant = false;
+        let mut package_grant = false;
         let mut owner_rights = false;
         let mut host_observer = false;
-        for index in 0..3 {
+        for index in 0..5 {
             let mut ace = null_mut();
             assert_ne!(unsafe { GetAce(dacl, index, &mut ace) }, 0);
             let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
             let sid = sid_text(std::ptr::addr_of!(ace.SidStart).cast_mut().cast()).unwrap();
+            if sid == TEST_WRITER {
+                assert_eq!(ace.Mask, GENERIC_ALL);
+                writer_grant = true;
+            }
+            if sid == TEST_PACKAGE {
+                assert_eq!(ace.Mask, GENERIC_ALL);
+                package_grant = true;
+            }
             if sid == "S-1-3-4" {
                 assert_eq!(ace.Mask, READ_CONTROL);
                 owner_rights = true;
@@ -1075,11 +1272,11 @@ mod restricted_token_tests {
                 host_observer = true;
             }
         }
-        assert!(owner_rights && host_observer);
+        assert!(owner_rights && host_observer && package_grant && writer_grant);
     }
     #[test]
     fn native_same_account_restricted_process_creation() {
-        restricted_process_creation(false);
+        restricted_process_creation(false, 1);
     }
 
     #[test]
@@ -1111,11 +1308,18 @@ mod restricted_token_tests {
             std::env::var("WW_SEALED_RUNNER_FIXTURE").as_deref(),
             Ok("1")
         );
-        restricted_process_creation(true);
+        restricted_process_creation(true, 1);
         println!("SEALED_RUNNER_FIXTURE_PASSED");
     }
 
-    fn restricted_process_creation(seal: bool) {
+    #[test]
+    fn native_saturated_payload_child_policy() {
+        for limit in [2, 8] {
+            restricted_process_creation(false, limit);
+        }
+    }
+
+    fn restricted_process_creation(seal: bool, process_limit: u64) {
         // This proves the restricted-token API path under the current account,
         // not administrator provisioning or the cross-account launcher path.
         let mut base = null_mut();
@@ -1126,7 +1330,7 @@ mod restricted_token_tests {
         let base = unsafe { owned(base).unwrap() };
         let user = token_information(raw(&base), TokenUser).unwrap();
         let host = sid_text(unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid }).unwrap();
-        let token = restricted_payload_token(&host).unwrap();
+        let token = restricted_payload_token(&host, TEST_PACKAGE, TEST_WRITER).unwrap();
         if seal {
             let pid = unsafe { GetCurrentProcessId() };
             let tid = unsafe { GetCurrentThreadId() };
@@ -1222,7 +1426,7 @@ mod restricted_token_tests {
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         limits.BasicLimitInformation.LimitFlags =
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-        limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        limits.BasicLimitInformation.ActiveProcessLimit = process_limit as u32;
         assert_ne!(
             unsafe {
                 SetInformationJobObject(
@@ -1253,7 +1457,7 @@ mod restricted_token_tests {
         };
         let inherited = [raw(&nul)];
         let jobs = [raw(&job)];
-        let mut attributes = Attributes::with_capacity(3).unwrap();
+        let mut attributes = Attributes::for_payload(3, process_limit).unwrap();
         attributes
             .set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)
             .unwrap();
@@ -1313,7 +1517,14 @@ mod restricted_token_tests {
             thread: unsafe { owned(info.hThread).unwrap() },
             finished: false,
         };
-        verify_payload_token(raw(&payload.process), raw(&token)).unwrap();
+        let payload_token = open_payload_token(raw(&payload.process)).unwrap();
+        verify_payload_token(raw(&payload_token), raw(&token), TEST_WRITER).unwrap();
+        if process_limit >= 2 {
+            assert_eq!(
+                child_processes_blocked(raw(&payload.process)).unwrap(),
+                process_limit == 2,
+            );
+        }
         let mut member = 0;
         assert_ne!(
             unsafe { IsProcessInJob(raw(&payload.process), raw(&job), &mut member) },

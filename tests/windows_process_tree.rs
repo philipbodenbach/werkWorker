@@ -276,7 +276,21 @@ impl Fixture {
             .execution_description(&workspace, true)
             .await
             .unwrap();
-        assert_eq!(provision["schema_version"], 4);
+        assert_eq!(provision["schema_version"], 5);
+        assert!(
+            provision["appcontainer_sid"]
+                .as_str()
+                .is_some_and(|sid| sid.starts_with("S-1-15-2-"))
+        );
+        assert_eq!(
+            description["appcontainer_sid"],
+            provision["appcontainer_sid"]
+        );
+        assert_eq!(description["appcontainer_capabilities"], json!([]));
+        let writer = provision["writer_sid"].as_str().unwrap();
+        assert!(writer.starts_with("S-1-5-21-"));
+        assert_ne!(provision["writer_sid"], provision["user_sid"]);
+        assert_eq!(description["writer_sid"], writer);
         let weight = u16::try_from(
             provision["network_sublayer_weight"]
                 .as_u64()
@@ -517,6 +531,8 @@ impl Fixture {
                 // The original observation has already failed. Keep the Tokio
                 // runtime alive while the real supervisor confirms cleanup;
                 // cleanup success must never turn that assertion into a pass.
+                let snapshot = self.sandbox.windows_process_tree_snapshot(&self.workspace);
+                println!("NATIVE_TREE_FAILURE_JOB_SNAPSHOT {snapshot:?}");
                 let cancel_error = run
                     .cancel(
                         "Native snapshot assertion failed",
@@ -526,9 +542,21 @@ impl Fixture {
                     .err()
                     .map(|error| error.to_string());
                 let close_error = engine.close().await.err().map(|error| error.to_string());
+                let marker = self.manifest.with_file_name("incomplete-run.json");
+                let marker_absent = match fs::symlink_metadata(&marker) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true),
+                    Ok(_) => Some(false),
+                    Err(error) => {
+                        eprintln!(
+                            "Cannot inspect cleanup marker {}: {error}",
+                            marker.display()
+                        );
+                        None
+                    }
+                };
                 println!(
                     "NATIVE_TREE_SNAPSHOT_FAILURE_CLEANUP {}",
-                    json!({"cancel_error":cancel_error,"close_error":close_error,"cleanup_confirmed":close_error.is_none()})
+                    json!({"cancel_error":cancel_error,"close_error":close_error,"marker_absent":marker_absent})
                 );
                 std::panic::resume_unwind(original_panic);
             }
@@ -1001,9 +1029,21 @@ async fn required_native_process_tree_acceptance() {
         }
         let (engine, run, provider) = launch(&fixture, directory.path(), arguments, mode).await;
         for generation in 0..3 {
-            wait_for(directory.path().join(format!("receipt-{generation}.json"))).await;
+            fixture_file_with_cleanup(
+                &fixture,
+                directory.path().join(format!("receipt-{generation}.json")),
+                &run,
+                &engine,
+            )
+            .await;
         }
-        wait_for(directory.path().join("budget.json")).await;
+        fixture_file_with_cleanup(
+            &fixture,
+            directory.path().join("budget.json"),
+            &run,
+            &engine,
+        )
+        .await;
         let pinned = fixture
             .snapshot_with_cleanup(directory.path(), 4, &run, &engine)
             .await;
@@ -1568,7 +1608,8 @@ async fn ui_boundary_checks(fixture: &mut Fixture) {
 async fn console_budget_checks(fixture: &mut Fixture) {
     let original_limits = fixture.sandbox.limits.clone();
     fixture.sandbox.limits.processes = 2;
-    for mode in ["console-alloc", "console-child"] {
+    // Record explicit child admission before testing the independent AllocConsole broker path.
+    for mode in ["console-child", "console-alloc"] {
         let directory = fixture.case(mode);
         let (engine, run, provider) = launch(
             fixture,
@@ -1577,7 +1618,13 @@ async fn console_budget_checks(fixture: &mut Fixture) {
             Mode::Run,
         )
         .await;
-        wait_for(directory.path().join("console-ready")).await;
+        fixture_file_with_cleanup(
+            fixture,
+            directory.path().join("console-ready"),
+            &run,
+            &engine,
+        )
+        .await;
         let pinned = fixture
             .snapshot_with_cleanup(directory.path(), 2, &run, &engine)
             .await;
@@ -1591,7 +1638,13 @@ async fn console_budget_checks(fixture: &mut Fixture) {
             })
             .await;
         fs::write(directory.path().join("console-attempt-gate"), b"attempt").unwrap();
-        wait_for(directory.path().join("console-attempt.json")).await;
+        fixture_file_with_cleanup(
+            fixture,
+            directory.path().join("console-attempt.json"),
+            &run,
+            &engine,
+        )
+        .await;
         let after_pinned = fixture.assert_with_cleanup(&run, &engine, || {
             let attempt = read_json(directory.path().join("console-attempt.json"));
             let helpers = new_console_helpers(&before);
@@ -1842,19 +1895,28 @@ async fn dns_broker_checks(fixture: &Fixture) {
     )
     .await;
     for generation in 0..3 {
-        wait_for(directory.path().join(format!("receipt-{generation}.json"))).await;
+        fixture_file_with_cleanup(
+            fixture,
+            directory.path().join(format!("receipt-{generation}.json")),
+            &run,
+            &engine,
+        )
+        .await;
     }
-    wait_for(directory.path().join("budget.json")).await;
+    fixture_file_with_cleanup(fixture, directory.path().join("budget.json"), &run, &engine).await;
     let pinned = fixture
         .snapshot_with_cleanup(directory.path(), 4, &run, &engine)
         .await;
     provider.completion.pin(&pinned);
     fs::write(directory.path().join("dns-gate"), b"query").unwrap();
     for generation in 0..3 {
-        wait_for(
+        fixture_file_with_cleanup(
+            fixture,
             directory
                 .path()
                 .join(format!("dns-result-{generation}.json")),
+            &run,
+            &engine,
         )
         .await;
     }
@@ -1871,9 +1933,13 @@ async fn dns_broker_checks(fixture: &Fixture) {
                 .path()
                 .join(format!("dns-result-{generation}.json")),
         );
+        let arrivals = server.arrivals(&name);
+        println!(
+            "NATIVE_TREE_DNS_OBSERVATION {}",
+            json!({"generation": generation, "name": name, "arrivals": arrivals, "result": result}),
+        );
         assert_eq!(
-            server.arrivals(&name),
-            0,
+            arrivals, 0,
             "DnsQueryEx transmitted the sandbox nonce through a DNS service or direct socket despite network denial: generation {generation}, result {result}"
         );
         assert_ne!(
@@ -1890,8 +1956,18 @@ async fn fixture_file_with_cleanup(
     run: &RunHandle,
     engine: &WorkerEngine,
 ) {
+    fixture_file_within(fixture, path, run, engine, Duration::from_secs(15)).await;
+}
+
+async fn fixture_file_within(
+    fixture: &Fixture,
+    path: PathBuf,
+    run: &RunHandle,
+    engine: &WorkerEngine,
+    timeout: Duration,
+) {
     use futures_util::FutureExt;
-    let observed = std::panic::AssertUnwindSafe(wait_for(path))
+    let observed = std::panic::AssertUnwindSafe(wait_for_within(path, timeout))
         .catch_unwind()
         .await;
     fixture
@@ -2604,7 +2680,13 @@ async fn inbound_loopback_checks(fixture: &Fixture) {
         Mode::Run,
     )
     .await;
-    wait_for(directory.path().join("listeners.json")).await;
+    fixture_file_with_cleanup(
+        fixture,
+        directory.path().join("listeners.json"),
+        &run,
+        &engine,
+    )
+    .await;
     let pinned = fixture
         .snapshot_with_cleanup(directory.path(), 2, &run, &engine)
         .await;
@@ -2676,7 +2758,13 @@ async fn resource_checks(fixture: &mut Fixture) {
             Mode::Run,
         )
         .await;
-        wait_for(directory.path().join("resource-ready")).await;
+        fixture_file_with_cleanup(
+            fixture,
+            directory.path().join("resource-ready"),
+            &run,
+            &engine,
+        )
+        .await;
         let pinned = fixture
             .snapshot_with_cleanup(directory.path(), 2, &run, &engine)
             .await;
@@ -2725,7 +2813,13 @@ async fn bounded_output_checks(fixture: &mut Fixture) {
         Mode::Run,
     )
     .await;
-    wait_for(directory.path().join("output-ready")).await;
+    fixture_file_with_cleanup(
+        fixture,
+        directory.path().join("output-ready"),
+        &run,
+        &engine,
+    )
+    .await;
     let pinned = fixture
         .snapshot_with_cleanup(directory.path(), 2, &run, &engine)
         .await;
@@ -2821,8 +2915,11 @@ fn native_behavior() {
     };
     let arguments = json!({"argv":[cargo,"test","--offline","--","--nocapture"],"cwd":directory.path().strip_prefix(&fixture.workspace.path).unwrap().to_string_lossy()});
     let (engine, run, provider) = launch(fixture, directory.path(), arguments, Mode::Run).await;
-    wait_for_within(
+    fixture_file_within(
+        fixture,
         directory.path().join("cargo-ready"),
+        &run,
+        &engine,
         Duration::from_secs(90),
     )
     .await;

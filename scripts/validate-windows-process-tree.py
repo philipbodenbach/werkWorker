@@ -637,7 +637,7 @@ def suite(args, environment):
             "WW_WINDOWS_PROCESS_TREE_EXTERNAL_ENDPOINT": witness.endpoint,
         })
         command = ["cargo", "test", "--locked", "--offline", "--manifest-path",
-                   str(args.source / "Cargo.toml"), "--target-dir", str(args.source / "target"),
+                   str(args.source / "Cargo.toml"), "--target-dir", str(args.evidence / "suite-build"),
                    "--test", "windows_process_tree", "--"]
         if args.diagnostic:
             environment["WW_TREE_DIAGNOSTIC_CASE"] = args.diagnostic
@@ -783,6 +783,9 @@ def installed_start(args, environment):
                 and isinstance(stdout, str) and "INSTALLED_NATIVE_TREE_OK" in stdout
                 and sandbox.get("backend") == "windows-account-job-tree"
                 and sandbox.get("account_sid") == manifest["user_sid"]
+                and sandbox.get("appcontainer_sid") == manifest["appcontainer_sid"]
+                and sandbox.get("appcontainer_capabilities") == []
+                and sandbox.get("writer_sid") == manifest["writer_sid"]
                 and sandbox.get("provisioning_sha256") == result["manifest_sha256"])
     successful = [item for item in calls if successful_call(item)]
     result["qualified_invocation_count"] = len(successful)

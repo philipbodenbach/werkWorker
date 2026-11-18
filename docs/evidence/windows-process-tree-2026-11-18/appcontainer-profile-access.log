@@ -1,0 +1,30 @@
+groups=16 logon_disabled=1 writer=S-1-15-2-1752109539-299345746-186662264-2241207756-2715369955-715777888-4182819691
+restricting SIDs 1 writer present 1
+both=1 user_only=0 package_only=0 foreign_user_and_package=0 actual_user_conditional=1 foreign_user_conditional=0
+synthetic write user_pkg=0 user_pkg_writer=1
+profile folder query hr=0
+profile registry read hr=0
+profile dir desired=10000 opened=0 error=5
+profile dir desired=40000 opened=0 error=5
+profile dir desired=80000 opened=0 error=5
+profile dir desired=40 opened=1 error=0
+profile dir desired=100 opened=0 error=5
+profile dir desired=2000000 opened=1 error=0
+ancestor=ownPackage desired=2 opened=0 error=5
+ancestor=ownPackage desired=4 opened=0 error=5
+ancestor=ownPackage desired=10000 opened=0 error=5
+ancestor=ownPackage desired=40 opened=0 error=5
+ancestor=ownPackage desired=40000 opened=0 error=5
+ancestor=packagesParent desired=2 opened=0 error=5
+ancestor=packagesParent desired=4 opened=0 error=5
+ancestor=packagesParent desired=10000 opened=0 error=5
+ancestor=packagesParent desired=40 opened=0 error=5
+ancestor=packagesParent desired=40000 opened=0 error=5
+profile key desired=10000 hr=80070005
+profile key desired=40000 hr=80070005
+profile key desired=80000 hr=80070005
+profile key desired=4 hr=80070005
+profile key desired=2 hr=80070005
+profile key desired=20 hr=0
+profile_directory_add_file=0 win32=5 profile_registry_key_set_hr=80070005
+profile cleanup=0x00000000

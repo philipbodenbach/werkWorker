@@ -1,0 +1,70 @@
+{
+  "archive_sha256": "2215bb17a94b9decebf83d2b2738ce99cc3e2721c7412575616f6125188826cb",
+  "suite_setup_exit": 0,
+  "mandatory_suite_exit": 1,
+  "installed_setup_exit": 0,
+  "installed_start_exit": 1,
+  "qualified": false,
+  "scope": "Frozen prerelease candidate 04. This result does not enable the working-branch product.",
+  "working_basis": "5a9ddff",
+  "ordinary_host_integrity_rid": 8192,
+  "suite": {
+    "cargo_exit": 101,
+    "failed_at": "first lifecycle workload, receipt-0.json absent",
+    "partial_summary": "2 passed, 1 failed, 5 ignored"
+  },
+  "installed_cli": {
+    "cli_exit": 1,
+    "payload_exit": 1,
+    "cancelled": true,
+    "qualified_invocations": 0,
+    "windows_artifacts": []
+  },
+  "focused_cases": {
+    "dns": {
+      "host_before_arrivals": 1,
+      "sandbox_query_attempts_verified": false,
+      "host_after_verified": false
+    },
+    "console": {
+      "allocconsole_verified": false,
+      "console_child_verified": false
+    }
+  },
+  "system_events": {
+    "log": "System",
+    "provider": "Application Popup",
+    "event_id": 26,
+    "status": "0xC0000142 (STATUS_DLL_INIT_FAILED)",
+    "records": [
+      {
+        "record": 46570,
+        "image": "probe.exe",
+        "time_utc": "2026-11-18T00:35:38Z"
+      },
+      {
+        "record": 46571,
+        "image": "probe.exe",
+        "time_utc": "2026-11-18T00:39:09Z"
+      },
+      {
+        "record": 46572,
+        "image": "cargo.exe",
+        "time_utc": "2026-11-18T00:39:46Z"
+      },
+      {
+        "record": 46573,
+        "image": "probe.exe",
+        "time_utc": "2026-11-18T00:44:14Z"
+      }
+    ],
+    "correlation": "Image name and time. The event does not identify a failing DLL or PID."
+  },
+  "evidence_files": {
+    "target/tree-ac-1118/native-integrated-04/suite/mandatory-suite-result.json": "ab8f3cb9de7ea5df06c20f8083b8a1481817f399368bf058cb80887cf983891c",
+    "target/tree-ac-1118/native-integrated-04/installed-start/installed-start-result.json": "7356fa8a1d8f9c4a13d885f83f4a55a04976ba82a38dd7006c8e64ea07349275",
+    "target/tree-ac-1118/focus-dns-04-111dd-20261118T0033179326Z/diagnostic-dns-result.json": "452b933b47ba866f73b90e4679aac03e0af26db5e48111f9a3613d55ede0ea00",
+    "target/tree-ac-1118/console-focus-04-8fd243baabc640daa43fc3053926b58e/suite/console-startup-observation.json": "658f08d828f4ae3be61dc8df40b5dafa25d230a883c36929c66473769db91eb8",
+    "target/tree-ac-1118/native-integrated-04/qualification-result.json": "c8221ffb04b497e237c17b6e34a169ebf117ad6f5abc068e3b36f76f06fe8aba"
+  }
+}

@@ -1,0 +1,479 @@
+{
+  "date": "2026-11-18",
+  "scope": "Local Windows compatibility diagnostics. The schema comparisons used the existing dedicated-account Jobs through a verified ordinary Medium host. The isolated token experiments used the same ordinary host and an ephemeral zero-capability AppContainer.",
+  "finding": "On this Windows build the native bcrypt process-attach path requests write data on the KsecDD device. Schema 5 fails its second, write-restricted access check for that bit. Native status is STATUS_ACCESS_DENIED, explicit loading returns Win32 1114, and the Rust image with a static bcrypt import exits with STATUS_DLL_INIT_FAILED before producing its test list.",
+  "schema_delta": "Both schema runners set DISABLE_MAX_PRIVILEGE, LUA_TOKEN and WRITE_RESTRICTED (0x0d). Schema 4 includes its dedicated account and Everyone among the restricting SIDs. Schema 5 combines a zero-capability AppContainer with one private writer as the sole restricting SID. The device grants the write-data bit to Everyone. Its discretionary ACL contains no ACE for that private writer.",
+  "system_dll": {
+    "path": "C:\\Windows\\System32\\bcrypt.dll",
+    "file_version": "10.0.26100.9949",
+    "sha256": "fb658b74aea2fc655d86e6f567c69e251a527c413a750d3952a7830fc715b446",
+    "inspection": "Local PE entry point, import address table, instructions and the UTF-16 object string. Addresses here are image-relative for this digest.",
+    "process_attach_entry_rva": "0xe910",
+    "native_open_call_rva": "0xa786",
+    "device_name_rva": "0x1e378",
+    "object": "\\Device\\KsecDD",
+    "api": "NtOpenFile",
+    "desired_access": "0x00100003",
+    "share_access": "0x7",
+    "open_options": "0x20",
+    "read_only_comparator": "0x00100001",
+    "access_names": [
+      "SYNCHRONIZE",
+      "FILE_READ_DATA",
+      "FILE_WRITE_DATA"
+    ]
+  },
+  "device_security": {
+    "read_only_query": "\\\\?\\GLOBALROOT\\Device\\KsecDD",
+    "owner_and_dacl_sddl": "O:BAD:(A;;0x1201bf;;;WD)(A;;0x1200a9;;;RC)(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1201bf;;;AC)(A;;0x1201bf;;;S-1-15-2-2)",
+    "label_sddl": "S:(ML;;NW;;;LW)",
+    "label_query": "GetNamedSecurityInfoW with LABEL_SECURITY_INFORMATION returned 0",
+    "special_principals": {
+      "WD": "Everyone",
+      "RC": "Restricted Code",
+      "AC": "All Application Packages",
+      "S-1-15-2-2": "All Restricted Application Packages"
+    },
+    "file_write_data": "0x2",
+    "label": "Low integrity with no-write-up. The measured schema-5 payload has Low integrity."
+  },
+  "real_jobs": [
+    {
+      "case": "schema4-crypto-resource",
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/schema4-crypto-resource/observation.json",
+        "sha256": "9d47ec25b8f9ab526dc308890b77be58f67a746a7e92ecc2b74706834baa3f0b"
+      },
+      "probe_sha256": "9a6d03a27152b86ceca313b762f6a03f9d0f3a927ffb2812bd60769d5ed4eb3b",
+      "runner_sha256": "c1b5cb93341e70c7b41bb87867915eef0eee0d4799089fd50cba976cd9567169",
+      "manifest_sha256": "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f",
+      "host_binary_sha256": "a83983b7a58583efc9e9e41a9ddc7d6c6001df79e645f1721e641440be482ac7",
+      "ordinary_host_integrity_rid": 8192,
+      "payload_pid": 158620,
+      "payload_exit": "0x0",
+      "stdout": [
+        "ENTRY",
+        "System32_sechost 0x00000000",
+        "System32_bcrypt 0x00000000",
+        "KsecDD_crypto_init_open_NTSTATUS 0x00000000",
+        "KsecDD_read_only_open_NTSTATUS 0x00000000"
+      ],
+      "marker_after": false,
+      "outer_job_active_after_cleanup": 0
+    },
+    {
+      "case": "schema5-crypto-resource",
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/schema5-crypto-resource/observation.json",
+        "sha256": "023bae39ea18f5da79ff502552562cfde221e30b6f8b7c3bbaf05a0cbc1e7e6f"
+      },
+      "probe_sha256": "9a6d03a27152b86ceca313b762f6a03f9d0f3a927ffb2812bd60769d5ed4eb3b",
+      "runner_sha256": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "manifest_sha256": "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d",
+      "host_binary_sha256": "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+      "ordinary_host_integrity_rid": 8192,
+      "payload_pid": 85160,
+      "payload_exit": "0x50",
+      "stdout": [
+        "ENTRY",
+        "System32_sechost 0x00000000",
+        "System32_bcrypt 0x0000045a",
+        "KsecDD_crypto_init_open_NTSTATUS 0xc0000022",
+        "KsecDD_read_only_open_NTSTATUS 0x00000000"
+      ],
+      "marker_after": false,
+      "outer_job_active_after_cleanup": 0
+    },
+    {
+      "case": "schema4-self-event",
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/schema4-self-event/observation.json",
+        "sha256": "29448450deb5710d16b58e58eb0db992c97ed196e78cd7e04985cd3d2f7eee4b"
+      },
+      "probe_sha256": "425ad9a702427887d510d508354293e0326bbd093136cab07eba448f7e80c55c",
+      "runner_sha256": "c1b5cb93341e70c7b41bb87867915eef0eee0d4799089fd50cba976cd9567169",
+      "manifest_sha256": "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f",
+      "host_binary_sha256": "a83983b7a58583efc9e9e41a9ddc7d6c6001df79e645f1721e641440be482ac7",
+      "ordinary_host_integrity_rid": 8192,
+      "payload_pid": 164708,
+      "payload_exit": "0x0",
+      "stdout": [
+        "ENTRY",
+        "CreateEventW_default OK 0x00000000",
+        "CreateEventExW_sync_modify OK 0x00000000",
+        "InitializeCriticalSectionEx OK 0x00000000",
+        "Own_token_query OK 0x00000000",
+        "USER S-1-5-21-4275439644-3620842777-1714106797-1011",
+        "PACKAGE (absent)",
+        "RESTRICTED S-1-5-21-4275439644-3620842777-1714106797-1011",
+        "RESTRICTED S-1-1-0",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x10000000 SID S-1-5-21-4275439644-3620842777-1714106797-1011",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x00101001 SID S-1-5-21-4275439644-3620842777-1714106797-1001",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x00020000 SID S-1-3-4",
+        "System32_bcrypt OK 0x00000000"
+      ],
+      "marker_after": false,
+      "outer_job_active_after_cleanup": 0
+    },
+    {
+      "case": "schema5-self-event",
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/schema5-self-event/observation.json",
+        "sha256": "840c6e574e82b4fb618e3b46cddde326687117472dd3c5709c3d84ccb1ad644e"
+      },
+      "probe_sha256": "425ad9a702427887d510d508354293e0326bbd093136cab07eba448f7e80c55c",
+      "runner_sha256": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "manifest_sha256": "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d",
+      "host_binary_sha256": "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+      "ordinary_host_integrity_rid": 8192,
+      "payload_pid": 99832,
+      "payload_exit": "0x50",
+      "stdout": [
+        "ENTRY",
+        "CreateEventW_default OK 0x00000000",
+        "CreateEventExW_sync_modify OK 0x00000000",
+        "InitializeCriticalSectionEx OK 0x00000000",
+        "Own_token_query OK 0x00000000",
+        "USER S-1-5-21-4275439644-3620842777-1714106797-1052",
+        "PACKAGE S-1-15-2-100764835-1869513343-2363173209-3834438018-281552172-942464821-2593819694",
+        "RESTRICTED S-1-5-21-4275439644-3620842777-1714106797-1053",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x10000000 SID S-1-5-21-4275439644-3620842777-1714106797-1052",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x10000000 SID S-1-15-2-100764835-1869513343-2363173209-3834438018-281552172-942464821-2593819694",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x10000000 SID S-1-5-21-4275439644-3620842777-1714106797-1053",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x00101001 SID S-1-5-21-4275439644-3620842777-1714106797-1001",
+        "DEFAULT_ACE TYPE 0x00000000 FLAGS 0x00000000 MASK 0x00020000 SID S-1-3-4",
+        "System32_bcrypt FAIL 0x0000045a"
+      ],
+      "marker_after": false,
+      "outer_job_active_after_cleanup": 0
+    },
+    {
+      "case": "schema5-accesscheck",
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/schema5-accesscheck/observation.json",
+        "sha256": "5c887eaf52da15891d2a62f20005f5ab5aaa10f06515770edb4818a14394de3d"
+      },
+      "probe_sha256": "9af47402363e986d2096b0d741e6359420f5a0829b3c96ffd5e0e5a56ed38400",
+      "runner_sha256": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "manifest_sha256": "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d",
+      "host_binary_sha256": "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+      "ordinary_host_integrity_rid": 8192,
+      "payload_pid": 116956,
+      "payload_exit": "0x0",
+      "stdout": [
+        "OBSERVED mask=0x00100001 api_err=0x00000000 allowed=0x00000001 rights=0x00100001",
+        "OBSERVED mask=0x00100003 api_err=0x00000000 allowed=0x00000000 rights=0x00000000",
+        "PRIVATE_WRITE_BIT_COPY mask=0x00100001 api_err=0x00000000 allowed=0x00000001 rights=0x00100001",
+        "PRIVATE_WRITE_BIT_COPY mask=0x00100003 api_err=0x00000000 allowed=0x00000001 rights=0x00100003",
+        "PRIVATE_REQUEST_MASK_COPY mask=0x00100001 api_err=0x00000000 allowed=0x00000001 rights=0x00100001",
+        "PRIVATE_REQUEST_MASK_COPY mask=0x00100003 api_err=0x00000000 allowed=0x00000001 rights=0x00100003"
+      ],
+      "marker_after": false,
+      "outer_job_active_after_cleanup": 0
+    }
+  ],
+  "accesscheck_method": "An unchanged schema-5 payload duplicated its own token for SecurityImpersonation and supplied FILE_GENERIC_READ/WRITE/EXECUTE and FILE_ALL_ACCESS mappings to AccessCheck. The first descriptor reproduces the observed DACL in memory. Appending an allow ACE on a separate memory copy for only the authentic writer SID and FILE_WRITE_DATA (0x2) changes the 0x100003 result to allowed. This simulation has no kernel-object or device handle.",
+  "paired_startup_controls": {
+    "common": "Hash-checked fixed images. Same account and same temporary AppContainer within each comparison, zero capabilities, Low integrity, detached child, only the private output handle inherited, Win32k disabled before resume, all eight Job UI restrictions, Job cap two, fixed default ACL and identical environment.",
+    "flags": [
+      [
+        "copy",
+        "0x00",
+        false
+      ],
+      [
+        "disable_privilege",
+        "0x01",
+        false
+      ],
+      [
+        "add_lua",
+        "0x05",
+        false
+      ],
+      [
+        "add_logon_deny",
+        "0x05",
+        true
+      ],
+      [
+        "add_write_flag",
+        "0x0d",
+        true
+      ],
+      [
+        "add_writer",
+        "0x0d",
+        true
+      ]
+    ],
+    "flags_columns": [
+      "stage",
+      "CreateRestrictedToken flags",
+      "logon group disabled"
+    ],
+    "interpretation": "At zero explicit restricting SIDs, adding only WRITE_RESTRICTED changed the result from successful load to 1114 and the matching device open from success to STATUS_ACCESS_DENIED. The read-only open remained successful. Adding the private writer retained this outcome. The process-level arm with WRITE_RESTRICTED cleared and a sole private restricting SID checks the stronger full restriction. Both fixed images then exited with STATUS_ACCESS_DENIED before their entry markers.",
+    "one_parameter_steps": {
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/token-steps-medium-fixed/observation.json",
+        "sha256": "c5861c06f59318a2c59185a32e1e365de17bf14c7de60c8ec08ae51497cd14bc"
+      },
+      "log": {
+        "path": "target/matched-startup-20261118-controls/token-steps-medium-fixed/control.log",
+        "sha256": "f9c2798c5339e21d17e53a3259d1524a857e330caf4d17a0b87b5b21d5c8b3c6"
+      },
+      "controller_exit": 0,
+      "host_integrity_rid": 8192,
+      "empty_job": true,
+      "profile_removed": true,
+      "arms": [
+        {
+          "stage": "copy",
+          "writer_count": 0,
+          "image": "bcrypt.exe",
+          "pid": 120848,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+            "SYSTEM32_MODULE_PATH_CONFIRMED"
+          ]
+        },
+        {
+          "stage": "copy",
+          "writer_count": 0,
+          "image": "resource.exe",
+          "pid": 34752,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x00000000",
+            "KsecDD_crypto_init_open_NTSTATUS 0x00000000",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        },
+        {
+          "stage": "disable_privilege",
+          "writer_count": 0,
+          "image": "bcrypt.exe",
+          "pid": 85600,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+            "SYSTEM32_MODULE_PATH_CONFIRMED"
+          ]
+        },
+        {
+          "stage": "disable_privilege",
+          "writer_count": 0,
+          "image": "resource.exe",
+          "pid": 39116,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x00000000",
+            "KsecDD_crypto_init_open_NTSTATUS 0x00000000",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        },
+        {
+          "stage": "add_lua",
+          "writer_count": 0,
+          "image": "bcrypt.exe",
+          "pid": 159700,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+            "SYSTEM32_MODULE_PATH_CONFIRMED"
+          ]
+        },
+        {
+          "stage": "add_lua",
+          "writer_count": 0,
+          "image": "resource.exe",
+          "pid": 134892,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x00000000",
+            "KsecDD_crypto_init_open_NTSTATUS 0x00000000",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        },
+        {
+          "stage": "add_logon_deny",
+          "writer_count": 0,
+          "image": "bcrypt.exe",
+          "pid": 78516,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+            "SYSTEM32_MODULE_PATH_CONFIRMED"
+          ]
+        },
+        {
+          "stage": "add_logon_deny",
+          "writer_count": 0,
+          "image": "resource.exe",
+          "pid": 73720,
+          "exit": "0x00000000",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x00000000",
+            "KsecDD_crypto_init_open_NTSTATUS 0x00000000",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        },
+        {
+          "stage": "add_write_flag",
+          "writer_count": 0,
+          "image": "bcrypt.exe",
+          "pid": 157448,
+          "exit": "0x00000050",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+          ]
+        },
+        {
+          "stage": "add_write_flag",
+          "writer_count": 0,
+          "image": "resource.exe",
+          "pid": 64920,
+          "exit": "0x00000050",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x0000045a",
+            "KsecDD_crypto_init_open_NTSTATUS 0xc0000022",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        },
+        {
+          "stage": "add_writer",
+          "writer_count": 1,
+          "image": "bcrypt.exe",
+          "pid": 126300,
+          "exit": "0x00000050",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+          ]
+        },
+        {
+          "stage": "add_writer",
+          "writer_count": 1,
+          "image": "resource.exe",
+          "pid": 156264,
+          "exit": "0x00000050",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x0000045a",
+            "KsecDD_crypto_init_open_NTSTATUS 0xc0000022",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        }
+      ]
+    },
+    "sole_writer_full_restriction": {
+      "raw": {
+        "path": "target/matched-startup-20261118-controls/token-private-writer-full/observation.json",
+        "sha256": "796017b781c41898649bff50d80e51ae6f0a81eaba8a74e9932a76d5ddb056ad"
+      },
+      "log": {
+        "path": "target/matched-startup-20261118-controls/token-private-writer-full/control.log",
+        "sha256": "ffdd3fd4df54f1062b9510d9650370c9e47328c69e59095eacd37d5e02ec68df"
+      },
+      "controller_exit": 2,
+      "host_integrity_rid": 8192,
+      "empty_job": true,
+      "profile_removed": true,
+      "arms": [
+        {
+          "stage": "private_writer_write_only",
+          "writer_count": 1,
+          "image": "bcrypt.exe",
+          "pid": 39088,
+          "exit": "0x00000050",
+          "stdout": [
+            "ENTRY",
+            "BEFORE_LOAD",
+            "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+          ]
+        },
+        {
+          "stage": "private_writer_write_only",
+          "writer_count": 1,
+          "image": "resource.exe",
+          "pid": 93852,
+          "exit": "0x00000050",
+          "stdout": [
+            "ENTRY",
+            "System32_sechost 0x00000000",
+            "System32_bcrypt 0x0000045a",
+            "KsecDD_crypto_init_open_NTSTATUS 0xc0000022",
+            "KsecDD_read_only_open_NTSTATUS 0x00000000"
+          ]
+        },
+        {
+          "stage": "private_writer_full",
+          "writer_count": 1,
+          "image": "bcrypt.exe",
+          "pid": 35700,
+          "exit": "0xc0000022",
+          "stdout": []
+        },
+        {
+          "stage": "private_writer_full",
+          "writer_count": 1,
+          "image": "resource.exe",
+          "pid": 34584,
+          "exit": "0xc0000022",
+          "stdout": []
+        }
+      ]
+    }
+  },
+  "diagnostic_inputs": [
+    {
+      "image": "resource.exe",
+      "source_sha256": "b9cffe153b8537c675b66d8bd8a2ba5ef08ee054e6aa7df41971fdc8dcff89df",
+      "image_sha256": "9a6d03a27152b86ceca313b762f6a03f9d0f3a927ffb2812bd60769d5ed4eb3b"
+    },
+    {
+      "image": "self-event.exe",
+      "source_sha256": "17410314335e1c71b126ec68dcd914461e121709c17530aaadfb2b10db97c876",
+      "image_sha256": "425ad9a702427887d510d508354293e0326bbd093136cab07eba448f7e80c55c"
+    },
+    {
+      "image": "accesscheck.exe",
+      "source_sha256": "787b5fea1986513b1534a8725da0b651558873bf1878cece6f4cc494673e8b4c",
+      "image_sha256": "9af47402363e986d2096b0d741e6359420f5a0829b3c96ffd5e0e5a56ed38400"
+    },
+    {
+      "image": "token-steps controller",
+      "source_sha256": "2d9f2b1b9ba586d2ea6b6fb827a3559f8b9eb64a4b9f9bbce6637eef9e0bca75",
+      "image_sha256": "6c530053d09520902808f664ee5203a1deb82594ec5bf2c7e38b215a37dfc6db"
+    },
+    {
+      "image": "sole-writer controller",
+      "source_sha256": "2cc3255b9f0fbe62afc3320724fe40b16827540318f420592915610d616f76a9",
+      "image_sha256": "21abcd2dc7691115b39e47f3dfe68c20f50920a8b2401c3207e16886733cbc08"
+    }
+  ],
+  "qualification": "The paired controls supply diagnostic evidence. Retaining the sole writer while switching to full restriction failed before application entry. A product-compatible fix under the required boundary remains unverified."
+}

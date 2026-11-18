@@ -1,0 +1,49 @@
+{
+    "scope":  "Repeated complete native wrapper with the guarded branch product and the updated failure-cleanup assertions. The product was freshly installed and provisioned independently for each acceptance stage.",
+    "archive_sha256":  "f65849bbfe91dbd1b9c4c6f21f847a46cf89fc7e5e98ce8eca64ba7802bf28a0",
+    "qualified":  false,
+    "setup_exit":  [
+                       0,
+                       0
+                   ],
+    "archive_and_installed_binary_sha256":  {
+                                                "ww.exe":  "e9d8720e86d4b9a4f73232b302a1d6a0537739094abab1d8084926d2d60025da",
+                                                "werk-worker.exe":  "254bce30455e78980ef314b8eea5f71ad31542fc9adcf48089c559bb99201cbe",
+                                                "ww-windows-runner.exe":  "8c032037d71da270d559ff489f6b8021ccfd2c1a54e4df99efab2830caff323b",
+                                                "ww-windows-provision.exe":  "f61f1532b5566a5c020cfe9a055f4dd37cc53d4b2aedaa57977bb8c22b241c40"
+                                            },
+    "mandatory_suite":  {
+                            "cargo_exit":  101,
+                            "passed":  2,
+                            "failed":  1,
+                            "ignored":  5,
+                            "host_integrity_rid":  8192
+                        },
+    "installed":  {
+                      "cli_exit":  0,
+                      "tool_result":  {
+                                          "status":  "failed",
+                                          "data":  {
+                                                       "executed":  false,
+                                                       "message":  "The Windows process-tree profile is disabled pending complete native isolation, process-limit, lifecycle and installed offline Cargo qualification."
+                                                   },
+                                          "error_code":  "sandbox_unqualified",
+                                          "artifacts":  [
+
+                                                        ],
+                                          "truncated":  false
+                                      },
+                      "host_integrity_rid":  8192,
+                      "windows_artifacts":  [
+
+                                            ]
+                  },
+    "raw_evidence_sha256":  {
+                                "target/matched-schema5-release-20261118-01/qualification-result.json":  "c297cbbc13e5eb4a8cf469cf6f4f06070ec973560d62e51a8b11ca130d132a50",
+                                "target/matched-schema5-release-20261118-01/suite/mandatory-suite-result.json":  "16e04f0e8bcfdb0efc31ee378848d1d4e8a501322ea535a974f7deb74dd3d0ca",
+                                "target/matched-schema5-release-20261118-01/suite/mandatory-suite.log":  "5e9d87026341194076eb64a9e4a2ae5d33cb7c2fd179879b9c78a52ab59fb75a",
+                                "target/matched-schema5-release-20261118-01/installation/smoke-result.json":  "13e716eeec808c7b27b768576eb1bf70c1799bf80d992dd27b61e574b7cd87d1",
+                                "target/matched-schema5-release-20261118-01/installed-start/installed-start-result.json":  "496826154f3ccfe23b4f62092a58c07f1ab79081564c9ec77c87e4daf3fc348a",
+                                "target/matched-schema5-release-20261118-01/installed-start/installed-start.log":  "2161d19ad652298995c3219ea56f12ef589f428423d0e096163e21cf69d951bd"
+                            }
+}

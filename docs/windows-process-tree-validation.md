@@ -1,13 +1,132 @@
-# Windows process-tree validation — 2026-11-17
+# Windows process-tree validation
 
-**The process-tree profile remains technically disabled.** The Rustc jobserver
-failure is corrected in the backend and demonstrated through real `process.run`
-from a fresh schema-4 provision. DNS broker isolation and the console process
-ceiling are still unresolved. The complete mandatory acceptance has not passed;
-`sandbox_unqualified` remains unconditional. No commit, push, remote PR edit or
-hosted CI result is claimed for this continuation.
+The schema-5 backend is under native qualification on
+`feat/windows-child-process`. The product returns `sandbox_unqualified`
+pending a complete passing result from the native suite and the freshly
+installed CLI. The local guarded package with SHA-256
+`f65849bbfe91dbd1b9c4c6f21f847a46cf89fc7e5e98ce8eca64ba7802bf28a0`
+was built, installed and provisioned twice by the required Windows wrapper.
+Both checks ran with the ordinary host token. The suite returned Cargo exit
+101 at admission, and the installed tool recorded `executed=false` and zero
+Windows artifacts. [Working-branch product result](evidence/windows-process-tree-2026-11-18/guarded-schema5-release.json)
 
-## Current continuation on `feat/windows-child-process`
+## Matched schema 4 and schema 5 startup
+
+On the same Windows host and ordinary Medium logon, the identical Rust test
+executable listed eight tests on schema 4 and exited before its first line
+on schema 5 with `0xC0000142`. A second, fresh schema-5 provision used the
+same toolchain environment template as schema 4. All 4,690 files across its
+five toolchain roots matched by relative path, size and SHA-256. Direct
+`process.run` of offline Cargo produced a passing test, the expected text
+and an x64 test executable on schema 4. On schema 5, Cargo itself exited
+with `0xC0000142` before producing either artifact.
+[Matched workloads and artifacts](evidence/windows-process-tree-2026-11-18/matched-offline-cargo.json)
+
+The two process-specific Process Monitor traces recorded successful mappings
+of the same `System32\bcrypt.dll` and `sechost.dll`. A separate fixed probe
+then isolated the failing operation. Opening the Windows cryptography device
+`\Device\KsecDD` for the access needed by this build of `bcrypt.dll` returned
+`STATUS_ACCESS_DENIED` on schema 5. The read-only control succeeded on both
+schemas. Both use `WRITE_RESTRICTED`. Schema 4 included the dedicated account
+and Everyone in its restricting SID list. Schema 5 uses only the private
+workspace writer, which the device's access control list does not grant the
+required write access. In an independent zero-capability AppContainer, changing
+only the write-restriction flag reproduced the device denial and DLL error
+1114. Removing the workspace write check from the product would change its
+filesystem and registry isolation contract.
+In the actual schema-5 token, an access check against an in-memory copy of the
+device DACL changed from denied to allowed when the copy granted only the
+missing write bit to the private writer. No device permissions were changed.
+Keeping the private writer and strengthening its token to restrict reads as
+well as writes made both probe images exit with `STATUS_ACCESS_DENIED` before
+their entry points. Neither change yields a shippable start fix.
+[Process Monitor comparison](evidence/windows-process-tree-2026-11-18/matched-schema4-schema5-start.json) · [Native access checks](evidence/windows-process-tree-2026-11-18/bcrypt-write-check.json)
+
+The old `111dd` provision still has its incomplete-run marker and temporary
+writer ACE. A fresh run reproduced the same missing DNS readiness receipt.
+The supervisor verified all three retained handles were signaled and its own
+Job contained zero active processes. An independent observer saw the original
+420-byte directory DACL restored before the protected marker disappeared. The
+DNS workload never reached the three query attempts or the final host control.
+[Failure-path cleanup](evidence/windows-process-tree-2026-11-18/dns-startup-failure-cleanup.json)
+
+The updated native tests and a fresh installation of the guarded ZIP again
+returned `qualified=false`. All four installed executables matched the ZIP.
+The required suite stopped at admission, and the installed CLI recorded
+`sandbox_unqualified` for Cargo. Neither console case has a passing measurement
+of the two-member limit on this integrated product.
+[Fresh product qualification](evidence/windows-process-tree-2026-11-18/guarded-schema5-matched-rerun.json)
+
+## Native startup on the combined AppContainer candidate
+
+Both fresh provisions of candidate 04 succeeded. Each Windows payload failed
+before its first lifecycle or console receipt. System event 26 recorded
+`0xC0000142` (`STATUS_DLL_INIT_FAILED`) for the suite probe, the independent
+console case and installed Cargo. The installed tool reported cancellation
+and produced no Windows artifact. The focused DNS run recorded one positive
+host query and stopped before the sandbox queries and final host control.
+The process cap remains unverified on this candidate.
+[Candidate package, event records and native results](evidence/windows-process-tree-2026-11-18/schema5-candidate04.json)
+
+The subsequent runner inherits a noninteractive critical-error mode into each
+child. In the same freshly provisioned workspace, the actual Rust test image
+running `--list` returned `0xC0000142` in 2.39 seconds and
+`System32\cmd.exe /d /c exit 23` returned 23. The ordinary host retained the
+payload and runner handles, observed both signaled and confirmed removal of
+the protected in-progress receipt for each invocation.
+[Comparison on the same provision](evidence/windows-process-tree-2026-11-18/loader-failure-and-cmd-control.json)
+
+Eight small executables reached their entry points on this same provision and
+each requested one fixed System32 DLL. Seven loaded successfully, including
+`bcryptprimitives.dll`. Loading `bcrypt.dll` returned Win32 error 1114
+(`ERROR_DLL_INIT_FAILED`). Native PE inspection confirmed that the installed
+Cargo image and the Rust suite probe both import `bcrypt.dll` directly. The
+failure persisted with the dedicated user profile and its roaming path, the
+system drive and the machine ProgramData directory. Each diagnostic run
+drained its outer Job and cleared the in-progress marker. The later matched
+comparison identifies the denied device open.
+[System32 load results and environment controls](evidence/windows-process-tree-2026-11-18/system32-bcrypt-load.json)
+
+The earlier DNS diagnostic on candidate 04 left its own provision marked
+`cleanup=unconfirmed` during the startup failure. It did not reach any of the
+three sandbox queries or the second host control. The console workloads also
+failed to start, so neither process limit check established the maximum number
+of live Job members.
+
+## First integrated schema-5 package on 18 November 2026
+
+Both fresh provisions succeeded. Each of the four installed executable hashes
+matched the native release build and its ZIP entry. The ordinary Medium host
+ran the full suite and the installed CLI on separate workspaces. The suite
+stopped at admission with Cargo exit 101. The installed CLI returned zero,
+while its `process.run` result recorded `sandbox_unqualified`, `executed=false`
+and zero Windows test artifacts. Both outer Jobs drained.
+[Package and acceptance record](evidence/windows-process-tree-2026-11-18/guarded-schema5-first-build.json)
+
+The separate Windows API control observed one host DNS arrival before and
+after its zero-capability child and zero arrivals for the child. The same
+control created and reopened a named semaphore and restored the package
+directory ACL after Job drain. The product requires the synthetic DNS check
+across all three workload generations.
+[Native control log](evidence/windows-process-tree-2026-11-18/package-namespace-module-control.log)
+
+## Release acceptance at `5a9ddff` on 18 November 2026
+
+The native Windows wrapper built the offline x64 MSVC release and installed all
+four executables. Their SHA-256 hashes match the build outputs and ZIP entries.
+The unfiltered suite used a new Cargo target directory and the ordinary host
+token (Medium integrity, elevation off). Two tests passed, one failed at
+profile admission with `sandbox_unqualified`, and five fixtures or diagnostics
+were ignored. Cargo returned 101.
+
+The installed CLI ran separately on a second fresh provision because the
+wrapper stops when the mandatory suite fails. Its session recorded
+`process.run` as failed with `sandbox_unqualified` and `executed=false`.
+The CLI returned zero and the workspace contained no generated Windows test
+executable. Both acceptance host Jobs drained. The [release record](evidence/windows-process-tree-2026-11-18/release-5a9ddff.json)
+identifies the package, installed files and original logs by SHA-256.
+
+## Earlier schema-4 continuation at `5a9ddff`
 
 The namespace fix provisions a non-inheriting, account-only `0x000f` grant on
 the current session's `BaseNamedObjects\Restricted` directory. KernelBase needs

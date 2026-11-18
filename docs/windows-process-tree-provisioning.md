@@ -11,17 +11,12 @@ at `a2bed0a` and its earlier `ca8d664` evidence reject the LPAC capability
 expansion and PSEC/MXC route; they are decision inputs, not an enabled backend.
 The existing single-process LPAC mode remains the default.
 
-**The process-tree profile is not qualified and is technically disabled.**
-Native tests reproduce a DNS-broker escape from network denial, `AllocConsole`
-creating a third Job member despite an active-process limit of two. The Cargo
-jobserver semaphore fix now passes a selected real-tool case, but the complete
-mandatory suite and installed profile acceptance have not passed. An explicit selection, even with valid
-provisioning, returns `sandbox_unqualified` before workspace admission or
-execution; Doctor cannot report this profile available. There is no environment,
-debug or feature-flag bypass. The setup contract below describes the candidate;
-provisioning does not enable it. The Windows ZIP includes both helpers, but a
-successful basic installation does not establish provisioned profile acceptance.
-See [the measured results and remaining gates](windows-process-tree-validation.md).
+**The process-tree profile remains disabled pending native qualification.**
+Selecting it returns `sandbox_unqualified` before workspace admission.
+The schema-5 backend combines a zero-capability AppContainer with the
+dedicated-account Job and network filters. Release qualification requires the
+complete native tree suite and an installed offline Cargo invocation on the
+same package. [Native validation results](windows-process-tree-validation.md)
 
 ## Setup request
 
@@ -95,48 +90,40 @@ loopback exception. The seventh blocks RPC calls matching the dedicated client
 account at RPC_UM through REMOTE_USER_TOKEN. This is an account-specific rule;
 other users' RPC and DNS configuration are unchanged.
 
-The RPC rule attempts to address a native failure of the six socket-attribution rules:
-`DnsQueryEx` transmitted and resolved a fresh synthetic query through the Windows
-DNS path despite those rules. RPC filtering with a client security descriptor is
-[documented by Microsoft](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-rpc).
-The current native test still receives that query with all seven filters present;
-the additional rule is not an effective DNS-broker boundary on this host.
-All seven filters must pass exact runtime readback, including layer, condition,
-SID, block action, priority and persistence. Actual direct-network, loopback and
-DNS-broker controls still have to pass; installing a rule is not proof of its
-runtime effect. Offline Cargo must also prove compatibility with the RPC denial.
+In schema 4 a mediated `DnsQueryEx` reached the synthetic DNS server with
+all seven filters installed. Schema 5 also places the actual workload in an
+individual AppContainer with zero capabilities. The runner checks its package
+SID, Low integrity, restricting SID and empty capability list on the suspended
+token. The DNS acceptance test measures each of three generations between
+two positive host queries.
 
-Setup requests the maximum sublayer priority, but BFE may assign the closest
-available value ([Microsoft's provider-installation example](https://learn.microsoft.com/en-us/windows/win32/fwp/installing-a-provider)).
-Manifest schema 4 requires all seven filters, the session-scoped named-object
-namespace receipt described below, and records the actual
-`network_sublayer_weight` read back after
-installation. The host-approved descriptor and Doctor expose it, and every
-launch must match that exact protected value. Older receipts, including schema 3 and receipts without the namespace receipt, are rejected. The assigned weight is not a claim that this is the host's highest
-priority sublayer; the mandatory native network controls remain required.
+Setup records the actual BFE sublayer weight and the identities of all seven
+filters. The host checks their layer, condition, SID, action, weight and
+persistence against the protected manifest at launch. Schema 5 also binds
+the individual package SID, writer SID and nonzero interactive session.
+Earlier experimental receipts require fresh provisioning.
 
-Setup also opens the current interactive session's
-`\Sessions\<session>\BaseNamedObjects\Restricted` directory and adds exactly
-two non-inheriting grants: `0x000f` (query, traverse, create object and create
-subdirectory) for the new sandbox account, and `0x00020003` (query, traverse,
-read-control) for the individual host. The sandbox account receives no ACL/owner
-mutation rights. The parent namespace and existing object ACLs are unchanged.
-KernelBase requires all four directory rights even for Rustc's named jobserver
-semaphore; create-object-only is insufficient. The ordinary loader rechecks the
-trusted owner, exact grants, unsafe mutation grants and receipt session before
-holding a read-only Directory handle through the invocation. It never repairs
-the namespace. Setup serializes its own provisioners and attempts exact rollback
-on failure without overwriting a detected foreign administrator edit. Other
-administrator edits must be coordinated separately; Windows provides no atomic
-DACL compare-and-swap. Session zero is rejected. Session change or reboot
-requires a fresh explicit provision; an old JSON receipt is not sufficient.
+Setup creates an empty SAM group for the individual write restriction and a
+fresh profile for the dedicated user. A trusted helper running as that user
+registers its unique AppContainer. The private temporary directory is the
+package's Windows-selected `AC\Temp`. Together with the workspace, it receives
+the dedicated user, package and writer grants and an inheritable Low integrity
+label. The individual host receives a non-inheriting metadata, traversal and
+synchronization grant on the new profile directories leading to that temp.
+Before execution the runner checks the actual suspended token's effective
+access to package storage, including the package registry.
 
-The payload uses a restricted primary token of the dedicated account, with
-maximum privileges disabled and write-restricting SIDs limited to that account
-and Everyone. Inherited logon SIDs are explicitly deny-only and cannot grant
-access to host-session objects.
-Only traverse privilege is enabled. This is an ACL-based account boundary;
-ordinary Windows read grants are not a strict executable/filesystem allowlist.
+The runner and host authenticate the package-private named-object directory
+using the suspended token, session, object type, name, owner and DACL. The host
+adds a non-inheriting `0x000f` grant there for the individual writer so Rustc
+can create its jobserver semaphore. It restores the original DACL after all
+retained processes signal and the Job drains. An unexpected DACL change keeps
+the workspace lease held.
+
+The payload uses a write-restricted primary token of the dedicated account.
+The empty writer group is its sole restricting SID. Logon SIDs are deny-only
+and only the traversal privilege is enabled.
+
 Before starting that payload, the trusted runner protects its own process,
 threads and primary token with explicit DACLs. It also sets a protected default
 for objects created by future runner threads before enumerating existing threads.
@@ -181,13 +168,12 @@ complete resource, DNS-broker, Cargo and lifecycle acceptance. Failure
 at either authenticated barrier refuses startup without a fallback.
 
 
-Setup enables the account only after the protected receipt and filters are ready.
-It then validates the actual enabled/password-required standard-user state and
-complete group membership before returning success.
-An incomplete setup returns the retained directory/account and attempts to keep
-the account disabled; it never emits a successful receipt for runtime use. Do not
-reuse partial output directories or remove filters while an account can run.
-Administrative recovery/removal of partial provisioning is explicit.
+Setup enables the dedicated account after securing its credentials, pending
+receipt and filters. It checks group membership, registers the package and
+binds its private temporary directory before publishing `provisioning.json`.
+On failure the helper records the account-disable and rollback outcomes.
+Administrative recovery of incomplete provisioning uses the retained identity
+and directory.
 
 ## Read-only launch checks
 
@@ -237,8 +223,8 @@ to the identical canonical workspace path; a mismatch refuses execution.
 
 ## Host selection and approval
 
-Normal startup does not provision accounts, adjust ACLs, request elevation or
-repair policy. Store this configuration outside the workspace:
+Store the host-selected configuration outside the workspace. Runtime verifies
+the administrator-provisioned state before taking the private namespace grant.
 
 ```json
 {
@@ -273,7 +259,10 @@ limits. A coding example is:
 ```
 
 The process ceiling includes the trusted runner. During startup a trusted
-launcher uses one temporary slot and exits before payload execution. Memory and
+launcher uses one temporary slot and exits before payload execution. At a limit
+of two the root receives the child-process restriction at creation. The runner
+checks this policy before resume. The native console cases count every live
+member, including an implicit console host. Memory and
 user CPU time are aggregate Job limits. The `process.run` tool accepts at most
 32768 UTF-8 bytes of stdin; direct SDK execution has a 1 MiB transport ceiling.
 Each output stream uses the selected byte ceiling and is still drained after
@@ -348,9 +337,10 @@ its exact SID, session and linked-logon identity before duplication; it never
 changes privileges. An owner-held outer kill-on-close Job drains the trusted
 test-host tree, independently of each actual sandbox Job and its unchanged
 limits. Product and diagnostic source builds use separate output directories.
-After the mandatory suite's deliberate crash case, the actual installed startup
-uses another fresh provision; the retained crash receipt is never erased to
-make an acceptance test pass.
+The installed CLI runs on a second fresh provision even when the mandatory
+suite fails. Both stages must pass. The CI artifact includes their exit codes
+and the tested archive's SHA-256 in `qualification-result.json`. The original
+workspace retains any crash receipt.
 
 ## Cleanup and interrupted-host recovery
 
@@ -380,18 +370,17 @@ Status, log, wait and cancel remain available. Direct builtin calls reacquire th
 guard at each entry point; arbitrary trusted SDK or external filesystem access
 is outside this cooperative tool contract.
 
-The host-death acceptance case deliberately runs last and leaves this receipt.
-Recovery is a separate trusted operation: stop all hosts using this provision,
-verify that no processes of its exact `user_sid` remain, and only then remove the
-receipt. If identity/process inspection or termination cannot be confirmed, keep
-the receipt and the profile disabled. This version does not automatically repair
-crash state. The private temp directory remains provisioned; cleanup confirms
-process/handle termination, not deletion of all build outputs or caches.
+The host-death acceptance case runs last and preserves this receipt. Stop all
+hosts using the provision and verify the disposition of every process belonging
+to its exact user SID. A crash after the temporary package-directory grant can
+also leave the writer ACE in place. Schema 5 checks for that condition on
+admission. Retain the receipt and use a new provision if the original private
+namespace descriptor and its restoration cannot be verified. The private temp
+and workspace retain their build outputs and caches.
 
 The reference architecture is the pinned OpenAI Codex implementation:
 [trusted account runner](https://github.com/openai/codex/blob/95dcd1e8378021080bf380e42587ef891f611897/codex-rs/windows-sandbox-rs/src/elevated/runner_client.rs),
 [account-scoped WFP setup](https://github.com/openai/codex/blob/95dcd1e8378021080bf380e42587ef891f611897/codex-rs/windows-sandbox-rs/src/wfp.rs).
-The filter set here requests unconditional denial for the dedicated account,
-but the measured DNS-broker path still bypasses it. Codex's published WFP set
-complements a separate firewall policy; the WFP rules alone are not a proven
-offline boundary.
+The schema-4 DNS test reached its witness through the Windows DNS service
+with all account WFP filters installed. Schema 5 also requires a verified
+zero-capability AppContainer and a passing three-generation DNS test.

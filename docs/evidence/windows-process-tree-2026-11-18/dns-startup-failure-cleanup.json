@@ -1,0 +1,141 @@
+{
+  "scope": "Fresh ordinary-host repetition of the earlier DNS fixture startup failure on a separate provision. The test-only admission is bound to the exact diagnostic harness directory, image name, argv, DNS case and provision. The release admission guard remains in the working tree.",
+  "fresh_run": {
+    "setup_exit": 0,
+    "host_integrity_rid": 8192,
+    "host_elevated": false,
+    "diagnostic_case": "dns",
+    "cargo_exit": 101,
+    "dns_test_passed": false,
+    "host_before_arrivals": 1,
+    "sandbox_dns_attempts_verified": false,
+    "host_after_verified": false,
+    "failure": "The Rust probe exited 0xc0000142 before producing receipt-0.json.",
+    "tool_output": {
+      "cancelled": false,
+      "exit_code": -1073741502,
+      "failure_excerpt": "",
+      "stderr": "",
+      "stdout": "",
+      "timed_out": false,
+      "truncated": false
+    },
+    "owned_job": {
+      "handoff_processes": [
+        {
+          "exit": "0x00000000",
+          "pid": 61868,
+          "wait": 0
+        },
+        {
+          "exit": "0xc0000142",
+          "pid": 155168,
+          "wait": 0
+        }
+      ],
+      "ledger": "retained_members=3, total_processes=3, active_processes=0, monitor_running=true, failure=none",
+      "stage": 2
+    },
+    "package_directory_supervisor_readbacks": [
+      {
+        "dacl_bytes": 420,
+        "dacl_sha256": "3444b766cf41452c10cbc5956e5636c23c847135cc20c534f9d8af8882b979cd",
+        "object": "\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-299191810-2672744680-2336707420-412235315-388895621-493066966-4135180835",
+        "owner": "S-1-5-21-4275439644-3620842777-1714106797-1058",
+        "protection": 0,
+        "stage": "before"
+      },
+      {
+        "dacl_bytes": 456,
+        "dacl_sha256": "bde291fd8c61135c57276f5525e1c9e8b987e2b4e46465621a8b147034cdbb70",
+        "object": "\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-299191810-2672744680-2336707420-412235315-388895621-493066966-4135180835",
+        "owner": "S-1-5-21-4275439644-3620842777-1714106797-1058",
+        "protection": 0,
+        "stage": "active"
+      },
+      {
+        "dacl_bytes": 420,
+        "dacl_sha256": "3444b766cf41452c10cbc5956e5636c23c847135cc20c534f9d8af8882b979cd",
+        "object": "\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-299191810-2672744680-2336707420-412235315-388895621-493066966-4135180835",
+        "owner": "S-1-5-21-4275439644-3620842777-1714106797-1058",
+        "protection": 0,
+        "stage": "restored"
+      }
+    ],
+    "independent_namespace_and_marker_observations": [
+      {
+        "utc": "2026-11-18T13:06:07.190905+00:00",
+        "milliseconds": 3,
+        "dacl_sha256": "3444b766cf41452c10cbc5956e5636c23c847135cc20c534f9d8af8882b979cd",
+        "writer_ace": false,
+        "marker": false
+      },
+      {
+        "utc": "2026-11-18T13:07:40.134643+00:00",
+        "milliseconds": 92947,
+        "dacl_sha256": "3444b766cf41452c10cbc5956e5636c23c847135cc20c534f9d8af8882b979cd",
+        "writer_ace": false,
+        "marker": true
+      },
+      {
+        "utc": "2026-11-18T13:07:40.990165+00:00",
+        "milliseconds": 93803,
+        "dacl_sha256": "bde291fd8c61135c57276f5525e1c9e8b987e2b4e46465621a8b147034cdbb70",
+        "writer_ace": true,
+        "marker": true
+      },
+      {
+        "utc": "2026-11-18T13:07:41.066888+00:00",
+        "milliseconds": 93879,
+        "dacl_sha256": "3444b766cf41452c10cbc5956e5636c23c847135cc20c534f9d8af8882b979cd",
+        "writer_ace": false,
+        "marker": true
+      },
+      {
+        "utc": "2026-11-18T13:07:41.082560+00:00",
+        "milliseconds": 93895,
+        "dacl_sha256": "3444b766cf41452c10cbc5956e5636c23c847135cc20c534f9d8af8882b979cd",
+        "writer_ace": false,
+        "marker": false
+      }
+    ],
+    "independent_original_and_final_owner_dacl_sddl_equal": true,
+    "fixture_after_engine_close": {
+      "cancel_error": null,
+      "close_error": null,
+      "marker_absent": true
+    },
+    "outer_host_job_cleanup": {
+      "active_before_cleanup": 2,
+      "active_after_cleanup": 0,
+      "confirmed": true,
+      "elapsed_ms": 0
+    },
+    "cleanup_confirmed": true,
+    "qualified": false
+  },
+  "historic_111dd": {
+    "observed_at_utc": "2026-11-18T13:04:56.823040+00:00",
+    "manifest_sha256": "ae7009741c4ffc2d75dcc2404ee8e030b54efe1585f436c7ec5af70401aac212",
+    "cleanup": "unconfirmed",
+    "current_package_dacl_contains_its_temporary_writer": true,
+    "current_owner_dacl_sddl_matches_archived_post_run": true,
+    "workspace_reused": false,
+    "recovery_performed": false,
+    "scope": "The original protected marker and temporary writer ACE still exist. That run did not retain a verified release record, its owned Job census, or the original binary DACL for this object in the examined evidence."
+  },
+  "source_and_artifact_sha256": {
+    "target/cleanup-111dd-repeat-3c6b8752/source-hashes.json": "13dd7c5cd8efaf60a477bc4c6b3336173752f20f2a1b9202dae0abcb7862d333",
+    "target/cleanup-111dd-repeat-3c6b8752/runtime/provisioning.json": "4736999c85b7b7215e5cf2631277429776e7cc11f43142ee4fb7b8296ad637b6",
+    "target/cleanup-111dd-repeat-3c6b8752/setup.log": "b9c62a9126e702752f74e3e41c9d64c52c6a7a5897ffc3e0d019801c37e54f7f",
+    "target/cleanup-111dd-repeat-3c6b8752/evidence/diagnostic-dns-result.json": "9db49030a3571ca6062dc2f91e30f3bfd659cb7dc6975da6e9971b3ad4534e22",
+    "target/cleanup-111dd-repeat-3c6b8752/evidence/diagnostic-dns.log": "e68d57fa11c57d0f24e2a6ac99c8decefe7ef831b96a09754497573b0499be1a",
+    "target/cleanup-111dd-repeat-3c6b8752/external-namespace-marker.json": "cddd6ccd6041399361e8ec748f3b32767001e9ad98ccd45f64fc26df2639f6c5",
+    "target/cleanup-111dd-repeat-3c6b8752/historic-read-only.json": "4018bb4bbf21e55968f22dbff95e1dcdfe18237f0858069e1e9c0e0182cfd60e",
+    "target/cleanup-111dd-repeat-3c6b8752/evidence/suite-build/debug/deps/windows_process_tree-e0c80f98b6edf9fb.exe": "4176040715a8ae7318abd06c1db2de038aeaf5b55fbf0093dfbdeb0e48306d29",
+    "target/tree-schema5-1118-branch-run02/installation/bin/ww-windows-runner.exe": "8c032037d71da270d559ff489f6b8021ccfd2c1a54e4df99efab2830caff323b",
+    "target/cleanup-111dd-repeat-3c6b8752/runtime/ww-windows-runner.exe": "8c032037d71da270d559ff489f6b8021ccfd2c1a54e4df99efab2830caff323b",
+    "target/tree-ac-1118/focus-dns-04-111dd-20261118T0033179326Z/post-run-namespace-read.log": "6251773624c0cd0eb0e40596b95c053e90956f768c991b67ef3f9a3835bf8427",
+    "target/tree-ac-1118/focus-dns-04-111dd-20261118T0033179326Z/diagnostic-dns-result.json": "452b933b47ba866f73b90e4679aac03e0af26db5e48111f9a3613d55ede0ea00"
+  }
+}

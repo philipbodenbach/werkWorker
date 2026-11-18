@@ -22,6 +22,7 @@ use windows_sys::Win32::{
             USER_OBJECT_INFORMATION_INDEX, USEROBJECTFLAGS,
         },
         SystemInformation::GetSystemDirectoryW,
+        SystemServices::{SYSTEM_MANDATORY_LABEL_ACE_TYPE, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP},
         Threading::GetCurrentThreadId,
     },
 };
@@ -178,23 +179,55 @@ fn canonical_sid(value: &str) -> Result<()> {
     }
     Ok(())
 }
-fn principals(host: &str, user: &str, full: u32, limited: u32) -> Result<BTreeMap<String, u32>> {
+fn principals(
+    host: &str,
+    user: &str,
+    payload: Option<(&str, &str)>,
+    full: u32,
+    limited: u32,
+) -> Result<BTreeMap<String, u32>> {
     canonical_sid(host)?;
     canonical_sid(user)?;
     if host == user || host == SYSTEM_SID || user == SYSTEM_SID {
         return Err(invalid("USER object principals are not distinct"));
     }
-    Ok(BTreeMap::from([
+    let mut principals = BTreeMap::from([
         (SYSTEM_SID.to_owned(), full),
         (host.to_owned(), full),
         (user.to_owned(), limited),
-    ]))
+    ]);
+    if let Some((sid, writer)) = payload {
+        canonical_sid(writer)?;
+        if !writer.starts_with("S-1-5-21-")
+            || writer.split('-').count() != 8
+            || principals.insert(writer.to_owned(), limited).is_some()
+        {
+            return Err(invalid("Expected a separate local write-restriction group"));
+        }
+        canonical_sid(sid)?;
+        if !sid.starts_with("S-1-15-2-")
+            || sid.split('-').count() != 11
+            || principals.insert(sid.to_owned(), limited).is_some()
+        {
+            return Err(invalid("Expected a distinct individual AppContainer SID"));
+        }
+    }
+    Ok(principals)
 }
-fn descriptor(owner: &str, host: &str, user: &str, full: u32, limited: u32) -> Result<Local> {
-    let _ = principals(host, user, full, limited)?;
-    let text = wide(&format!(
-        "O:{owner}D:P(A;;0x{full:x};;;SY)(A;;0x{full:x};;;{host})(A;;0x{limited:x};;;{user})"
-    ))?;
+fn descriptor(
+    owner: &str,
+    host: &str,
+    user: &str,
+    payload: Option<(&str, &str)>,
+    full: u32,
+    limited: u32,
+) -> Result<Local> {
+    let mut text = format!("O:{owner}D:P");
+    for (sid, mask) in principals(host, user, payload, full, limited)? {
+        text.push_str(&format!("(A;;0x{mask:x};;;{sid})"));
+    }
+    text.push_str("S:(ML;;NW;;;LW)");
+    let text = wide(&text)?;
     let mut sd = null_mut();
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(), 1, &mut sd, null_mut())
@@ -282,15 +315,46 @@ fn verify_object(handle: HANDLE, name: &str, kind: &str) -> Result<()> {
     }
     Ok(())
 }
+fn verify_low_integrity_label(labels: *mut ACL) -> Result<()> {
+    if labels.is_null() || unsafe { IsValidAcl(labels) } == 0 || unsafe { (*labels).AceCount } != 1
+    {
+        return Err(invalid(
+            "Private USER object lacks a Low mandatory integrity label",
+        ));
+    }
+    let mut entry = null_mut();
+    if unsafe { GetAce(labels, 0, &mut entry) } == 0 {
+        return Err(failure("Read private USER integrity label"));
+    }
+    let header = unsafe { &*entry.cast::<ACE_HEADER>() };
+    if u32::from(header.AceType) != SYSTEM_MANDATORY_LABEL_ACE_TYPE
+        || header.AceFlags != 0
+        || (header.AceSize as usize) < size_of::<SYSTEM_MANDATORY_LABEL_ACE>()
+    {
+        return Err(invalid(
+            "Private USER object mandatory integrity ACE changed",
+        ));
+    }
+    let label = unsafe { &*entry.cast::<SYSTEM_MANDATORY_LABEL_ACE>() };
+    if label.Mask != SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
+        || sid_text(std::ptr::addr_of!(label.SidStart).cast_mut().cast())? != "S-1-16-4096"
+    {
+        return Err(invalid("Private USER object mandatory policy changed"));
+    }
+    Ok(())
+}
+
 fn verify_security(
     handle: HANDLE,
     owner_expected: &str,
     host: &str,
     user: &str,
+    payload: Option<(&str, &str)>,
     full: u32,
     limited: u32,
 ) -> Result<()> {
-    let mut expected = principals(host, user, full, limited)?;
+    let mut expected = principals(host, user, payload, full, limited)?;
+    let mut labels = null_mut();
     let mut owner = null_mut();
     let mut acl = null_mut();
     let mut sd = null_mut();
@@ -298,11 +362,11 @@ fn verify_security(
         GetSecurityInfo(
             handle,
             SE_WINDOW_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
             &mut owner,
             null_mut(),
             &mut acl,
-            null_mut(),
+            &mut labels,
             &mut sd,
         )
     };
@@ -312,6 +376,7 @@ fn verify_security(
         )));
     }
     let _sd = Local(sd);
+    verify_low_integrity_label(labels)?;
     let mut control = 0;
     let mut revision = 0;
     if unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) } == 0 {
@@ -356,8 +421,9 @@ fn verify_pair(
     qualified: &str,
     host: &str,
     user: &str,
-    hardened: bool,
+    payload: Option<(&str, &str)>,
 ) -> Result<()> {
+    let hardened = payload.is_some();
     let (station_name, desktop_name) = split_qualified(qualified)?;
     verify_object(station, station_name, "WindowStation")?;
     verify_object(desktop, desktop_name, "Desktop")?;
@@ -367,6 +433,7 @@ fn verify_pair(
         owner,
         host,
         user,
+        payload,
         STATION_FULL,
         if hardened {
             STATION_SANDBOX
@@ -379,6 +446,7 @@ fn verify_pair(
         owner,
         host,
         user,
+        payload,
         DESKTOP_FULL,
         if hardened {
             DESKTOP_SANDBOX
@@ -431,18 +499,39 @@ impl HostResources {
         debug_assert!(self.desktop.is_null());
         self.desktop = handle;
     }
-    pub(super) fn verify(&self, qualified: &str, host: &str, user: &str) -> Result<()> {
-        verify_pair(self.station, self.desktop, qualified, host, user, true)
+    pub(super) fn verify(
+        &self,
+        qualified: &str,
+        host: &str,
+        user: &str,
+        package: &str,
+        writer: &str,
+    ) -> Result<()> {
+        verify_pair(
+            self.station,
+            self.desktop,
+            qualified,
+            host,
+            user,
+            Some((package, writer)),
+        )
     }
     /// The authenticated bootstrap must have freshly created these objects.
     /// Exact creation ACLs and names are checked before either ACL is changed.
-    pub(super) fn verify_and_harden(&self, qualified: &str, host: &str, user: &str) -> Result<()> {
-        verify_pair(self.station, self.desktop, qualified, host, user, false)?;
+    pub(super) fn verify_and_harden(
+        &self,
+        qualified: &str,
+        host: &str,
+        user: &str,
+        package: &str,
+        writer: &str,
+    ) -> Result<()> {
+        verify_pair(self.station, self.desktop, qualified, host, user, None)?;
         for (handle, full, limited) in [
             (self.station, STATION_FULL, STATION_SANDBOX),
             (self.desktop, DESKTOP_FULL, DESKTOP_SANDBOX),
         ] {
-            let sd = descriptor(host, host, user, full, limited)?;
+            let sd = descriptor(host, host, user, Some((package, writer)), full, limited)?;
             let mut owner = null_mut();
             let mut acl = null_mut();
             let mut defaulted = 0;
@@ -475,7 +564,7 @@ impl HostResources {
                 )));
             }
         }
-        self.verify(qualified, host, user)
+        self.verify(qualified, host, user, package, writer)
     }
     /// The host calls this only after confirmed Job/process cleanup, while its
     /// workspace lease remains held. Failure retains the handle for retry.
@@ -544,7 +633,7 @@ pub(super) struct BootstrapResources {
 impl BootstrapResources {
     pub(super) fn create(nonce: &str, host: &str, user: &str) -> Result<Self> {
         validate_nonce(nonce)?;
-        let _ = principals(host, user, STATION_FULL, STATION_FULL)?;
+        let _ = principals(host, user, None, STATION_FULL, STATION_FULL)?;
         let api = user32()?;
         let original_station = unsafe { (api.get_process_window_station)() };
         let original_desktop = unsafe { (api.get_thread_desktop)(GetCurrentThreadId()) };
@@ -556,7 +645,7 @@ impl BootstrapResources {
             original_desktop,
         };
         let result = (|| -> Result<()> {
-            let sd = descriptor(user, host, user, STATION_FULL, STATION_FULL)?;
+            let sd = descriptor(user, host, user, None, STATION_FULL, STATION_FULL)?;
             let sa = SECURITY_ATTRIBUTES {
                 nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: sd.0,
@@ -593,7 +682,7 @@ impl BootstrapResources {
             if unsafe { GetLastError() } != ERROR_FILE_NOT_FOUND {
                 return Err(failure("Check fresh desktop name"));
             }
-            let sd = descriptor(user, host, user, DESKTOP_FULL, DESKTOP_FULL)?;
+            let sd = descriptor(user, host, user, None, DESKTOP_FULL, DESKTOP_FULL)?;
             let sa = SECURITY_ATTRIBUTES {
                 nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: sd.0,
@@ -630,7 +719,7 @@ impl BootstrapResources {
                 return Err(failure("Associate bootstrap private desktop"));
             }
             let qualified = format!("{}\\{nonce}", object_text(station, UOI_NAME)?);
-            verify_pair(station, desktop, &qualified, host, user, false)?;
+            verify_pair(station, desktop, &qualified, host, user, None)?;
             verify_current(&qualified)
         })();
         if let Err(error) = result {
@@ -668,8 +757,22 @@ impl BootstrapResources {
     pub(super) fn desktop_raw(&self) -> HANDLE {
         self.desktop
     }
-    pub(super) fn verify_hardened(&self, qualified: &str, host: &str, user: &str) -> Result<()> {
+    pub(super) fn verify_hardened(
+        &self,
+        qualified: &str,
+        host: &str,
+        user: &str,
+        package: &str,
+        writer: &str,
+    ) -> Result<()> {
         verify_current(qualified)?;
-        verify_pair(self.station, self.desktop, qualified, host, user, true)
+        verify_pair(
+            self.station,
+            self.desktop,
+            qualified,
+            host,
+            user,
+            Some((package, writer)),
+        )
     }
 }

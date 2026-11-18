@@ -1,0 +1,523 @@
+{
+  "observed_utc": "2026-11-18T17:37:48.175521+00:00",
+  "scope": "Targeted offline Windows controls; no new product acceptance run.",
+  "baseline": {
+    "worker_branch": "feat/windows-child-process",
+    "commit": "2ae77b11e80e065112195094b126436e987e374a",
+    "git_tree": "7bd00f1f80db3a5168ec0f2e652700c1232db3ea",
+    "initial_clean": true,
+    "initial_untracked_paths": [],
+    "initial_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "os": {
+      "DisplayVersion": "25H2",
+      "CurrentBuildNumber": "26200",
+      "UBR": 9974
+    },
+    "checksummed_inputs": 139,
+    "verified_original_package": {
+      "archive": "F:\\werkWorker\\target\\sovereign-job-0d61dcb-02\\built-package\\werkWorker-v0.3.3-windows-x86_64.zip",
+      "sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+      "verified_build_archive_install": {
+        "ww.exe": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+        "werk-worker.exe": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c",
+        "ww-windows-runner.exe": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e",
+        "ww-windows-provision.exe": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86"
+      },
+      "inputs_sha256": "259c9f60ef9b4943273f59c17630d6558218a075a41a83b59739ad730e605390",
+      "inputs_count": 139,
+      "listed_inputs_identical_after_acceptance": true
+    },
+    "verified_provisions": {
+      "runtime": {
+        "manifest_sha256": "00345300ef4a179641b2de2171a0204752ad4f6e8cd45f120323b94afcf8a747",
+        "schema_version": 5,
+        "runner_sha256": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e"
+      },
+      "installed-runtime": {
+        "manifest_sha256": "d8c7cffbf52df1ca24e83c8128fb3d9d896c1277e1097d5da9290e1b54748a5a",
+        "schema_version": 5,
+        "runner_sha256": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e"
+      }
+    },
+    "source_evidence_sha256": {
+      "sovereign-native-acceptance.json": "598a36012cfd7736075f0d33090a234d8c91db5425a62fa64cb6a5672bdc45de",
+      "sovereign-broker-controls.json": "95a5d44c7158480494617cc25449b68db80cc3102ccc13e4f4d2c48a390fdf07",
+      "bcrypt-write-check.json": "580f1d9d54a8db27582514a6bf9ff6c5a740f35f7d247bdd3528ccd2483400e8",
+      "appcontainer-write-boundary-9d2ee11.json": "5f3467f9a03e2d11ad8f1b7ce68ddd4ee40de2a5df0a2979564b829d51bd912e",
+      "matched-offline-cargo.json": "9f274ee7e89f1275222a1328805079b0efb3e333e7d3a094db0eef677e67507f",
+      "dns-startup-failure-cleanup.json": "c9eaa09a8c89909c82fb478a08fc98636a861abee8549be9467b634e416fe3d7"
+    },
+    "previous_product_host": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "verified_before_resume": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "installed_inference_evidence": {
+      "backend_repository_evidence": "docs/development/werk-worker-cpu-interop.json",
+      "evidence_sha256": "c52b15fe41eb565d83de1c8f739417e31bc8d821fc881b678345a9b59629bb89",
+      "worker_sha256": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+      "server_sha256": "139a8e4b6ecf7870b4bc52f0ed85ef9591c04f57a2a112464c1e10e0ced30187",
+      "worker_json": "OK",
+      "worker_sse": "OK",
+      "worker_run_cancel_json": {
+        "local_run": "cancelled",
+        "inference": "cancelled"
+      },
+      "worker_run_cancel_sse": {
+        "local_run": "cancelled",
+        "inference": "cancelled"
+      }
+    },
+    "token_functions_identical_in_9d2ee11_0d61dcb_HEAD": {
+      "restricted_payload_token": "381aba17afbb8e060824e4c35daaf8516761ac49c2858ee86426693005dd90aa",
+      "verify_restricted_token": "a416bfb577afcc761df6358f255dd150eb4d0420cfadb22415e7869d19c25b8a",
+      "verify_payload_token": "d6ae7f53b40d5b23040ca4e9272a2d0f59819661d1dac736d5d9e4946ff7f73c",
+      "verify_appcontainer_token": "381c7b78098d516ed41e515b1fbff30d0081357542dc0f52e0a2ec5f8e58d000"
+    },
+    "matching_input_count": 139
+  },
+  "admission": {
+    "historical_result": {
+      "archive_sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+      "suite_setup_exit": 0,
+      "mandatory_suite_exit": 1,
+      "installed_setup_exit": 0,
+      "installed_start_exit": 1,
+      "qualified": false
+    },
+    "mandatory_test": [
+      "required_native_process_tree_acceptance"
+    ],
+    "harness_exit": 101,
+    "harness_summary": "test result: FAILED. 2 passed; 1 failed; 5 ignored; 0 measured; 0 filtered out",
+    "test_not_reached": [
+      "NATIVE_TREE_LIFECYCLE_OK normal",
+      "NATIVE_TREE_LIFECYCLE_OK parent-exit",
+      "NATIVE_TREE_LIFECYCLE_OK timeout",
+      "NATIVE_TREE_LIFECYCLE_OK cancel",
+      "NATIVE_TREE_LIFECYCLE_OK abort",
+      "NATIVE_TREE_LIFECYCLE_OK engine-close",
+      "NATIVE_TREE_CONSOLE_BUDGET_OK console-alloc",
+      "NATIVE_TREE_CONSOLE_BUDGET_OK console-child",
+      "NATIVE_TREE_UI_BOUNDARIES_OK",
+      "NATIVE_TREE_DNS_BROKER_DENIED_OK",
+      "NATIVE_TREE_THREAD_IDENTITY_NETWORK_MATRIX_OK",
+      "NATIVE_TREE_HOST_LOGON_SID_BOUNDARY_OK",
+      "NATIVE_TREE_FILE_REGISTRY_NETWORK_IPC_HANDLES_OK",
+      "NATIVE_TREE_INBOUND_LOOPBACK_OK",
+      "NATIVE_TREE_RESOURCE_OK memory",
+      "NATIVE_TREE_RESOURCE_OK cpu",
+      "NATIVE_TREE_BOUNDED_OUTPUT_AND_DRAIN_OK",
+      "NATIVE_TREE_OFFLINE_CARGO_OK",
+      "NATIVE_TREE_CRASH_WORKSPACE_BARRIER_OK",
+      "NATIVE_TREE_HOST_DEATH_AND_RESTART_DENIAL_OK"
+    ],
+    "rust_probe": {
+      "host": {
+        "elevated": false,
+        "integrity_rid": 8192,
+        "verified_before_resume": true,
+        "cleanup": {
+          "active_before_cleanup": 1,
+          "active_after_cleanup": 0,
+          "confirmed": true,
+          "elapsed_ms": 0
+        }
+      },
+      "cli_exit": 0,
+      "probe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+      "cli_sha256": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+      "tool_status": "failed",
+      "error_code": "sandbox_unqualified",
+      "executed": false,
+      "workload_exit": null,
+      "invocation_id": "invocation_495b8366-889e-44d7-91b1-dc12d20af914"
+    },
+    "cargo": {
+      "host": {
+        "elevated": false,
+        "integrity_rid": 8192,
+        "verified_before_resume": true,
+        "cleanup": {
+          "active_before_cleanup": 1,
+          "active_after_cleanup": 0,
+          "confirmed": true,
+          "elapsed_ms": 0
+        }
+      },
+      "cli_exit": 0,
+      "artifact_count": 0,
+      "qualified_invocations": 0,
+      "log_sha256": "ee5f6cd88eff1425bc42d7d3a8d8439ddf9d76692a8105a485fe6b2e6c1746a0",
+      "tool_status": "failed",
+      "error_code": "sandbox_unqualified",
+      "executed": false,
+      "workload_exit": null,
+      "invocation_id": "invocation_6591edc0-2338-4695-9487-7664e63436af"
+    },
+    "three_generation_dns": {
+      "measured": false,
+      "reason": "admission refused before the three-generation workload and its two bracketing host controls",
+      "independent_host_control": {
+        "receiver": "127.0.0.1:53",
+        "arrivals": 1,
+        "passed": true
+      }
+    },
+    "console_cap_two": {
+      "measured": false,
+      "reason": "admission refused before console cases"
+    }
+  },
+  "prior_init_and_execution": {
+    "diagnostic_only": true,
+    "expected_device_open": {
+      "path": "C:\\Windows\\System32\\bcrypt.dll",
+      "file_version": "10.0.26100.9949",
+      "sha256": "fb658b74aea2fc655d86e6f567c69e251a527c413a750d3952a7830fc715b446",
+      "inspection": "Local PE entry point, import address table, instructions and the UTF-16 object string. Addresses here are image-relative for this digest.",
+      "process_attach_entry_rva": "0xe910",
+      "native_open_call_rva": "0xa786",
+      "device_name_rva": "0x1e378",
+      "object": "\\Device\\KsecDD",
+      "api": "NtOpenFile",
+      "desired_access": "0x00100003",
+      "share_access": "0x7",
+      "open_options": "0x20",
+      "read_only_comparator": "0x00100001",
+      "access_names": [
+        "SYNCHRONIZE",
+        "FILE_READ_DATA",
+        "FILE_WRITE_DATA"
+      ]
+    },
+    "original_descriptor": {
+      "read_only_query": "\\\\?\\GLOBALROOT\\Device\\KsecDD",
+      "owner_and_dacl_sddl": "O:BAD:(A;;0x1201bf;;;WD)(A;;0x1200a9;;;RC)(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1201bf;;;AC)(A;;0x1201bf;;;S-1-15-2-2)",
+      "label_sddl": "S:(ML;;NW;;;LW)",
+      "label_query": "GetNamedSecurityInfoW with LABEL_SECURITY_INFORMATION returned 0",
+      "special_principals": {
+        "WD": "Everyone",
+        "RC": "Restricted Code",
+        "AC": "All Application Packages",
+        "S-1-15-2-2": "All Restricted Application Packages"
+      },
+      "file_write_data": "0x2",
+      "label": "Low integrity with no-write-up. The measured schema-5 payload has Low integrity."
+    },
+    "flags_in_both_schemas": "0x0d",
+    "token_delta": "Both schema runners set DISABLE_MAX_PRIVILEGE, LUA_TOKEN and WRITE_RESTRICTED (0x0d). Schema 4 includes its dedicated account and Everyone among the restricting SIDs. Schema 5 combines a zero-capability AppContainer with one private writer as the sole restricting SID. The device grants the write-data bit to Everyone. Its discretionary ACL contains no ACE for that private writer.",
+    "schema4": {
+      "cargo_exit_hex": "0x0",
+      "stdout": "\nrunning 1 test\nINSTALLED_NATIVE_TREE_OK\ntest installed_native_test ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+      "x64_pe_artifacts": [
+        {
+          "name": "installed_offline_tree-fc150bc5c002a938.exe",
+          "size": 744960,
+          "machine": "0x8664",
+          "sha256": "e38cf536db3f28ff1d342d46e142d0a269aded2ad49042d9022d0c0cfbd828c1"
+        }
+      ],
+      "runner_sha256": "c1b5cb93341e70c7b41bb87867915eef0eee0d4799089fd50cba976cd9567169",
+      "manifest_sha256": "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f"
+    },
+    "schema5": {
+      "cargo_exit_hex": "0xc0000142",
+      "stdout": "",
+      "x64_pe_artifacts": [],
+      "runner_sha256": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "manifest_sha256": "604fa29fa245c4172398b0838ff1fec42d257ca74908c1c1465800a6a3d2884f"
+    },
+    "dynamic_loader_win32_error": 1114,
+    "native_device_open_ntstatus": "0xc0000022",
+    "static_initialization_status": "0xc0000142",
+    "writer_free_actual_primary_tokens": {
+      "scope": "Individually verified on both primary tokens",
+      "normal_appcontainer_evidence": "No all-application-packages opt-out requested; user plus ALL APPLICATION PACKAGES passes the Low write control, and either side alone fails.",
+      "user_and_package_matched": true,
+      "elevated": false,
+      "integrity_rid": 4096,
+      "capabilities": 0,
+      "restricting_sids": 0,
+      "enabled_logon_sids": 0,
+      "deny_only_logon_sids": 1,
+      "privileges": [
+        "SeChangeNotifyPrivilege (enabled)"
+      ],
+      "mandatory_policy_no_write_up": true
+    },
+    "writer_free_fixture_exit": {
+      "root": 77,
+      "child": "0xc0000142",
+      "controller": 2,
+      "root_and_child_handles_signaled": true,
+      "private_job_active_after": 0,
+      "private_job_total_assigned": 3,
+      "outer_job_active_after": 0,
+      "outer_cleanup_confirmed": true
+    },
+    "writer_free_measurement_scope": "No real targets were opened for the modeled permissions. The fixture reads and writes only its own staging files as host and uses anonymous pipes for payload output.",
+    "probes_per_token": 35,
+    "loader_thread_impersonation_observed": false,
+    "writer_free_grandchild_observed": false
+  },
+  "prior_cleanup": {
+    "repeat_confirmed": true,
+    "repeat_restored_original_descriptor": true,
+    "original_111dd": {
+      "observed_at_utc": "2026-11-18T13:04:56.823040+00:00",
+      "manifest_sha256": "ae7009741c4ffc2d75dcc2404ee8e030b54efe1585f436c7ec5af70401aac212",
+      "cleanup": "unconfirmed",
+      "current_package_dacl_contains_its_temporary_writer": true,
+      "current_owner_dacl_sddl_matches_archived_post_run": true,
+      "workspace_reused": false,
+      "recovery_performed": false,
+      "scope": "The original protected marker and temporary writer ACE still exist. That run did not retain a verified release record, its owned Job census, or the original binary DACL for this object in the examined evidence."
+    }
+  },
+  "new_controls": {
+    "mandatory_integrity": {
+      "hypothesis": "Lowering integrity could deny host Low file writes while retaining the same mask for a Low no-write-up device.",
+      "discriminator": "On two private NTFS files compare actual named OPEN_EXISTING for the two masks against verified Low and Untrusted impersonation tokens; fixed DACL and label readback.",
+      "additional_authority_in_experiment": "None. Tested copies of the Medium verifier token have lower integrity.",
+      "readout": {
+        "dacl_readback": "Protected, exactly full access for SYSTEM and test account",
+        "effective_thread_tokens": [
+          {
+            "effective_integrity_rid": 4096,
+            "elevated": false,
+            "mandatory_policy": 3,
+            "opens": {
+              "low": {
+                "0x100001": 0,
+                "0x100003": 0
+              },
+              "untrusted": {
+                "0x100001": 0,
+                "0x100003": 0
+              }
+            },
+            "token_type": 2
+          },
+          {
+            "effective_integrity_rid": 0,
+            "elevated": false,
+            "mandatory_policy": 3,
+            "opens": {
+              "low": {
+                "0x100001": 0,
+                "0x100003": 5
+              },
+              "untrusted": {
+                "0x100001": 0,
+                "0x100003": 0
+              }
+            },
+            "token_type": 2
+          }
+        ],
+        "file_labels": {
+          "low": "S:AI(ML;;NW;;;LW)",
+          "untrusted": "S:AI(ML;;NW;;;S-1-16-0)"
+        },
+        "filesystem": "NTFS",
+        "fresh_directory_removed": true,
+        "host_primary_integrity_rid": 8192,
+        "no_data_changed": true,
+        "scope": "Owned NTFS file handles. OS error 5 is access denied. No device, Registry or payload-tree operations.",
+        "thread_reverted": true
+      },
+      "privilege": {
+        "execution": {
+          "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+          "elevated": false,
+          "authentication_id": "0x00000000002542ff",
+          "integrity_rid": 8192,
+          "integrity_sid": "S-1-16-8192",
+          "elevation_type": 3,
+          "session_id": 1,
+          "token_type": 1,
+          "appcontainer": false
+        },
+        "verified_before_resume": true,
+        "outer_job": {
+          "kill_on_close": true,
+          "ui_restrictions": 0,
+          "resource_limit_flags": 0,
+          "membership_verified": true,
+          "cleanup": {
+            "active_before_cleanup": 1,
+            "active_after_cleanup": 0,
+            "confirmed": true,
+            "elapsed_ms": 0
+          }
+        }
+      },
+      "exit": 0,
+      "probe": "tests/diagnostics/windows_mandatory_file.py",
+      "probe_sha256": "573921b0f4bdd88b5e02c194c2c88c6564a3e71a730a9338eecc8ca7d8aff16d",
+      "raw": "target\\mic-file-2ae77b1-3334a1735b86",
+      "log_sha256": "5aae25966a0b93f2f745a22c673b14fd0f80481136b86eb6b60e89c039d8292a",
+      "host_record_sha256": "68bc26690fda6ec969427acff56797e35a94c62e5501e995d785d825e5c4486e",
+      "decision": "Reject mandatory integrity alone for this role. It differentiates integrity labels, but the device and out-of-scope Low files share Low/NW. This is a necessary condition tested on ordinary files, not a test of a device open with this token."
+    },
+    "passive_read_only_handle": {
+      "hypothesis": "The image could use a passively inherited read-only device handle for bcrypt attach under an exclusive writer.",
+      "change": "The control passes a read-only file handle; the test instead passes a read-only handle to the device, with no additional token rights.",
+      "required_result": "Both controlled roots must reach entry and identify their inherited handles. For eligibility, only the device arm must complete the previously failing bcrypt initialization.",
+      "observed": {
+        "file": {
+          "host_integrity": "S-1-16-8192",
+          "host_elevated": "0",
+          "create_flags": "0x0d",
+          "pre_resume_appcontainer": "1",
+          "pre_resume_capabilities": "0",
+          "pre_resume_integrity": "S-1-16-4096",
+          "pre_resume_restricting_sid": "S-1-5-21-3987231234-3987231235-3987231236-212345",
+          "pre_resume_deny_only_logons": "1",
+          "pre_resume_bounded_job": "true",
+          "pre_resume_win32k_disabled": "true",
+          "thread_token_status": "0xc000007c",
+          "inherited_access": "0x00100081",
+          "inherited_name": "\\Device\\HarddiskVolume8\\werkWorker\\target\\preopen-reader-control-2ae77b1-1118\\fixture\\probe.exe",
+          "device_name_match": "0x00000000",
+          "query_name": "0x00000000",
+          "system32_bcrypt": "0x0000045a",
+          "system32_sechost": "0x00000000",
+          "bcrypt_preloaded": "0x00000000",
+          "child_exit": "0x00000050",
+          "job_active_end": "0",
+          "job_total": "1"
+        },
+        "device": {
+          "host_integrity": "S-1-16-8192",
+          "host_elevated": "0",
+          "create_flags": "0x0d",
+          "pre_resume_appcontainer": "1",
+          "pre_resume_capabilities": "0",
+          "pre_resume_integrity": "S-1-16-4096",
+          "pre_resume_restricting_sid": "S-1-5-21-3987231234-3987231235-3987231236-212345",
+          "pre_resume_deny_only_logons": "1",
+          "pre_resume_bounded_job": "true",
+          "pre_resume_win32k_disabled": "true",
+          "thread_token_status": "0xc000007c",
+          "inherited_access": "0x00100081",
+          "inherited_name": "\\Device\\KsecDD",
+          "device_name_match": "0x00000001",
+          "query_name": "0x00000000",
+          "system32_bcrypt": "0x0000045a",
+          "system32_sechost": "0x00000000",
+          "bcrypt_preloaded": "0x00000000",
+          "child_exit": "0x00000050",
+          "job_active_end": "0",
+          "job_total": "1"
+        }
+      },
+      "raw": "target\\preopen-reader-control-2ae77b1-1118\\profileenv\\result.json",
+      "raw_sha256": "9967c51478902eecbd16ff0082b94b446558d2c1511cf751cb6589ec760dad9f",
+      "scope": "trusted detached fixed image using live native tokens and loader on caller-derived base, dedicated account and product admission not exercised",
+      "profile_before": {
+        "mapping_exists": false,
+        "profile_folder_exists": false
+      },
+      "profile_after": {
+        "mapping_exists": false,
+        "profile_folder_exists": false
+      },
+      "test_profile_removed": true,
+      "security_descriptor_before": {
+        "owner_dacl": "O:BAD:(A;;0x1201bf;;;WD)(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;RC)(A;;0x1201bf;;;AC)(A;;0x1201bf;;;S-1-15-2-2)",
+        "mandatory_label": "S:(ML;;NW;;;LW)"
+      },
+      "security_descriptor_after": {
+        "owner_dacl": "O:BAD:(A;;0x1201bf;;;WD)(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;RC)(A;;0x1201bf;;;AC)(A;;0x1201bf;;;S-1-15-2-2)",
+        "mandatory_label": "S:(ML;;NW;;;LW)"
+      },
+      "old_and_current_ace_multisets_equal": true,
+      "old_and_current_dacl_text_equal": false,
+      "source_and_binary_sha256": {
+        "probe.exe": "dcc871f14b6b204e832c28d2c8d8463eed4924c8529aaaa205825fdaa4acb225",
+        "controller.exe": "d3fb390e58000d83451695156c12d12cf976dd44fb606436293390dc6bcb398f",
+        "validate-windows-process-tree.py": "f53d8573ca9125a4be5b96d1ceed89a403eafd942e022933bd386bf5e387a1d6",
+        "probe.c": "0247e7ae3a4b1eb2545a52021682e5afbd49343f09158c192084db5f5ebc2beb",
+        "controller.c": "171b2fedee0fe19ec3b31096376d2932ae8a35f826542b9d5a3fc0a1a5a3598c",
+        "build.ps1": "38fd2a248cd71de4349761483d8e302880f8e6ce677b92d9670116bb69f31868",
+        "bcrypt.dll": "fb658b74aea2fc655d86e6f567c69e251a527c413a750d3952a7830fc715b446"
+      },
+      "diagnostic_exit": "passive_read_only_preopen_rejected_on_this_build",
+      "product_qualification_credit": false
+    }
+  },
+  "decision": {
+    "finding": "No qualifying design established among the evaluated candidates.",
+    "accepted": [],
+    "qualified": false,
+    "admission_error": "sandbox_unqualified",
+    "production_diff": [],
+    "product_rerun": false,
+    "unreached_current_candidate_properties": [
+      "three-generation effective file and Registry enforcement, including inherited/duplicated handles and aliases",
+      "three-generation DNS with both host controls",
+      "both console cases with two live Job members",
+      "installed coding workload and process.start lifecycle"
+    ],
+    "next_required_mechanism": "Before resuming untrusted descendants, independently enforce the authorized file and Registry object scope while permitting the required crypto device initialization. No driver or guest implementation was undertaken."
+  },
+  "token_candidate_decisions": [
+    {
+      "candidate": "schema5 sole writer with WRITE_RESTRICTED",
+      "change": "None; already the product token",
+      "observation": "Named crypto init open denied. Diagnostic Rust failed before entry.",
+      "decision": "ineligible"
+    },
+    {
+      "candidate": "sole writer without WRITE_RESTRICTED",
+      "change": "Apply full restriction with the same writer",
+      "observation": "Existing fixed images exited with STATUS_ACCESS_DENIED before their entry markers.",
+      "decision": "rejected"
+    },
+    {
+      "candidate": "add logon or another private restricting SID",
+      "change": "Add a trustee absent from the required device write grants",
+      "observation": "No matching write ACE on the captured device descriptor. Adds potential authority wherever that trustee has a grant.",
+      "decision": "rejected_by_descriptor",
+      "workload_run": false
+    },
+    {
+      "candidate": "add Everyone or another shared write trustee",
+      "change": "Admit a generally assigned principal on the restricting pass",
+      "observation": "Schema 4 ran the reference workload. Device and unrelated file descriptors can grant the same principal. The token has no file-path whitelist.",
+      "decision": "rejected_as_general_write_boundary"
+    },
+    {
+      "candidate": "capability-free ordinary AppContainer without exclusive writer",
+      "change": "Remove the sole writer and its extra write check",
+      "observation": "Root and child primary-token checks admitted broad Low grants. No actual target mutation, no confirmed child entry or grandchild.",
+      "decision": "rejected_as_general_write_boundary"
+    },
+    {
+      "candidate": "LPAC All Application Packages opt-out",
+      "change": "Opt out of AC grants. Does not grant the private writer a device ACE.",
+      "observation": "Historical zero-capability child initialization failed at SideBySide. New filesystem evidence for a three-generation LPAC tree was not obtained.",
+      "decision": "no_qualified_configuration"
+    }
+  ],
+  "diagnostics_bundle": {
+    "path": "target/native-write-boundary-2ae77b1-delivery/controls-and-observations.zip",
+    "sha256": "d905414af983028d7427865ee01bfb839ad7d9f872c6dd6c333568f2faf68308",
+    "entries": 17,
+    "contains_compiled_binaries": false
+  },
+  "initialization_and_inheritance_limits": {
+    "payload_execution_in_new_handle_control": "two fixed trusted roots, one member per private Job",
+    "child_or_grandchild_qualification": false,
+    "actual_descriptor_fixture_opens": "NTFS FILE handles from lowered test-thread tokens only",
+    "registry_alias_transfer_and_broker_matrix_measured_in_new_controls": false
+  }
+}

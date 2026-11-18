@@ -1,5 +1,8 @@
 #!/usr/bin/env pwsh
-param([ValidateSet('windows')][string]$Target = 'windows')
+param(
+    [ValidateSet('windows')][string]$Target = 'windows',
+    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'releases')
+)
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
@@ -24,9 +27,9 @@ try {
         Copy-Item (Join-Path $Build $Binary) $Staging
     }
     foreach ($Name in @('README.md', 'LICENSE', 'NOTICE')) { Copy-Item $Name $Staging }
-    New-Item releases -ItemType Directory -Force | Out-Null
+    [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
     $Name = "werkWorker-v$Version-windows-x86_64.zip"
-    $Artifact = Join-Path $RepoRoot "releases/$Name"
+    $Artifact = Join-Path $OutputDirectory $Name
     $Files = @($Binaries + @('README.md', 'LICENSE', 'NOTICE')) | ForEach-Object { Join-Path $Staging $_ }
     Compress-Archive -Path $Files -DestinationPath $Artifact -Force
     $Hash = (Get-FileHash $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -2984,12 +2984,16 @@ impl SessionHandle {
                 .flat_map(|r| &r.invocations)
                 .filter(|i| i.call.name.starts_with("werk."))
                 .filter_map(|i| i.result.as_ref())
-                .filter(|r| {
-                    r.data["result"]["url"]
-                        .as_str()
-                        .is_some_and(|u| u.starts_with("/v1/jobs/"))
+                .filter_map(|r| {
+                    let job = &r.data["result"];
+                    let id = job["id"].as_str()?;
+                    let url = job["url"].as_str()?;
+                    // Older persisted receipts carry the previous local job URI.
+                    let receipt_id = url
+                        .strip_prefix("/werk/v1/jobs/")
+                        .or_else(|| url.strip_prefix("/v1/jobs/"))?;
+                    (receipt_id == id && validate_id(id).is_ok()).then(|| id.to_owned())
                 })
-                .filter_map(|r| r.data["result"]["id"].as_str().map(str::to_owned))
                 .collect(),
             skills: data
                 .skill_snapshots

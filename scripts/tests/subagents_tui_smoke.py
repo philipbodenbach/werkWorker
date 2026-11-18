@@ -30,21 +30,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(raw)))
+        if control:
+            self.send_header('X-Werk-Protocol-Version', '1.0')
+            self.send_header('X-Werk-Request-Id', 'req_fixture')
         self.end_headers()
         self.wfile.write(raw)
 
     def do_GET(self):
         routes = {
             '/werk/v1/info': {'service': 'werk1112', 'protocol': {'major': 1, 'minor': 0}},
-            '/werk/v1/capabilities': {'capabilities': []},
-            '/v1/models': {'data': [{'id': 'fixture'}]},
-            '/v1/capabilities': {'models': []},
-            '/v1/parameters?task=text-generation': {'parameters': []},
+            '/werk/v1/capabilities': {'capabilities': [
+                {'id': 'api.models.list', 'status': 'supported', 'detail': 'fixture', 'operations': ['list']},
+                {'id': 'api.chat.completions', 'status': 'supported', 'detail': 'fixture', 'operations': ['complete', 'stream']}]},
+            '/werk/v1/models': {'data': [{'id': 'fixture'}]},
         }
         self.respond(routes.get(self.path, {}), control=self.path.startswith('/werk/'),
                      status=200 if self.path in routes else 404)
 
     def do_POST(self):
+        assert self.headers.get('X-Werk-Protocol-Version') == '1.0'
+        assert self.path == '/werk/v1/chat/completions'
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         messages = request['messages']
         child = any(m['role'] == 'system' and 'delegated worker' in m['content'] for m in messages)
@@ -68,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
         message = {'role': 'assistant', 'content': text}
         if call:
             message['tool_calls'] = [{'id': 'fixture_call', 'type': 'function', 'function': {'name': call[0], 'arguments': json.dumps(call[1])}}]
-        self.respond({'choices': [{'message': message, 'finish_reason': 'tool_calls' if call else 'stop'}]})
+        self.respond({'choices': [{'message': message, 'finish_reason': 'tool_calls' if call else 'stop'}]}, control=True)
 
 
 binary = Path(sys.argv[1]).resolve()

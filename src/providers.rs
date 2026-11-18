@@ -557,8 +557,15 @@ impl SecretResolver for EnvironmentSecrets {
         Ok(std::env::var(reference).ok())
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProviderTransport {
+    Werk,
+    OpenAiCompatible,
+}
+
 #[derive(Clone)]
 pub struct WerkClient {
+    transport: ProviderTransport,
     client: reqwest::Client,
     base: reqwest::Url,
     secret: Option<Arc<String>>,
@@ -611,6 +618,7 @@ impl WerkClient {
             .build()
             .map_err(|_| WorkerError::new("http_client", "Cannot construct Werk client"))?;
         Ok(Self {
+            transport: ProviderTransport::Werk,
             client,
             base,
             secret: secret.map(Arc::new),
@@ -620,7 +628,23 @@ impl WerkClient {
         })
     }
     fn request(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder> {
-        if !path.starts_with('/')
+        self.request_accept(method, path, "application/json")
+    }
+
+    fn request_accept(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        accept: &str,
+    ) -> Result<reqwest::RequestBuilder> {
+        let allowed = match self.transport {
+            ProviderTransport::Werk => path.starts_with("/werk/v1/"),
+            ProviderTransport::OpenAiCompatible => {
+                matches!(path, "/v1/models" | "/v1/chat/completions")
+            }
+        };
+        if !allowed
+            || !path.starts_with('/')
             || path.starts_with("//")
             || path.contains("..")
             || path.contains('#')
@@ -631,13 +655,15 @@ impl WerkClient {
             .base
             .join(path)
             .map_err(|_| WorkerError::new("route_denied", "Invalid Werk route"))?;
-        if url.origin() != self.base.origin() {
+        if url.origin() != self.base.origin()
+            || (self.transport == ProviderTransport::Werk && !url.path().starts_with("/werk/v1/"))
+        {
             return Err(WorkerError::new("origin_denied", "Werk origin changed"));
         }
-        let mut request = self
-            .client
-            .request(method, url)
-            .header("Accept", "application/json");
+        let mut request = self.client.request(method, url).header("Accept", accept);
+        if self.transport == ProviderTransport::Werk {
+            request = request.header("X-Werk-Protocol-Version", "1.0");
+        }
         if let Some(secret) = &self.secret {
             request = request.bearer_auth(secret.as_str());
         }
@@ -678,9 +704,7 @@ impl WerkClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
-        let mut request = self
-            .request(method, path)?
-            .header("X-Werk-Protocol-Version", "1.0");
+        let mut request = self.request(method, path)?;
         if let Some(body) = body {
             if body.to_string().len() > 1_048_576 {
                 return Err(WorkerError::new(
@@ -690,15 +714,63 @@ impl WerkClient {
             }
             request = request.json(&body);
         }
-        let response = self.send(request).await?;
-        let status = response.status();
-        let headers = response.headers().clone();
-        // Authentication middleware may reject before producing a Werk envelope.
-        if matches!(status.as_u16(), 401 | 403) {
-            return Err(http_error(status.as_u16()));
+        self.control_response(self.send(request).await?).await
+    }
+
+    async fn control_response(&self, response: reqwest::Response) -> Result<Value> {
+        if !response.status().is_success() {
+            return Err(self.rejection(response, self.max_body).await?.0);
         }
+        let headers = response.headers().clone();
         let bytes = bounded_body(response, self.max_body).await?;
         let value: Value = serde_json::from_str(&self.redact(&String::from_utf8_lossy(&bytes)))?;
+        Self::validate_envelope(&headers, &value)?;
+        value
+            .get("data")
+            .cloned()
+            .ok_or_else(|| WorkerError::new("invalid_envelope", "Success data missing"))
+    }
+
+    async fn rejection(
+        &self,
+        response: reqwest::Response,
+        max: usize,
+    ) -> Result<(WorkerError, Value)> {
+        let status = response.status();
+        // Authentication and redirects may be rejected before the protocol adapter.
+        if matches!(status.as_u16(), 401 | 403 | 300..=399) {
+            return Ok((http_error(status.as_u16()), Value::Null));
+        }
+        let headers = response.headers().clone();
+        let bytes = bounded_body(response, max).await?;
+        let value: Value = serde_json::from_str(&self.redact(&String::from_utf8_lossy(&bytes)))?;
+        let request_id = Self::validate_envelope(&headers, &value)?;
+        let error = &value["error"];
+        let code = error["code"]
+            .as_str()
+            .filter(|code| validate_id(code).is_ok())
+            .ok_or_else(|| WorkerError::new("invalid_envelope", "Missing protocol error code"))?;
+        let message = error["message"].as_str().ok_or_else(|| {
+            WorkerError::new("invalid_envelope", "Missing protocol error message")
+        })?;
+        let mut e = WorkerError::new(
+            &format!("werk_protocol_{code}"),
+            format!("{message} [request {request_id}]"),
+        );
+        e.retryable = error["retryable"].as_bool().unwrap_or(false)
+            && matches!(status.as_u16(), 429 | 500..=599);
+        e.retry_after_ms = headers
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|s| s.saturating_mul(1000).min(30_000));
+        Ok((e, value))
+    }
+
+    fn validate_envelope<'a>(
+        headers: &reqwest::header::HeaderMap,
+        value: &'a Value,
+    ) -> Result<&'a str> {
         if value["protocol"] != json!({"major":1,"minor":0}) {
             return Err(WorkerError::new(
                 "protocol_mismatch",
@@ -735,41 +807,44 @@ impl WerkClient {
                 "Exactly one data or error member is required",
             ));
         }
-        if !status.is_success() {
-            let error = &value["error"];
-            let code = error["code"]
-                .as_str()
-                .filter(|code| validate_id(code).is_ok())
-                .ok_or_else(|| {
-                    WorkerError::new("invalid_envelope", "Missing protocol error code")
-                })?;
-            let message = error["message"].as_str().ok_or_else(|| {
-                WorkerError::new("invalid_envelope", "Missing protocol error message")
-            })?;
-            let mut e = WorkerError::new(
-                &format!("werk_protocol_{code}"),
-                format!("{message} [request {request_id}]"),
-            );
-            e.retryable = error["retryable"].as_bool().unwrap_or(false)
-                && matches!(status.as_u16(), 429 | 500..=599);
-            e.retry_after_ms = headers
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .map(|s| s.saturating_mul(1000).min(30_000));
-            return Err(e);
-        }
-        value
-            .get("data")
-            .cloned()
-            .ok_or_else(|| WorkerError::new("invalid_envelope", "Success data missing"))
+        Ok(request_id)
     }
+
+    fn validate_stream_headers(
+        headers: &reqwest::header::HeaderMap,
+        content_type: &str,
+    ) -> Result<()> {
+        let media_type = headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .map(str::trim);
+        if !media_type.is_some_and(|ty| ty.eq_ignore_ascii_case(content_type))
+            || headers
+                .get("x-werk-protocol-version")
+                .is_none_or(|v| v != "1.0")
+            || !headers
+                .get("x-werk-request-id")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|id| validate_id(id).is_ok())
+        {
+            return Err(WorkerError::new(
+                "invalid_envelope",
+                "Invalid Werk response media type, protocol version or request ID",
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn json(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
+        if self.transport == ProviderTransport::Werk && path != "/werk/v1/deployments" {
+            return self.control_request(method, path, body).await;
+        }
         let mut req = self.request(method, path)?;
         if let Some(body) = body {
             if body.to_string().len() > 1_048_576 {
@@ -786,13 +861,13 @@ impl WerkClient {
     }
     pub async fn job(&self, job_id: &str, cancel: bool) -> Result<Value> {
         validate_id(job_id)?;
-        self.json(
+        self.control_request(
             if cancel {
                 reqwest::Method::DELETE
             } else {
                 reqwest::Method::GET
             },
-            &format!("/v1/jobs/{job_id}"),
+            &format!("/werk/v1/jobs/{job_id}"),
             None,
         )
         .await
@@ -800,11 +875,16 @@ impl WerkClient {
     pub async fn output(&self, output_id: &str) -> Result<Vec<u8>> {
         validate_id(output_id)?;
         let response = self
-            .send(self.request(reqwest::Method::GET, &format!("/v1/outputs/{output_id}"))?)
+            .send(self.request_accept(
+                reqwest::Method::GET,
+                &format!("/werk/v1/outputs/{output_id}"),
+                "application/octet-stream, application/json",
+            )?)
             .await?;
         if !response.status().is_success() {
-            return Err(http_error(response.status().as_u16()));
+            return Err(self.rejection(response, self.max_body).await?.0);
         }
+        Self::validate_stream_headers(response.headers(), "application/octet-stream")?;
         bounded_body(response, self.max_body).await
     }
 }
@@ -988,6 +1068,22 @@ impl WerkProvider {
         Self::connect_client(config, client).await
     }
 
+    /// Use an explicitly selected third-party OpenAI-compatible origin.
+    pub async fn connect_openai_compatible(
+        config: WerkConfig,
+        secret: Option<String>,
+    ) -> Result<Self> {
+        if config.deployment.is_some() {
+            return Err(WorkerError::new(
+                "invalid_deployment",
+                "Werk deployment selection requires the Werk transport",
+            ));
+        }
+        let mut client = WerkClient::new(&config, secret)?;
+        client.transport = ProviderTransport::OpenAiCompatible;
+        Self::connect_client(config, client).await
+    }
+
     async fn connect_client(config: WerkConfig, client: WerkClient) -> Result<Self> {
         for (key, value) in &config.options {
             match key.as_str() {
@@ -1016,22 +1112,44 @@ impl WerkProvider {
                 "Choose reasoning_tier or native reasoning_effort, not both",
             ));
         }
-        let info = client.control("/werk/v1/info").await?;
-        if info["service"] != "werk1112" || info["protocol"] != json!({"major":1,"minor":0}) {
-            return Err(WorkerError::new(
-                "invalid_service",
-                "Endpoint is not Werk Protocol 1.0",
-            ));
-        }
-        // The general /v1/capabilities catalogue probes every installed model
-        // and backend. Chat setup needs only protocol capabilities and model IDs;
-        // media tools perform their own task discovery when explicitly configured.
-        let (envelope, models) = tokio::try_join!(
-            client.control("/werk/v1/capabilities"),
-            client.json(reqwest::Method::GET, "/v1/models", None),
-        )?;
-        let runtime_capabilities: Vec<RuntimeCapability> =
-            serde_json::from_value(envelope["capabilities"].clone())?;
+        let werk = client.transport == ProviderTransport::Werk;
+        let (info, runtime_capabilities, models) = if werk {
+            let info = client.control("/werk/v1/info").await?;
+            if info["service"] != "werk1112" || info["protocol"] != json!({"major":1,"minor":0}) {
+                return Err(WorkerError::new(
+                    "invalid_service",
+                    "Endpoint is not Werk Protocol 1.0",
+                ));
+            }
+            let advertised = client.control("/werk/v1/capabilities").await?;
+            let capabilities: Vec<RuntimeCapability> =
+                serde_json::from_value(advertised["capabilities"].clone())?;
+            for (id, operation) in [
+                ("api.models.list", "list"),
+                (
+                    "api.chat.completions",
+                    if config.stream { "stream" } else { "complete" },
+                ),
+            ] {
+                if !capabilities.iter().any(|cap| {
+                    cap.id == id
+                        && cap.status == CapabilityStatus::Supported
+                        && cap.operations.iter().any(|op| op == operation)
+                }) {
+                    return Err(WorkerError::new(
+                        "unsupported_capability",
+                        format!("Werk does not advertise {id}/{operation}"),
+                    ));
+                }
+            }
+            let models = client.control("/werk/v1/models").await?;
+            (info, capabilities, models)
+        } else {
+            let models = client
+                .json(reqwest::Method::GET, "/v1/models", None)
+                .await?;
+            (Value::Null, Vec::new(), models)
+        };
         let generation_limits = if runtime_capabilities
             .iter()
             .any(|c| c.id == "api.chat.limits" && c.status == CapabilityStatus::Supported)
@@ -1074,13 +1192,17 @@ impl WerkProvider {
         }
         // Prefer fresh, model-matched Werk Protocol evidence. This samples only
         // running workers; it does not probe/load every installed backend.
-        let snapshot = tokio::time::timeout(
-            Duration::from_secs(4),
-            client.control("/werk/v1/observability"),
-        )
-        .await
-        .ok()
-        .and_then(std::result::Result::ok);
+        let snapshot = if werk {
+            tokio::time::timeout(
+                Duration::from_secs(4),
+                client.control("/werk/v1/observability"),
+            )
+            .await
+            .ok()
+            .and_then(std::result::Result::ok)
+        } else {
+            None
+        };
         let protocol_capacity = generation_limits
             .as_ref()
             .and_then(|limits| limits.max_concurrent_requests)
@@ -1107,7 +1229,7 @@ impl WerkProvider {
         });
         // Older protocol producers omit per-request context. Their deployment
         // extension is plain JSON and is only an optional fallback.
-        let diagnostics = if protocol_capacity.is_none() || protocol_limit.is_none() {
+        let diagnostics = if werk && (protocol_capacity.is_none() || protocol_limit.is_none()) {
             tokio::time::timeout(
                 Duration::from_secs(2),
                 client.json(reqwest::Method::GET, "/werk/v1/deployments", None),
@@ -1384,6 +1506,9 @@ impl ModelProvider for WerkProvider {
         self.refreshed_concurrency.lock().unwrap().clone()
     }
     async fn refresh_concurrency(&self) {
+        if self.client.transport != ProviderTransport::Werk {
+            return;
+        }
         // A polling interval must use the same monotonic clock as async waits.
         // Wall-clock corrections can otherwise suppress an already-due refresh.
         if self.capacity_refresh_at.lock().unwrap().elapsed() < Duration::from_secs(5) {
@@ -1440,10 +1565,24 @@ impl ModelProvider for WerkProvider {
         caps
     }
     fn identity(&self) -> String {
-        format!("werk:{}", self.config.model)
+        match self.client.transport {
+            ProviderTransport::Werk => format!("werk:{}", self.config.model),
+            ProviderTransport::OpenAiCompatible => format!(
+                "openai-compatible:{}:{}",
+                self.client.origin(),
+                self.config.model
+            ),
+        }
     }
     fn request_fingerprint(&self, request: &ModelRequest) -> String {
-        fingerprint(&(&self.config, self.supports_reasoning_tiers(), request))
+        match self.client.transport {
+            ProviderTransport::Werk => {
+                fingerprint(&(&self.config, self.supports_reasoning_tiers(), request))
+            }
+            ProviderTransport::OpenAiCompatible => {
+                fingerprint(&("openai-compatible", &self.config, request))
+            }
+        }
     }
     fn cached_input_tokens(&self, request: &ModelRequest) -> Option<usize> {
         self.token_counts
@@ -1699,9 +1838,20 @@ impl ModelProvider for WerkProvider {
         }
         let has_images = request.messages.iter().any(|m| !m.images.is_empty());
         let body = self.chat_body(&request)?;
+        let werk = self.client.transport == ProviderTransport::Werk;
+        let path = if werk {
+            "/werk/v1/chat/completions"
+        } else {
+            "/v1/chat/completions"
+        };
+        let accept = if self.config.stream {
+            "text/event-stream, application/json"
+        } else {
+            "application/json"
+        };
         let request = self
             .client
-            .request(reqwest::Method::POST, "/v1/chat/completions")?
+            .request_accept(reqwest::Method::POST, path, accept)?
             .json(&body);
         self.check_inference_available()?;
         let mut receipt = InferenceReceipt {
@@ -1723,18 +1873,38 @@ impl ModelProvider for WerkProvider {
             // An explicit HTTP rejection remains eligible for ordinary bounded
             // retries (e.g. 429/503); an uncertain transport failure does not.
             receipt.settled = true;
-            let mut e = http_error(response.status().as_u16());
-            e.retry_after_ms = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .map(|s| s.saturating_mul(1000).min(30_000));
-            if response.status().as_u16() == 400 {
-                let bytes = bounded_body(response, self.config.max_body_bytes.min(65536)).await?;
-                if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-                    && value["error"]["code"] == "context_length_exceeded"
+            let status = response.status();
+            let (error, mut value) = if werk {
+                self.client
+                    .rejection(response, self.config.max_body_bytes.min(65536))
+                    .await
+                    .map_err(no_inference_retry)?
+            } else {
+                let mut error = http_error(status.as_u16());
+                error.retry_after_ms = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|s| s.saturating_mul(1000).min(30_000));
+                let value = if status.as_u16() == 400 {
+                    let bytes =
+                        bounded_body(response, self.config.max_body_bytes.min(65536)).await?;
+                    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                (error, value)
+            };
+            if status.as_u16() == 400 {
+                if werk
+                    && let Some(code) = value["error"]["details"]["inference_code"]
+                        .as_str()
+                        .map(str::to_owned)
                 {
+                    value["error"]["code"] = json!(code);
+                }
+                if value["error"]["code"] == "context_length_exceeded" {
                     let reported = value["error"]["context_length"]
                         .as_u64()
                         .or_else(|| value["error"]["details"]["context_length"].as_u64());
@@ -1771,7 +1941,6 @@ impl ModelProvider for WerkProvider {
                     ));
                 }
                 if has_images
-                    && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
                     && matches!(
                         value["error"]["code"].as_str(),
                         Some(
@@ -1788,12 +1957,10 @@ impl ModelProvider for WerkProvider {
                         "The configured backend rejected image input. Check its vision capability and projector/mmproj configuration. Browser actions may already have completed; images were not processed. No backend was switched.",
                     ));
                 }
-                if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-                    && matches!(
-                        value["error"]["code"].as_str(),
-                        Some("invalid_reasoning_effort" | "invalid_reasoning_tier")
-                    )
-                {
+                if matches!(
+                    value["error"]["code"].as_str(),
+                    Some("invalid_reasoning_effort" | "invalid_reasoning_tier")
+                ) {
                     let message = value["error"]["message"].as_str().unwrap_or(
                         "The server/model rejected reasoning_effort; select Server default or a supported level",
                     );
@@ -1806,7 +1973,7 @@ impl ModelProvider for WerkProvider {
                             .collect::<String>(),
                     ));
                 }
-                if has_images && let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                if has_images && value.is_object() {
                     let detail = value["error"]["message"]
                         .as_str()
                         .unwrap_or("No structured diagnostic supplied");
@@ -1823,20 +1990,30 @@ impl ModelProvider for WerkProvider {
                     ));
                 }
             }
-            return Err(e);
+            return Err(error);
         }
         let client = self.client.clone();
         let max = self.config.max_body_bytes;
         if !self.config.stream {
-            let bytes = bounded_body(response, max)
-                .await
-                .map_err(no_inference_retry)?;
+            let v: Value = if werk {
+                client
+                    .control_response(response)
+                    .await
+                    .map_err(no_inference_retry)?
+            } else {
+                let bytes = bounded_body(response, max)
+                    .await
+                    .map_err(no_inference_retry)?;
+                serde_json::from_str(&client.redact(&String::from_utf8_lossy(&bytes)))?
+            };
             receipt.settled = true;
-            let v: Value = serde_json::from_str(&client.redact(&String::from_utf8_lossy(&bytes)))?;
             let deltas = decode_completion(&v)?;
             return Ok(Box::pin(futures_util::stream::iter(
                 deltas.into_iter().map(Ok),
             )));
+        }
+        if werk {
+            WerkClient::validate_stream_headers(response.headers(), "text/event-stream")?;
         }
         Ok(Box::pin(async_stream::try_stream! {
             // Capture the guard even if the returned stream is never polled.

@@ -2970,6 +2970,7 @@ fn native_behavior() {
     fs::write(directory.path().join("cargo-exit-gate"), b"finish").unwrap();
     let output = finish(&run, &provider).await;
     pinned.assert_all_stopped_now();
+    assert_eq!(output["executed"], true, "{output}");
     assert_eq!(
         output["exit_code"], 0,
         "Private Rust/MSVC offline Cargo did not pass: {output}"

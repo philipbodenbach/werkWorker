@@ -573,7 +573,10 @@ impl Tool for Builtin {
                     let before = crate::completion::verification_files(&args, &ctx.workspace).await?;
                     let output = ctx.sandbox.run_managed(&ctx.workspace,ctx.writable,&argv,cwd,ctx.cancel.clone(),args["stdin"].as_str(),ctx.workspace_lease.clone()).await.inspect_err(|error| ctx.jobs.record_cleanup_failure(error))?;
                     let mut result = serde_json::to_value(&output)?;
-                    if output.exit_code != Some(0) || output.timed_out || output.cancelled {
+                    // A completed zero exit confirms execution. Cancellation can precede payload admission.
+                    if output.exit_code == Some(0) && !output.timed_out && !output.cancelled {
+                        result["executed"] = json!(true);
+                    } else {
                         result["failure_excerpt"] = json!(crate::completion::diagnostic_excerpt(
                             if output.stderr.is_empty() { &output.stdout } else { &output.stderr }, 1000));
                     }
@@ -723,11 +726,29 @@ impl WerkNativeTool {
         runtime: &[RuntimeCapability],
         experimental: bool,
     ) -> Result<Vec<Arc<dyn Tool>>> {
-        let catalog = client.json(reqwest::Method::GET, "/v1/tools", None).await?;
-        let capabilities = client
-            .json(reqwest::Method::GET, "/v1/capabilities", None)
-            .await?;
-        if catalog["object"] != "werk.tools" {
+        if allowlist.is_empty() {
+            return Ok(Vec::new());
+        }
+        let native_tools_supported = runtime.iter().any(|cap| {
+            cap.id == "api.tools"
+                && cap.status.executable(experimental)
+                && ["list", "tasks", "call"]
+                    .iter()
+                    .all(|op| cap.operations.iter().any(|advertised| advertised == op))
+        });
+        if !native_tools_supported {
+            return Err(WorkerError::new(
+                "unsupported_capability",
+                "Werk Protocol native tool discovery and invocation are unavailable",
+            ));
+        }
+        let catalog = client.control("/werk/v1/tools").await?;
+        let capabilities = client.control("/werk/v1/tasks").await?;
+        if catalog["object"] != "werk.tools"
+            || !catalog["tools"].is_array()
+            || capabilities["object"] != "werk.capabilities"
+            || !capabilities["models"].is_array()
+        {
             return Err(WorkerError::new(
                 "invalid_discovery",
                 "Unexpected Werk tool catalog",
@@ -828,7 +849,24 @@ impl Tool for WerkNativeTool {
         Ok(json!({"origin":self.client.origin(),"arguments":args}))
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
-        let result=self.client.json(reqwest::Method::POST,"/v1/tools/call",Some(json!({"id":ctx.invocation_id,"type":"function","function":{"name":self.native_name,"arguments":args["arguments"].to_string()}}))).await.map_err(|_|WorkerError::new("outcome_unknown","Native task may have been accepted; reconcile its receipt"))?;
+        let call = json!({
+            "id": ctx.invocation_id,
+            "type": "function",
+            "function": {
+                "name": self.native_name,
+                "arguments": args["arguments"].to_string(),
+            },
+        });
+        let result = self
+            .client
+            .control_request(reqwest::Method::POST, "/werk/v1/tools/call", Some(call))
+            .await
+            .map_err(|_| {
+                WorkerError::new(
+                    "outcome_unknown",
+                    "Native task may have been accepted; reconcile its receipt",
+                )
+            })?;
         if result["object"] != "werk.tool_result"
             || result["tool_call_id"] != ctx.invocation_id
             || result["name"] != self.native_name

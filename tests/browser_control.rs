@@ -1493,7 +1493,7 @@ async fn browser_images_reach_the_actual_werk_backend_request_in_vision_and_dom_
         let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = step.clone();
         let server=support::Server::start(move |request| {
-            if request.path!="/v1/chat/completions" {return support::werk(request);}
+            if request.path!="/werk/v1/chat/completions" {return support::werk(request);}
             let n=counter.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
             let open = request.body["tools"].as_array().unwrap().iter()
                 .find(|t|t["function"]["name"]=="browser.open").unwrap();

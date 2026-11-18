@@ -118,7 +118,7 @@ async fn protocol_budgets_and_hash_guarded_section_insertion() {
         let changed_hash = hash(&changed);
         let server = Server::start(move |request| {
             if let Some(response)=control_request(request,context,output,reasoning){return response;}
-            if request.path=="/v1/chat/completions" {
+            if request.path=="/werk/v1/chat/completions" {
                 return match step.fetch_add(1,Ordering::SeqCst) {
                     0 => tool("files.read",json!({"path":"game.js"})),
                     1 => tool("files.insert",json!({"path":"game.js","expected_hash":original_hash,"after_line":1,"content":section})),
@@ -170,7 +170,10 @@ async fn protocol_budgets_and_hash_guarded_section_insertion() {
         assert_eq!(calls[3].result.as_ref().unwrap().status, Outcome::Succeeded);
         {
             let requests = server.requests.lock().unwrap();
-            for request in requests.iter().filter(|r| r.path == "/v1/chat/completions") {
+            for request in requests
+                .iter()
+                .filter(|r| r.path == "/werk/v1/chat/completions")
+            {
                 assert_eq!(request.body["max_completion_tokens"], output);
                 let definition = &request.body["tools"]
                     .as_array()
@@ -210,7 +213,7 @@ async fn long_unicode_line_paginates_forward_without_losing_bytes() {
         if let Some(response) = control_request(request, 16384, 4096, Some(2048)) {
             return response;
         }
-        if request.path == "/v1/chat/completions" {
+        if request.path == "/werk/v1/chat/completions" {
             let last = request.body["messages"]
                 .as_array()
                 .unwrap()
@@ -302,7 +305,7 @@ async fn context_reduction_refreshes_reasoning_and_counts_the_dispatched_tools()
         let requests = server.requests.lock().unwrap();
         let chat = requests
             .iter()
-            .find(|r| r.path == "/v1/chat/completions")
+            .find(|r| r.path == "/werk/v1/chat/completions")
             .unwrap();
         let output = chat.body["max_completion_tokens"].as_u64().unwrap();
         assert!(output < 4096);
@@ -350,7 +353,7 @@ async fn insert_preserves_boundaries_and_rejects_invalid_positions() {
             if let Some(response) = control_request(request, 16384, 4096, Some(2048)) {
                 return response;
             }
-            if request.path == "/v1/chat/completions" {
+            if request.path == "/werk/v1/chat/completions" {
                 return tool("files.insert", json!({"path":"file.txt","expected_hash":original_hash,"after_line":line,"content":section}));
             }
             werk(request)

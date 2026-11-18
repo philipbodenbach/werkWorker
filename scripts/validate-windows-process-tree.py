@@ -692,6 +692,43 @@ def objects(value):
             yield from objects(part)
 
 
+def is_x64_test_executable(path):
+    with path.open("rb") as image:
+        dos_header = image.read(64)
+        if len(dos_header) < 64 or dos_header[:2] != b"MZ":
+            return False
+        pe_offset = int.from_bytes(dos_header[60:64], "little")
+        if pe_offset < len(dos_header):
+            return False
+        image.seek(pe_offset)
+        header = image.read(26)  # PE signature, COFF header and optional-header magic
+        if (len(header) != 26 or header[:6] != b"PE\0\0\x64\x86"
+                or int.from_bytes(header[20:22], "little") < 2
+                or (int.from_bytes(header[22:24], "little") & 0x2002) != 0x0002
+                or header[24:26] != b"\x0b\x02"):
+            return False
+
+        # Validate the complete image with Windows without executing its code.
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileMappingW.argtypes = (wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                                              wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR)
+        kernel.CreateFileMappingW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.CloseHandle.restype = wintypes.BOOL
+        page_readonly = 0x02
+        sec_image_no_execute = 0x11000000
+        mapping = kernel.CreateFileMappingW(msvcrt.get_osfhandle(image.fileno()), None,
+                                            page_readonly | sec_image_no_execute, 0, 0, None)
+        if not mapping:
+            return False
+        if not kernel.CloseHandle(mapping):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return True
+
+
 def installed_start(args, environment):
     if args.installed_bin is None:
         raise ValueError("--installed-bin is required for installed-start")
@@ -725,7 +762,7 @@ def installed_start(args, environment):
     write_json(script, [plan("in_progress"),
                         tool_turn("files.read", {"path": crate.name + "/Cargo.toml"}),
                         tool_turn("files.read", {"path": crate.name + "/src/lib.rs"}),
-                        tool_turn("process.run", {"argv": [str(cargo), "test", "--offline", "--", "--nocapture"],
+                        tool_turn("process.run", {"argv": [str(cargo), "test", "--offline", "--", "--nocapture", "--test-threads=2"],
                                                  "cwd": crate.name,
                                                  "verification": {"kind": "behavior", "criteria": criteria,
                                                                   "paths": [crate.name + "/Cargo.toml", crate.name + "/src/lib.rs"]}}),
@@ -777,10 +814,14 @@ def installed_start(args, environment):
                 and tool_result.get("status") == "succeeded"
                 and tool_result.get("error_code") is None
                 and tool_result.get("truncated", False) is False
-                and all(data.get(flag, False) is False for flag in
-                        ("timed_out", "cancelled", "truncated", "stdout_truncated", "stderr_truncated"))
-                and data.get("exit_code") == 0
-                and isinstance(stdout, str) and "INSTALLED_NATIVE_TREE_OK" in stdout
+                and all(data.get(flag) is False for flag in ("timed_out", "cancelled", "truncated"))
+                and all(data.get(flag, False) is False for flag in ("stdout_truncated", "stderr_truncated"))
+                and data.get("executed") is True
+                and type(data.get("exit_code")) is int and data["exit_code"] == 0
+                and isinstance(stdout, str)
+                and "INSTALLED_NATIVE_TREE_OK" in stdout.splitlines()
+                and "test installed_native_test ... ok" in stdout.splitlines()
+                and "test result: ok. 1 passed; 0 failed;" in stdout
                 and sandbox.get("backend") == "windows-account-job-tree"
                 and sandbox.get("account_sid") == manifest["user_sid"]
                 and sandbox.get("appcontainer_sid") == manifest["appcontainer_sid"]
@@ -790,11 +831,13 @@ def installed_start(args, environment):
     successful = [item for item in calls if successful_call(item)]
     result["qualified_invocation_count"] = len(successful)
     artifact = crate / "installed-profile-artifact.txt"
-    executables = list((crate / "target/debug/deps").glob("*.exe"))
-    result["windows_artifacts"] = [{"path": str(path), "sha256": digest(path)} for path in executables]
+    executables = (crate / "target/debug/deps").glob("installed_offline_tree-*.exe")
+    result["windows_artifacts"] = [{"path": str(path), "sha256": digest(path)}
+                                   for path in executables if is_x64_test_executable(path)]
     result["passed"] = (result["exit_code"] == 0 and "store_error" not in result and len(successful) == 1
                          and artifact.is_file() and artifact.read_bytes() == b"INSTALLED_NATIVE_TREE_OK\n"
-                         and bool(executables) and not (args.manifest.parent / "incomplete-run.json").exists())
+                         and len(result["windows_artifacts"]) == 1
+                         and not (args.manifest.parent / "incomplete-run.json").exists())
     write_json(args.evidence / "installed-start-result.json", result)
     print(json.dumps({key: value for key, value in result.items() if key != "invocations"}), flush=True)
     return 0 if result["passed"] else 1

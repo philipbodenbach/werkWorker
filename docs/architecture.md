@@ -47,7 +47,7 @@ harness, tools, permission model and session store.
 | Component | Responsibility | Current integration |
 |---|---|---|
 | werkWorker | Agent execution, harness, tools, approvals, sessions and subagents | Public `werk_worker` SDK; standalone `ww` / `werk-worker`; JSONL via `ww rpc` |
-| werk1112 | Inference, models and runtime management | werkWorker's `WerkProvider` uses its public HTTP APIs |
+| werk1112 | Inference, models and runtime management | werkWorker uses versioned Werk Protocol routes for models, chat, runtime controls and native inference tools |
 | werkStation | Planned wrapper suite and shared application interface | Intended to import and compose werkWorker and werk1112; suite integration is future work |
 
 The planned suite reuses the agent implementation in werkWorker and the

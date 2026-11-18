@@ -22,10 +22,11 @@ $Python = (Get-Command python.exe -CommandType Application -ErrorAction Stop).So
 if (-not $Archive) {
     # Diagnostic source snapshots must never share the product's binary output.
     # Cargo freshness records alone do not prove a shared top-level EXE's origin.
+    $PackageDirectory = Join-Path $EvidenceRoot 'built-package'
     $TreePreviousCargoTargetDir = $env:CARGO_TARGET_DIR
     try {
         $env:CARGO_TARGET_DIR = Join-Path $EvidenceRoot 'product-build'
-        & (Join-Path $PSScriptRoot 'package-release.ps1')
+        & (Join-Path $PSScriptRoot 'package-release.ps1') -OutputDirectory $PackageDirectory
         if ($LASTEXITCODE -ne 0) { throw 'Native package build failed.' }
     } finally {
         [Environment]::SetEnvironmentVariable('CARGO_TARGET_DIR', $TreePreviousCargoTargetDir, 'Process')
@@ -33,7 +34,7 @@ if (-not $Archive) {
     $Manifest = Get-Content -LiteralPath (Join-Path $RepoRoot 'Cargo.toml') -Raw
     $Version = [regex]::Match($Manifest, '(?ms)^\[package\]\s+.*?^version = "([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
     if (-not $Version) { throw 'Missing stable package version.' }
-    $Archive = Join-Path $RepoRoot "releases/werkWorker-v$Version-windows-x86_64.zip"
+    $Archive = Join-Path $PackageDirectory "werkWorker-v$Version-windows-x86_64.zip"
 }
 $Archive = (Resolve-Path -LiteralPath $Archive).Path
 $Installation = Join-Path $EvidenceRoot 'installation'

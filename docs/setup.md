@@ -10,11 +10,10 @@ checks and reconnects to the saved service, while **Connect new** opens the wiza
 No inference is made until you submit a chat message or explicitly resume an
 interrupted run.
 
-Connecting checks WerkProtocol identity, runtime capabilities and `/v1/models`.
-Runtime capabilities and the model list are fetched concurrently. The worker
-does not request the general `/v1/capabilities` catalogue or `/v1/parameters`
-during chat setup: the catalogue probes installed models/backends and can be
-slow on a cold server. Explicit media tools discover their own task support.
+Connecting checks Werk Protocol identity and advertised operations, then reads
+`/werk/v1/models`. Chat uses `/werk/v1/chat/completions`. A Werk server must
+advertise the model list and the requested completion mode. Explicit media tools
+discover their task support separately.
 Bounded deployment/observability checks still establish context and concurrency.
 
 Image input defaults to **Auto** (`capabilities.images: "unknown"`), including
@@ -32,7 +31,7 @@ flags cannot override a client-side disable.
 3. Choose authentication: masked API-key input for this session, the **name** of
    an environment variable, or explicitly no authentication. Paste is supported.
    Use a key already accepted by Werk; this does not create a server-side key.
-4. Discover models. The client checks WerkProtocol 1.0 and lists `/v1/models`.
+4. Discover models. The client checks Werk Protocol 1.0 and reads `/werk/v1/models`.
    Authentication/network failures stay in the dialog so you can correct them.
 5. Select the model, context limit, output budget, agent profile and workspace
    access. Keep context empty for discovery, or supply the actual **per-request**
@@ -57,6 +56,16 @@ flags cannot override a client-side disable.
 CUDA, CPU, Metal and other inference backends are controlled by the running
 Werk server. The dialog reports Werk's active backend; it does not install,
 launch or reconfigure an inference server and is not a generic OpenAI adapter.
+
+## Third-party model providers
+
+To use a provider with an OpenAI-compatible API, select it explicitly with
+`ww --openai-compatible-config provider.json --secret-env PROVIDER_API_KEY run "Hello"`.
+Set `base_url` to the provider's origin, `model` to its model ID, and
+`capabilities.context_tokens` to the supported per-request limit. Configure
+tool calling and streaming according to the selected model. This connection
+uses the provider's model list and chat completion API. Each run keeps its
+selected origin and credential. A failed Werk request stays on the Werk connection.
 
 ## Controls and reconnecting
 

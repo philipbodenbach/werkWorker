@@ -1,9 +1,77 @@
 # Windows process-tree validation
 
+## Native Job acceptance with the Werk Protocol client
+
+The tested Windows ZIP has SHA-256
+`9973d7e6ad7019c5a461fa647a1400b42e397b4bfbf1a3f3532b852e8ddddfdd`.
+All four installed executables matched the corresponding build outputs and ZIP
+entries. Both fresh provisions succeeded. The unfiltered mandatory suite ran
+with an ordinary Medium token and ended with exit 101. Two tests passed, one
+failed at admission and five were ignored. The separately provisioned CLI
+returned `sandbox_unqualified` and `executed=false` for the fixed Rust
+`--list` probe and for offline Cargo. Repeating Cargo after the probe in a new
+crate also produced zero test executables. All three CLI host Jobs drained.
+The workload never reached the three-generation DNS test or either two-member
+console test. The workspace-write process-tree profile stays disabled.
+[Native package and invocation evidence](evidence/windows-process-tree-2026-11-18/werk-protocol-native-acceptance.json)
+
+Werk Protocol carries model and inference-tool requests between the two
+programs. The installed offline test uses the worker's scripted provider and
+its native Windows Job supervisor. Model-provider selection leaves the native
+process admission checks in effect.
+
+## AppContainer write isolation at `9d2ee11`
+
+The workspace-write profile remains disabled. The candidate that omits the
+private writer restriction cannot guarantee that only the workspace and private
+temporary directory are writable. Windows decides access from the token and
+the security descriptor of the object. A reachable Low-integrity file or registry
+key outside the provision can grant write access to both the account and All
+Application Packages. A child object can inherit those permissions. An empty
+capability list supplies no separate path or registry-subtree constraint, and
+Low integrity permits writes at the same integrity level when the DACL allows
+them. Descendants using the same AppContainer identity are subject to those
+same access checks. [AppContainer access checks](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer#appcontainer-overview) · [Mandatory integrity control](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control) · [ACL inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
+
+`windows_appcontainer_storage::check_storage` walks the provisioned package
+directory and its registered private storage key. The approved workspace, temp
+and copied toolchain have individually checked ACLs. These checks cover known
+objects. Other objects, including ones created after launch, can carry an
+independent writable ACL. The existing broker, Job Object and account-scoped
+network filters supply no additional filesystem or registry write check on
+such objects. The production runner therefore still requires the private writer.
+
+A native diagnostic retained the primary tokens of a parent and its live child on
+an ordinary Windows logon. Each token passed the same 35 in-memory access checks.
+Broad direct and inherited grants allowed writes to Low-integrity file and
+registry descriptors. An executable with read/execute permissions rejected writes.
+The test applied mandatory integrity policy separately. The child exited with
+`0xc0000142` before a user-code entry was confirmed. Both process handles were
+signaled and the private Job reported zero active processes. [Measured token rights and cleanup](evidence/windows-process-tree-2026-11-18/appcontainer-write-boundary-9d2ee11.json)
+
+The release built before the Werk Protocol transport changes has SHA-256
+`c76a3966dabe34034c5a1227043989d57eb67a9d0e36844adc565ab159211b80`.
+All four installed executables matched the release build and the ZIP. The
+mandatory suite ran under an ordinary Medium token and stopped at profile
+admission with Cargo test-harness exit 101 (two passed, one failed, five
+ignored). The separately provisioned installed CLI also refused both the
+identical `--list` probe and offline Cargo with `sandbox_unqualified` and
+`executed=false`. Neither produced a workload exit or a test artifact.
+The three-generation DNS result and both two-member console bounds remain
+unverified on this package. [Fresh product results](evidence/windows-process-tree-2026-11-18/guarded-write-boundary-9d2ee11.json)
+
+A successful CLI qualification now requires an explicit Boolean `executed=true`,
+an integer exit code of zero, the named passing test, the success summary, the
+expected marker bytes and one newly built x64 test executable. Windows validates
+the complete executable through a non-executable image mapping. The test
+directory is new for each run.
+
+## Earlier schema-5 product qualification
+
 The schema-5 backend is under native qualification on
 `feat/windows-child-process`. The product returns `sandbox_unqualified`
 pending a complete passing result from the native suite and the freshly
-installed CLI. The local guarded package with SHA-256
+installed CLI. The preceding local guarded package with SHA-256
 `f65849bbfe91dbd1b9c4c6f21f847a46cf89fc7e5e98ce8eca64ba7802bf28a0`
 was built, installed and provisioned twice by the required Windows wrapper.
 Both checks ran with the ordinary host token. The suite returned Cargo exit

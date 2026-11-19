@@ -1,0 +1,17 @@
+wrote 488 PSEC 1.1 bytes
+STAGED hash=276CB07196CA714B221EA116B7BF8D0D937C40C43798FE1F4432C34E4A53E7D4 policy=54880AA61FA678830BF219313473D071FD8A9553FAEBE824DE8AF29422098E20
+PRIVATE_OBJECTS role=medium owner=BA system_full=1 initial_principals_exact=1 protected_dacl=1 low_label=1 station=ww-ui-662d3b4b4d141d94a53bca39ced7abd5 desktop=desk-662d3b4b4d141d94a53bca39ced7abd5
+PSEC hr=0x00000000 terminate_on_close=1 policy_bytes=488
+ROOT pid=34200 creation_flags=0x8040c desktop_argument=explicit handle_allowlist=2
+TOKEN phase=before_resume pid=34200 appcontainer=1 elevated=0 win32k_deny=0 mitigation_flags=0x0
+PRIVATE_FINAL both=1 owner=BA full=SYSTEM,BA limited=user,verified-package protected_dacl=1 low_label=1
+UI_SET phase=after_assignment_before_resume member=1 before=0x0 requested=0xff ok=1 error=0
+JOB phase=before_resume_explicit active_limit=2 flags=0x220c ui=0xff mem=536870912 cpu_100ns=300000000
+RESUMED
+PAYLOAD_EXIT code=0x00000000
+TOKEN phase=payload pid=34200 appcontainer=1 elevated=0 win32k_deny=0 mitigation_flags=0x0
+SELF_OBJECT kind=station name=ww-ui-662d3b4b4d141d94a53bca39ced7abd5
+SELF_OBJECT kind=desktop name=desk-662d3b4b4d141d94a53bca39ced7abd5
+JOB phase=payload_immediate active_limit=2 flags=0x220c ui=0xff mem=536870912 cpu_100ns=300000000
+EXACT_PRIVATE_PLACEMENT
+CLEANUP root_created=1 retained_wait=0 active=0 confirmed=1

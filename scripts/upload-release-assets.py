@@ -41,7 +41,8 @@ def validate_archive(path):
     if version is None:
         raise ValueError(f"Missing archive version: {path.name}")
     windows = path.name.endswith(".zip")
-    binaries = {"werk-worker.exe", "ww.exe"} if windows else {"werk-worker", "ww"}
+    binaries = {"werk-worker.exe", "ww.exe", "ww-windows-provision.exe",
+                "ww-windows-runner.exe"} if windows else {"werk-worker", "ww"}
     expected = binaries | {"README.md", "LICENSE", "NOTICE"}
     readme = b""
     if windows:
@@ -54,7 +55,7 @@ def validate_archive(path):
                           for member in members)
             if regular and archive.testzip() is not None:
                 raise ValueError(f"Corrupt ZIP contents: {path.name}")
-            if len(names) == 5 and set(names) == expected and regular:
+            if len(names) == len(expected) and set(names) == expected and regular:
                 if archive.getinfo("README.md").file_size > 1024 * 1024:
                     raise ValueError(f"Oversized release README: {path.name}")
                 readme = archive.read("README.md")
@@ -63,7 +64,7 @@ def validate_archive(path):
             members = archive.getmembers()
             names = [member.name for member in members]
             regular = all(member.isfile() for member in members)
-            if len(names) == 5 and set(names) == expected and regular:
+            if len(names) == len(expected) and set(names) == expected and regular:
                 if archive.getmember("README.md").size > 1024 * 1024:
                     raise ValueError(f"Oversized release README: {path.name}")
                 with archive.extractfile("README.md") as source:
@@ -73,7 +74,7 @@ def validate_archive(path):
         with gzip.open(path, "rb") as compressed:
             for _ in iter(lambda: compressed.read(1024 * 1024), b""):
                 pass
-    if len(names) != 5 or set(names) != expected or not regular:
+    if len(names) != len(expected) or set(names) != expected or not regular:
         raise ValueError(f"Unexpected members or non-regular files in {path.name}")
     versions = re.findall(rb"release version \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*", readme)
     if versions != [version[1].encode("ascii")]:

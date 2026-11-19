@@ -34,6 +34,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(raw)))
+        if control:
+            self.send_header('X-Werk-Protocol-Version', '1.0')
+            self.send_header('X-Werk-Request-Id', 'fixture')
         self.end_headers()
         self.wfile.write(raw)
 
@@ -53,25 +56,27 @@ class Handler(BaseHTTPRequestHandler):
         routes = {
             '/werk/v1/info': {'service': 'werk1112', 'protocol': {'major': 1, 'minor': 0}},
             '/werk/v1/capabilities': {'capabilities': [
+                {'id': 'api.models.list', 'status': 'supported', 'detail': 'fixture', 'operations': ['list']},
+                {'id': 'api.chat.completions', 'status': 'supported', 'detail': 'fixture', 'operations': ['complete', 'stream']},
                 {'id': 'api.chat.reasoning', 'status': 'supported', 'detail': 'fixture', 'operations': ['profile', 'tiers']},
                 {'id': 'api.chat.token_count', 'status': 'supported', 'detail': 'fixture', 'operations': ['count_tokens']}]},
-            '/v1/models': {'data': [{'id': 'fixture'}]},
-            '/v1/capabilities': {'models': []},
-            '/v1/parameters?task=text-generation': {'parameters': []},
+            '/werk/v1/models': {'data': [{'id': 'fixture'}]},
         }
         self.reply(routes.get(self.path, {}), self.path.startswith('/werk/'), 200 if self.path in routes else 404)
 
     def do_POST(self):
+        assert self.headers.get('X-Werk-Protocol-Version') == '1.0'
         data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        if self.path.endswith('/count_tokens'):
+        if self.path == '/werk/v1/chat/count_tokens':
             counts.append(data)
             self.reply({'model': 'fixture', 'input_tokens': 64}, True)
         else:
+            assert self.path == '/werk/v1/chat/completions'
             chats.append(data)
             if len(chats) == 5:
                 generation_started.set()
                 assert release_generation.wait(15), 'Fixture generation was not released'
-            self.reply({'choices': [{'message': {'role': 'assistant', 'content': f'fixture response {len(chats)}'}, 'finish_reason': 'stop'}]})
+            self.reply({'choices': [{'message': {'role': 'assistant', 'content': f'fixture response {len(chats)}'}, 'finish_reason': 'stop'}]}, control=True)
 
 
 binary = Path(sys.argv[1]).resolve()

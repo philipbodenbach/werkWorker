@@ -49,6 +49,10 @@ Options:
           Trusted process resource limits JSON, separate from agent run budgets
       --werk-config <WERK_CONFIG>
           Explicit Werk transport/model configuration JSON; no credentials inside
+      --openai-compatible-config <OPENAI_COMPATIBLE_CONFIG>
+          Explicit third-party OpenAI-compatible configuration, with its own origin and credential
+      --provider-routing-env <PROVIDER_ROUTING_ENV>
+          Host environment variable containing an ordered provider routing and disclosure policy
       --secret-env <SECRET_ENV>
 
       --script <SCRIPT>

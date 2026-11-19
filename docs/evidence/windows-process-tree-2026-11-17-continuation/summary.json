@@ -1,0 +1,151 @@
+{
+  "date": "2026-11-17",
+  "profile_qualified": false,
+  "product_guard": "sandbox_unqualified retained",
+  "cargo": "PASS: fresh schema-4 diagnostic snapshot; actual process.run, exit 0, output, native executable, immediate all-member cleanup",
+  "dns": "UNRESOLVED in product; full restricting thread tokens deny mediated queries, but compatible child startup is not established",
+  "console": "UNRESOLVED: zero-capability LPAC also has two retained live exact-Job members at limit 1",
+  "ci": "Mandatory windows-process-tree job added locally; no hosted result or remote update claimed",
+  "known_dll_probe": "NOT RUN; user explicitly declined all KnownDlls changes; approval request closed",
+  "diagnostic_limitations": "Selected diagnostics and thread-token controls are not the complete mandatory suite or ordinary-host installed-profile acceptance",
+  "files": [
+    {
+      "name": "acceptance-host-abort-result.json",
+      "sha256": "d73c4d980706c9cdcb9b6a6537a060033e800a8e53329b92b79987f9f01ad479"
+    },
+    {
+      "name": "cargo-medium-native.log",
+      "sha256": "e9bbe92655d4c43339bd96f69c3f4297266cea4a354e878b4bd2a09926aa7f79"
+    },
+    {
+      "name": "cargo-medium-result.json",
+      "sha256": "7cf591e500f01628e9a32c7dd4e16c674338796008cb12da875da6dc8fa795c5"
+    },
+    {
+      "name": "cargo-native.log",
+      "sha256": "ba19c71eba36306201907b848a7ca171ba35afbf348a4aaf1f2e99e62c6b8079"
+    },
+    {
+      "name": "cargo-result.json",
+      "sha256": "757613675e75b31794afdba05a5c5150489763083efc3f5953add665e75cb5f6"
+    },
+    {
+      "name": "console-lpac-cpp-live.log",
+      "sha256": "520eae88ab02bc6f46063aecdb6dd34255fc41805f6cb066950947f36de5ac9d"
+    },
+    {
+      "name": "console-lpac-rust-live.log",
+      "sha256": "e14a40c4d036341cc67c6bf1a32d6517ec7c7773ed11db55256c8d1da5f78180"
+    },
+    {
+      "name": "dns-dedicated-token-controls.jsonl",
+      "sha256": "b0eb95ab7052c749358ba32e1b854962c7972f52487db125f7357403100cef99"
+    },
+    {
+      "name": "dns-medium-native-result.json",
+      "sha256": "707ddddb49499f57259b09c1a51a1c2f6616755d09992b1806e871dbf7230f12"
+    },
+    {
+      "name": "dns-medium-native.log",
+      "sha256": "fd79ff69c4a0dc8939f0595b68bcfb49d5a83c969ef78bea9c43c5607f1b635d"
+    },
+    {
+      "name": "dns-token-summary.json",
+      "sha256": "41060f1432cdf542d6e3e4bc6d5b0f9986f8ae85475f9246e3b59468f6e67869"
+    },
+    {
+      "name": "fresh-install-smoke-result.json",
+      "sha256": "26471259b6314d791b32fd410fe719463052025149018125379740c31501e682"
+    },
+    {
+      "name": "installed-profile-refusal-result.json",
+      "sha256": "1b8e13a0639a866e36be74cfb1b97f46bb5978cfa205893f87527014ee84f17c"
+    },
+    {
+      "name": "invalidated-mixed-package.json",
+      "sha256": "55550f47eac73b81edb423489b4b6b8fe5322a64d841064c67cb764c01314d97"
+    },
+    {
+      "name": "isolated-guarded-package-result.json",
+      "sha256": "38cd210f25637f6d6f3129fad86658da78bd5e69d51982e72d110daf5814c6f8"
+    },
+    {
+      "name": "mandatory-medium-suite-result.json",
+      "sha256": "79894e0eb0f6ae363b0f948335cfc9b47799dfd0bfea5377c1757990b9a17a23"
+    },
+    {
+      "name": "mandatory-medium-suite.log",
+      "sha256": "4593747db3d4370453fba6ef50e44956605e554cf6db8c722c23774615ec3520"
+    },
+    {
+      "name": "namespace-build-checks.json",
+      "sha256": "a3ed53e8e223aecc17aea908ce08afec0c6700c71e4ce70a746437bedeee13e6"
+    },
+    {
+      "name": "native-baseline-result.json",
+      "sha256": "880f4350044bf3913181064a1ab19c5f256974785beb4b32a056bd95db22f213"
+    },
+    {
+      "name": "native-control-units-result.json",
+      "sha256": "1a86df151cc575796042d02a7c66a2c83f07b0864062f579dc00682bfdd0eccf"
+    },
+    {
+      "name": "sdk-native-compile-checks.json",
+      "sha256": "5f68ddb9fd1df8ce231705a3a7a558a6af2d3629ce1508396603da836a7c1cc9"
+    },
+    {
+      "name": "windows-runtime-security-units-result.json",
+      "sha256": "cc693500833d2c1e1c7f4db8d303d37eb057c16a757dffd052285fb0bae76639"
+    }
+  ],
+  "native_host_scope": "Both initial elevated diagnostics and later independently verified Medium runs are explicitly identified; no full feature qualification",
+  "source_head": "db8760eb74b32deb3ad0aed75fd68ac346fba56d",
+  "working_branch": "feat/windows-child-process",
+  "git_mutations": "none; no commits, pushes or remote PR writes",
+  "native_baseline": {
+    "passed_top_level": 54,
+    "failed": 0,
+    "intentional_subprocess_fixture_ignores": 5,
+    "host": "Verified same-SID/session/logon Medium token, elevation false; zero inherited bridge handles; confirmed outer-Job drain"
+  },
+  "mandatory_tree_acceptance": {
+    "passed": false,
+    "exit_code": 101,
+    "lifecycle_cases_passed": [
+      "normal",
+      "parent-exit",
+      "timeout",
+      "cancel",
+      "abort",
+      "engine-close"
+    ],
+    "failure": "Three retained, simultaneously live exact-Job members at approved process limit two",
+    "failure_cleanup_confirmed": true
+  },
+  "dns_native": {
+    "passed": false,
+    "sandbox_nonce_arrivals": 1,
+    "host_controls_before_after": "successful",
+    "cleanup": "all four original process handles signaled immediately at tool return"
+  },
+  "product_installation": {
+    "build": "Isolated native debug target; source input hashes unchanged before/after",
+    "smoke_passed": true,
+    "doctor_error": "sandbox_unqualified",
+    "real_installed_process_run": "failed with sandbox_unqualified and executed=false",
+    "qualification_guard_retained": true
+  },
+  "build_provenance_correction": "First shared-target test archives invalidated as product evidence; isolated rebuilt package and actual installed gate verification replace them",
+  "python_checks": {
+    "affected_ci_orchestration": "8 passed",
+    "installer_tests": "5 passed, 7 platform skips",
+    "full_scripts_discovery": "Python 3.10 cannot import pre-existing release-tool tomllib dependency: 109 discovered, 1 import error, 51 skips; not reported as a pass"
+  },
+  "user_constraints": {
+    "date": "2026-11-17",
+    "repository": "F:\\werkWorker",
+    "known_dll_changes": "prohibited by explicit user decision",
+    "git": "user performs commits, pushes and other Git mutations"
+  },
+  "read_only_alternatives_audit": "No new supported drop-in fix established; no system probes or permission changes; DNS and console remain unresolved"
+}

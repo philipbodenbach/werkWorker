@@ -278,6 +278,7 @@ impl ProcessFixture {
             native: NativeSandboxConfig {
                 macos_path_based_workspace: cfg!(target_os = "macos"),
                 macos_system_task_access: cfg!(target_os = "macos"),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -604,6 +605,7 @@ async fn live_only_allocations_cannot_reuse_a_prepared_process_contract() {
         native: NativeSandboxConfig {
             macos_path_based_workspace: cfg!(target_os = "macos"),
             macos_system_task_access: cfg!(target_os = "macos"),
+            ..Default::default()
         },
         ..Default::default()
     };

@@ -1,0 +1,179 @@
+{
+    "scope":  "Fixed System32 module loads through the installed diagnostic CLI on one fresh schema-5 provision. All calls use the ordinary non-elevated host and the zero-capability payload. These results are independent of product qualification.",
+    "provisioning_sha256":  "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d",
+    "host_sha256":  "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+    "runner_sha256":  "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+    "direct_pe_dependencies":  [
+                                   {
+                                       "image":  "provisioned cargo.exe",
+                                       "sha256":  "c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9",
+                                       "dumpbin_dependents_match":  "bcrypt.dll"
+                                   },
+                                   {
+                                       "image":  "native Rust suite probe.exe",
+                                       "sha256":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                       "dumpbin_dependents_match":  "bcrypt.dll"
+                                   }
+                               ],
+    "observations":  [
+                         {
+                             "case":  "fixed-dll-observation",
+                             "raw_result":  "target/tree-ac-1118/loader-focus-f28d33f633084a1eaefe89e36ff77ed2/fixed-dll-observation/observation.json",
+                             "raw_sha256":  "aff0981890a85c760ef52171b41523062bdbf11218f863b68b6599c0249439bc",
+                             "host_integrity_rid":  8192,
+                             "marker_after":  false,
+                             "outer_job_active_after_cleanup":  0,
+                             "calls":  [
+                                           {
+                                               "image":  "probe-user32.exe",
+                                               "image_sha256":  "bbf839e4b0ea7bcb90612fe8234491bab6981cc6314ea65e3453eeb69b42338b",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x000036b7",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-ws2_32.exe",
+                                               "image_sha256":  "757d6d81ee1b6f19b886bb569d70fc6691c86c59083ced41735eea23f827b854",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-vcruntime140.exe",
+                                               "image_sha256":  "7ff25630040fc558ac10c32c36047412ce6b54e86b43a1930c196118ab290fe8",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-advapi32.exe",
+                                               "image_sha256":  "3208e75f4eaf38c677846393ed7beb395492e7aa92c369e8529def4039ef051c",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-bcrypt.exe",
+                                               "image_sha256":  "25570d8c269d1293681f92d0e5ae27a595829b8472429fe2094b4c4f651ae0b2",
+                                               "exit_code":  80,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-bcryptprimitives.exe",
+                                               "image_sha256":  "f8406b0d9de35b04e5e0832170a8ceaea711892b04738347576ea6e7c1ef2112",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-combase.exe",
+                                               "image_sha256":  "02fe29a9e55301dbe9847c1f7f4c3ae1fd4b0f2892b0eda2e6e2fcfc53992718",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x00000002",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-userenv.exe",
+                                               "image_sha256":  "ed19cc440ae3c76b17a4ff41acef254f7e0ab90ae7d4e8db5aeb1a3ddb51b135",
+                                               "exit_code":  0,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_OK LAST_ERROR=0x00000000",
+                                                              "SYSTEM32_MODULE_PATH_CONFIRMED"
+                                                          ]
+                                           }
+                                       ]
+                         },
+                         {
+                             "case":  "fixed-bcrypt-environment",
+                             "raw_result":  "target/tree-ac-1118/loader-focus-f28d33f633084a1eaefe89e36ff77ed2/fixed-bcrypt-environment/observation.json",
+                             "raw_sha256":  "f7849516706c501eaa46447b14a032adb60ff7f7afe1e08b7f82cb3efd48d542",
+                             "host_integrity_rid":  8192,
+                             "marker_after":  false,
+                             "outer_job_active_after_cleanup":  0,
+                             "calls":  [
+                                           {
+                                               "image":  "probe-bcrypt-env0.exe",
+                                               "image_sha256":  "b3a2707734c8cd46aec100c6c19fa8837212fc68f29e35ee5dcb4011252cf51f",
+                                               "exit_code":  80,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "USERPROFILE PRESENT_OTHER_PRESERVED",
+                                                              "SystemDrive ABSENT",
+                                                              "ProgramData ABSENT",
+                                                              "APPDATA ABSENT",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+                                                          ]
+                                           },
+                                           {
+                                               "image":  "probe-bcrypt-env1.exe",
+                                               "image_sha256":  "4dd579c0a0e343f8ef3f41556be3cf17fa5bf1325e9f5dd56ce5b857160a33c9",
+                                               "exit_code":  80,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "USERPROFILE PRESENT_OTHER_PRESERVED",
+                                                              "SystemDrive ADDED",
+                                                              "ProgramData ADDED",
+                                                              "APPDATA ADDED",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+                                                          ]
+                                           }
+                                       ]
+                         },
+                         {
+                             "case":  "fixed-bcrypt-dedicated-profile",
+                             "raw_result":  "target/tree-ac-1118/loader-focus-f28d33f633084a1eaefe89e36ff77ed2/fixed-bcrypt-dedicated-profile/observation.json",
+                             "raw_sha256":  "e99c1ffcdbe02a0c9c6193c03dbd53a41ec70b705b22c9eae6ccd8c31fa7692f",
+                             "host_integrity_rid":  8192,
+                             "marker_after":  false,
+                             "outer_job_active_after_cleanup":  0,
+                             "calls":  [
+                                           {
+                                               "image":  "probe-bcrypt-env2.exe",
+                                               "image_sha256":  "72cd0e97f87926066a5c06ce81d9d61044727300673a2678430e776b7ffa16da",
+                                               "exit_code":  80,
+                                               "stdout":  [
+                                                              "ENTRY",
+                                                              "USERPROFILE REPLACED_DEDICATED_PROFILE_VERIFIED",
+                                                              "SystemDrive ADDED",
+                                                              "ProgramData ADDED",
+                                                              "APPDATA ADDED",
+                                                              "BEFORE_LOAD",
+                                                              "AFTER_LOAD_FAILED LAST_ERROR=0x0000045a"
+                                                          ]
+                                           }
+                                       ]
+                         }
+                     ]
+}

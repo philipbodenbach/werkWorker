@@ -102,7 +102,7 @@ async fn continuous_reviews_and_explicit_deadlines_keep_the_shared_provider_usab
     for (streaming, before_headers) in [(true, true), (true, false), (false, true)] {
         let server = Server::with_chat_delays(
             |request| {
-                if request.path != "/v1/chat/completions" {
+                if request.path != "/werk/v1/chat/completions" {
                     return discovery(request);
                 }
                 let messages = request.body["messages"].as_array().unwrap();
@@ -272,7 +272,7 @@ async fn expired_request_cleanup_remains_bounded_and_uncertain_results_stay_bloc
     for terminal in [false, true] {
         let server = Server::with_chat_delays(
             move |r| {
-                if r.path != "/v1/chat/completions" {
+                if r.path != "/werk/v1/chat/completions" {
                     return discovery(r);
                 }
                 reply(
@@ -344,7 +344,7 @@ async fn expired_request_cleanup_remains_bounded_and_uncertain_results_stay_bloc
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|r| r.path == "/v1/chat/completions")
+                .filter(|r| r.path == "/werk/v1/chat/completions")
                 .count(),
             1
         );
@@ -468,7 +468,7 @@ async fn deadline_while_waiting_for_capacity_never_dispatches_or_starts_cleanup(
         {
             let dispatched = dispatched.clone();
             move |request| {
-                if request.path != "/v1/chat/completions" {
+                if request.path != "/werk/v1/chat/completions" {
                     return discovery(request);
                 }
                 dispatched.notify_one();
@@ -549,7 +549,7 @@ async fn deadline_while_waiting_for_capacity_never_dispatches_or_starts_cleanup(
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r.path == "/v1/chat/completions")
+            .filter(|r| r.path == "/werk/v1/chat/completions")
             .count(),
         1
     );

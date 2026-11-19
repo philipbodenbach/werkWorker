@@ -84,8 +84,10 @@ ww sandbox doctor
 
 The demo is explicitly offline. A missing model connection never falls back to
 scripted replies. Linux process tools require user namespaces and Bubblewrap.
-Windows process tools run in single-process mode and require an explicitly
-provisioned local NTFS workspace;
+Windows process tools default to single-process mode and require an explicitly
+provisioned local NTFS workspace. A separate, default-disabled
+[Windows coding process-tree profile](docs/windows-process-tree-provisioning.md)
+requires explicit administrator provisioning and native acceptance;
 macOS has an opt-in Seatbelt single-process mode that requires explicit acceptance
 of path-based workspaces and an authenticated system task-access port exception.
 macOS currently supports fresh live sessions; restoring sessions and saving

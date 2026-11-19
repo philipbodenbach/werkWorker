@@ -63,12 +63,12 @@ class Handler(BaseHTTPRequestHandler):
         routes = {
             '/werk/v1/info': {'service': 'werk1112', 'protocol': {'major': 1, 'minor': 0}, 'active_backend': 'fixture'},
             '/werk/v1/capabilities': {'capabilities': [
+                {'id': 'api.models.list', 'status': 'supported', 'detail': 'fixture', 'operations': ['list']},
+                {'id': 'api.chat.completions', 'status': 'supported', 'detail': 'fixture', 'operations': ['complete', 'stream']},
                 {'id':'api.chat.reasoning','status':'supported','detail':'fixture','operations':['profile','tiers']},
                 {'id': 'runtime.state.persistence', 'status': 'unsupported',
                  'detail': 'fixture backend does not expose this operation'}]},
-            '/v1/capabilities': {'models': [{'id': 'fixture-model', 'available_tasks': ['text_generation']}]},
-            '/v1/models': {'data': [{'id': 'fixture-model'}]},
-            '/v1/parameters?task=text-generation': {'parameters': []},
+            '/werk/v1/models': {'data': [{'id': 'fixture-model'}]},
         }
         if self.path in routes:
             self.respond(routes[self.path], control=self.path.startswith('/werk/'))
@@ -76,6 +76,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({}, 404)
 
     def do_POST(self):
+        assert self.headers.get('X-Werk-Protocol-Version') == '1.0'
+        assert self.path == '/werk/v1/chat/completions'
         assert self.headers.get('Authorization') == 'Bearer ' + KEY
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         requests.append(body)
@@ -89,10 +91,10 @@ class Handler(BaseHTTPRequestHandler):
                    and source.get('text') == 'fixture project instruction'
                    for source in sources) == 1
         if not any(m['role'] == 'tool' for m in body['messages']):
-            self.respond({'choices': [{'message': {'role': 'assistant', 'content': 'Read approved fixture', 'tool_calls': [{'id': 'read1', 'type': 'function', 'function': {'name': 'files.read', 'arguments': json.dumps({'path': 'notes.md'})}}]}, 'finish_reason': 'tool_calls'}]})
+            self.respond({'choices': [{'message': {'role': 'assistant', 'content': 'Read approved fixture', 'tool_calls': [{'id': 'read1', 'type': 'function', 'function': {'name': 'files.read', 'arguments': json.dumps({'path': 'notes.md'})}}]}, 'finish_reason': 'tool_calls'}]}, control=True)
             return
         assert 'notes fixture content' in json.dumps(body)
-        self.respond({'choices': [{'message': {'role': 'assistant', 'content': 'Setup connected successfully'}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 100, 'completion_tokens': 4}})
+        self.respond({'choices': [{'message': {'role': 'assistant', 'content': 'Setup connected successfully'}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 100, 'completion_tokens': 4}}, control=True)
 
 binary = Path(sys.argv[1]).resolve()
 with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
@@ -505,7 +507,7 @@ with tempfile.TemporaryDirectory(prefix='ww-setup-test-') as temp:
         assert len(remembered) == 1
         assert all(KEY not in p.read_text() and p.stat().st_mode & 0o777 == 0o600 for p in remembered)
         assert '/v1/capabilities' not in discovery_requests
-        assert not any(path.startswith('/v1/parameters') for path in discovery_requests)
+        assert all(path.startswith('/werk/v1/') for path in discovery_requests)
         print('PASS: fast discovery omits global backend probes; 20 immediate chat/setup/connection transitions retain keyboard input.')
         print('PASS: remembered connection and capabilities, workspace-filtered sessions, same-session follow-up with model history, --session without run-id, interrupted approval recovery, retry/connect-new after failure; no replay or leaked credentials.')
         print('PASS: PTY setup, reasoning selection and actual request forwarding, global/project persistence and explicit server default on reconnect, masked key paste, auth retry, budgets, authenticated chat and approval, saved configs (0600), project rules and permission separation, environment reference and terminal restoration.')

@@ -1,0 +1,73 @@
+{
+  "source_commit": "5a9ddff6a68bb5fb71012946984fd2f85390b91d",
+  "product_profile": "release",
+  "qualification": "failed",
+  "host": "native Windows x64 MSVC",
+  "suite_target": "new directory below this run's evidence root",
+  "local_run": "F:\\werkWorker\\target\\tree-5a9ddff-1118-r1",
+  "zip_sha256": "0cc0673d6ddf29914e1b8ffc9e9466903c1d9d4e43addd1cdab47f9c9b736b34",
+  "built_archived_installed_sha256": {
+    "werk-worker.exe": "3d7d01999e0380aea188d05d1a5c6bc9d6e5302736b019769b7893e09158636a",
+    "ww.exe": "1f4c2038a5489e95c1a27fae27f71433738f520e0fc05d4606810e3948aa0af7",
+    "ww-windows-runner.exe": "c9dc09429bdb860c59542e41727bea6ab55127bb51f04400225c65cda0382e6e",
+    "ww-windows-provision.exe": "85ab43c6b3c0fd437bd9ed3e5a8f0d13d83c745051100b1039ef17cec0189e36"
+  },
+  "installation_helpers": [
+    {
+      "name": "ww-windows-provision.exe",
+      "exit_code": 2,
+      "sha256": "85ab43c6b3c0fd437bd9ed3e5a8f0d13d83c745051100b1039ef17cec0189e36"
+    },
+    {
+      "name": "ww-windows-runner.exe",
+      "exit_code": 125,
+      "sha256": "c9dc09429bdb860c59542e41727bea6ab55127bb51f04400225c65cda0382e6e"
+    }
+  ],
+  "suite": {
+    "cargo_exit": 101,
+    "result": "2 passed, 1 failed, 5 fixture/diagnostic tests ignored",
+    "error": "sandbox_unqualified",
+    "missing_markers": [
+      "NATIVE_TREE_LIFECYCLE_OK normal",
+      "NATIVE_TREE_LIFECYCLE_OK parent-exit",
+      "NATIVE_TREE_LIFECYCLE_OK timeout",
+      "NATIVE_TREE_LIFECYCLE_OK cancel",
+      "NATIVE_TREE_LIFECYCLE_OK abort",
+      "NATIVE_TREE_LIFECYCLE_OK engine-close",
+      "NATIVE_TREE_CONSOLE_BUDGET_OK console-alloc",
+      "NATIVE_TREE_CONSOLE_BUDGET_OK console-child",
+      "NATIVE_TREE_UI_BOUNDARIES_OK",
+      "NATIVE_TREE_DNS_BROKER_DENIED_OK",
+      "NATIVE_TREE_THREAD_IDENTITY_NETWORK_MATRIX_OK",
+      "NATIVE_TREE_HOST_LOGON_SID_BOUNDARY_OK",
+      "NATIVE_TREE_FILE_REGISTRY_NETWORK_IPC_HANDLES_OK",
+      "NATIVE_TREE_INBOUND_LOOPBACK_OK",
+      "NATIVE_TREE_RESOURCE_OK memory",
+      "NATIVE_TREE_RESOURCE_OK cpu",
+      "NATIVE_TREE_BOUNDED_OUTPUT_AND_DRAIN_OK",
+      "NATIVE_TREE_OFFLINE_CARGO_OK",
+      "NATIVE_TREE_CRASH_WORKSPACE_BARRIER_OK",
+      "NATIVE_TREE_HOST_DEATH_AND_RESTART_DENIAL_OK"
+    ],
+    "ordinary_host_integrity_rid": 8192,
+    "outer_job_cleanup_confirmed": true
+  },
+  "installed_start": {
+    "cli_exit": 0,
+    "tool_status": "failed",
+    "tool_error": "sandbox_unqualified",
+    "executed": false,
+    "windows_artifacts": [],
+    "provision_sha256": "e7ea9647f7b3ab1251e1c78cc1280bf44dbe44ca5e79ee1a25c20e1cc41c4497",
+    "ordinary_host_integrity_rid": 8192,
+    "outer_job_cleanup_confirmed": true
+  },
+  "local_evidence_sha256": {
+    "installation/smoke-result.json": "c6a12a22f2111396264fedda369f11aaec0373b32fcdc8f97068cb400381e6ee",
+    "suite/mandatory-suite-result.json": "50e4d57905ee96dd4cd4ee0e4db69e9e05a3701a27264c0cefc4cd80210f7d38",
+    "suite/mandatory-suite.log": "ebe92030716bc8671a5b5ae585a9eb912082231e8d35f002186129c8d35d400a",
+    "installed-start/installed-start-result.json": "6b45851b8cd676e0eb1190db4038252eb85105919baa1dfe33ccbc7258742e1e",
+    "installed-start/installed-start.log": "de74706c31c3d7b027a3cead6e83445b8e68a0dc684c45b9ffd2a96c5142af43"
+  }
+}

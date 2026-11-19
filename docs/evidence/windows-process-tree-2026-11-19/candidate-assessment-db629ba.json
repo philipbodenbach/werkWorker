@@ -1,0 +1,423 @@
+{
+  "product_status": "NOT QUALIFIED",
+  "qualified_candidate_sha256": null,
+  "historical_111dd_restoration": "unconfirmed",
+  "decision": "Default-desktop construction refuted; corrected explicit private placement verified for the measured root. No post-repair overrun or unauthorized persistent host mutation is established on the corrected candidate. Product objective remains open.",
+  "observed_utc": "2026-11-19T12:05:45.997544+00:00",
+  "source": {
+    "worker_branch": "feat/windows-child-process",
+    "worker_head": "db629ba4726d825d92caf58e14a28bb6a1e04678",
+    "parent": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+    "initial_worker_worktree": "clean; previous local changes are now part of db629ba",
+    "werk1112_branch": "feat/expand-werkProtocol",
+    "werk1112_head": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+    "werk1112_worktree": "clean",
+    "runtime_diff_vs_head": false,
+    "operational_patch_sha256": "4754992757aea3fd55e28276815a8433c50b48fc0ea3ffea2be1b0d358b26db3",
+    "operational_worktree_files": {
+      ".github/workflows/ci.yml": "1201545ab4290498e257d68246dc524b7bf66b2a46b62a49257b50b9ee48f4fd",
+      "scripts/smoke-install.py": "0e4bf30f023316ef10324b7a4e9e59c5051d8dc7fea12b0a67aeedeb1c549fa0",
+      "scripts/test-windows-process-tree.ps1": "5569c28789efbbd098957e18896ac602cfb0ed3e6e35ca117bc8c3eba3093b34",
+      "scripts/tests/test_install.py": "f2d4a4b58d494d33b6c3df7730d43d28d4bed66c23efa9b6da75b4d8e6c1c84b",
+      "scripts/validate-windows-process-tree.py": "b7dd00eb810c007e9f5eb3d92a94e0a7898a92f036f29653b327ceac906abd0e",
+      "scripts/tests/test_windows_tree_preflight.py": "57dd32f05f1f4d2c083fc7cfcc2089a5e1f098b9aaa778d38cbcb19a656eed51"
+    }
+  },
+  "actual_execution": {
+    "cargo_and_ui": "CreateProcessSecurityEnvironment / PROC_THREAD_ATTRIBUTE_SECURITY_ENVIRONMENT / CreateProcessW; fixed diagnostic processes; no product executor invocation",
+    "installed_package_control": "normal CLI smoke; no process.run qualification",
+    "product_admission": "sandbox_unqualified",
+    "mxc": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+    "schema_sha256": "736cacef37a6c97a0cb97c7132da462a3b51811fca8f1e4076cac51085dfa516",
+    "os": "11 25H2 x64 26200.9974",
+    "win32k_policy_change": "Permitted Win32k opens the corresponding kernel attack surface. Private station/desktop and Job UI restrictions do not reestablish the disabled kernel mitigation."
+  },
+  "preflight": {
+    "utc": "2026-11-19T11:56:54.420350+00:00",
+    "worker_head": "db629ba4726d825d92caf58e14a28bb6a1e04678",
+    "source_sha256": {
+      "scripts/test-windows-process-tree.ps1": "5569c28789efbbd098957e18896ac602cfb0ed3e6e35ca117bc8c3eba3093b34",
+      "scripts/validate-windows-process-tree.py": "b7dd00eb810c007e9f5eb3d92a94e0a7898a92f036f29653b327ceac906abd0e",
+      "scripts/tests/test_windows_tree_preflight.py": "57dd32f05f1f4d2c083fc7cfcc2089a5e1f098b9aaa778d38cbcb19a656eed51"
+    },
+    "powerShell_cli": "scripts/test-windows-process-tree.ps1 -PreflightOnly -RequirePsec -EvidenceRoot <new evidence directory>",
+    "capabilities": {
+      "supports_required_policy": true,
+      "module": "C:\\WINDOWS\\System32\\processmodel.dll",
+      "module_sha256": "ed703d26d7f3c124d11291220744be460d2574ddc163ad5b74ee2a3367fda462",
+      "features_hresult": 0,
+      "version_hresult": 0,
+      "v1_minor": 1,
+      "flags": 15
+    },
+    "windows_build": 26200,
+    "ubr": 9974,
+    "workstation": true,
+    "platform": "win-amd64",
+    "native_machine": 34404,
+    "process_machine": 0,
+    "host": {
+      "mode": "linked_medium_bridge",
+      "launcher_elevated": true,
+      "execution_elevated": false,
+      "execution_integrity_rid": 8192,
+      "same_sid": true,
+      "same_session": true,
+      "same_execution_logon": true,
+      "verified_before_resume": true,
+      "outer_cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "host_receipt": {
+      "path": "updated-host/preflight/preflight-result.json",
+      "sha256": "094b85dab9e84a630c3120b1461a77b5619d9cc8e6190648372e987c711f76f9"
+    },
+    "negative": {
+      "case": "A non-elevated actual host invokes full provisioning with a nonexistent archive. The administrator gate must stop it before using the archive or any privileged operation.",
+      "outer_bridge_exit": 1,
+      "status": "INFRASTRUCTURE_BLOCKED",
+      "qualification": false,
+      "suite_setup_exit": null,
+      "archive_sha256": null,
+      "receipt_path": "updated-medium-provisioning/qualification-result.json",
+      "receipt_sha256": "326f0da35a39f87cc3da98cf2fcabecc0dfa4c9ce11ebf69fe481c16b50ddb2d",
+      "preparation_status": "NOT_RUN"
+    },
+    "unit_tests": {
+      "command": [
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_windows_tree_preflight.py",
+        "-v"
+      ],
+      "exit": 0,
+      "passed": 3,
+      "log_sha256": "e2a44eb2b82659f98f815ba32ece0041bcb68f4d8b1738a38171723b20be9827",
+      "log": "updated-preflight-tests.log"
+    },
+    "scope": "Fixed host infrastructure probe only. No release, package, candidate payload, or PSEC policy enforcement verdict.",
+    "preparation_failure": {
+      "command": "scripts/test-windows-process-tree.ps1 -RequirePsec -EvidenceRoot <fresh-evidence> -BindAddress 127.0.0.1 -Archive <fresh-evidence>/absent-archive.zip",
+      "input": "Archive deliberately absent; no archive build requested.",
+      "ordinary_host_preflight_status": "READY",
+      "preflight_path": "elevated-missing-archive/preflight/preflight-result.json",
+      "preflight_sha256": "c0082f5422459a50213304094b393a48232185763edc3944afc4716321bc9e70",
+      "launcher_elevated": true,
+      "probed_execution_elevated": false,
+      "same_user": true,
+      "qualification": false,
+      "status": "NOT_RUN",
+      "stage": "archive_verification",
+      "stage_status": "FAIL",
+      "error_id": "PathNotFound,Microsoft.PowerShell.Commands.ResolvePathCommand",
+      "error_names_missing_archive": true,
+      "phase_exits": {
+        "suite_setup_exit": null,
+        "mandatory_suite_exit": null,
+        "installed_setup_exit": null,
+        "installed_start_exit": null
+      },
+      "archive_sha256": null,
+      "evidence_entries": [
+        "preflight",
+        "qualification-result.json"
+      ],
+      "receipt_path": "elevated-missing-archive/qualification-result.json",
+      "receipt_sha256": "bfd1fd09f83aa586b76c4599471a47a630f1f3286ba3c6d2d8e2d93f6b364cbb"
+    }
+  },
+  "package_provenance": {
+    "source_head": "db629ba4726d825d92caf58e14a28bb6a1e04678",
+    "purpose": "New smoke verifier against a retained ordinary product package. No candidate or installed process-tree acceptance.",
+    "archive_sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+    "utc_start": "2026-11-19T11:56:30.777116+00:00",
+    "command": [
+      "python.exe",
+      "-B",
+      "F:\\werkWorker\\scripts\\smoke-install.py",
+      "F:\\werkWorker\\target\\sovereign-job-0d61dcb-02\\built-package\\werkWorker-v0.3.3-windows-x86_64.zip",
+      "--retain",
+      "F:\\werkWorker\\target\\candidate-assessment-db629ba-20261119\\package-provenance\\installation",
+      "--windows-build-bin",
+      "F:\\werkWorker\\target\\sovereign-job-0d61dcb-02\\product-build\\x86_64-pc-windows-msvc\\release"
+    ],
+    "exit": 0,
+    "utc_end": "2026-11-19T11:56:38.386483+00:00",
+    "execution": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "appcontainer": false
+    },
+    "outer_cleanup": {
+      "active_before_cleanup": 1,
+      "active_after_cleanup": 0,
+      "confirmed": true,
+      "elapsed_ms": 0
+    },
+    "log_sha256": "d5d5f1a3a56828f3283601fe5e541c62b36d99fab240c1fcef76f1b06bb6c8b6",
+    "verified_exes": {
+      "werk-worker.exe": {
+        "archive": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c",
+        "installed": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c",
+        "build": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c",
+        "after_smoke": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c"
+      },
+      "ww.exe": {
+        "archive": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+        "installed": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+        "build": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+        "after_smoke": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93"
+      },
+      "ww-windows-provision.exe": {
+        "archive": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86",
+        "installed": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86",
+        "build": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86",
+        "after_smoke": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86"
+      },
+      "ww-windows-runner.exe": {
+        "archive": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e",
+        "installed": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e",
+        "build": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e",
+        "after_smoke": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e"
+      }
+    },
+    "raw_receipt_sha256": "642c2db4bee4956632825608f4a5d64259ac900da74c5274bdbc270b11217a98"
+  },
+  "gates": {
+    "environment": {
+      "status": "PASS",
+      "evidence": "preflight",
+      "subject": "Actual Windows 11 host and a verified genuine ordinary user were available."
+    },
+    "cargo_start_compatibility": {
+      "status": "PASS",
+      "evidence": "cargo-psec-win32k-db629ba.json",
+      "subject": "Exact stock executable and --version. Only decoded Win32k field differed."
+    },
+    "direct_psec_default_desktop": {
+      "status": "FAIL",
+      "evidence": {
+        "root_pid": 86088,
+        "flags": "0x8040c",
+        "suspended_appcontainer": true,
+        "payload_elevated": false,
+        "sampled_win32k_deny_before_resume": false,
+        "previous_external_ui_mask": 0,
+        "external_set_before_resume": true,
+        "external_and_immediate_job_ui": 255,
+        "external_and_immediate_limit": 2,
+        "job_limit_flags": "0x220c",
+        "desktop": "Default",
+        "window_station": "WinSta0",
+        "exit": 0,
+        "retained_root_signaled": true,
+        "active_after_cleanup": 0
+      },
+      "subject": "The default launch assigned the fixed payload to WinSta0 and Default."
+    },
+    "explicit_private_root_desktop_and_public_job_ui": {
+      "status": "PASS",
+      "evidence": "psec-private-ui-db629ba.json",
+      "subject": "One fixed root observed the same assigned private names, public Job UI mask, and configured limit as the host. Confirmed cleanup."
+    },
+    "persistent_file_and_registry_host_write_boundary": {
+      "status": "NOT_RUN",
+      "subject": "No live prohibited host modifications attempted on this configuration. No proven tree-wide host registry boundary. Workspace/temp/private-hive positive results on previous configurations do not supply this result."
+    },
+    "exhausted_budget_allocconsole_and_console_child": {
+      "status": "NOT_RUN",
+      "subject": "No current incompatible third-member launch attempted. Historical three live at limit two was a different policy. Current positive root measured an active limit, not the two console scenarios."
+    },
+    "descendants_ui_handles_authority_network_and_cleanup": {
+      "status": "NOT_RUN",
+      "subject": "No current three-generation data, bilateral DNS witness, direct/mediated TCP/UDP/IPv4/IPv6, all-process handle barriers or broker/host-death and lease checks on an installed candidate."
+    },
+    "installed_native_process_run_cargo": {
+      "status": "NOT_RUN",
+      "executed": null,
+      "cargo_exit": null,
+      "new_test_artifact": null,
+      "subject": "No PSEC product executor selected. Existing admission returns sandbox_unqualified. No general activation or silent fallback."
+    },
+    "mandatory_native_suite_and_installed_candidate": {
+      "status": "NOT_RUN",
+      "candidate_package": null,
+      "technical_qualification": false,
+      "release": false
+    },
+    "package_identity_regression": {
+      "status": "PASS",
+      "scope": "Fresh smoke installation of a retained ordinary product package, independently matching 4 EXEs before and after smoke, also against the retained build."
+    }
+  },
+  "regressions": [
+    {
+      "tag": "preflight",
+      "utc_start": "2026-11-19T12:00:58.855587+00:00",
+      "command": [
+        "python",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_windows_tree_preflight.py",
+        "-v"
+      ],
+      "summary": [
+        "Ran 3 tests in 0.020s",
+        "OK"
+      ],
+      "exit": 0,
+      "log": "preflight.log",
+      "sha256": "2973b8aef992bde0f12c549add9f47900d7cba8295025f7e4a09764d1298a98b"
+    },
+    {
+      "tag": "installer",
+      "utc_start": "2026-11-19T12:00:59.318829+00:00",
+      "command": [
+        "python",
+        "-B",
+        "-m",
+        "unittest",
+        "-v",
+        "scripts.tests.test_install.WindowsInstallTests.test_all_four_commands_and_existing_state_preserved",
+        "scripts.tests.test_install.WindowsInstallTests.test_smoke_matches_product_build_before_running_installed_commands"
+      ],
+      "summary": [
+        "Ran 2 tests in 5.290s",
+        "OK"
+      ],
+      "exit": 0,
+      "log": "installer.log",
+      "sha256": "b13fe9042281c43e10d3db79bdd737d47ca6436a0454d4059e7ff4ec08af6aef"
+    },
+    {
+      "tag": "installer-optimized",
+      "utc_start": "2026-11-19T12:01:04.953609+00:00",
+      "command": [
+        "python",
+        "-O",
+        "-B",
+        "-m",
+        "unittest",
+        "-v",
+        "scripts.tests.test_install.WindowsInstallTests.test_smoke_matches_product_build_before_running_installed_commands"
+      ],
+      "summary": [
+        "Ran 1 test in 3.482s",
+        "OK"
+      ],
+      "exit": 0,
+      "log": "installer-optimized.log",
+      "sha256": "fc89f4300cbe73391591c9b30eb7a5a2acd041b52f3f85664e3cfc9d3bdfcd45"
+    },
+    {
+      "tag": "ci",
+      "utc_start": "2026-11-19T12:01:09.275274+00:00",
+      "command": [
+        "python",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_native_ci_workflow.py",
+        "-v"
+      ],
+      "summary": [
+        "Ran 8 tests in 0.054s",
+        "OK"
+      ],
+      "exit": 0,
+      "log": "ci.log",
+      "sha256": "1af9491f5d0a0db6d56cf598c2391c3edad17f4d614ba608bd060a7be7894f3e"
+    },
+    {
+      "tag": "parsers",
+      "utc_start": "2026-11-19T12:01:09.672524+00:00",
+      "command": [
+        "python",
+        "-B",
+        "-c",
+        "import ast,pathlib,yaml; p=pathlib.Path; list(map(lambda f: ast.parse(p(f).read_text(encoding='utf-8-sig')), ['scripts/validate-windows-process-tree.py','scripts/smoke-install.py','scripts/tests/test_install.py','scripts/tests/test_windows_tree_preflight.py'])); w=yaml.safe_load(p('.github/workflows/ci.yml').read_text()); assert 'werkworker-windows11-psec-x64' in w['jobs']['windows_process_tree']['runs-on']"
+      ],
+      "summary": [],
+      "exit": 0,
+      "log": "parsers.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "tag": "powershell-parser",
+      "utc_start": "2026-11-19T12:01:09.919483+00:00",
+      "command": [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$t=$null; $e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/test-windows-process-tree.ps1'),[ref]$t,[ref]$e); if ($e.Count) {throw $e[0]}"
+      ],
+      "summary": [],
+      "exit": 0,
+      "log": "powershell-parser.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "tag": "whitespace",
+      "utc_start": "2026-11-19T12:01:10.541021+00:00",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "summary": [],
+      "exit": 0,
+      "log": "whitespace.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "next_design_decision": "Select a supported kernel-enforced Registry namespace or write boundary covering the entire native tree under permissive ACLs, together with admission covering system console helpers. A process-isolated Windows container has a separate Windows image, Registry and desktop/user model and needs independent budget qualification.",
+  "local_container_inventory": {
+    "query": "Get-WindowsOptionalFeature -Online -FeatureName Containers; read-only Test-Path and enumeration of the three standard stores",
+    "feature_enabled": true,
+    "standard_baseimages_subdirectories": 0,
+    "docker_windowsfilter_present": false,
+    "containerd_default_windows_snapshots_present": false,
+    "scope": "No image search outside these defaults. No backend switch or image installation."
+  },
+  "protocol": {
+    "changed": false,
+    "actual_new_two_exe_inference_runs": 0
+  },
+  "archive_members": {
+    "cargo/version-source.zip": "e05edbd357e8a68cebfa8ada7607c3e1622087b3ede906e666b91a6dfee74cf2",
+    "cargo/version-raw.zip": "1222179f0989b79e827e8d3bc6ccb8148f0e16bfffc6d5f6e093b5484bd98dd1",
+    "ui/default-source-and-raw.zip": "289ff87396bce19742d8638ce31723e33a738ff24e50f673a85bb522909de6cc",
+    "ui/private-source-and-raw.zip": "6c14326941c2fc5e0beb41cf02c3199e198f57ee7755e975c37e254c7df65ef0"
+  },
+  "review_sources": {
+    "cargo-psec-win32k-db629ba.json": "ef6896c2591d09287531b074216785519536fb52a9c459e37462033d7c0d4664",
+    "cargo-psec-win32k-db629ba.log": "1e01157bafbb0a3357f0acc3745a18b2af518cda15c50719f29bf3304bc22644",
+    "psec-private-ui-db629ba.json": "64b59f6f0bda195effae88212fea3b0e5500556d429966312c196ea213384d82",
+    "psec-private-ui-db629ba.log": "60623a83008a39f42a46069b96ab5c6252935f59199ec60071dc433f30bfa25e",
+    "native-qualification-86b9694.json": "2f70b6a49b75a6a0246bd657db37690952f40b36abd218b2076c5ec8b473ef51"
+  },
+  "private_ui_transcript": {
+    "file": "psec-private-ui-db629ba.log",
+    "conversion": "CR characters removed for review; original native.log retained in private-source-and-raw.zip",
+    "raw_sha256": "9f84be5776666c4eb5cb9a9d8f4463af21d65253e55811849d8e6fea8f2d5cfb"
+  }
+}

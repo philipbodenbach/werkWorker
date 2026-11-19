@@ -1,0 +1,21 @@
+{
+  "archive": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-guarded-debug-package\\werkWorker-v0.3.3-windows-x86_64.zip",
+  "install_dir": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-guarded-installation\\bin",
+  "version": "0.3.3",
+  "commands": [
+    "werk-worker",
+    "ww"
+  ],
+  "helpers": [
+    {
+      "name": "ww-windows-provision.exe",
+      "exit_code": 2,
+      "sha256": "5c17d18ef71d021d99d72467b26614196cce70ea4bef9dd86f7d59e782d18396"
+    },
+    {
+      "name": "ww-windows-runner.exe",
+      "exit_code": 125,
+      "sha256": "bd57248dba656102f9f0a1a7ed848dab03b3c9ffb6bd045b20da1a392af2e9fb"
+    }
+  ]
+}

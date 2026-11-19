@@ -1,0 +1,605 @@
+{
+  "record_version": 1,
+  "observation_utc": "2026-11-18T18:12:02.720329+00:00",
+  "outcome": "B",
+  "candidate": "Windows native BaseContainer / CreateProcessSecurityEnvironment",
+  "qualified": false,
+  "product_admission": "sandbox_unqualified",
+  "integration_changes": [],
+  "release_suite_rerun": false,
+  "full_tree_gate_run": false,
+  "worker": {
+    "head": "87a999ac39ad3236e13700a55bf05d27f07c44f4",
+    "tree": "7a6117d1ba3fb1ba4c949c2fdf98fb006cc1fa83",
+    "branch": "feat/windows-child-process",
+    "baseline": "2ae77b11e80e065112195094b126436e987e374a",
+    "original_sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+    "original_verified_installed": {
+      "ww.exe": "7e1f10b21bc179a0754dd3ff785ea654e9d5b288d940d1bf0bcff133abedab93",
+      "werk-worker.exe": "97d452db65651627a0aae0997456d3e28570ca5ff57d23834f819aeaac671b6c",
+      "ww-windows-runner.exe": "00ab6c90a7f1cc78e62d9b3321359e7512bfe63fc15f2cc9cb03a994e2baf48e",
+      "ww-windows-provision.exe": "acda3c09ae0af6f6d061a8b59530254755cbfeb9d3006924783f047e0e632f86"
+    },
+    "matching_baseline_inputs": 139,
+    "baseline_record": {
+      "path": "docs/evidence/windows-process-tree-2026-11-18/native-write-boundary-2ae77b1.json",
+      "sha256": "8172e17013aa1bd5284572d6f6f601f1458352957c878135b671ed283406e113"
+    },
+    "previous_product_acceptance": {
+      "archive_sha256": "e3475a9f219be943f703edb8b24ccf2300bcec26bd015953c69453fec95564dc",
+      "suite_setup_exit": 0,
+      "mandatory_suite_exit": 1,
+      "installed_setup_exit": 0,
+      "installed_start_exit": 1,
+      "qualified": false
+    },
+    "historic_111dd": "unconfirmed",
+    "admission_source": {
+      "path": "src/runtime/windows_process_tree.rs",
+      "sha256": "03ab83326fac1b3e8a4cb588b0930986b6ed9653e55859321ce8769a31af6b30"
+    },
+    "original_package_identity_check": "Archive and all four installed binaries rehashed. No new build or product invocation.",
+    "source_input_manifest": {
+      "path": "target/sovereign-job-0d61dcb-02/source-before.json",
+      "sha256": "259c9f60ef9b4943273f59c17630d6558218a075a41a83b59739ad730e605390"
+    },
+    "previous_product_suite": {
+      "path": "docs/evidence/windows-process-tree-2026-11-18/sovereign-native-acceptance.json",
+      "sha256": "598a36012cfd7736075f0d33090a234d8c91db5425a62fa64cb6a5672bdc45de"
+    }
+  },
+  "source": {
+    "repository": "https://github.com/microsoft/mxc",
+    "branch": "main",
+    "commit": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+    "tree": "10af6b91ba97b647834034ef0f0e4737b3275bc0",
+    "commit_time": "2026-11-17T14:51:28-08:00",
+    "reviewed_files": {
+      "docs/development/guides/process-container-adding-os-features.md": {
+        "git_blob": "3f28442008b4ef84b1be506533f5e648245ed622",
+        "canonical_sha256": "ddc01085d6f57a50bf9b051aedc6e102695db700cdb44ca4f47054d763ecd156"
+      },
+      "docs/backends/process-container/os-version-support.md": {
+        "git_blob": "59fd05f87f222effd17d82aa7516cccfc4bcd05c",
+        "canonical_sha256": "90d8bc85c885d60f751699d48a1cbac79a838daa8d17396c3c7dc1165ffba6d3"
+      },
+      "docs/backends/process-container/filesystem.md": {
+        "git_blob": "b3caf1380b04e5bed33fcf160c70a833b4ee6084",
+        "canonical_sha256": "de3675188325a7b7b1de120ccc8acad9fc93407589d9f60f428f58aa12786698"
+      },
+      "docs/schema.md": {
+        "git_blob": "427d223fde5e0721fa8d25d1573aff2484506358",
+        "canonical_sha256": "937199ee992eb8aa88a478f79ddddf88ff5c393c7693166c3d2ad27cfde3a795"
+      },
+      "external/windows-sdk/ProcessSecurityEnvironment.fbs": {
+        "git_blob": "ccace182ce2ca53bbda760c038f1c6af0bfb1f7f",
+        "canonical_sha256": "736cacef37a6c97a0cb97c7132da462a3b51811fca8f1e4076cac51085dfa516"
+      },
+      "src/mxc-sdk/src/backends/process_container/common/base_container_runner.rs": {
+        "git_blob": "b60dbe81e459f36b579fc6c586dd47fe22888475",
+        "canonical_sha256": "ae729bf01eb0324edfa66673b758bf4a9a158e2669a10177196588a70df4c256"
+      },
+      "src/mxc-sdk/src/backends/process_container/common/base_container_helpers.rs": {
+        "git_blob": "9550eaf8a80d6274986f3087f1d27236fbe4d366",
+        "canonical_sha256": "ed1f77ab66ce6975ab4692f622681c385660532189cfbf8885781413af836c3c"
+      },
+      "src/mxc-sdk/src/backends/process_container/common/secenv.rs": {
+        "git_blob": "4d76514088e0de1c9189368c47c7308d6e500e0e",
+        "canonical_sha256": "2bc998c58eb50c6f4a2913197ac3d5b7245a78c34e1e9ebe52a21908b4eacb09"
+      },
+      "tests/scripts/run_processcontainer_contract_tests.ps1": {
+        "git_blob": "df2f442c8853a60151afb4912e7eebb78d599cb3",
+        "canonical_sha256": "0acc821d70085e6934ca9b1b846b1906a6aee60d021b22df198b5ea7e89ffe4a"
+      },
+      "tests/scripts/lib/processcontainer_policy_probe.ps1": {
+        "git_blob": "6eb91bc993cb8f349acfa45b882f9d4c7b5c8a9c",
+        "canonical_sha256": "42f07f1355126aa44a30e5864bba473c9fab9df240bd48ee9b4508a851518ebf"
+      }
+    }
+  },
+  "capability_query": {
+    "pin": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+    "system_build": "10.0.26200.9974",
+    "measurement": {
+      "source_pin": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+      "os": {
+        "CurrentBuild": "26200",
+        "DisplayVersion": "25H2",
+        "UBR": 9974
+      },
+      "host_bitness": 64,
+      "api_set": "api-win-appmodel-processmodel~securityenvironment",
+      "api_set_implemented": true,
+      "module": "C:\\WINDOWS\\system32\\processmodel.dll",
+      "module_sha256": "ed703d26d7f3c124d11291220744be460d2574ddc163ad5b74ee2a3367fda462",
+      "exports": {
+        "CreateProcessSecurityEnvironment": {
+          "present": true,
+          "lookup_error": null
+        },
+        "QueryProcessSecurityEnvironmentSupport": {
+          "present": true,
+          "lookup_error": null
+        },
+        "CloseProcessSecurityEnvironment": {
+          "present": true,
+          "lookup_error": null
+        },
+        "IsProcessSecurityEnvironmentVersionSupported": {
+          "present": true,
+          "lookup_error": null
+        }
+      },
+      "complete_base_exports": true,
+      "query": {
+        "called": true,
+        "hresult": "0x00000000",
+        "support_mask": "0x000000000000000f",
+        "mapped_by_mxc": {
+          "PSE_SUPPORT_FS_DENY": true,
+          "PSE_SUPPORT_FS_ENUMERATE": true,
+          "PSE_SUPPORT_NETWORK_INGRESS": true
+        },
+        "bits_outside_pinned_mxc_enum": "0x0000000000000002"
+      },
+      "version_support": {
+        "called": true,
+        "requested_major": 1,
+        "hresult": "0x00000000",
+        "available": true,
+        "supported_minor": 1
+      },
+      "environment_created": false,
+      "candidate_launched": false,
+      "backend_dispatched": null,
+      "fallback": false,
+      "effective_policy": null
+    },
+    "signed_module": {
+      "path": "C:\\WINDOWS\\system32\\processmodel.dll",
+      "file_version": "10.0.26100.9818 (WinBuild.160101.0800)",
+      "product_version": "10.0.26100.9818",
+      "sha256": "ed703d26d7f3c124d11291220744be460d2574ddc163ad5b74ee2a3367fda462",
+      "signature_type": "Catalog",
+      "status": "Valid",
+      "subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+      "certificate_thumbprint": "AD714D3C4B2B794A95441375C954130E9109EF4C"
+    },
+    "verified_ordinary_host": {
+      "elevated": false,
+      "integrity_rid": 8192,
+      "before_resume": true,
+      "outer_job": {
+        "kill_on_close": true,
+        "ui_restrictions": 0,
+        "resource_limit_flags": 0,
+        "membership_verified": true,
+        "cleanup": {
+          "active_before_cleanup": 1,
+          "active_after_cleanup": 0,
+          "confirmed": true,
+          "elapsed_ms": 0
+        }
+      }
+    },
+    "decoded_support_mask": {
+      "PSE_SUPPORT_FS_DENY": 1,
+      "PSE_SUPPORT_NETWORK_PROXY": 2,
+      "PSE_SUPPORT_FS_ENUMERATE": 4,
+      "PSE_SUPPORT_NETWORK_INGRESS": 8
+    },
+    "unknown_mask": 0,
+    "sources": {
+      "mxc_abi_and_flag_values": "https://github.com/microsoft/mxc/blob/51805f40beaf19631df63ae25d0c11876d05a4ce/src/mxc-sdk/src/backends/process_container/common/secenv.rs#L53-L119",
+      "windows_api_enum": "https://learn.microsoft.com/en-us/windows/win32/api/processmodel/ne-processmodel-process_security_environment_support_flags",
+      "network_proxy_bit": {
+        "source": "https://www.nuget.org/packages/Microsoft.Windows.SDK.CPP/10.0.26100.9457",
+        "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/10.0.26100.9457/microsoft.windows.sdk.cpp.10.0.26100.9457.nupkg",
+        "path": "c/Include/10.0.26100.0/um/processmodel.h",
+        "sha256": "9b9a4ec60cddc5cc46ae537072c0daf85413f8b49c7205ba4e13e6594ecd1647",
+        "flag_line": 38,
+        "flag_name": "PSE_SUPPORT_NETWORK_PROXY",
+        "support_declaration_lines": [
+          65,
+          66
+        ],
+        "declaration": "PROCESS_SECURITY_ENVIRONMENT_SUPPORT_FLAGS*",
+        "interop_note": "Pinned MXC calls with a zero-initialized u64 out-buffer. The host measurement used the same buffer. The observed 0xF occupies the low four bits; no inference about the number of bytes written or unlisted OS features is required."
+      }
+    },
+    "files_sha256": {
+      "probe.py": "d1db35e892c38cbc4b3fa6c8054da2ab616387e9f41a9acba1f8e95701396699",
+      "capabilities.json": "71d94d1544ec4d5b69d7d7f3be162edb5fd24aa4d800b4ecc4b8b896a5ce7cfb",
+      "signed-module.json": "e7fbd3b89a5424a6e756e761cd049bba4a8616a5477140d27d2e58876f1c5f6b",
+      "medium-host.json": "71c837e3841b75a4546779747f5d04a74b86177c98f25087d402ee6f152cb9de"
+    },
+    "scope": "Support-only query from actual Windows x64 process. No security environment creation, no candidate or payload launch, no effective policy, and no fallback."
+  },
+  "current_measurement_scope": {
+    "query_only": {
+      "path": "target/psec-official-capabilities-2655ca190fa34c53a0ac36a174f18fe1/capabilities.json",
+      "sha256": "71d94d1544ec4d5b69d7d7f3be162edb5fd24aa4d800b4ecc4b8b896a5ce7cfb"
+    },
+    "medium_host": {
+      "path": "target/psec-official-capabilities-2655ca190fa34c53a0ac36a174f18fe1/medium-host.json",
+      "sha256": "71c837e3841b75a4546779747f5d04a74b86177c98f25087d402ee6f152cb9de"
+    },
+    "registry_query_or_mutation_from_running_payload": false
+  },
+  "enforcement_contract": {
+    "launch": [
+      "CreateProcessSecurityEnvironment",
+      "PROC_THREAD_ATTRIBUTE_SECURITY_ENVIRONMENT (0x20023)",
+      "CreateProcessW"
+    ],
+    "experimental_api_used": false,
+    "fallback": false,
+    "startup": "Security environment supplied at process creation. The pinned BaseContainer implementation creates the root suspended, explicitly lists standard handles in pipe mode, assigns a kill Job before first resume and reaps failures.",
+    "filesystem": "Native FS_DENY can supersede an applicable ambient grant. Same-path deny wins. A more specific explicit writable descendant can override a parent deny. Drive-root grant exception is documented for grants. Neither a complete object-scope allowlist nor coverage of future namespace changes follows from a drive list.",
+    "registry": "No host-hive/key write policy is carried by the pinned PSEC schema or mapper. LPAC is rejected by this runner. Generic capability names and ordinary AppContainer/token authorization remain relevant. Separate implicit kernel or virtualization rules have not been established for this specific PSEC tree.",
+    "alternative_layer": "No independent scoped Registry enforcement layer in the existing runner can gate arbitrary Windows Registry calls made directly by descendants. The trusted broker only authorizes the operations entering its own interface.",
+    "inherited_authority": "Standard IO handles are allowlisted at launch. An access token or newly installed name-based path policy alone cannot be credited with revoking access on handles already held, later duplicated or passed by an authorized helper. Descendant/handle boundaries require their own verification."
+  },
+  "historical_same_native_api": {
+    "os_build": "26200.9974",
+    "historical_dll_hash_recorded": false,
+    "actual_controlled_native_launches": true,
+    "SDK_discovery_only": "base-container",
+    "separate_mxc_dispatch_workload": false,
+    "observed": {
+      "exit": 1,
+      "atomic_assignment_ignored": true,
+      "budget_exceeded": true,
+      "incomplete": false,
+      "cleanup_confirmed_cases": 6
+    },
+    "source": {
+      "path": "scripts/tests/windows_psec_budget.cpp",
+      "sha256": "a551cf9fa24c22cf1ad4a6fb9830223b3ca86c1c5ee674ba33aad6224482ddcf"
+    },
+    "raw": {
+      "path": "docs/evidence/windows-process-tree-2026-11-14/psec-native.log",
+      "sha256": "fdc5ba0e471cf03b63e2ab9f915addbce1ee5222c8b22fab6b9453a893cc578d"
+    },
+    "direct_file_control": {
+      "host_read_and_execute_win32": [
+        0,
+        0
+      ],
+      "sandbox_read_and_execute_win32": [
+        5,
+        5
+      ],
+      "scope": "A single expressly denied system image, not an exclusive write scope."
+    },
+    "cap_two": {
+      "limit": 2,
+      "live_job_members": 3,
+      "census": [
+        "root",
+        "console child",
+        "conhost.exe"
+      ],
+      "explicit_image_deny_arm_also_measured_three": true
+    },
+    "atomic_job_list": {
+      "non_psec_control_member": true,
+      "psec_member": false,
+      "resumed_when_unverified": false,
+      "alternative_suspended_assignment_retained": true
+    },
+    "test_date": "2026-11-14",
+    "second_limit_two_measurement_is_new_AllocConsole_test": false,
+    "scope": "Existing native console-child coverage, with and without a file deny. No new run of the two installed console gates was performed."
+  },
+  "wire_policy": {
+    "sha256": "eaf38a02791c19927630d80168733a556e3a2a3734374da98921e4036aff611b",
+    "identifier": "PSEC",
+    "version": [
+      1,
+      1
+    ],
+    "capabilities_field_absent": true,
+    "disallow_win32k": true,
+    "ui_restrictions": "0x3ff",
+    "fs_read_write": [
+      "F:\\werkWorker\\target\\native-psec-list-9416c0b059e6\\workspace",
+      "F:\\werkWorker\\target\\native-psec-list-9416c0b059e6\\scratch"
+    ],
+    "fs_read_only": [
+      "C:\\WINDOWS\\System32",
+      "F:\\werkWorker\\target\\native-psec-list-9416c0b059e6\\runtime"
+    ],
+    "fs_deny": [
+      "C:\\",
+      "F:\\"
+    ],
+    "fs_enumerate": [],
+    "network": {
+      "proxy_absent": true,
+      "allowed_peer_absent": true,
+      "egress_default_deny": true,
+      "egress_allowlist_absent": true,
+      "ingress_default_deny": true,
+      "host_loopback_deny": true
+    },
+    "registry_write_scope_encoded": false
+  },
+  "architectural_dependency": "For this host Job design, require an OS-enforced inherited Registry write scope (or a documented private hive that cannot mutate prohibited host objects) and enforceable admission of all live Job members including implicit console hosts. File policy must cover authorized objects over supported naming and volume semantics. Without those contracts keep native process-tree deployment unsupported.",
+  "focused_launch": {
+    "backend": "Direct native Windows PSEC syscalls via processmodel.dll and CreateProcessW, using the same policy layout as the pinned MXC BaseContainer implementation. No MXC session dispatcher or product CLI called.",
+    "policy": {
+      "path": "target/native-psec-list-9416c0b059e6/policy.bin",
+      "sha256": "eaf38a02791c19927630d80168733a556e3a2a3734374da98921e4036aff611b"
+    },
+    "policy_encoding": {
+      "encoder_sha256": "8142c7b0f9957761c7325b31704d454d72153320ed2044640507e9891109a9c5",
+      "generated_schema_files_matching_MXC_after_LF_normalization": {
+        "process_security_environment_layout\\destination_rule_generated.rs": "34f6d1251a09e638d9e18ef9a16033f498ba8fe2b1202198931c02048b42909b",
+        "process_security_environment_layout\\endpoint_policy_generated.rs": "a9847a1882d648671516f5bc5bc166f6073cbbe9973a74264998baa27b8056ea",
+        "process_security_environment_layout\\endpoint_rule_generated.rs": "24fecf87792a5be80c5ddd66091de3ac95f1df534e0ea5d067cd642501d566bd",
+        "process_security_environment_layout\\filter_action_generated.rs": "4344b118b4590285d034c97a03de95822f32f5b405f705dcf7681d9bae222f12",
+        "process_security_environment_layout\\ingress_policy_generated.rs": "2f28d13caa5d8927f46d0d20c5e78f4ba99576430f58bc47d51176cc8b6c2d51",
+        "process_security_environment_layout\\ip_protocol_generated.rs": "c886caef1b972ede6ba117e020b4796d614bf38f4099a7b27cff10c3928b5343",
+        "process_security_environment_layout\\ip_subnet_generated.rs": "c63d923626e9e3a1a4c31ecc84a7acfb12f0d9bea13a59475d8fe6445f3a9905",
+        "process_security_environment_layout\\network_policy_generated.rs": "53624f021a987c76046448635a9116834ed0ada2ace7a1561107204cc37e89c5",
+        "process_security_environment_layout\\port_rule_generated.rs": "2e54a0bf003b6218021acb8d8db8c34cc6bf906119c368a848af01434ad060b0",
+        "process_security_environment_layout\\process_security_environment_generated.rs": "1e4b0190ae36780c707619617e12e7cad7bec67e171a523d8a1bddecbabb32c9",
+        "process_security_environment_layout\\proxy_info_generated.rs": "9123bfef57dac6e41e7a98a2d8214bab4a05b2074b4db5bb5f4426aa15b0271d",
+        "process_security_environment_layout\\schema_version_generated.rs": "b7fc911f67036291957686ebbff30a3f123d720b2c258295ec732ff29bcaaece"
+      }
+    },
+    "raw": {
+      "path": "target/native-psec-list-9416c0b059e6/independent/medium-run.log",
+      "sha256": "5159dc306810e3e6bb2bbbf5c2ea046633d3cc50e518437f370131387a67ecc7"
+    },
+    "receipt": {
+      "path": "target/native-psec-list-9416c0b059e6/independent/result.json",
+      "sha256": "0a3fea20f436f5a2c1113cf27e99bd339b21ef179bdf594b8f9a7d7dd7d972c6"
+    },
+    "ordinary_host_receipt": {
+      "path": "target/native-psec-list-9416c0b059e6/independent/medium-host.json",
+      "sha256": "c0fee8c2b0333d95368409da776107361740874977cef4a5899cf5773bcc5c47"
+    },
+    "controller_source": {
+      "path": "target/native-psec-list-9416c0b059e6/controller-independent.cpp",
+      "sha256": "c6ab0eca2193b254110d46c06b2dccc82ef91cb3a9ce8cfd3645a530fb54e583"
+    },
+    "controller_exe_sha256": "001835fec5f3b85c83e77cac5092a14e0185f249feddf6ae854825bb758cb05a",
+    "measurement_driver": {
+      "path": "target/native-psec-list-9416c0b059e6/run-private-controls.py",
+      "sha256": "341d10d993431c6fcbc88a3afac79e6224f20fa91389ec432de8218cfa548816"
+    },
+    "normal_host": {
+      "integrity_rid": 8192,
+      "elevated": false,
+      "token_verified_before_resume": true
+    },
+    "startup": {
+      "security_environment_created": "S_OK",
+      "created_suspended": true,
+      "job_cap_before_resume": 2,
+      "membership_verified_before_resume": true,
+      "kill_on_close": true,
+      "win32k_deny_observed": true,
+      "payload_stdio": "explicit pipe handles only"
+    },
+    "effective_primary_tokens_in_arm_order_writes_then_list": [
+      {
+        "rid": 4096,
+        "lpac_query": [
+          "known=0 value=0 error=87"
+        ],
+        "capabilities": 1,
+        "restricting": 0,
+        "capability_sids": [
+          "S-1-15-3-1024-530591407-3118584226-222893001-1659895842-537460181-133087082-1363364250-4100990745"
+        ],
+        "package_sid": "S-1-15-2-2133194289-3621368839-2300382850-1695475245-3350199793-1132681737-2563353859"
+      },
+      {
+        "rid": 4096,
+        "lpac_query": [
+          "known=0 value=0 error=87"
+        ],
+        "capabilities": 1,
+        "restricting": 0,
+        "capability_sids": [
+          "S-1-15-3-1024-530591407-3118584226-222893001-1659895842-537460181-133087082-1363364250-4100990745"
+        ],
+        "package_sid": "S-1-15-2-754293819-111850509-1009298230-3508927022-3061060819-321304402-2692290191"
+      }
+    ],
+    "lpac_status": "unavailable, Win32 87; no LPAC claimed",
+    "explicit_capabilities_requested": [],
+    "authorized_write": {
+      "fresh_check": "Both marker names absent before launch. The fixed C++ witness used CREATE_NEW and flushed both files. The host then verified the exact bytes.",
+      "helper_source": {
+        "path": "target/native-psec-list-9416c0b059e6/writes.cpp",
+        "sha256": "be83087198eb4e0936e038b044749b27ce073422e4bd11f416173420d830c32b"
+      },
+      "helper_sha256": "9d6f78dda901ef08ba90e8d94f551e5ae63271f4719f6d6f0f99b43ebfcda893",
+      "wait_ms": 16,
+      "exit_code": 0,
+      "combined_output": "PRIVATE_WRITES_OK",
+      "files": [
+        {
+          "path": "target/native-psec-list-9416c0b059e6/workspace/witness.txt",
+          "sha256": "facbd755baa84bf17f1dd5f9378e4df13ec0a0c991453bd61a7b9de0083cf09d",
+          "byte_count": 25,
+          "content_utf8": "native-private-workspace\n"
+        },
+        {
+          "path": "target/native-psec-list-9416c0b059e6/scratch/witness.txt",
+          "sha256": "36c8ba47b06d4ed7b009dd15ae892ef58aef2b227caaa0ca0051326fa7b5d4d5",
+          "byte_count": 20,
+          "content_utf8": "native-private-temp\n"
+        }
+      ]
+    },
+    "rust_list": {
+      "argv": [
+        "probe.exe",
+        "--list"
+      ],
+      "reference": {
+        "path": "docs/evidence/windows-process-tree-2026-11-18/matched-schema4-schema5-start.json",
+        "sha256": "ac6b16bf0af0570617d9765f02c64e3d234b92ede49484ad19e449d807e29a16"
+      },
+      "reference_exit_code": 0,
+      "reference_stdout_bytes_utf8": 374,
+      "expected_tests": 8,
+      "expected_benchmarks": 0,
+      "exe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+      "stdin_at_eof": true,
+      "combined_output_drained_during_wait": true,
+      "observed_output_bytes": 0,
+      "resume_reached": true,
+      "wait_result": 258,
+      "wait_status": "WAIT_TIMEOUT",
+      "elapsed_ms": 30032,
+      "reported_process_status_before_cleanup": 259,
+      "normal_exit_observed": false,
+      "test_entry_confirmed": false,
+      "cause": "undetermined",
+      "loader_failure_inferred": false
+    },
+    "cleanup": {
+      "inner_jobs_confirmed_empty": 2,
+      "outer_job": {
+        "active_before_cleanup": 0,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "controller_exit": 22,
+    "initial_observation": {
+      "lpac_query_returned_87": true,
+      "raw": {
+        "path": "target/native-psec-list-9416c0b059e6/medium-run.log",
+        "sha256": "474d5f73dded5fc7136d067ac8f95627e7e3f0462da12b0388bdff7eb9f34dd5"
+      },
+      "terminated_before_resume": true
+    },
+    "intermediate_observation": {
+      "raw": {
+        "path": "target/native-psec-list-9416c0b059e6/recheck/medium-run.log",
+        "sha256": "7f3f564b8d408f4527834310a969c8ecdd3e91df06e42ec5213bf1ad6dc1a8d9"
+      },
+      "legacy_wait_message_has_no_reliable_error_code": true
+    },
+    "registryRead_requested": false,
+    "policy_sha256_identical_for_all_three_roots": true
+  },
+  "registry_token_measurement": {
+    "mechanism": "AccessCheck on in-memory security descriptors using an impersonation duplicate of each actual suspended PSEC root token.",
+    "fixture_baseline": {
+      "path": "docs/evidence/windows-process-tree-2026-11-18/appcontainer-write-boundary-9d2ee11.json",
+      "sha256": "5f3467f9a03e2d11ad8f1b7ce68ddd4ee40de2a5df0a2979564b829d51bd912e"
+    },
+    "requested_mask": 2,
+    "requested_right": "KEY_SET_VALUE",
+    "fixture_integrity": "Low",
+    "inherited_control": "Effective inherited ACE on the tested descriptor.",
+    "observed_per_token": {
+      "direct_broad": {
+        "allowed": true,
+        "granted": 2
+      },
+      "inherited_broad": {
+        "allowed": true,
+        "granted": 2
+      },
+      "readonly_negative_control": {
+        "allowed": false,
+        "granted": 0
+      }
+    },
+    "tokens_measured": 2,
+    "api_result_rows": [
+      "MEMORY_REGISTRY broad_direct api=1 error=0 allowed=1 granted=0x2 requested=0x2",
+      "MEMORY_REGISTRY broad_inherited_ace api=1 error=0 allowed=1 granted=0x2 requested=0x2",
+      "MEMORY_REGISTRY readonly_control api=1 error=0 allowed=0 granted=0x0 requested=0x2",
+      "MEMORY_REGISTRY broad_direct api=1 error=0 allowed=1 granted=0x2 requested=0x2",
+      "MEMORY_REGISTRY broad_inherited_ace api=1 error=0 allowed=1 granted=0x2 requested=0x2",
+      "MEMORY_REGISTRY readonly_control api=1 error=0 allowed=0 granted=0x0 requested=0x2"
+    ],
+    "actual_registry_key_opened_or_mutated": false,
+    "per_tree_host_write_scope_established": false,
+    "interpretation": "The token and discretionary permission checks permit the tested write right. AccessCheck does not exercise Registry virtualization, namespace mapping or an additional OS filter."
+  },
+  "gates": {
+    "1": "failed to justify an inherited exclusive host-Registry write boundary on this native path",
+    "2": "private writes verified, original Rust --list timed out, no successful Rust entry or exclusive storage boundary demonstrated",
+    "3": "not entered",
+    "cargo": "not run",
+    "fresh_product_and_release_suite": "not run",
+    "dns_console_and_provider_regressions": "not rerun",
+    "product_unqualified": true
+  },
+  "additional_scope": {
+    "candidate_introduced_into_product": false,
+    "new_prohibited_persistent_host_mutation_measured": false,
+    "host_security_acl_changes": false,
+    "changes_to_werk1112_or_protocol": false,
+    "historic_111dd_restoration_confirmed": false,
+    "werk1112_head": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+    "werk1112_branch": "feat/expand-werkProtocol"
+  },
+  "file_token_measurement": {
+    "request": "FILE_WRITE_DATA",
+    "mapping": "FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS",
+    "results": [
+      {
+        "label": "broad_direct",
+        "api": true,
+        "win32": 0,
+        "allowed": true,
+        "granted": 2,
+        "requested": 2
+      },
+      {
+        "label": "broad_inherited_ace",
+        "api": true,
+        "win32": 0,
+        "allowed": true,
+        "granted": 2,
+        "requested": 2
+      },
+      {
+        "label": "readonly_control",
+        "api": true,
+        "win32": 0,
+        "allowed": false,
+        "granted": 0,
+        "requested": 2
+      }
+    ],
+    "suspend_count_prior_to_additional_suspend": 1,
+    "payload_resumed": false,
+    "attempted_file_open_or_mutation_under_token": false,
+    "actual_file_enforcement_measured": false,
+    "concrete_job_cleanup_lines": [
+      "CLEANUP_ROOT wait=0 win32=0",
+      "CLEANUP total_assigned=1 active=0 confirmed=1"
+    ],
+    "receipt": {
+      "path": "target/psec-suspended-file-accesscheck-dbcb6bd25eb6/result.json",
+      "sha256": "c13e68618f7f2f4d2cd596673bdeb30636425b49f6f542be486cd4452c7e2e26"
+    },
+    "raw": {
+      "path": "target/psec-suspended-file-accesscheck-dbcb6bd25eb6/medium.log",
+      "sha256": "462b096f4da40188a352d589a855a903fd4ddde96b0433219a7e7ad72c6933e2"
+    },
+    "fixture_integrity": "Low",
+    "host_integrity_rid": 8192,
+    "outer_cleanup": {
+      "active_before_cleanup": 1,
+      "active_after_cleanup": 0,
+      "confirmed": true,
+      "elapsed_ms": 0
+    },
+    "interpretation": "Discretionary authorization only. The PSEC filesystem filter and actual object state outside the two authorized write directories were not exercised in this run."
+  }
+}

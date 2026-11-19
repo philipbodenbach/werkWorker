@@ -1,0 +1,125 @@
+{
+  "basis": "9d2ee1139488fa7bf6b64d3e10af8d8fa89d3b0f",
+  "measured_utc": "2026-11-18T14:56:33Z",
+  "windows_build": "10.0.26200",
+  "conclusion": "Rejected as a universal write boundary. Both measured tokens pass synthetic Low-integrity file and registry write checks on broad explicit and inherited grants independent of any workspace or private Temp designation.",
+  "host": {
+    "verifier": "scripts/validate-windows-process-tree.py, WindowsHostExecution",
+    "execution": "verified same-logon ordinary Medium account",
+    "integrity_rid": 8192,
+    "elevated": false,
+    "extra_restricting_sid_count": 0
+  },
+  "fixture": {
+    "source": "tests/fixtures/native_process_probe.rs",
+    "modes": [
+      "spawn-wait",
+      "sleep"
+    ],
+    "natural_child": true,
+    "parent_relationship": "Toolhelp parent PID and image, child pinned alive with a query/synchronize handle and IsProcessInJob",
+    "root_checked_suspended": true,
+    "tokens_from": "OpenProcessToken on retained process handles; DuplicateToken for AccessCheck",
+    "private_image": "Fresh protected private fixture image and directory; exact existing Werk read-only profile SID received read/execute at creation. The selected fixture modes contain no file or registry write probes.",
+    "verified_file_removed": true
+  },
+  "token_properties": {
+    "scope": "Individually verified on both primary tokens",
+    "normal_appcontainer_evidence": "No all-application-packages opt-out requested; user plus ALL APPLICATION PACKAGES passes the Low write control, and either side alone fails.",
+    "user_and_package_matched": true,
+    "elevated": false,
+    "integrity_rid": 4096,
+    "capabilities": 0,
+    "restricting_sids": 0,
+    "enabled_logon_sids": 0,
+    "deny_only_logon_sids": 1,
+    "privileges": [
+      "SeChangeNotifyPrivilege (enabled)"
+    ],
+    "mandatory_policy_no_write_up": true
+  },
+  "root": {
+    "pid": 178024,
+    "fixture_controller_pid": 73276,
+    "job_membership_verified": true,
+    "win32k_disabled_verified": true
+  },
+  "child": {
+    "pid": 126624,
+    "parent_pid": 178024,
+    "job_membership_verified": true,
+    "alive_at_pin": true,
+    "user_code_entry_verified": false
+  },
+  "method": {
+    "descriptor": "Memory-only SYSTEM-owned and SYSTEM-group security descriptors. Each case contains an explicit Low or Medium no-write-up mandatory label. 'Inherited' means an effective inherited ACE on the modeled child descriptor; inheritance propagation was not exercised.",
+    "discretionary": "Win32 AccessCheck on each actual duplicated token, with specific access masks and file or registry generic mapping. On Medium/NW descriptors the API alone still reported DACL grants.",
+    "mandatory": "The harness read TokenIntegrityLevel and TokenMandatoryPolicy and the mandatory ACE from each memory descriptor. It separately applied no-write-up to the write/add/create bits checked here. Combined Medium outcomes are model results, not kernel opens.",
+    "scope": "No real targets were opened for the modeled permissions. The fixture reads and writes only its own staging files as host and uses anonymous pipes for payload output.",
+    "principals": {
+      "file_broad": "Everyone and ALL APPLICATION PACKAGES",
+      "key_broad": "BUILTIN Users and ALL APPLICATION PACKAGES",
+      "file_authusers": "Authenticated Users and ALL APPLICATION PACKAGES",
+      "toolchain_rx": "Account and exact package, read/execute only",
+      "package_temp": "Account and exact package",
+      "private_temp_foreign_package": "Account with a different synthetic package"
+    }
+  },
+  "results": {
+    "probes_per_token": 35,
+    "root_and_child_identical": true,
+    "row_format": [
+      "DACL granted mask, decimal",
+      "DACL allow (0/1)",
+      "modeled mandatory no-write-up denial (0/1)",
+      "combined modeled allow (0/1)"
+    ],
+    "cases": {
+      "workspace_positive_add": {"right": "0x2", "low": [2, 1, 0, 1]},
+      "foreign_package_file": {"right": "0x2", "low": [0, 0, 0, 0]},
+      "user_only_file": {"right": "0x2", "low": [0, 0, 0, 0]},
+      "package_only_file": {"right": "0x2", "low": [0, 0, 0, 0]},
+      "inherit_only": {"right": "0x2", "low": [0, 0, 0, 0]},
+      "file_broad_direct_write": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "key_broad_direct_set": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "file_authusers_inherited_write": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "file_everyone_only_write": {"right": "0x2", "low": [0, 0, 0, 0], "medium": [0, 0, 1, 0]},
+      "file_allpackages_only_write": {"right": "0x2", "low": [0, 0, 0, 0], "medium": [0, 0, 1, 0]},
+      "file_broad_inherited_write": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "dir_broad_inherited_add": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "key_broad_inherited_set": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "key_broad_inherited_create": {"right": "0x4", "low": [4, 1, 0, 1], "medium": [4, 1, 1, 0]},
+      "toolchain_rx_read": {"right": "0x1", "low": [1, 1, 0, 1], "medium": [1, 1, 0, 1]},
+      "toolchain_rx_execute": {"right": "0x20", "low": [32, 1, 0, 1], "medium": [32, 1, 0, 1]},
+      "toolchain_rx_write": {"right": "0x2", "low": [0, 0, 0, 0], "medium": [0, 0, 1, 0]},
+      "toolchain_inherited_broad_write": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "package_temp_inherited_add": {"right": "0x2", "low": [2, 1, 0, 1], "medium": [2, 1, 1, 0]},
+      "private_temp_foreign_package": {"right": "0x2", "low": [0, 0, 0, 0], "medium": [0, 0, 1, 0]}
+    }
+  },
+  "fixture_exit": {
+    "root": 77,
+    "child": "0xc0000142",
+    "controller": 2,
+    "root_and_child_handles_signaled": true,
+    "private_job_active_after": 0,
+    "private_job_total_assigned": 3,
+    "outer_job_active_after": 0,
+    "outer_cleanup_confirmed": true
+  },
+  "product_differences": [
+    "The standalone test used the ordinary test user's existing registered Werk profile. The product uses its provisioned dedicated account, its provisioned package identity and private Desktop.",
+    "The derived base retained DISABLE_MAX_PRIVILEGE, LUA_TOKEN and deny-only logon SIDs. WRITE_RESTRICTED and the private restricting SID were omitted. The fixture's token-default DACL granted the account and exact package access plus owner-rights read-control. Separate host and writer ACEs from the product were absent.",
+    "The detached root inherited three allowlisted stdio handles, ran with Win32k calls disabled and entered a private kill-on-close Job with limit four while suspended. Runtime startup and the product's Desktop, network filters, storage verification, registry provisioning and coding workflow were outside this authorization check."
+  ],
+  "provenance": {
+    "run_id": "run-99a8dc2e-5d2f-439d-837d-da8108e58f42",
+    "archived_outside_checkout": "%TEMP%/werk-authz-fixture-d6d9fd8987b34b448af4090d9cc59184/run-99a8dc2e-5d2f-439d-837d-da8108e58f42",
+    "measurement_log_sha256": "c023a97f8684c6c19e4b6dd20161740d41b40718dd2f589f8aa7d982d3e0b01b",
+    "controller_receipt_sha256": "d527d0f99364fdfb83f74b8ee4ebf11060cf5a47602df2622dffbeb0491a7601",
+    "native_authorizer_source_sha256": "8295866e39387c4b9ed46971407dbe5cae1e4968ed1e8ec7ff3339ebd17bf839",
+    "native_authorizer_exe_sha256": "815d7f1537cf99cd1f92ab55110232e5b94df97abf461619da381e10cabc8657",
+    "fixture_source_sha256": "2e3964eecac34f98e6f3fcfd3e70aa5b4e75a1e2976cbb6c8dc3527f1235de4c",
+    "fixture_image_sha256": "7943ae5fdee1e4b36947186413d65e8b9751aa20fe87c133527e585e91251a6d"
+  }
+}

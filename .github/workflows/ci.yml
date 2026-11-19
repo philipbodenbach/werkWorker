@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows11_acceptance:
+        description: Run process-tree acceptance on the dedicated Windows 11 x64 PSEC runner
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -82,8 +87,11 @@ jobs:
           commands = [
               ["cargo", "test", "--locked", "--lib", "parallel::tests"],
               ["cargo", "test", "--locked", "--lib", "runtime::macos::"],
-              ["cargo", "test", "--locked", "--no-fail-fast", "--test", "platform", "--test", "native_workspace", "--test", "sandbox_contract", "--test", "native_coding", "--test", "native_lifecycle", "--test", "native_policy", "--test", "contracts", "--test", "macos_process", "--test", "windows_sandbox"],
+              ["cargo", "test", "--locked", "--lib", "runtime::windows"],
+              ["cargo", "test", "--locked", "--no-fail-fast", "--test", "platform", "--test", "native_workspace", "--test", "sandbox_contract", "--test", "native_coding", "--test", "native_lifecycle", "--test", "native_policy", "--test", "contracts", "--test", "provider_routing", "--test", "provider_transport", "--test", "provider_execution_policy", "--test", "macos_process", "--test", "windows_sandbox"],
           ]
+          if sys.platform == "win32":
+              commands[-1].extend(["--test", "permissions"])
           failed = False
           for command in commands:
               print("+ " + " ".join(command), flush=True)
@@ -179,3 +187,85 @@ jobs:
           /tmp/worker-install/bin/werk-worker profiles inspect coding-basic
           /tmp/worker-install/bin/werk-worker skills inspect ticket-drafting
           /tmp/worker-install/bin/ww --store /tmp/worker-short.sqlite run --demo "short command smoke"
+
+  windows_process_tree:
+    name: windows-process-tree
+    # A PR cannot opt a privileged, interactive Windows host into executing its checkout.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.windows11_acceptance && 'werkworker-windows11-psec-x64' || 'windows-2022' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Verify the ordinary Windows host and PSEC before installing the toolchain
+        shell: pwsh
+        run: ./scripts/test-windows-process-tree.ps1 -EvidenceRoot "$env:RUNNER_TEMP/windows-tree-eligibility" -PreflightOnly -RequirePsec
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+      - name: MSVC x64 environment
+        shell: pwsh
+        run: ./scripts/setup-msvc.ps1
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.windows11_acceptance }}
+        with:
+          shared-key: windows-process-tree-x86_64-pc-windows-msvc
+      - name: Cache the locked dependencies for offline acceptance
+        run: cargo fetch --locked
+      - name: Require fresh installed Windows process-tree acceptance
+        shell: pwsh
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          DEDICATED_ACCEPTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.windows11_acceptance }}
+          ACCEPTANCE_PROBE: ${{ vars.WINDOWS_TREE_RUST_PROBE }}
+          ACCEPTANCE_ARCHIVE: ${{ vars.WINDOWS_TREE_ARCHIVE }}
+          ACCEPTANCE_SHA256: ${{ vars.WINDOWS_TREE_ARCHIVE_SHA256 }}
+          SUITE_MANIFEST: ${{ vars.WINDOWS_TREE_SUITE_MANIFEST }}
+          INSTALLED_MANIFEST: ${{ vars.WINDOWS_TREE_INSTALLED_MANIFEST }}
+        run: |
+          $Address = [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+            Where-Object { $_.OperationalStatus -eq 'Up' } |
+            ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+            Where-Object {
+              $_.Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
+              -not [Net.IPAddress]::IsLoopback($_.Address) -and
+              $_.Address.ToString() -ne '0.0.0.0'
+            } | Select-Object -First 1 -ExpandProperty Address
+          if (-not $Address) { throw 'No assigned non-loopback address for the controlled TCP witness.' }
+          $prepared = @{}
+          if ($env:DEDICATED_ACCEPTANCE -eq 'true') {
+            foreach ($name in 'ACCEPTANCE_PROBE','ACCEPTANCE_ARCHIVE','ACCEPTANCE_SHA256','SUITE_MANIFEST','INSTALLED_MANIFEST') {
+              if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Dedicated runner requires $name." }
+            }
+            $prepared = @{
+              RustProbe = $env:ACCEPTANCE_PROBE
+              Archive = $env:ACCEPTANCE_ARCHIVE
+              ArchiveSha256 = $env:ACCEPTANCE_SHA256
+              SuiteManifest = $env:SUITE_MANIFEST
+              InstalledManifest = $env:INSTALLED_MANIFEST
+            }
+          }
+          ./scripts/test-windows-process-tree.ps1 -EvidenceRoot "$env:RUNNER_TEMP/windows-process-tree" -BindAddress $Address.ToString() -RequirePsec @prepared
+      - name: Preserve native tree results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-process-tree-results
+          path: |
+            ${{ runner.temp }}/windows-process-tree/suite/*.log
+            ${{ runner.temp }}/windows-process-tree/suite/*-result.json
+            ${{ runner.temp }}/windows-process-tree/installed-start/*.log
+            ${{ runner.temp }}/windows-process-tree/installed-start/*-result.json
+            ${{ runner.temp }}/windows-process-tree/installation/smoke-result.json
+            ${{ runner.temp }}/windows-process-tree/preflight/preflight-result.json
+            ${{ runner.temp }}/windows-process-tree/prepared-inputs.json
+            ${{ runner.temp }}/windows-process-tree/qualification-result.json
+            ${{ runner.temp }}/windows-tree-eligibility/qualification-result.json
+            ${{ runner.temp }}/windows-tree-eligibility/preflight/preflight-result.json
+            ${{ runner.temp }}/windows-process-tree/built-package/*.zip
+            ${{ runner.temp }}/windows-process-tree/built-package/*.zip.sha256
+          if-no-files-found: warn

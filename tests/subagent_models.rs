@@ -45,7 +45,7 @@ fn fixture(request: &Request) -> Response {
             {"id":"api.chat.limits","status":"supported","detail":"fixture","operations":["limits"]},
             {"id":"api.chat.token_count","status":"supported","detail":"fixture","operations":["count_tokens"]}
         ]})),
-        "/v1/models" => Response::json(json!({"data":[{"id":"main"},{"id":"helper"}]})),
+        "/werk/v1/models" => Response::json(json!({"data":[{"id":"main"},{"id":"helper"}]})),
         path if path.starts_with("/werk/v1/chat/limits?") => {
             let url = reqwest::Url::parse(&format!("http://localhost{path}")).unwrap();
             let model = url
@@ -69,7 +69,7 @@ fn fixture(request: &Request) -> Response {
         "/werk/v1/chat/count_tokens" => {
             control(json!({"model":request.body["model"],"input_tokens":64}))
         }
-        "/v1/chat/completions" => {
+        "/werk/v1/chat/completions" => {
             let messages = request.body["messages"].as_array().unwrap();
             let child = messages.iter().any(|m| {
                 m["role"] == "system"
@@ -110,7 +110,7 @@ fn profile() -> AgentProfile {
 #[tokio::test]
 async fn nested_children_keep_the_configured_model() {
     let server = Server::start(|request| {
-        if request.path == "/v1/chat/completions" {
+        if request.path == "/werk/v1/chat/completions" {
             let messages = request.body["messages"].as_array().unwrap();
             let child = messages.iter().any(|m| m["content"].as_str().is_some_and(|s| s.contains("delegated worker")));
             let can_delegate = request.body["tools"].as_array().is_some_and(|tools| tools.iter().any(|t| t["function"]["name"]=="delegate_task"));
@@ -183,7 +183,7 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
         return;
     }
     let server = Server::start(|request| {
-        if request.path=="/v1/chat/completions" && request.body["model"]=="main" {
+        if request.path=="/werk/v1/chat/completions" && request.body["model"]=="main" {
             let messages=request.body["messages"].as_array().unwrap();
             let called = |name:&str| messages.iter().any(|m| m["tool_calls"].as_array().is_some_and(|calls| calls.iter().any(|c|c["function"]["name"]==name)));
             let next= if !called("task.plan") {
@@ -288,7 +288,7 @@ async fn automatic_review_uses_subagent_model_with_existing_limits_and_permissio
             .lock()
             .unwrap()
             .iter()
-            .any(|r| r.path == "/v1/chat/completions" && r.body["model"] == "helper")
+            .any(|r| r.path == "/werk/v1/chat/completions" && r.body["model"] == "helper")
     );
     engine.close().await.unwrap();
 }
@@ -306,9 +306,14 @@ async fn project_model_routes_children_only_and_survives_reopen() {
         )
         .unwrap();
         let project = Project::load(root.path()).await.unwrap();
-        let provider = WerkProvider::connect(config(&server.origin), Some("fixture-secret".into()))
-            .await
-            .unwrap();
+        let provider = WerkProvider::connect_explicit(
+            werk_worker::providers::ProviderTransport::Werk,
+            config(&server.origin),
+            Some("fixture-secret".into()),
+            Some("FIXTURE_KEY"),
+        )
+        .await
+        .unwrap();
         let store = Arc::new(
             SqliteStore::open(storage.path().join("sessions.sqlite"))
                 .await
@@ -361,7 +366,10 @@ async fn project_model_routes_children_only_and_survives_reopen() {
         }
         let requests = server.requests.lock().unwrap().clone();
         let mut child_requests = 0;
-        for request in requests.iter().filter(|r| r.path == "/v1/chat/completions") {
+        for request in requests
+            .iter()
+            .filter(|r| r.path == "/werk/v1/chat/completions")
+        {
             assert!(request.raw.contains("Bearer fixture-secret"));
             let child = request.body["messages"]
                 .as_array()
@@ -390,7 +398,7 @@ async fn project_model_routes_children_only_and_survives_reopen() {
             run.status().await.unwrap().tree_model_requests as usize,
             requests
                 .iter()
-                .filter(|r| r.path == "/v1/chat/completions")
+                .filter(|r| r.path == "/werk/v1/chat/completions")
                 .count()
         );
         assert_eq!(
@@ -414,9 +422,14 @@ async fn project_model_routes_children_only_and_survives_reopen() {
             r#"{"subagent_model":"missing"}"#,
         )
         .unwrap();
-        let provider = WerkProvider::connect(config(&server.origin), Some("fixture-secret".into()))
-            .await
-            .unwrap();
+        let provider = WerkProvider::connect_explicit(
+            werk_worker::providers::ProviderTransport::Werk,
+            config(&server.origin),
+            Some("fixture-secret".into()),
+            Some("FIXTURE_KEY"),
+        )
+        .await
+        .unwrap();
         let engine = WorkerEngine::builder(Arc::new(provider))
             .store(Arc::new(
                 SqliteStore::open(storage.path().join("sessions.sqlite"))
@@ -478,7 +491,7 @@ async fn unavailable_model_is_reported_without_falling_back() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r.path == "/v1/chat/completions")
+            .filter(|r| r.path == "/werk/v1/chat/completions")
             .all(|r| !r.body.to_string().contains("delegated worker"))
     );
     engine.close().await.unwrap();
@@ -529,7 +542,7 @@ async fn explicit_subagent_model_keeps_the_shared_tree_budget() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r.path == "/v1/chat/completions")
+            .filter(|r| r.path == "/werk/v1/chat/completions")
             .count(),
         2
     );

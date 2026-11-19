@@ -1,0 +1,38 @@
+PINNED sha256=c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9
+PINNED sha256=3ec6bfe5cdc56201f3a2eb2c7daa10891435df6d2d9a697db5ecbda5dfde734e
+PINNED sha256=19605f8e2210a3bbb301447eb8ebab964b9426be9b1564ae460450227d6e9083
+ARM A
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+LAUNCH exe=<private-stage>\runtime\cargo.exe argv=--version requested_cwd=<private-stage>\workspace hard_error_mode=0x1
+ROOT_CREATE pid=132736 flags=0x8 budget=2 success=1 error=0
+LPAC_QUERY known=0 value=0 error=87
+PRE_RESUME rid=4096 capability_count=1 restricting_count=0
+CAPABILITY <effective-capability>
+TOKEN pid=132736 appcontainer=1 elevated=0 package=<private-package>
+PRE_RESUME win32k_deny=1 flags=1
+BEFORE_RESUME owned_job_member=1 kill_on_close=1 active_limit=2 flags=8716 memory=536870912 cpu_100ns=300000000 external_ui=0
+WAIT result=0 error=0 elapsed_ms=32 process_status=3221225794
+WORKLOAD_EXIT 3221225794
+STDOUT_BEGIN
+
+STDOUT_END
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+ARM B
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+LAUNCH exe=<private-stage>\runtime\cargo.exe argv=--version requested_cwd=<private-stage>\workspace hard_error_mode=0x1
+ROOT_CREATE pid=89076 flags=0x8 budget=2 success=1 error=0
+LPAC_QUERY known=0 value=0 error=87
+PRE_RESUME rid=4096 capability_count=1 restricting_count=0
+CAPABILITY <effective-capability>
+TOKEN pid=89076 appcontainer=1 elevated=0 package=<private-package>
+PRE_RESUME win32k_deny=0 flags=0
+BEFORE_RESUME owned_job_member=1 kill_on_close=1 active_limit=2 flags=8716 memory=536870912 cpu_100ns=300000000 external_ui=0
+WAIT result=0 error=0 elapsed_ms=63 process_status=0
+WORKLOAD_EXIT 0
+STDOUT_BEGIN
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+
+STDOUT_END
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1

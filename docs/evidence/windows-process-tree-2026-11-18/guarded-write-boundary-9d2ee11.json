@@ -1,0 +1,146 @@
+{
+  "base_commit": "9d2ee1139488fa7bf6b64d3e10af8d8fa89d3b0f",
+  "source_diff_sha256": "2e7030a76cba345de7fbd9ec720e2a905e8dbc587f74f515220a3890641d9b34",
+  "source_input_list_sha256": "fe59de6eacbb9dc65763293d4e07b88fd0a72cde6dc856735235e896e655b3a5",
+  "input_count": 184,
+  "changes_after_build_start_before_suite": [
+    "scripts/validate-windows-process-tree.py"
+  ],
+  "changes_between_pre_suite_and_after": [],
+  "validator_sha256": "f53d8573ca9125a4be5b96d1ceed89a403eafd942e022933bd386bf5e387a1d6",
+  "package": {
+    "archive": "F:\\werkWorker\\target\\product-9d2ee11-6a42\\built-package\\werkWorker-v0.3.3-windows-x86_64.zip",
+    "archive_sha256": "c76a3966dabe34034c5a1227043989d57eb67a9d0e36844adc565ab159211b80",
+    "checksum_file_sha256": "7fe99e7e57afddd4b78f0ecd0792067b91caf9aad10b3cc4c46629b29d345a31",
+    "binaries": {
+      "werk-worker.exe": {
+        "build_sha256": "fa591457691a95f1564d8be83807e0c41b7fd531a64c4e76c985ee70af83b7e9",
+        "archive_sha256": "fa591457691a95f1564d8be83807e0c41b7fd531a64c4e76c985ee70af83b7e9",
+        "install_sha256": "fa591457691a95f1564d8be83807e0c41b7fd531a64c4e76c985ee70af83b7e9"
+      },
+      "ww.exe": {
+        "build_sha256": "c3d521059d2f96be317f1cc3d71e63d057f33d395d2909476850101986ca8c37",
+        "archive_sha256": "c3d521059d2f96be317f1cc3d71e63d057f33d395d2909476850101986ca8c37",
+        "install_sha256": "c3d521059d2f96be317f1cc3d71e63d057f33d395d2909476850101986ca8c37"
+      },
+      "ww-windows-provision.exe": {
+        "build_sha256": "05ebf0b1af3c15c704b60279edad0fa9a32af007c0eacb3e741d4902ed9ae11c",
+        "archive_sha256": "05ebf0b1af3c15c704b60279edad0fa9a32af007c0eacb3e741d4902ed9ae11c",
+        "install_sha256": "05ebf0b1af3c15c704b60279edad0fa9a32af007c0eacb3e741d4902ed9ae11c"
+      },
+      "ww-windows-runner.exe": {
+        "build_sha256": "7953465ce7aca7821092b4e2d03b7ae3da0a39fdc7da92a6851fba0b85e94c71",
+        "archive_sha256": "7953465ce7aca7821092b4e2d03b7ae3da0a39fdc7da92a6851fba0b85e94c71",
+        "install_sha256": "7953465ce7aca7821092b4e2d03b7ae3da0a39fdc7da92a6851fba0b85e94c71"
+      }
+    }
+  },
+  "provisions": [
+    {
+      "manifest": "F:\\werkWorker\\target\\product-9d2ee11-6a42\\acceptance\\runtime\\provisioning.json",
+      "manifest_sha256": "28e29994132c8dfbe97aa08c9375989ad08b2a7c9b4490149ae8c82e34e08e24",
+      "schema_version": 5,
+      "runner_sha256": "7953465ce7aca7821092b4e2d03b7ae3da0a39fdc7da92a6851fba0b85e94c71",
+      "protected_runner": "F:\\werkWorker\\target\\product-9d2ee11-6a42\\acceptance\\runtime\\ww-windows-runner.exe",
+      "toolchain_roots": 5
+    },
+    {
+      "manifest": "F:\\werkWorker\\target\\product-9d2ee11-6a42\\acceptance\\installed-runtime\\provisioning.json",
+      "manifest_sha256": "12cfe71a7ae73388552953496bcc7b20b3b8f003d7c9789c9abeba53e3a27c1a",
+      "schema_version": 5,
+      "runner_sha256": "7953465ce7aca7821092b4e2d03b7ae3da0a39fdc7da92a6851fba0b85e94c71",
+      "protected_runner": "F:\\werkWorker\\target\\product-9d2ee11-6a42\\acceptance\\installed-runtime\\ww-windows-runner.exe",
+      "toolchain_roots": 5
+    }
+  ],
+  "wrapper": {
+    "archive_sha256": "c76a3966dabe34034c5a1227043989d57eb67a9d0e36844adc565ab159211b80",
+    "suite_setup_exit": 0,
+    "mandatory_suite_exit": 1,
+    "installed_setup_exit": 0,
+    "installed_start_exit": 1,
+    "qualified": false
+  },
+  "mandatory_suite": {
+    "cargo_test_harness_exit": 101,
+    "validator_exit": 1,
+    "host": {
+      "integrity_rid": 8192,
+      "elevated": false,
+      "mode": "linked_medium_bridge",
+      "outer_job_cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "missing_required_markers": 20,
+    "passed": 2,
+    "failed": 1,
+    "ignored": 5,
+    "profile_error": "sandbox_unqualified",
+    "log_sha256": "d2610c1d072eeb3e020c31c117344562c988482475a8857538e8c1486ec7b6b7"
+  },
+  "installed_offline_cargo": {
+    "cli_exit": 0,
+    "invocation_id": "invocation_96f8285a-f30e-4996-837d-fc5c2611220e",
+    "status": "failed",
+    "error_code": "sandbox_unqualified",
+    "executed": false,
+    "workload_exit": null,
+    "artifact_count": 0,
+    "host": {
+      "integrity_rid": 8192,
+      "elevated": false,
+      "mode": "linked_medium_bridge",
+      "outer_job_cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "validator_exit": 1,
+    "crate": "installed-offline-cargo-8af24b635e64cdeb",
+    "cargo_target_exists": false,
+    "marker_file_exists": false,
+    "qualified_invocation_count": 0,
+    "windows_artifacts": []
+  },
+  "supplemental_installed_rust_list": {
+    "cli_exit": 0,
+    "invocation_id": "invocation_a7016148-7bb7-42e5-8725-401dbfebbbea",
+    "status": "failed",
+    "error_code": "sandbox_unqualified",
+    "executed": false,
+    "workload_exit": null,
+    "artifact_count": 0,
+    "host": {
+      "integrity_rid": 8192,
+      "elevated": false,
+      "mode": "linked_medium_bridge",
+      "outer_job_cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "argv": [
+      "matched-startup-20261118-a/probe.exe",
+      "--list"
+    ],
+    "hashes": {
+      "probe": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+      "request": "ca3206e8812688ae1730e13c43787768d378959251938bc06be40bde4de4196d",
+      "installed_ww_exe": "c3d521059d2f96be317f1cc3d71e63d057f33d395d2909476850101986ca8c37",
+      "provisioning": "12cfe71a7ae73388552953496bcc7b20b3b8f003d7c9789c9abeba53e3a27c1a",
+      "protected_runner": "7953465ce7aca7821092b4e2d03b7ae3da0a39fdc7da92a6851fba0b85e94c71",
+      "script": "6484167a2446c021a473e601f3262c28c82f658ba89133bbddace00bc2746a4b",
+      "limits": "e25b78870f3d934b909ac4797082c601fa4aa820bd2685325b17c572483610b4",
+      "grants": "3a15c27bd2f4e6f73e7b1e35653989cea969484789d6550535e8f0276a5102d2"
+    },
+    "incomplete_receipt_present": false
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "source": "guarded original repository; compile-only, no elevated sandbox acceptance inferred",
+  "source_sha256": "cf80ddeb755877bf7394e9f789c7706e87af61287b4a1791a9255cb9fe7b2f6c",
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\namespace-no-default-features.log",
+      "sha256": "f6c4d127c263e4dc142d53a5de4436ce7340604fafa7b95fba6d0d688f57cadf"
+    },
+    {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "examples/sdk-consumer/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\namespace-sdk-consumer.log",
+      "sha256": "c742cf4ff5e6fa00266ff6fb4f72dcade1d4b5ccd7d08ae0d78d67b326ddff99"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-run",
+        "--message-format=json",
+        "--test",
+        "platform",
+        "--test",
+        "native_workspace",
+        "--test",
+        "sandbox_contract",
+        "--test",
+        "native_coding",
+        "--test",
+        "native_lifecycle",
+        "--test",
+        "native_policy",
+        "--test",
+        "contracts",
+        "--test",
+        "macos_process",
+        "--test",
+        "windows_sandbox",
+        "--test",
+        "windows_process_tree"
+      ],
+      "exit_code": 0,
+      "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\namespace-native-integration-no-run.log",
+      "sha256": "bc44866a33a0bda0069cdbfbab2440a73d8b8609d235a0383f4cf365342b7edc"
+    }
+  ],
+  "native_integration_executables": [
+    {
+      "target": "macos_process",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\macos_process-4479022a7c0296d8.exe",
+      "sha256": "2d67af05c7b4c23cbe67722d0e371f5b8a67fc3d5a5eda7f57aba97897841a14"
+    },
+    {
+      "target": "native_workspace",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\native_workspace-d9e9bb05cbb0473a.exe",
+      "sha256": "79dd93abd587ac43c386149ccceb12511f0b00a8d0dfc5e838d3b4c4bc572e0e"
+    },
+    {
+      "target": "sandbox_contract",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\sandbox_contract-7d21ecf1f14fcd47.exe",
+      "sha256": "b0bfdca46264114c6a179d671330b9f4630c14e79a56b90a28a03223c8555a59"
+    },
+    {
+      "target": "windows_sandbox",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\windows_sandbox-6c378ee7993c803d.exe",
+      "sha256": "148ae359cf51061d1056d38fb7286b4c492dc3281a7acdaad00319f769788b5f"
+    },
+    {
+      "target": "platform",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\platform-b5b0974ee0a80b0b.exe",
+      "sha256": "55756cc7d45ce1a07119e6dceefbccdb8640c619fd4fdf76e779cdbbcf13743c"
+    },
+    {
+      "target": "contracts",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\contracts-28c6bdd949230324.exe",
+      "sha256": "fa99545f237e1d2c0e1d438d3e599c1c783567b195be8b12a34c851e8e196ea6"
+    },
+    {
+      "target": "native_coding",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\native_coding-5b3e377afabcb263.exe",
+      "sha256": "0b80a51ceaf9ae300eba2e2537399023d26478d374b6b71c404242431a64b1c9"
+    },
+    {
+      "target": "native_lifecycle",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\native_lifecycle-d5350fb482e2b702.exe",
+      "sha256": "16621489b807ac710ad11f8e53dec566db0b92782003fcebd5d2ec1b4835ef5b"
+    },
+    {
+      "target": "native_policy",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\native_policy-1cd689cf8e20f06a.exe",
+      "sha256": "fdbde78484363b01209587a49960d1e47944fdc9c51cf616c56abe8042de7e03"
+    },
+    {
+      "target": "windows_process_tree",
+      "path": "F:\\werkWorker\\target\\debug\\deps\\windows_process_tree-8b20d90c66391e81.exe",
+      "sha256": "c5fdba5c3c14eac8646b45fc1b07b878638f17b555e582bcb69d324f25946171"
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+{
+  "date": "2026-11-18",
+  "scope": "Native differential reference using diagnostic CLIs, the ordinary host bridge and real process.run on separately provisioned workspaces. Release qualification requires the guarded product and mandatory suite.",
+  "ordinary_host": {
+    "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+    "authentication_id": "0x00000000002542ff",
+    "session_id": 1,
+    "integrity_rid": 8192,
+    "elevated": false
+  },
+  "fixture": {
+    "entry_point": "scripts/validate-windows-process-tree.py installed_start",
+    "argv": [
+      "{toolchain0}/bin/cargo.exe",
+      "test",
+      "--offline",
+      "--",
+      "--nocapture"
+    ],
+    "cargo_toml_sha256": "2e6e295b266095eddfdc3ed96484fa2c5c0b7b2a22a4d04e7e430abbde5bc3db",
+    "lib_rs_sha256": "80280cea403a42df67263d2ea8d9c8af8bdcac28cb97428d3da342fccc951f82",
+    "cargo_sha256": "c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9"
+  },
+  "toolchains": {
+    "per_schema_files": 4690,
+    "per_schema_bytes": 2103099261,
+    "differing_files": 0,
+    "root_source_paths_and_environment_template_equal": true,
+    "combined_sha256": "a81707ff6c5c39be6c9529cd8268385b0fb66fc44145d0a79bf1b4dbd55e354a",
+    "combined_hash_method": "SHA-256 of the five concatenated binary root digests in index order.",
+    "root_hash_method": "For each root hash each file's bytes, then hash newline terminated compact JSON arrays [relative_POSIX_path, size, lowercase_SHA256] sorted by path.",
+    "roots": [
+      {
+        "index": 0,
+        "source": "Rust stable x64 MSVC",
+        "files": 3970,
+        "bytes": 1185502650,
+        "sha256": "096244d933dbad331fe5af0a72828e9e8260a751e2f7c3c167468f824b9bc943"
+      },
+      {
+        "index": 1,
+        "source": "MSVC Hostx64/x64 tools",
+        "files": 84,
+        "bytes": 126623602,
+        "sha256": "5a35fd1b48d7e5446f9247c56b3cc4e9d36bcfa6ee6ae938984713c3bfb8a031"
+      },
+      {
+        "index": 2,
+        "source": "MSVC x64 libraries",
+        "files": 147,
+        "bytes": 590143107,
+        "sha256": "101dbd808f9040f924fb777a3cf23f0196d50fb8cd514b69a90f41b2485516f1"
+      },
+      {
+        "index": 3,
+        "source": "Windows SDK x64 UM libraries",
+        "files": 481,
+        "bytes": 110187164,
+        "sha256": "4390942d7484211b773bd2509bd655c6d874f1dc67d1a48b78ce48c6796f194c"
+      },
+      {
+        "index": 4,
+        "source": "Windows SDK x64 UCRT libraries",
+        "files": 8,
+        "bytes": 90642738,
+        "sha256": "0a4a448041ed87a5700418fa6b74bb530fb9f6fd59a47efe4ebcfb6721db534d"
+      }
+    ],
+    "original": {
+      "path": "target/matched-startup-20261118-controls/schema5-full-5ddc/toolchain-comparison.json",
+      "sha256": "cda6af4fb089f9f0398907d81580e6f02704e72f13318b1aa5b7c917d5012cfd"
+    }
+  },
+  "results": {
+    "schema4": {
+      "reference_workload_passed": true,
+      "cli_exit": 0,
+      "cargo_exit": 0,
+      "cargo_exit_hex": "0x0",
+      "cargo_pid": 63020,
+      "stdout": "\nrunning 1 test\nINSTALLED_NATIVE_TREE_OK\ntest installed_native_test ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+      "stderr": "   Compiling installed-offline-tree v0.0.0 (F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\installed-offline-cargo-908d9d30032fddd1)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.74s\n     Running unittests src\\lib.rs (target\\debug\\deps\\installed_offline_tree-fc150bc5c002a938.exe)\n",
+      "timed_out": false,
+      "cancelled": false,
+      "truncated": false,
+      "elapsed_ms": 8625,
+      "text_artifact": {
+        "present": true,
+        "content": "INSTALLED_NATIVE_TREE_OK\n",
+        "sha256": "adb8dd9e095f58e4d63d406136f1fccc8855060dbb7c04430d61b193760990f8"
+      },
+      "x64_pe_artifacts": [
+        {
+          "name": "installed_offline_tree-fc150bc5c002a938.exe",
+          "size": 744960,
+          "machine": "0x8664",
+          "sha256": "e38cf536db3f28ff1d342d46e142d0a269aded2ad49042d9022d0c0cfbd828c1"
+        }
+      ],
+      "payload_account_sid": "S-1-5-21-4275439644-3620842777-1714106797-1011",
+      "runner_sha256": "c1b5cb93341e70c7b41bb87867915eef0eee0d4799089fd50cba976cd9567169",
+      "cli_sha256": "a83983b7a58583efc9e9e41a9ddc7d6c6001df79e645f1721e641440be482ac7",
+      "manifest_sha256": "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f",
+      "cleanup": {
+        "pinned_handles_signaled": 10,
+        "outer_job_drain_confirmed": true,
+        "outer_job_active_after": 0,
+        "incomplete_marker_after": false,
+        "private_cli_removed": true
+      },
+      "list_control": {
+        "argv": [
+          "matched-startup-20261118-a/probe.exe",
+          "--list"
+        ],
+        "probe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+        "native_exit": 0,
+        "original": {
+          "path": "target/matched-startup-20261118-controls/schema4-list/observation.json",
+          "sha256": "edd9b614fd20118cd0b2f64a4cd45758840e1e6cc0f15e66137ede5cf56acfc4"
+        }
+      },
+      "original": {
+        "path": "target/matched-startup-20261118-controls/schema4-cargo/cargo-reference.json",
+        "sha256": "1fe00e4c41b35ad64a1c81dbf3f53c5983d4605e78206fb5a89ee2659715ac2a"
+      },
+      "release_qualification": "Historical schema 4 reference. The current validator requires the schema 5 appcontainer_sid field."
+    },
+    "schema5": {
+      "reference_workload_passed": false,
+      "cli_exit": 1,
+      "cargo_exit": -1073741502,
+      "cargo_exit_hex": "0xc0000142",
+      "cargo_pid": 140532,
+      "stdout": "",
+      "stderr": "",
+      "timed_out": false,
+      "cancelled": false,
+      "truncated": false,
+      "elapsed_ms": 3000,
+      "text_artifact": {
+        "present": false
+      },
+      "x64_pe_artifacts": [],
+      "payload_account_sid": "S-1-5-21-4275439644-3620842777-1714106797-1060",
+      "runner_sha256": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "cli_sha256": "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+      "manifest_sha256": "604fa29fa245c4172398b0838ff1fec42d257ca74908c1c1465800a6a3d2884f",
+      "cleanup": {
+        "pinned_handles_signaled": 3,
+        "outer_job_drain_confirmed": true,
+        "outer_job_active_after": 0,
+        "incomplete_marker_after": false,
+        "private_cli_removed": true
+      },
+      "list_control": {
+        "argv": [
+          "matched-startup-20261118-a/probe.exe",
+          "--list"
+        ],
+        "probe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+        "native_exit": -1073741502,
+        "original": {
+          "path": "target/matched-startup-20261118-controls/schema5-full-5ddc/test-list/observation.json",
+          "sha256": "3c27fac22f31414282cd3a3eb3dbba2cbbcaa959ad8caa2f9141dcbf9dc40e92"
+        }
+      },
+      "original": {
+        "path": "target/matched-startup-20261118-controls/schema5-full-5ddc/cargo/cargo-reference.json",
+        "sha256": "d524802d432c830380e7e1577caac8e4c8ac056941325c6f4a25820b4e53bef1"
+      },
+      "release_qualification": "The schema 5 diagnostic installed-start validator returned 1 and counted zero qualified invocations."
+    }
+  }
+}

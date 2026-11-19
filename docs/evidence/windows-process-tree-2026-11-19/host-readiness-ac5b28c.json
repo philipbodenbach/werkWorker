@@ -1,0 +1,91 @@
+{
+  "scope": "Host readiness and selected historical input identities. No candidate qualification verdict.",
+  "source_at_start": {
+    "worker_branch": "feat/windows-child-process",
+    "worker_head": "ac5b28cc31ecd4cd59e36326c3084b2b2f6708de",
+    "worker_worktree": "clean",
+    "werk1112_branch": "feat/expand-werkProtocol",
+    "werk1112_head": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+    "werk1112_worktree": "clean"
+  },
+  "current_host_preflight": {
+    "status": "PASS",
+    "receipt_mtime_utc": "2026-11-19T14:40:29.4757196Z",
+    "command_in_ordinary_process": ["python.exe", "-I", "scripts/validate-windows-process-tree.py", "--inspect-native-host"],
+    "exit_code": 0,
+    "source_head_at_launch": "ac5b28cc31ecd4cd59e36326c3084b2b2f6708de",
+    "validator_sha256_at_launch": null,
+    "validator_provenance": "The launch receipt does not record a hash of the validator.",
+    "host": {
+      "mode": "ordinary_host",
+      "token_source": "unchanged ordinary parent subprocess",
+      "parent_and_child_same_user_session_and_authentication_id": true,
+      "user_sid_utf8_sha256": "b4a93751db3f3f37e12cf4f858c5a11821574cfa23172f0c6b0f45af8d06fb24",
+      "session": 1,
+      "elevated": false,
+      "appcontainer": false,
+      "token_type": 1,
+      "integrity_rid": 8192,
+      "launcher_verified_before_resume": false,
+      "windows_build": 26200,
+      "ubr": 9974,
+      "workstation": true,
+      "platform": "win-amd64",
+      "native_machine": 34404,
+      "process_machine": 0
+    },
+    "psec": {
+      "module": "C:/Windows/System32/processmodel.dll",
+      "module_sha256": "ed703d26d7f3c124d11291220744be460d2574ddc163ad5b74ee2a3367fda462",
+      "features_hresult": 0,
+      "version_hresult": 0,
+      "v1_minor": 1,
+      "support_flags": 15
+    },
+    "local_files_sha256": {
+      "target/qualification-ac5b28c-current-host/preflight-result.json": "7d2fa076308d1313df0f793f98cfaa39da6f8547a39656eda630a236d17d3e7f",
+      "target/qualification-ac5b28c-current-host/host.log": "285a9839043bde682034679b2def36064b32f1dabd7e317c375b77f96f1dd504"
+    }
+  },
+  "historical_cargo_start": {
+    "source_worker_head": "db629ba4726d825d92caf58e14a28bb6a1e04678",
+    "historical_launch_utc": "2026-11-19T11:50:22.647031+00:00",
+    "input_verification": "Retained inputs rehashed at ac5b28c. No product package was used by this historical diagnostic.",
+    "receipt": "docs/evidence/windows-process-tree-2026-11-19/cargo-psec-win32k-db629ba.json",
+    "receipt_sha256": "ef6896c2591d09287531b074216785519536fb52a9c459e37462033d7c0d4664",
+    "actual_executor": "standalone fixed diagnostic using CreateProcessSecurityEnvironment and PROC_THREAD_ATTRIBUTE_SECURITY_ENVIRONMENT",
+    "payload": ["cargo.exe", "--version"],
+    "only_different_decoded_field_verified": "disallow_win32k_system_calls",
+    "observed_before_resume": [true, false],
+    "exit_hex": ["0xC0000142", "0x00000000"],
+    "output_allowed_arm": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "differing_private_objects": "Individual PSEC package SID, unnamed Job and anonymous pipes per arm.",
+    "cargo_sha256_verified_for_all_three_paths": "c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9",
+    "cargo_paths": [
+      "%USERPROFILE%/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe",
+      "target/matched-startup-20261118-controls/schema5-full-5ddc/runtime/toolchains/0/bin/cargo.exe",
+      "%LOCALAPPDATA%/Temp/ww-cargo-psec-b19ac76e8fbc47a6b9e1e90aa3e31ccc/runtime/cargo.exe"
+    ],
+    "lab_directory": "F:/WIndowsBuilderWerk/werk1112/target/cargo-win32k-pair-db629ba-24e30009",
+    "verified_lab_files_sha256": {
+      "A.bin": "3ec6bfe5cdc56201f3a2eb2c7daa10891435df6d2d9a697db5ecbda5dfde734e",
+      "B.bin": "19605f8e2210a3bbb301447eb8ebab964b9426be9b1564ae460450227d6e9083",
+      "pair.raw.log": "a158e87de42259d73481f76d6840b0e23f63f82bc9acd9ac46d61adb456e3712"
+    },
+    "verified_local_archive": {
+      "path": "target/cargo-psec-win32k-db629ba/fixed-cargo-version-raw.zip",
+      "sha256": "1222179f0989b79e827e8d3bc6ccb8148f0e16bfffc6d5f6e093b5484bd98dd1"
+    },
+    "scope": "Retained compatibility result. No new Cargo invocation or installed process.run execution in this preflight."
+  },
+  "historical_rust_inputs_verified_sha256": {
+    "target/native-psec-list-9416c0b059e6/runtime/probe.exe": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+    "target/win32k-evidence-843acba-mwmneg4d/checkout-probe-4a1d423a2f/evidence/inputs.json": "56e732742f81084716a63cc4063d5d88461ede335d4a6b8ee1c65a43fdd335aa"
+  },
+  "historical_111dd": {
+    "restoration": "unconfirmed",
+    "original_run_directory": "target/tree-ac-1118/fresh-provision-111ddf337b454e51a4bab402601838e5",
+    "record": "docs/evidence/windows-process-tree-2026-11-18/native-write-boundary-2ae77b1.json",
+    "observation": "The retained directory contains setup data. No release receipt, job census or original binary DACL was identified for this run. No restoration attempted."
+  }
+}

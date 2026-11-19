@@ -1,0 +1,196 @@
+{
+  "base_commit": "8cbefc0",
+  "native_host": {
+    "os": "Windows 11 Pro 25H2",
+    "build": "26200.9974",
+    "rust": "1.98.1 x86_64-pc-windows-msvc",
+    "cargo": "1.98.1",
+    "msvc": "14.51.36231 (Visual Studio 18 Community)",
+    "fresh_ntfs_checkout": true,
+    "fresh_target_dir": true
+  },
+  "baseline_tests": {
+    "contracts": 3,
+    "native_coding": 1,
+    "native_lifecycle": 4,
+    "native_policy": 9,
+    "native_workspace": 6,
+    "platform": 3,
+    "sandbox_contract": 2,
+    "windows_sandbox": 7,
+    "parallel_unit": 2,
+    "cli_config_unit": 1
+  },
+  "passed": 38,
+  "failed": 0,
+  "ignored_subprocess_fixtures": 4,
+  "checks": [
+    {
+      "name": "build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "--bins"
+      ],
+      "exit_code": 0,
+      "seconds": 89.69
+    },
+    {
+      "name": "parallel",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--lib",
+        "parallel::tests"
+      ],
+      "exit_code": 0,
+      "seconds": 45.1
+    },
+    {
+      "name": "native-integration",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-fail-fast",
+        "--test",
+        "platform",
+        "--test",
+        "native_workspace",
+        "--test",
+        "sandbox_contract",
+        "--test",
+        "native_coding",
+        "--test",
+        "native_lifecycle",
+        "--test",
+        "native_policy",
+        "--test",
+        "contracts",
+        "--test",
+        "windows_sandbox",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 54.9
+    },
+    {
+      "name": "cli-config",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--bin",
+        "ww",
+        "cli_config::tests"
+      ],
+      "exit_code": 0,
+      "seconds": 19.5
+    },
+    {
+      "name": "no-default-lib",
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--lib"
+      ],
+      "exit_code": 0,
+      "seconds": 35.76
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 34.65
+    },
+    {
+      "name": "sdk",
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "examples/sdk-consumer/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "seconds": 19.92
+    }
+  ],
+  "limitations": [
+    "Baseline evidence is for the existing single-process LPAC product only.",
+    "native_coding executes a precompiled expression fixture, not sandboxed Cargo.",
+    "Host-death conformance currently checks no late write, not a retained process handle.",
+    "Native Python is 3.10; scripts/build-windows.ps1 requires Python 3.11+, so Cargo commands were used directly.",
+    "No claim of Windows Server 2022 CI execution."
+  ],
+  "logs": {
+    "before-packaging-release-smoke.log": "bf24b5693382f0b0e0e964a54ff50e9a613c5a1f2b351cf16981ddb25cae44de",
+    "before-packaging-release.log": "0156f7b8aa015402f3d0f6fce321e3b3e80356d253d212a6bebba2220d5959ec",
+    "build.log": "d15418a94496aff277d024527ee3b8671df673abc2e8c4c21abb9f68438a0c03",
+    "cli-config.log": "160af87020c027cd969a74b471938b462fa2b738d1dc1e30c84b77bcefa199c2",
+    "clippy.log": "33161e203ece9af42b3eb0db7aa67d0cef691d4f78d8bec7ee656f668ff82cfc",
+    "environment.log": "37da725c96ad21b434ae3b153777a32a6fbf2fdc6d14baa87ddda792a929fc09",
+    "native-integration.log": "081d051c699b06c26985d0d17f3390fcac4136b450cbe0cad79e19c4341185e9",
+    "no-default-lib.log": "dd33b1da3f57e407b3a2f03a56e539eca64e2388ea5677bcb2f6c0d162f97193",
+    "parallel.log": "373d380d272d432f4a6d6ac8e28a1bb46f605b6a46d99c57915232ae645e4132",
+    "release-smoke.log": "bf24b5693382f0b0e0e964a54ff50e9a613c5a1f2b351cf16981ddb25cae44de",
+    "release.log": "ff456b234202b717ceef839d800a32f2e730df5802218b7bf8f4e1575b3b9973",
+    "sdk.log": "e5fb61f12565e16a691347af143f93a807277a7a7bf926e528021d65e72214fe"
+  },
+  "release": {
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--offline",
+      "--release",
+      "--bins",
+      "--target",
+      "x86_64-pc-windows-msvc"
+    ],
+    "exit_code": 0,
+    "seconds": 2.0,
+    "binaries": {
+      "ww.exe": {
+        "path": "C:\\Users\\Philip Bodenbach\\AppData\\Local\\Temp\\werkworker-native-baseline-15246469a5784bf383ea5030a5ab7c86\\target\\x86_64-pc-windows-msvc\\release\\ww.exe",
+        "sha256": "1ce51e67f8e6c7ecd6c6f4c8e151a8339f8f3692cb1e2dc97242913fde54c9ad",
+        "size": 22904832,
+        "smoke_exit": 0
+      },
+      "werk-worker.exe": {
+        "path": "C:\\Users\\Philip Bodenbach\\AppData\\Local\\Temp\\werkworker-native-baseline-15246469a5784bf383ea5030a5ab7c86\\target\\x86_64-pc-windows-msvc\\release\\werk-worker.exe",
+        "sha256": "065d18e28ffdca690241d0861fc2089b89ea8a2a6392724dd32b3a46117f55f1",
+        "size": 22905344,
+        "smoke_exit": 0
+      }
+    }
+  },
+  "source_equivalence": {
+    "copied_file": "Cargo.toml",
+    "baseline_sha256": "d603c525baf0ec7b817b669690e80b9b2c4029d5377e556e5a9b53d052583292",
+    "final_sha256": "16a579d5252a0b92adabdd029aab9dc6c4e85b33cf495f42c9f7f7e5838d5a27",
+    "code_equivalence_files": 126,
+    "different_code_files": [],
+    "packaging_only_change": true
+  }
+}

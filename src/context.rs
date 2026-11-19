@@ -529,8 +529,8 @@ impl DefaultContextBuilder {
             );
             #[cfg(any(target_os = "macos", windows))]
             prompt.push_str(&format!(
-                "Native process platform: {}. Workspace root (path data): {}. /workspace is a file-tool alias, not a native process mount. Process argv/scripts/stdin are passed literally. Use CWD-relative files and available native executable paths. The native process mode denies child creation; multiprocess builds and browser isolation are unavailable. Read temporary paths from TMPDIR (macOS) or TEMP (Windows); Windows private profile data can persist between calls.\n",
-                std::env::consts::OS, serde_json::to_string(&session.workspace)?,
+                "Native process platform: {}. Use /workspace for file tools and CWD-relative paths for native commands. Process argv, scripts and stdin are passed literally. The host selects the process profile and its child-process limits. Read temporary paths from TMPDIR (macOS) or TEMP (Windows). Windows private profile data can persist between calls.\n",
+                std::env::consts::OS,
             ));
             prompt.push_str(&format!(
             "Remaining: {} steps, {} tool calls, including implementation, repeated checks and final report.\n",

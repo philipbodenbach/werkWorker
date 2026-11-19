@@ -1,0 +1,241 @@
+{
+  "command": [
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-guarded-installation\\bin\\ww.exe",
+    "--native-sandbox-config",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\installed-native.json",
+    "--workspace",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-product-workspace",
+    "--grants",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\installed-grants.json",
+    "--script",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\installed-start-script.json",
+    "--harness",
+    "minimal",
+    "--process-limits",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\installed-process-limits.json",
+    "--store",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\installed-start.sqlite",
+    "run",
+    "Run the explicitly provisioned native offline Cargo acceptance.",
+    "--profile",
+    "coding-basic"
+  ],
+  "cwd": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start",
+  "exit_code": 0,
+  "native_host_token": {
+    "mode": "linked_medium_bridge",
+    "launcher": {
+      "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+      "elevated": true,
+      "authentication_id": "0x000000000025429d",
+      "integrity_rid": 12288,
+      "integrity_sid": "S-1-16-12288",
+      "elevation_type": 2,
+      "session_id": 1,
+      "token_type": 1,
+      "appcontainer": false
+    },
+    "execution": {
+      "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+      "elevated": false,
+      "authentication_id": "0x00000000002542ff",
+      "integrity_rid": 8192,
+      "integrity_sid": "S-1-16-8192",
+      "elevation_type": 3,
+      "session_id": 1,
+      "token_type": 1,
+      "appcontainer": false
+    },
+    "verified_before_resume": true,
+    "inherited_handle_count": 0,
+    "suspended_handle_count": 0,
+    "inherited_handles": [],
+    "token_source": {
+      "kind": "system_explorer_matching_linked_logon",
+      "process_id": 18532,
+      "image": "C:\\Windows\\explorer.exe",
+      "linked_token": {
+        "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+        "elevated": false,
+        "authentication_id": "0x00000000002542ff",
+        "integrity_rid": 8192,
+        "integrity_sid": "S-1-16-8192",
+        "elevation_type": 3,
+        "session_id": 1,
+        "token_type": 2,
+        "appcontainer": false
+      },
+      "primary_token": {
+        "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+        "elevated": false,
+        "authentication_id": "0x00000000002542ff",
+        "integrity_rid": 8192,
+        "integrity_sid": "S-1-16-8192",
+        "elevation_type": 3,
+        "session_id": 1,
+        "token_type": 1,
+        "appcontainer": false
+      }
+    },
+    "creation_api": "CreateProcessWithTokenW",
+    "task": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\ordinary-command-613290afa5af9f6fceaaeda0b26dda24.json",
+    "result": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\ordinary-result-613290afa5af9f6fceaaeda0b26dda24.json",
+    "nonce": "613290afa5af9f6fceaaeda0b26dda24",
+    "outer_job": {
+      "kill_on_close": true,
+      "ui_restrictions": 0,
+      "resource_limit_flags": 0,
+      "membership_verified": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "resumed": true,
+    "bridge_exit_code": 0,
+    "command_host_token": {
+      "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+      "elevated": false,
+      "authentication_id": "0x00000000002542ff",
+      "integrity_rid": 8192,
+      "integrity_sid": "S-1-16-8192",
+      "elevation_type": 3,
+      "session_id": 1,
+      "token_type": 1,
+      "appcontainer": false
+    }
+  },
+  "log": "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-medium-installed-start\\installed-start.log",
+  "log_sha256": "a95e069bc9fc6122c9cca41312304fced3cf0308bfad8b3486a395440b66eca7",
+  "binary_sha256": "20c6530faefb864cf1ad9bebaa8caa018fb32727cf3c6fae0d6322d83bcc0f21",
+  "manifest_sha256": "dde40f7d00fb245c981f72985afd9da279d559297e924d928204e76eaf8def49",
+  "invocations": [
+    {
+      "invocation_id": "invocation_f98fb120-97c5-43a2-a10d-c4f5f05b313a",
+      "step_id": "step_33f895a2-3e78-4c87-997c-46930fa94ecb",
+      "message_index": 7,
+      "call": {
+        "id": "installed-5be46fa97bdd605e",
+        "name": "process.run",
+        "arguments": {
+          "argv": [
+            "F:\\werkWorker\\target\\windows-process-tree-20261117\\isolated-product-runtime\\toolchains\\0\\bin\\cargo.exe",
+            "test",
+            "--offline",
+            "--",
+            "--nocapture"
+          ],
+          "cwd": "installed-offline-cargo-7aa7220d7fb22a2f",
+          "verification": {
+            "criteria": [
+              "The provisioned offline Cargo test exits zero",
+              "The native test prints INSTALLED_NATIVE_TREE_OK and creates its Windows artifact"
+            ],
+            "kind": "behavior",
+            "paths": [
+              "installed-offline-cargo-7aa7220d7fb22a2f/Cargo.toml",
+              "installed-offline-cargo-7aa7220d7fb22a2f/src/lib.rs"
+            ]
+          }
+        }
+      },
+      "definition": {
+        "name": "process.run",
+        "version": "1",
+        "description": "Sandboxed literal argv, no implicit shell or network. When the interpreter is available, use argv:[\"python3\",\"-\"] or [\"sh\"] with stdin containing the script; shell syntax otherwise needs [\"sh\",\"-c\",script]. Finish a runnable core, then check behavior. verification.kind must explicitly be behavior for real entry-point assertions; syntax/inspection or omitted kind are diagnostics. Include criteria and relevant paths. A successful corrected check can replace a broken check via verification.replaces=source_invocation; it must cover its paths. Diagnostics do not prove behavior. Workspace files persist. Linux exposes /workspace and a fresh /tmp; native platforms use real workspace paths and private OS temporary storage. Use CWD-relative file paths; argv and stdin are never rewritten. Child creation follows the host-approved sandbox profile.",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "argv": {
+              "items": {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              "maxItems": 128,
+              "minItems": 1,
+              "type": "array"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "stdin": {
+              "description": "Literal standard input, closed after delivery. Use for scripts instead of shell here-documents or temporary files.",
+              "maxLength": 32768,
+              "type": "string"
+            },
+            "verification": {
+              "additionalProperties": false,
+              "properties": {
+                "criteria": {
+                  "items": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 32,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "behavior",
+                    "syntax",
+                    "inspection"
+                  ],
+                  "type": "string"
+                },
+                "paths": {
+                  "items": {
+                    "maxLength": 65536,
+                    "type": "string"
+                  },
+                  "maxItems": 64,
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "replaces": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "criteria",
+                "paths"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "argv"
+          ],
+          "type": "object"
+        },
+        "effect": "process",
+        "timeout_ms": 30000,
+        "output_limit": 8192,
+        "concurrency_safe": false
+      },
+      "status": "finished",
+      "prepared": null,
+      "result": {
+        "status": "failed",
+        "data": {
+          "executed": false,
+          "message": "The Windows process-tree profile is unqualified and disabled: native tests show DNS Client broker queries escaping network denial and AllocConsole exceeding the active-process limit. Complete native isolation, resource-limit, lifecycle, offline Cargo and fresh-install acceptance must pass before this profile can be enabled."
+        },
+        "error_code": "sandbox_unqualified",
+        "artifacts": [],
+        "truncated": false
+      },
+      "approval": null,
+      "interaction": null
+    }
+  ],
+  "qualified_invocation_count": 0,
+  "windows_artifacts": [],
+  "passed": false
+}

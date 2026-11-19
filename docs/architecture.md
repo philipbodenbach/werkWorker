@@ -5,6 +5,8 @@ installed as `werk-worker` and `ww`, both sharing the same implementation.
 The starting repository had only Cargo's hello-world program.
 Keep all changes local. Product name: werkWorker. License: Elastic-2.0.
 
+The [inference and execution decision](inference-and-execution-adr.md) describes provider selection, disclosure authorization and the native Windows release gate.
+
 Dependencies flow from CLI/transport to the public SDK, then to contracts,
 providers, store, policy and runtime. Tools implement an explicit trait; core
 does not know ticket or Git semantics. Skills are immutable data. Profiles
@@ -47,7 +49,7 @@ harness, tools, permission model and session store.
 | Component | Responsibility | Current integration |
 |---|---|---|
 | werkWorker | Agent execution, harness, tools, approvals, sessions and subagents | Public `werk_worker` SDK; standalone `ww` / `werk-worker`; JSONL via `ww rpc` |
-| werk1112 | Inference, models and runtime management | werkWorker's `WerkProvider` uses its public HTTP APIs |
+| werk1112 | Inference, models and runtime management | werkWorker uses versioned Werk Protocol routes for models, chat, runtime controls and native inference tools |
 | werkStation | Planned wrapper suite and shared application interface | Intended to import and compose werkWorker and werk1112; suite integration is future work |
 
 The planned suite reuses the agent implementation in werkWorker and the

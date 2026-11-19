@@ -1,4 +1,12 @@
-# Werk reuse decision — 2026-10-19
+# Werk HTTP integration
+
+The current Werk connection uses the versioned model list and tool-capable
+chat routes on `feat/expand-werkProtocol`. Media tools use versioned catalogue,
+invocation, job and output routes on that same connection. Third-party chat
+providers can be selected explicitly with a separate origin and credentials.
+See [connection setup](setup.md) for configuration.
+
+## Original Werk reuse decision — 2026-10-19
 
 Wire reference: philipbodenbach/werk1112
 `78254d7f709586576ec14d06a7f362a8185c2f36` (remote HEAD checked).

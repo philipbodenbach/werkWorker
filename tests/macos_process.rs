@@ -41,6 +41,7 @@ impl Fixture {
             native: NativeSandboxConfig {
                 macos_path_based_workspace: true,
                 macos_system_task_access: true,
+                ..Default::default()
             },
             // The test host already has a VM map before fork. The backend must
             // reject a requested limit it cannot lower, rather than ignore it.
@@ -515,6 +516,7 @@ async fn host_exit_fixture() {
         native: NativeSandboxConfig {
             macos_path_based_workspace: true,
             macos_system_task_access: true,
+            ..Default::default()
         },
         limits: werk_worker::runtime::ProcessLimits {
             memory_bytes: 1024 * 1024 * 1024 * 1024,

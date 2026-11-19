@@ -648,6 +648,9 @@ pub struct SessionData {
     pub revision: u64,
     pub workspace: PathBuf,
     pub workspace_identity: String,
+    /// Host-owned first-hop and model authorization for explicitly routed sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_disclosure_binding: Option<String>,
     pub sandbox_id: String,
     pub principal: String,
     pub profile: crate::profiles::AgentProfile,

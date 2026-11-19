@@ -1,0 +1,104 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--target-dir",
+    "F:\\werkWorker\\target\\tree-job-1118-check\\build",
+    "--lib",
+    "runtime::windows_tree_runner::restricted_token_tests",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "F:\\werkWorker",
+  "exit_code": 0,
+  "native_host_token": {
+    "mode": "linked_medium_bridge",
+    "launcher": {
+      "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+      "elevated": true,
+      "authentication_id": "0x000000000025429d",
+      "integrity_rid": 12288,
+      "integrity_sid": "S-1-16-12288",
+      "elevation_type": 2,
+      "session_id": 1,
+      "token_type": 1,
+      "appcontainer": false
+    },
+    "execution": {
+      "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+      "elevated": false,
+      "authentication_id": "0x00000000002542ff",
+      "integrity_rid": 8192,
+      "integrity_sid": "S-1-16-8192",
+      "elevation_type": 3,
+      "session_id": 1,
+      "token_type": 1,
+      "appcontainer": false
+    },
+    "verified_before_resume": true,
+    "inherited_handle_count": 0,
+    "suspended_handle_count": 0,
+    "inherited_handles": [],
+    "token_source": {
+      "kind": "system_explorer_matching_linked_logon",
+      "process_id": 18532,
+      "image": "C:\\Windows\\explorer.exe",
+      "linked_token": {
+        "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+        "elevated": false,
+        "authentication_id": "0x00000000002542ff",
+        "integrity_rid": 8192,
+        "integrity_sid": "S-1-16-8192",
+        "elevation_type": 3,
+        "session_id": 1,
+        "token_type": 2,
+        "appcontainer": false
+      },
+      "primary_token": {
+        "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+        "elevated": false,
+        "authentication_id": "0x00000000002542ff",
+        "integrity_rid": 8192,
+        "integrity_sid": "S-1-16-8192",
+        "elevation_type": 3,
+        "session_id": 1,
+        "token_type": 1,
+        "appcontainer": false
+      }
+    },
+    "creation_api": "CreateProcessWithTokenW",
+    "task": "F:\\werkWorker\\target\\tree-job-1118-check\\ordinary-command-2388576a544147ab119e5eed93f91290.json",
+    "result": "F:\\werkWorker\\target\\tree-job-1118-check\\ordinary-result-2388576a544147ab119e5eed93f91290.json",
+    "nonce": "2388576a544147ab119e5eed93f91290",
+    "outer_job": {
+      "kill_on_close": true,
+      "ui_restrictions": 0,
+      "resource_limit_flags": 0,
+      "membership_verified": true,
+      "cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      }
+    },
+    "resumed": true,
+    "bridge_exit_code": 0,
+    "command_host_token": {
+      "user_sid": "S-1-5-21-4275439644-3620842777-1714106797-1001",
+      "elevated": false,
+      "authentication_id": "0x00000000002542ff",
+      "integrity_rid": 8192,
+      "integrity_sid": "S-1-16-8192",
+      "elevation_type": 3,
+      "session_id": 1,
+      "token_type": 1,
+      "appcontainer": false
+    }
+  },
+  "log": "F:\\werkWorker\\target\\tree-job-1118-check\\runner-tests.log",
+  "log_sha256": "d9c4ded007bc1d4876875647799d6abfcadf6c5941ee1a674c1fb774858d621b"
+}

@@ -1,0 +1,94 @@
+{
+  "base_commit": "ac5b28cc31ecd4cd59e36326c3084b2b2f6708de",
+  "branch": "feat/windows-child-process",
+  "product_status": "NOT_QUALIFIED",
+  "tested_candidate_package_sha256": null,
+  "installed_product_executor_observed": null,
+  "host_measurement": "host-readiness-ac5b28c.json",
+  "retained_compatibility_result": "cargo-psec-win32k-db629ba.json",
+  "new_direct_native_measurements": {
+    "profile": "Retained Cargo pair, PSEC B, Win32k allowed, no inherited handles, fixed cargo.exe suspended throughout. Direct diagnostics, separate from the product.",
+    "pair_directory": "F:/WIndowsBuilderWerk/werk1112/target/cargo-win32k-pair-db629ba-24e30009",
+    "reproduction": "From the verified normal host run scripts/psec-budget-repro/check-suspended-child-policy.ps1 -PairDirectory <pair_directory> -OutputDirectory <fresh_dir> -JobMode <mode>. Run once for each mode below.",
+    "observations": [
+      {"mode": "outer", "status": "FAIL", "exit": 1, "raw": "child-policy-01", "ordinary_child_process_flags": 1, "psec_child_process_flags": 0, "both_outer_members": true},
+      {"mode": "leaf-budget", "status": "FAIL", "exit": 1, "raw": "leaf-budget-list-product-ui", "ordinary_member_of_both_jobs": true, "psec_member_of_either_job": false, "outer_limit": 2, "outer_limit_flags": 8200, "inner_limit": 1, "outer_ui_flags": 255, "prior_observer": "leaf-budget-01 used the SDK full UI mask 1023. Separate sources and logs retained."},
+      {"mode": "assign-suspended", "status": "PASS", "exit": 0, "raw": "leaf-budget-assigned-product-ui", "ordinary_and_psec_member_of_both_jobs": true, "outer_limit": 2, "outer_limit_flags": 8200, "inner_limit": 1, "inner_limit_flags": 8200, "outer_ui_flags": 255, "psec_child_process_flags": 0, "prior_observer": "leaf-budget-02"}
+    ],
+    "cleanup": "In all five paired runs the ten roots were terminated without resume and their retained handles signaled. All observed jobs reported zero active members. No conhost or descendant was exercised.",
+    "scope": "Explicit post-create/pre-resume assignment corrected missing job membership. The two required console cases and simultaneous-process ceiling remain unmeasured on this configuration."
+  },
+  "direct_root_token_test": {
+    "diagnostic": "scripts/tests/windows_psec_token.py",
+    "command": "python -B scripts/tests/windows_psec_token.py <stage from Cargo pair setup.json>",
+    "initial": {"status": "NOT_RUN", "raw": "../qualification-ac5b28c-current-host/psec-writer-suspended.log", "reason": "Both PSEC creation calls failed with Win32 203 before token readback."},
+    "fixed_environment": {"status": "PASS", "exit": 0, "raw": "../qualification-ac5b28c-current-host/psec-writer-environment.log", "ordinary_writer": "Medium, only provisioned writer restricting SID", "psec_control": "Low AppContainer, empty restricting SID list", "psec_with_writer": "Low AppContainer, only provisioned writer restricting SID", "all_win32k_flags": 0, "all_signaled": true, "payloads_resumed": 0},
+    "scope": "Direct readback of the suspended primary tokens. No file or registry permissions or descendants were measured in this comparison."
+  },
+  "cargo_writer_startup": {
+    "image_sha256": "c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9",
+    "psec_policy_sha256": "19605f8e2210a3bbb301447eb8ebab964b9426be9b1564ae460450227d6e9083",
+    "command": "python -B scripts/psec-budget-repro/check-cargo-writer-version.py <pair_directory> <fresh_output> [--private-dirs]",
+    "source": "Pinned archived fixed-cargo.cpp and fixed-paths.inc, generated exact diagnostic delta and sources captured in each raw directory.",
+    "mode": "Direct fixed cargo.exe --version, one running payload in a Job of capacity two. No child requested. System32 processmodel.dll, CreateProcessAsUserW, suspended creation, checked account restrictions and Win32k before resume. The version diagnostic uses a two-handle standard-I/O list.",
+    "pre_resume": {"win32k_disallowed": false, "integrity_rid": 4096, "appcontainer": true, "reported_capabilities": 1, "lpac_measured": false, "lpac_query_win32": 87, "outer_job_ui": 255},
+    "original_pair_paths": {"raw": "cargo-writer-version", "status": "FAIL", "controller_exit": 22, "control_pid": 121484, "control_exit": 0, "writer_pid": 82416, "writer_exit_hex": "0xC0000142", "writer_output": "", "both_processes_signaled_and_jobs_empty": true},
+    "allowed_directory_repair": {"raw": "cargo-writer-private-dirs", "status": "FAIL", "controller_exit": 22, "change": "Fresh private work and temp below the two policy-authorized paths. Protected DACL, exact individual package and writer Modify ACEs and Low no-write-up label read back before resume.", "control_exit": 0, "writer_exit_hex": "0xC0000142", "writer_output": "", "all_four_private_directories_removed": true},
+    "ordinary_station_creation": {"raw": "cargo-writer-private-ui", "status": "NOT_RUN", "controller_exit": 2, "failed_operation": "CreateWindowStationW", "win32": 5, "payload_started": false},
+    "matched_flags": {"raw": "cargo-writer-matched-flags", "options": ["--private-dirs", "--match-token-flags"], "status": "FAIL", "control_exit_hex": "0xC0000142", "writer_exit_hex": "0xC0000142", "restricting_sid_counts": [0,1]},
+    "already_filtered_host": {"raw": "cargo-writer-filtered", "extra_options": ["--already-filtered-host"], "status": "FAIL", "flags": ["DISABLE_MAX_PRIVILEGE", "WRITE_RESTRICTED"], "actual_privilege_count": [1,1], "admin_absent_or_deny_only": [true,true], "control_exit_hex": "0xC0000142", "writer_exit_hex": "0xC0000142"},
+    "derive_privilege_limit": {"raw": "cargo-writer-derived", "extra_options": ["--verify-derived-privileges"], "status": "NOT_RUN", "gate": "PSEC alone left an additional privilege, the fixed controller rejected the first suspended process.", "payloads_resumed": 0},
+    "remove_before_resume": {"raw": "cargo-writer-root-pruned", "extra_options": ["--remove-extra-privileges"], "status": "FAIL", "removed_luid_high_low": [0,33], "remaining_privilege": "SeChangeNotifyPrivilege", "admin_absent_or_deny_only": [true,true], "control_exit_hex": "0xC0000142", "writer_exit_hex": "0xC0000142"},
+    "original_primary_with_same_privilege_removal": {"raw": "cargo-writer-direct-pruned", "extra_options": ["--direct-control"], "status": "FAIL", "removed_luid_high_low": [0,33], "remaining_privilege": "SeChangeNotifyPrivilege", "admin_absent_or_deny_only": [true,true], "control_exit": 0, "writer_exit_hex": "0xC0000142", "note": "Only selection of the control's primary token changed from remove_before_resume. Earlier options are cumulative from matched_flags through this row."},
+    "separately_provisioned_desktop": {"raw": "cargo-writer-separated-ui/provision-result.json", "status": "NOT_RUN", "normal_host_session": 1, "admin_owner_started": false, "cargo_started": false, "reason": "Windows reported cancellation of the UAC RunAs request before the object owner started.", "reproduction": "scripts/psec-budget-repro/check-cargo-writer-private-ui.ps1 -PairDirectory <pair_directory> -ObjectOwner F:/WIndowsBuilderWerk/werk1112/target/candidate-private-ui-db629ba-20261119/ui-inspect.exe -NewEvidence <fresh_dir>"},
+    "separately_provisioned_desktop_recheck": {"evidence": "execution-blockers-recheck-ac5b28c.json", "administrative_provision": "PASS", "control": "FAIL", "writer": "FAIL", "control_exit_hex": "0xC0000142", "writer_exit_hex": "0xC0000142"},
+    "separate_desktop_controller_compile": {"status": "PASS", "payload": "NOT_RUN", "raw": "provisioned-version-build/receipt.json", "scope": "Final source compiled with MSVC for the actual canceled trial nonce. No elevation or payload execution."},
+    "per_arm_status_and_outputs": "cargo-workloads.json",
+    "diagnostic_limit": "0xC0000142 is DLL initialization failure. These exits do not identify the failing DLL, API or driver. The historical Win32k/Rust trace does not establish their cause."
+  },
+  "broker_change": {
+    "scope": "Host and dedicated-account runner. Does not select PSEC.",
+    "payload_handoff_version": 3,
+    "first_resume": "Host calls ResumeThread on the verified payload thread after checking exact Job membership, token handoff, namespace and job limits. With a two-place budget, the account runner occupies the other place. The host independently reads NoChildProcessCreation and AllowSecureProcessCreation on the retained payload handle before resume.",
+    "completion": "The host verifies termination and the exit code on the retained root handle. An interrupted launch before resume has no payload exit code.",
+    "observer": "Host retains the exact-member handles through the fixture's observation. An additional cleanup handle must compare equal to its observed kernel object before use."
+  },
+  "checks": [
+    {"case": "native broker, permissions and cleanup regressions", "status": "PASS", "tests": 5, "log": "final-broker.log"},
+    {"case": "independent read of the effective child-process mitigation through a query-only handle to the current process", "status": "PASS", "tests": 1, "log": "final-host-query-rights.log"},
+    {"case": "clippy on native library and mandatory integration test target", "status": "PASS", "log": "final-clippy.log"},
+    {"case": "required Windows integration suite compilation", "status": "PASS", "log": "suite-compile.log", "payloads_run": 0},
+    {"case": "format", "status": "PASS", "log": "final-format.log"},
+    {"case": "installed invocation receipt, separately prepared inputs, host preflight and CI regressions", "status": "PASS", "tests": 17, "log": "final-validator.log"},
+    {"case": "ordinary host writes three generation-specific markers in a disposable registry key; independent readback sees the replacement of exactly one", "status": "PASS", "tests": 1, "log": "registry-host-control.log", "command": "cargo test --locked --offline --test windows_process_tree ordinary_registry_control_changes_only_the_named_generation -- --exact --nocapture"},
+    {"case": "Windows package helper and installer regressions", "status": "PASS", "tests": 3, "log": "package-tests.log"},
+    {"case": "external TCP witness ordinary-host control", "status": "PASS", "accepted_with_three_controls": 3, "accepted_with_additional_connection": 4, "log": "tcp-receiver.json"}
+  ],
+  "mandatory_installed_cases": {
+    "original_rust_probe_and_offline_cargo": "NOT_RUN",
+    "actual_write_scope_over_three_generations": "NOT_RUN",
+    "both_console_cases_at_limit_two": "NOT_RUN",
+    "dns_network_and_mediated_access": "NOT_RUN",
+    "ui_token_and_handle_boundaries": "NOT_RUN",
+    "lifecycle_and_workspace_release": "NOT_RUN"
+  },
+  "raw_log_directory": "target/qualification-ac5b28c-review",
+  "source_patch": "target/qualification-ac5b28c-review/werkWorker-local.patch",
+  "provenance": "bundle-manifest.json in the local review bundle contains the working patch digest and log digests. final-runs.json contains source hashes at test start, invocation vectors, timestamps and exits. checks.json and rust-checks.json cover earlier checks. The retained original C++ observer source is stored per diagnostic run.",
+  "execution_block": {
+    "observation": "Original attempt. The later execution_block_recheck records the successful rerun of this test.",
+    "case": "native_saturated_payload_child_policy",
+    "status": "NOT_RUN",
+    "cause": "The execution approval service rejected the command before it ran because it resumed the saturated process-budget path and could reproduce a sandbox budget overrun.",
+    "ordinary_host_available": true,
+    "passive_alternative": "Read the effective policy on the exact suspended root and query its Job membership. Kept separate from the two mandatory console workloads.",
+    "installed_console_executions": 0,
+    "post_repair_budget_overrun_observed": false
+  },
+  "release_authorized": false,
+  "execution_block_recheck": "execution-blockers-recheck-ac5b28c.json",
+  "qualification_disposition": "NOT QUALIFIED. Both previously blocked diagnostic commands ran. On separately provisioned private desktops Cargo failed in both matched filtered-token arms. The single-payload mitigation unit test passed. The two full console workloads and installed product acceptance remain NOT_RUN.",
+  "protocol_and_provider_changes": false,
+  "new_two_exe_inference_runs": 0,
+  "historical_111dd_restoration": "unconfirmed"
+}

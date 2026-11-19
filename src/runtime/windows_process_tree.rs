@@ -1,0 +1,1848 @@
+//! Host-owned supervision of a separately provisioned, unprivileged Windows tree.
+//! No provisioning, account repair, elevation or backend fallback occurs here.
+use super::{
+    LiveOutput, ProcessOutput, Sandbox, Workspace, windows_provision, windows_tree_desktop,
+    windows_tree_launcher, windows_tree_members, windows_tree_runner,
+};
+use crate::{core::*, parallel::WorkspaceLease, policy::relative_path};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ffi::{OsStr, OsString},
+    mem::{size_of, zeroed},
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle},
+    },
+    path::{Component, Path, PathBuf, Prefix},
+    ptr::{null, null_mut},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio_util::sync::CancellationToken;
+use windows_sys::Win32::{
+    Foundation::*,
+    Security::{Authorization::*, *},
+    Storage::FileSystem::*,
+    System::{JobObjects::*, Pipes::*, SystemInformation::GetSystemDirectoryW, Threading::*},
+};
+
+const REQUIRED_UI_RESTRICTIONS: u32 = JOB_OBJECT_UILIMIT_HANDLES
+    | JOB_OBJECT_UILIMIT_READCLIPBOARD
+    | JOB_OBJECT_UILIMIT_WRITECLIPBOARD
+    | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+    | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+    | JOB_OBJECT_UILIMIT_GLOBALATOMS
+    | JOB_OBJECT_UILIMIT_DESKTOP
+    | JOB_OBJECT_UILIMIT_EXITWINDOWS;
+const MAX_REQUEST: usize = 65536;
+const PIPE_BUFFER: u32 = 65536;
+const CLEANUP_REPORT_AFTER: Duration = Duration::from_secs(10);
+
+fn failure(operation: &str) -> WorkerError {
+    WorkerError::new(
+        "sandbox_unavailable",
+        format!("{operation}: {}", std::io::Error::last_os_error()),
+    )
+}
+fn wide(value: impl AsRef<OsStr>) -> Result<Vec<u16>> {
+    let mut value: Vec<_> = value.as_ref().encode_wide().collect();
+    if value.contains(&0) {
+        return Err(WorkerError::new("invalid_argv", "NUL in Windows argument"));
+    }
+    value.push(0);
+    Ok(value)
+}
+fn raw(handle: &OwnedHandle) -> HANDLE {
+    handle.as_raw_handle()
+}
+unsafe fn own(handle: HANDLE) -> Result<OwnedHandle> {
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(failure("Create native handle"));
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+pub(super) fn system_directory() -> Result<PathBuf> {
+    let mut data = vec![0u16; 32768];
+    let n = unsafe { GetSystemDirectoryW(data.as_mut_ptr(), data.len() as u32) } as usize;
+    if n == 0 || n >= data.len() {
+        return Err(failure("GetSystemDirectoryW"));
+    }
+    Ok(PathBuf::from(String::from_utf16_lossy(&data[..n])))
+}
+fn quote(value: &OsStr) -> Vec<u16> {
+    let mut result = vec![34];
+    let mut slashes = 0;
+    for ch in value.encode_wide() {
+        if ch == 92 {
+            slashes += 1;
+            continue;
+        }
+        result.extend(std::iter::repeat_n(
+            92,
+            if ch == 34 { slashes * 2 + 1 } else { slashes },
+        ));
+        slashes = 0;
+        result.push(ch);
+    }
+    result.extend(std::iter::repeat_n(92, slashes * 2));
+    result.push(34);
+    result
+}
+fn environment(values: &BTreeMap<String, String>) -> Result<Vec<u16>> {
+    let mut result = Vec::new();
+    for (key, value) in values {
+        if key.contains('=') || key.is_empty() {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Invalid environment key",
+            ));
+        }
+        result.extend(wide(format!("{key}={value}"))?);
+    }
+    result.push(0);
+    Ok(result)
+}
+// The delivered profile requires passing native tree and installed Cargo acceptance.
+pub(super) fn require_qualified_profile() -> Result<()> {
+    Err(WorkerError::new(
+        "sandbox_unqualified",
+        "The Windows process-tree profile is disabled pending complete native isolation, process-limit, lifecycle and installed offline Cargo qualification.",
+    ))
+}
+
+fn validate(sandbox: &Sandbox, writable: bool) -> Result<()> {
+    require_qualified_profile()?;
+    let limits = &sandbox.limits;
+    if !writable {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "The provisioned coding account requires explicit workspace write authority; no read-only fallback",
+        ));
+    }
+    if limits.processes < 2
+        || limits.processes > 4096
+        || limits.memory_bytes == 0
+        || limits.memory_bytes > usize::MAX as u64
+        || limits.cpu_seconds == 0
+        || limits.cpu_seconds > i64::MAX as u64 / 10_000_000
+        || limits.timeout_ms == 0
+        || limits.output_bytes == 0
+        || limits.output_bytes > 16 * 1024 * 1024
+        || Instant::now()
+            .checked_add(Duration::from_millis(limits.timeout_ms))
+            .is_none()
+    {
+        return Err(WorkerError::new(
+            "invalid_limits",
+            "Windows tree requires finite representable limits, at least two Job slots (runner plus payload), and at most 16 MiB output per stream",
+        ));
+    }
+    Ok(())
+}
+pub(super) fn description(
+    sandbox: &Sandbox,
+    workspace: &Workspace,
+    writable: bool,
+) -> Result<Value> {
+    validate(sandbox, writable)?;
+    let config = sandbox
+        .native
+        .windows_process_tree
+        .as_ref()
+        .ok_or_else(|| {
+            WorkerError::new(
+                "sandbox_unavailable",
+                "Windows process-tree profile not selected",
+            )
+        })?;
+    let p = windows_provision::load(&config.provisioning, &workspace.path)?;
+    Ok(json!({
+        "backend":"windows-account-job-tree", "version":4,
+        "provisioning":config.provisioning, "provisioning_sha256":p.manifest_digest,
+        "account_sid":p.manifest.user_sid, "workspace":p.manifest.workspace,
+        "appcontainer_sid":p.manifest.appcontainer_sid, "appcontainer_capabilities":[], "writer_sid":p.manifest.writer_sid,
+        "session_id":p.manifest.session_id,
+        "toolchains":p.manifest.toolchain_roots, "environment":p.manifest.toolchain_environment,
+        "temporary":p.manifest.private_temp, "runner":p.manifest.runner,
+        "network_enforcement":"zero-capability AppContainer with account-scoped WFP filters for IPv4, IPv6 and RPC",
+        "network_sublayer_key":p.manifest.network_sublayer_key,
+        "network_sublayer_weight":p.manifest.network_sublayer_weight,
+        "ipc":"dedicated account and object ACLs; account-scoped RPC denial; private noninteractive window station and desktop with exact host-owned ACLs; full Job UI restrictions; private authenticated stdio pipes",
+        "inheritance":"atomic host-owned Job; exact three-stdio handle allowlist; no breakaway; inherited logon SIDs deny-only",
+        "payload_token":"zero-capability AppContainer on the write-restricted dedicated account",
+        "cleanup":"trusted supervisor retains workspace admission and invocation lock until the complete process-handle ledger matches the Job lifetime count, every recorded process is signaled, the Job is empty and private USER handles are closed; crash receipt blocks subsequent workspace tools pending trusted recovery",
+        "effective_process_limit":sandbox.limits.processes, "trusted_runner_processes":1,
+        "process_history_limit":windows_tree_members::MAX_TRACKED_PROCESSES,
+        "job_ui_restrictions":REQUIRED_UI_RESTRICTIONS,
+        "resource_limits":sandbox.limits, "memory_scope":"aggregate Job commit", "cpu_scope":"aggregate Job user time",
+        "limitations":["Dedicated per-workspace account; one active tree per provision", "Workspace-write mode only", "Existing Windows ACL grants to ordinary users remain readable; no inode-deny overlay", "Private temp persists until explicit host cleanup", "No per-file size or handle-count limit", "Native acceptance requires administrative provisioning"]
+    }))
+}
+
+struct Attributes {
+    _storage: Vec<usize>,
+    pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
+}
+impl Attributes {
+    fn new() -> Result<Self> {
+        let mut bytes = 0;
+        unsafe {
+            InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes);
+        }
+        let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
+        let pointer = storage.as_mut_ptr().cast();
+        if unsafe { InitializeProcThreadAttributeList(pointer, 2, 0, &mut bytes) } == 0 {
+            return Err(failure("Initialize process attributes"));
+        }
+        Ok(Self {
+            _storage: storage,
+            pointer,
+        })
+    }
+    fn set<T>(&mut self, kind: u32, value: &T) -> Result<()> {
+        if unsafe {
+            UpdateProcThreadAttribute(
+                self.pointer,
+                0,
+                kind as usize,
+                (value as *const T).cast(),
+                size_of::<T>(),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(failure("Apply mandatory process creation attribute"));
+        }
+        Ok(())
+    }
+}
+impl Drop for Attributes {
+    fn drop(&mut self) {
+        unsafe { DeleteProcThreadAttributeList(self.pointer) };
+    }
+}
+
+struct Pipe {
+    handle: Option<OwnedHandle>,
+    connected: bool,
+}
+impl Pipe {
+    fn create(name: &str, reads: bool, host: &str, user: &str) -> Result<Self> {
+        let descriptor_text = wide(format!("D:P(A;;GA;;;SY)(A;;GA;;;{host})(A;;GRGW;;;{user})"))?;
+        let mut descriptor = null_mut();
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                descriptor_text.as_ptr(),
+                1,
+                &mut descriptor,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(failure("Build private pipe ACL"));
+        }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let name = wide(name)?;
+        let handle = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                (if reads {
+                    PIPE_ACCESS_INBOUND
+                } else {
+                    PIPE_ACCESS_OUTBOUND
+                }) | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                PIPE_BUFFER,
+                PIPE_BUFFER,
+                0,
+                &sa,
+            )
+        };
+        unsafe {
+            LocalFree(descriptor);
+        }
+        Ok(Self {
+            handle: Some(unsafe { own(handle)? }),
+            connected: false,
+        })
+    }
+    fn handle(&self) -> HANDLE {
+        self.handle.as_ref().map(raw).unwrap_or(null_mut())
+    }
+    fn connect(&mut self, pid: u32) -> Result<bool> {
+        if self.connected {
+            return Ok(true);
+        }
+        if unsafe { ConnectNamedPipe(self.handle(), null_mut()) } != 0 {
+            // PIPE_NOWAIT initially succeeds by making an instance available.
+            // Only ERROR_PIPE_CONNECTED on a later call proves connection.
+            return Ok(false);
+        } else {
+            match unsafe { GetLastError() } {
+                ERROR_PIPE_LISTENING => return Ok(false),
+                // A client may write a startup diagnostic and exit before this
+                // poll. Its buffered data and peer PID remain queryable; require
+                // the same retained-process authentication below before reading.
+                ERROR_PIPE_CONNECTED | ERROR_NO_DATA => {}
+                _ => return Err(failure("Connect private runner pipe")),
+            }
+        }
+        let mut actual = 0;
+        if unsafe { GetNamedPipeClientProcessId(self.handle(), &mut actual) } == 0 || actual != pid
+        {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Runner pipe peer is not the retained suspended process",
+            ));
+        }
+        self.connected = true;
+        Ok(true)
+    }
+    fn write(&mut self, data: &[u8]) -> Result<usize> {
+        let mut sent = 0;
+        if unsafe {
+            WriteFile(
+                self.handle(),
+                data.as_ptr(),
+                data.len().min(16384) as u32,
+                &mut sent,
+                null_mut(),
+            )
+        } == 0
+        {
+            return match unsafe { GetLastError() } {
+                ERROR_NO_DATA | ERROR_BROKEN_PIPE => {
+                    self.handle.take();
+                    Ok(data.len())
+                }
+                ERROR_PIPE_BUSY => Ok(0),
+                _ => Err(failure("Write bounded runner input")),
+            };
+        }
+        Ok(sent as usize)
+    }
+    fn drain(
+        &self,
+        capture: &mut Capture,
+        live: &Option<Arc<LiveOutput>>,
+        stderr: bool,
+    ) -> Result<()> {
+        self.drain_chunks(capture, live, stderr, 8)
+    }
+    // Only after all owned Job writers have exited: the remaining pipe contents
+    // are finite, even when the kernel buffered more than its advisory size.
+    fn drain_until_empty(
+        &self,
+        capture: &mut Capture,
+        live: &Option<Arc<LiveOutput>>,
+        stderr: bool,
+    ) -> Result<()> {
+        self.drain_chunks(capture, live, stderr, usize::MAX)
+    }
+    fn drain_chunks(
+        &self,
+        capture: &mut Capture,
+        live: &Option<Arc<LiveOutput>>,
+        stderr: bool,
+        chunks: usize,
+    ) -> Result<()> {
+        for _ in 0..chunks {
+            let mut available = 0;
+            if unsafe {
+                PeekNamedPipe(
+                    self.handle(),
+                    null_mut(),
+                    0,
+                    null_mut(),
+                    &mut available,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return match unsafe { GetLastError() } {
+                    ERROR_BROKEN_PIPE | ERROR_NO_DATA => Ok(()),
+                    _ => Err(failure("Inspect bounded runner output")),
+                };
+            }
+            if available == 0 {
+                return Ok(());
+            }
+            let mut bytes = [0u8; 8192];
+            let mut read = 0;
+            if unsafe {
+                ReadFile(
+                    self.handle(),
+                    bytes.as_mut_ptr(),
+                    available.min(bytes.len() as u32),
+                    &mut read,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err(failure("Read runner output"));
+            }
+            capture.append(&bytes[..read as usize]);
+            if let Some(live) = live {
+                let mut log = if stderr {
+                    live.stderr.blocking_lock()
+                } else {
+                    live.stdout.blocking_lock()
+                };
+                log.total = log.total.saturating_add(read as usize);
+                log.bytes.extend_from_slice(&bytes[..read as usize]);
+                let excess = log.bytes.len().saturating_sub(65536);
+                if excess != 0 {
+                    log.bytes.drain(..excess);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+struct Capture {
+    bytes: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+impl Capture {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            truncated: false,
+        }
+    }
+    fn append(&mut self, bytes: &[u8]) {
+        let keep = bytes.len().min(self.limit.saturating_sub(self.bytes.len()));
+        self.bytes.extend_from_slice(&bytes[..keep]);
+        self.truncated |= keep < bytes.len();
+    }
+}
+
+fn payload_exit(process: HANDLE) -> Result<i32> {
+    match unsafe { WaitForSingleObject(process, 0) } {
+        WAIT_OBJECT_0 => {}
+        WAIT_TIMEOUT => {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "The retained payload has not exited",
+            ));
+        }
+        _ => return Err(failure("Wait for retained payload")),
+    }
+    let mut code = 0;
+    if unsafe { GetExitCodeProcess(process, &mut code) } == 0 {
+        return Err(failure("Read retained payload exit code"));
+    }
+    Ok(code as i32)
+}
+
+fn confirmed_payload_exit(process: HANDLE, runner_exit: i32) -> Result<i32> {
+    let code = payload_exit(process)?;
+    if code != runner_exit {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            format!("Runner exit {runner_exit} disagrees with payload exit {code}"),
+        ));
+    }
+    Ok(code)
+}
+
+struct Tree {
+    job: OwnedHandle,
+    members: windows_tree_members::MemberTracker,
+    process: OwnedHandle,
+    auxiliary: Mutex<Vec<OwnedHandle>>,
+    desktop: Mutex<Option<windows_tree_desktop::HostResources>>,
+    namespace: Mutex<Option<super::windows_tree_package_namespace::PackageNamespaceGuard>>,
+    desktop_name: Mutex<String>,
+    completion: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<ProcessOutput>>>>>,
+    pid: u32,
+    cleaned: AtomicBool,
+    _provision: Arc<windows_provision::Provisioning>,
+    // Declared last so native/provisioning handles drop before the final lease.
+    _lease: Option<Arc<WorkspaceLease>>,
+}
+impl Tree {
+    fn active(&self) -> Result<u32> {
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+        if unsafe {
+            QueryInformationJobObject(
+                raw(&self.job),
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(WorkerError::new(
+                "cleanup_failed",
+                "Cannot confirm owned Job process count",
+            ));
+        }
+        Ok(info.ActiveProcesses)
+    }
+    fn exited(&self) -> Result<Option<i32>> {
+        match unsafe { WaitForSingleObject(raw(&self.process), 0) } {
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_OBJECT_0 => {
+                let mut code = 0;
+                if unsafe { GetExitCodeProcess(raw(&self.process), &mut code) } == 0 {
+                    return Err(failure("Get runner exit code"));
+                }
+                Ok(Some(code as i32))
+            }
+            _ => Err(failure("Wait retained runner handle")),
+        }
+    }
+    fn terminate(&self) {
+        unsafe {
+            TerminateJobObject(raw(&self.job), 1);
+            // A failed suspended handoff can precede confirmed Job membership.
+            // Reap the processes returned by our trusted launchers by handle.
+            TerminateProcess(raw(&self.process), 1);
+            for process in self.auxiliary.lock().unwrap().iter() {
+                TerminateProcess(raw(process), 1);
+            }
+        }
+    }
+    fn restore_namespace(&self) -> Result<()> {
+        let mut namespace = self.namespace.lock().unwrap();
+        if let Some(guard) = namespace.as_mut() {
+            guard.restore()?;
+            namespace.take();
+        }
+        Ok(())
+    }
+    fn close_desktop(&self) -> Result<()> {
+        let mut desktop = self.desktop.lock().unwrap();
+        if let Some(resource) = desktop.as_mut() {
+            resource.close()?;
+            desktop.take();
+        }
+        Ok(())
+    }
+    fn drained(&self) -> bool {
+        (unsafe { WaitForSingleObject(raw(&self.process), 0) }) == WAIT_OBJECT_0
+            && self
+                .auxiliary
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|process| unsafe { WaitForSingleObject(raw(process), 0) } == WAIT_OBJECT_0)
+            // The final accounting query follows all signal observations. A
+            // bare ActiveProcesses==0 can precede process-object signaling.
+            && self.members.confirmed_drain().unwrap_or(false)
+            && self.restore_namespace().is_ok()
+            && self.close_desktop().is_ok()
+    }
+}
+impl Drop for Tree {
+    fn drop(&mut self) {
+        if self.cleaned.load(Ordering::Acquire) {
+            return;
+        }
+        // Runs on the trusted supervisor thread, including unwind/startup error.
+        // Unknown cleanup never releases the lease or cross-host invocation lock.
+        self.terminate();
+        let started = Instant::now();
+        while !self.drained() {
+            if started.elapsed() > CLEANUP_REPORT_AFTER
+                && let Some(tx) = self.completion.lock().unwrap().take()
+            {
+                let _ = tx.send(Err(WorkerError::new("cleanup_failed", format!("Startup cleanup remains unconfirmed; trusted supervisor retains workspace lease and invocation lock: {}", self.members.diagnostics()))));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            self.terminate();
+        }
+        // A failed receipt removal keeps the next invocation unavailable.
+        let _ = self._provision.confirm_cleanup();
+    }
+}
+static ACTIVE: OnceLock<Mutex<HashMap<String, Weak<Tree>>>> = OnceLock::new();
+fn active_trees() -> &'static Mutex<HashMap<String, Weak<Tree>>> {
+    ACTIVE.get_or_init(Mutex::default)
+}
+
+fn limits(job: HANDLE) -> Result<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+    if unsafe {
+        QueryInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(failure("Read effective Job limits"));
+    }
+    Ok(info)
+}
+fn ui_restrictions(job: HANDLE) -> Result<u32> {
+    let mut info: JOBOBJECT_BASIC_UI_RESTRICTIONS = unsafe { zeroed() };
+    if unsafe {
+        QueryInformationJobObject(
+            job,
+            JobObjectBasicUIRestrictions,
+            (&mut info as *mut JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
+            size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(failure("Read exact owned Job UI restrictions"));
+    }
+    Ok(info.UIRestrictionsClass)
+}
+fn enforce_ui_restrictions(job: HANDLE) -> Result<()> {
+    let info = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+        UIRestrictionsClass: REQUIRED_UI_RESTRICTIONS,
+    };
+    if unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectBasicUIRestrictions,
+            (&info as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
+            size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+        )
+    } == 0
+    {
+        return Err(failure(
+            "Set mandatory Job UI restrictions before payload execution",
+        ));
+    }
+    if ui_restrictions(job)? != REQUIRED_UI_RESTRICTIONS {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Job UI restrictions differ from the approved policy",
+        ));
+    }
+    Ok(())
+}
+fn verify_job_limits(job: HANDLE, sandbox: &Sandbox) -> Result<()> {
+    let actual = limits(job)?;
+    let flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_JOB_MEMORY
+        | JOB_OBJECT_LIMIT_JOB_TIME;
+    if actual.BasicLimitInformation.LimitFlags != flags
+        || actual.BasicLimitInformation.ActiveProcessLimit != sandbox.limits.processes as u32
+        || actual.BasicLimitInformation.PerJobUserTimeLimit
+            != (sandbox.limits.cpu_seconds * 10_000_000) as i64
+        || actual.JobMemoryLimit != sandbox.limits.memory_bytes as usize
+        || ui_restrictions(job)? != REQUIRED_UI_RESTRICTIONS
+    {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Effective Job limits differ from the approved process-tree policy",
+        ));
+    }
+    Ok(())
+}
+fn create_job(sandbox: &Sandbox) -> Result<OwnedHandle> {
+    let job = unsafe { own(CreateJobObjectW(null(), null()))? };
+    let mut requested: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+    requested.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_JOB_MEMORY
+        | JOB_OBJECT_LIMIT_JOB_TIME;
+    requested.BasicLimitInformation.ActiveProcessLimit = sandbox.limits.processes as u32;
+    requested.BasicLimitInformation.PerJobUserTimeLimit =
+        (sandbox.limits.cpu_seconds * 10_000_000) as i64;
+    requested.JobMemoryLimit = sandbox.limits.memory_bytes as usize;
+    if unsafe {
+        SetInformationJobObject(
+            raw(&job),
+            JobObjectExtendedLimitInformation,
+            (&requested as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    } == 0
+    {
+        return Err(failure("Set mandatory aggregate Job limits"));
+    }
+    let actual = limits(raw(&job))?;
+    if actual.BasicLimitInformation.LimitFlags != requested.BasicLimitInformation.LimitFlags
+        || actual.BasicLimitInformation.ActiveProcessLimit
+            != requested.BasicLimitInformation.ActiveProcessLimit
+        || actual.BasicLimitInformation.PerJobUserTimeLimit
+            != requested.BasicLimitInformation.PerJobUserTimeLimit
+        || actual.JobMemoryLimit != requested.JobMemoryLimit
+    {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Job limits differ from the approved finite policy",
+        ));
+    }
+    Ok(job)
+}
+fn verify_account(token: HANDLE, expected: &str) -> Result<()> {
+    let mut n = 0;
+    unsafe {
+        GetTokenInformation(token, TokenUser, null_mut(), 0, &mut n);
+    }
+    let mut buffer = vec![0usize; (n as usize).div_ceil(size_of::<usize>())];
+    if unsafe { GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), n, &mut n) } == 0
+    {
+        return Err(failure("Read suspended runner identity"));
+    }
+    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut text = null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+        return Err(failure("Format runner identity"));
+    }
+    let mut len = 0;
+    unsafe {
+        while *text.add(len) != 0 {
+            len += 1;
+        }
+    }
+    let actual = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+    unsafe {
+        LocalFree(text.cast());
+    }
+    let mut elevated = 0u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevated as *mut u32).cast(),
+            4,
+            &mut n,
+        )
+    } == 0
+    {
+        return Err(failure("Read suspended runner elevation"));
+    }
+    let mut kind = 0i32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenType,
+            (&mut kind as *mut i32).cast(),
+            size_of::<i32>() as u32,
+            &mut n,
+        )
+    } == 0
+    {
+        return Err(failure("Read suspended runner token type"));
+    }
+    if actual != expected || elevated != 0 || kind != TokenPrimary {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Runner primary token identity/elevation differs from provisioned low-privilege account",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_program(
+    argv: &[String],
+    workspace: &Workspace,
+    p: &windows_provision::Provisioning,
+) -> Result<Vec<String>> {
+    if argv.is_empty()
+        || argv.len() > 128
+        || argv.iter().any(|a| a.len() > 8192 || a.contains('\0'))
+    {
+        return Err(WorkerError::new(
+            "invalid_argv",
+            "Invalid Windows process-tree argv",
+        ));
+    }
+    let system = std::fs::canonicalize(system_directory()?)?;
+    let mut executable = PathBuf::from(&argv[0]);
+    if executable.extension().is_none() {
+        executable.set_extension("exe");
+    }
+    let given = executable.as_path();
+    let candidates = if given.is_absolute() {
+        vec![given.to_path_buf()]
+    } else if given.components().count() > 1 {
+        vec![workspace.path.join(given)]
+    } else {
+        let mut paths = vec![workspace.path.join(given), system.join(given)];
+        if let Some(path) = p.manifest.toolchain_environment.get("PATH") {
+            paths.extend(std::env::split_paths(path).map(|d| d.join(given)));
+        }
+        paths
+    };
+    let program = candidates
+        .into_iter()
+        .find_map(|path| std::fs::canonicalize(path).ok())
+        .ok_or_else(|| {
+            WorkerError::new(
+                "invalid_argv",
+                "Executable absent from explicit workspace/toolchain/System32 search paths",
+            )
+        })?;
+    let in_toolchain = p
+        .manifest
+        .toolchain_roots
+        .iter()
+        .any(|root| std::fs::canonicalize(root).is_ok_and(|root| program.starts_with(root)));
+    if (!program.starts_with(&workspace.path) && !program.starts_with(system) && !in_toolchain)
+        || !program
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+    {
+        return Err(WorkerError::new(
+            "path_denied",
+            "Executable outside provisioned runtime roots or not an .exe",
+        ));
+    }
+    let mut argv = argv.to_vec();
+    argv[0] = program.to_string_lossy().into_owned();
+    Ok(argv)
+}
+
+fn process_working_directory(canonical: &Path) -> Result<PathBuf> {
+    if !matches!(canonical.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_)))
+    {
+        return Ok(canonical.to_path_buf());
+    }
+    // cmd.exe treats a \\?\ drive path as UNC and silently changes its cwd.
+    // Only remove this local-drive spelling after the host's canonical boundary
+    // check, and require the DOS spelling to resolve back to the same directory.
+    // This rejects names whose meaning changes under DOS path normalization.
+    let wide: Vec<_> = canonical.as_os_str().encode_wide().collect();
+    let ordinary = PathBuf::from(OsString::from_wide(&wide[4..]));
+    if std::fs::canonicalize(&ordinary)? != canonical {
+        return Err(WorkerError::new(
+            "path_denied",
+            "Working directory changes identity under Windows path normalization",
+        ));
+    }
+    Ok(ordinary)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn supervise(
+    sandbox: Sandbox,
+    workspace: Workspace,
+    writable: bool,
+    argv: Vec<String>,
+    cwd: String,
+    cancel: CancellationToken,
+    live: Option<Arc<LiveOutput>>,
+    input: Vec<u8>,
+    lease: Option<Arc<WorkspaceLease>>,
+    completion: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<ProcessOutput>>>>>,
+) -> Result<ProcessOutput> {
+    validate(&sandbox, writable)?;
+    relative_path(&cwd)?;
+    let config = sandbox.native.windows_process_tree.as_ref().unwrap();
+    let p = if let Some(lease) = &lease {
+        sandbox.admit_windows_workspace(&workspace, lease)?;
+        lease.windows_tree.lock().unwrap().as_ref().unwrap().clone()
+    } else {
+        let p = Arc::new(windows_provision::load(
+            &config.provisioning,
+            &workspace.path,
+        )?);
+        p.try_lock_invocation()?;
+        p.require_confirmed_cleanup()?;
+        p
+    };
+    let argv = resolve_program(&argv, &workspace, &p)?;
+    let current = std::fs::canonicalize(workspace.path.join(&cwd))?;
+    if !current.starts_with(&workspace.path) {
+        return Err(WorkerError::new(
+            "path_denied",
+            "Working directory escapes provisioned workspace",
+        ));
+    }
+    let current = process_working_directory(&current)?;
+    let system = system_directory()?;
+    let windows = system
+        .parent()
+        .ok_or_else(|| WorkerError::new("sandbox_unavailable", "Missing Windows directory"))?;
+    let mut env = p.manifest.toolchain_environment.clone();
+    for (key, value) in [
+        ("SystemRoot", windows),
+        ("WINDIR", windows),
+        ("TEMP", p.manifest.private_temp.as_path()),
+        ("TMP", p.manifest.private_temp.as_path()),
+        ("USERPROFILE", p.manifest.private_temp.as_path()),
+        ("HOME", p.manifest.private_temp.as_path()),
+    ] {
+        env.insert(key.into(), value.to_string_lossy().into_owned());
+    }
+    env.entry("PATH".into())
+        .or_insert_with(|| system.to_string_lossy().into_owned());
+    let desktop_nonce = format!("werk-tree-{}", uuid::Uuid::new_v4());
+    let request = serde_json::to_vec(&windows_tree_runner::Request {
+        version: 4,
+        approved_process_limit: sandbox.limits.processes,
+        appcontainer_sid: p.manifest.appcontainer_sid.clone(),
+        writer_sid: p.manifest.writer_sid.clone(),
+        desktop_nonce: desktop_nonce.clone(),
+        user_sid: p.manifest.user_sid.clone(),
+        host_sid: p.manifest.host_sid.clone(),
+        argv,
+        cwd: current,
+        environment: env,
+    })?;
+    if request.len() > MAX_REQUEST || input.len() > 1024 * 1024 {
+        return Err(WorkerError::new(
+            "invalid_argv",
+            "Runner request or stdin exceeds its bounded transport",
+        ));
+    }
+    let prefix = format!("\\\\.\\pipe\\werk-tree-{}", uuid::Uuid::new_v4());
+    let host = &p.manifest.host_sid;
+    let user = &p.manifest.user_sid;
+    let mut control = Pipe::create(&format!("{prefix}.control"), false, host, user)?;
+    let mut stdin = Pipe::create(&format!("{prefix}.stdin"), false, host, user)?;
+    let mut stdout = Pipe::create(&format!("{prefix}.stdout"), true, host, user)?;
+    let mut stderr = Pipe::create(&format!("{prefix}.stderr"), true, host, user)?;
+    let mut runner_ready = Pipe::create(&format!("{prefix}.ready"), true, host, user)?;
+    let mut runner_ack = Pipe::create(&format!("{prefix}.ack"), false, host, user)?;
+    let bootstrap_prefix = format!(r"\\.\pipe\werk-launch-{}", uuid::Uuid::new_v4());
+    // Repeating the host SID grants no sandbox account access to bootstrap data.
+    let mut launch_request =
+        Pipe::create(&format!("{bootstrap_prefix}.request"), false, host, host)?;
+    let mut launch_reply = Pipe::create(&format!("{bootstrap_prefix}.reply"), true, host, host)?;
+    let mut launch_ack = Pipe::create(&format!("{bootstrap_prefix}.ack"), false, host, host)?;
+    let launch_bytes = serde_json::to_vec(&windows_tree_launcher::Request {
+        version: 4,
+        provisioning: std::fs::canonicalize(&config.provisioning)?,
+        manifest_digest: p.manifest_digest.clone(),
+        workspace: workspace.path.clone(),
+        pipe_prefix: prefix,
+        environment: BTreeMap::new(),
+    })?;
+    if launch_bytes.len() > MAX_REQUEST {
+        return Err(WorkerError::new(
+            "invalid_argv",
+            "Launcher request exceeds transport bound",
+        ));
+    }
+    let job = create_job(&sandbox)?;
+    let members = windows_tree_members::MemberTracker::new(&job)?;
+    let mut parent = null_mut();
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            GetCurrentProcess(),
+            GetCurrentProcess(),
+            &mut parent,
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            1,
+            0,
+        )
+    } == 0
+    {
+        return Err(failure("Pin host identity for trusted launcher"));
+    }
+    let parent = unsafe { own(parent)? };
+    let mut attributes = Attributes::new()?;
+    let jobs = [raw(&job)];
+    let inherited = [raw(&parent)];
+    attributes.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
+    attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
+    let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.lpAttributeList = attributes.pointer;
+    let runner = wide(&p.manifest.runner)?;
+    let mut command = quote(p.manifest.runner.as_os_str());
+    for arg in [
+        "--host-launcher".to_owned(),
+        "--pipe-prefix".to_owned(),
+        bootstrap_prefix,
+        "--host-pid".to_owned(),
+        unsafe { GetCurrentProcessId() }.to_string(),
+        "--host-handle".to_owned(),
+        (raw(&parent) as usize).to_string(),
+    ] {
+        command.push(32);
+        command.extend(quote(OsStr::new(&arg)));
+    }
+    command.push(0);
+    if command.len() > 32767 {
+        return Err(WorkerError::new(
+            "invalid_argv",
+            "Launcher command exceeds Windows limit",
+        ));
+    }
+    // Trusted bootstrap receives only a minimal local OS environment. Toolchain
+    // paths and sandbox cwd do not affect loading code in the host account.
+    let bootstrap_env = BTreeMap::from([
+        (
+            "SystemRoot".to_owned(),
+            windows.to_string_lossy().into_owned(),
+        ),
+        ("WINDIR".to_owned(), windows.to_string_lossy().into_owned()),
+        ("PATH".to_owned(), system.to_string_lossy().into_owned()),
+    ]);
+    let env_block = environment(&bootstrap_env)?;
+    let working = wide(&system)?;
+    if cancel.is_cancelled() {
+        return Err(WorkerError::new(
+            "cancelled",
+            "Cancelled before trusted launcher",
+        ));
+    }
+    let expected_user = user.clone();
+    let started = Instant::now();
+    p.begin_invocation()?;
+    let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+    if unsafe {
+        CreateProcessW(
+            runner.as_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            CREATE_SUSPENDED
+                | DETACHED_PROCESS
+                | EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_UNICODE_ENVIRONMENT,
+            env_block.as_ptr().cast(),
+            working.as_ptr(),
+            &startup.StartupInfo,
+            &mut info,
+        )
+    } == 0
+    {
+        let error = failure("Create trusted launcher with atomic Job assignment");
+        // A failed native creation/assignment may already have affected Job
+        // accounting. Retain admission until even that partial attempt drains.
+        let cleanup_started = Instant::now();
+        loop {
+            unsafe {
+                TerminateJobObject(raw(&job), 1);
+            }
+            if members.confirmed_drain().unwrap_or(false) {
+                break;
+            }
+            if cleanup_started.elapsed() > CLEANUP_REPORT_AFTER
+                && let Some(tx) = completion.lock().unwrap().take()
+            {
+                let _ = tx.send(Err(WorkerError::new("cleanup_failed", format!(
+                    "Failed launcher creation cleanup remains unconfirmed; admission retained: {}", members.diagnostics()
+                ))));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        p.confirm_cleanup()?;
+        return Err(error);
+    }
+    // Successful CreateProcessW returns both owned handles. Establish the lease
+    // owner immediately, before any fallible verification or pipe operation.
+    let mut tree = Tree {
+        job,
+        members,
+        process: unsafe { OwnedHandle::from_raw_handle(info.hProcess) },
+        auxiliary: Mutex::new(Vec::new()),
+        desktop: Mutex::new(None),
+        namespace: Mutex::new(None),
+        desktop_name: Mutex::new(String::new()),
+        completion: completion.clone(),
+        pid: info.dwProcessId,
+        cleaned: AtomicBool::new(false),
+        _lease: lease,
+        _provision: p,
+    };
+    let launcher_thread = unsafe { own(info.hThread)? };
+    let mut member = 0;
+    if unsafe { IsProcessInJob(raw(&tree.process), raw(&tree.job), &mut member) } == 0
+        || member == 0
+    {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Trusted launcher is outside mandatory owned Job",
+        ));
+    }
+    tree.members.register_known(raw(&tree.process))?;
+    if unsafe { ResumeThread(raw(&launcher_thread)) } != 1 {
+        return Err(failure("Resume verified trusted launcher"));
+    }
+    let mut offset = 0;
+    let mut reply = Capture::new(8192);
+    let ready = loop {
+        if let Some(reason) = tree.members.failure() {
+            return Err(reason);
+        }
+        if cancel.is_cancelled() {
+            return Err(WorkerError::new(
+                "cancelled",
+                "Cancelled during trusted launcher handoff",
+            ));
+        }
+        if started.elapsed() >= Duration::from_millis(sandbox.limits.timeout_ms) {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Trusted launcher handoff exceeded invocation timeout",
+            ));
+        }
+        let reply_connected = launch_reply.connect(tree.pid)?;
+        if reply_connected {
+            launch_reply.drain(&mut reply, &None, false)?;
+        }
+        if reply.truncated {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Oversized trusted launcher reply",
+            ));
+        }
+        if let Some(end) = reply.bytes.iter().position(|byte| *byte == b'\n') {
+            break serde_json::from_slice::<windows_tree_launcher::Reply>(&reply.bytes[..end])?;
+        }
+        if let Some(code) = tree.exited()? {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                format!("Trusted launcher exited before handoff: {code}"),
+            ));
+        }
+        let connected =
+            reply_connected & launch_request.connect(tree.pid)? & launch_ack.connect(tree.pid)?;
+        if connected && launch_request.handle.is_some() {
+            offset += launch_request.write(&launch_bytes[offset..])?;
+            if launch_request.handle.is_none() {
+                return Err(WorkerError::new(
+                    "process_io",
+                    "Launcher closed request before delivery",
+                ));
+            }
+            if offset == launch_bytes.len() {
+                launch_request.handle.take();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let (pid, source_process, source_thread, source_token) = match ready {
+        windows_tree_launcher::Reply::Ready {
+            version: 4,
+            pid,
+            process_handle,
+            thread_handle,
+            token_handle,
+        } => (pid, process_handle, thread_handle, token_handle),
+        windows_tree_launcher::Reply::Failed {
+            version: 4,
+            message,
+        } => {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                format!("Trusted launcher: {message}"),
+            ));
+        }
+        _ => {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Unsupported trusted launcher reply",
+            ));
+        }
+    };
+    let launcher_process = raw(&tree.process);
+    let pull = |source: u64, access: u32, options: u32| -> Result<OwnedHandle> {
+        let source = usize::try_from(source)
+            .ok()
+            .filter(|h| *h != 0 && *h != usize::MAX)
+            .ok_or_else(|| {
+                WorkerError::new("sandbox_unavailable", "Invalid launcher handoff handle")
+            })?;
+        let mut handle = null_mut();
+        if unsafe {
+            DuplicateHandle(
+                launcher_process,
+                source as HANDLE,
+                GetCurrentProcess(),
+                &mut handle,
+                access,
+                0,
+                options,
+            )
+        } == 0
+        {
+            return Err(failure("Pull retained suspended runner handle"));
+        }
+        unsafe { own(handle) }
+    };
+    let process = pull(source_process, 0, DUPLICATE_SAME_ACCESS)?;
+    let launcher = std::mem::replace(&mut tree.process, process);
+    tree.auxiliary.lock().unwrap().push(launcher);
+    tree.pid = pid;
+    // From the first successful pull, even a thread-copy failure is covered by
+    // the native owner's retained-process fallback and lease lifetime.
+    let thread = pull(source_thread, 0, DUPLICATE_SAME_ACCESS)?;
+    if unsafe { GetProcessId(raw(&tree.process)) } != pid
+        || unsafe { GetProcessIdOfThread(raw(&thread)) } != pid
+    {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Runner handoff process/thread identity mismatch",
+        ));
+    }
+    member = 0;
+    if unsafe { IsProcessInJob(raw(&tree.process), raw(&tree.job), &mut member) } == 0
+        || member == 0
+    {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Suspended account runner did not inherit the exact owned Job",
+        ));
+    }
+    tree.members.register_known(raw(&tree.process))?;
+    // The authenticated launcher opened this actual child's primary token while
+    // it was still suspended, then reverted before its reply. The host only
+    // pulls query access; no impersonation or token-DACL expansion occurs here.
+    let token = pull(source_token, TOKEN_QUERY, 0)?;
+    verify_account(raw(&token), &expected_user)?;
+    drop(token);
+    // This still-suspended trusted runner will create its own fresh station.
+    // UI restrictions are installed at its authenticated USER-object barrier,
+    // before any untrusted payload can be created or resumed.
+    if unsafe { SuspendThread(raw(&thread)) } != 1 || unsafe { ResumeThread(raw(&thread)) } != 2 {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Runner was not initially suspended during handoff",
+        ));
+    }
+    if launch_ack.write(&[1])? != 1 || launch_ack.handle.is_none() {
+        return Err(WorkerError::new(
+            "process_io",
+            "Cannot acknowledge verified runner handoff",
+        ));
+    }
+    launch_ack.handle.take();
+    // Release the transient trusted-launcher slot before any payload can start.
+    loop {
+        match unsafe { WaitForSingleObject(raw(&tree.auxiliary.lock().unwrap()[0]), 0) } {
+            WAIT_OBJECT_0 => break,
+            WAIT_TIMEOUT => {}
+            _ => return Err(failure("Wait retained trusted launcher")),
+        }
+        if cancel.is_cancelled()
+            || started.elapsed() >= Duration::from_millis(sandbox.limits.timeout_ms)
+        {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Interrupted while waiting for trusted launcher cleanup",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut launcher_exit = 0;
+    if unsafe { GetExitCodeProcess(raw(&tree.auxiliary.lock().unwrap()[0]), &mut launcher_exit) }
+        == 0
+        || launcher_exit != 0
+    {
+        return Err(failure("Trusted launcher did not finish verified handoff"));
+    }
+    // Keep sole ownership through this last fallible startup step. Publishing
+    // first would let a concurrent host snapshot retain the Arc and postpone
+    // Tree::drop past an early error return, before cleanup was confirmed.
+    if unsafe { ResumeThread(raw(&thread)) } != 1 {
+        return Err(failure("Resume verified account runner"));
+    }
+    let tree = Arc::new(tree);
+    active_trees()
+        .lock()
+        .unwrap()
+        .insert(workspace.identity.clone(), Arc::downgrade(&tree));
+    let mut timed_out = false;
+    let mut cancelled = false;
+    let mut request_offset = 0;
+    let mut ready_capture = Capture::new(8192);
+    let mut stage = 0u8;
+    // Kept alive in tree.auxiliary throughout supervision and cleanup.
+    let mut resumed_payload = None;
+    let mut input_offset = 0;
+    let mut out = Capture::new(sandbox.limits.output_bytes);
+    let mut err = Capture::new(sandbox.limits.output_bytes);
+    let result = (|| -> Result<i32> {
+        loop {
+            if let Some(reason) = tree.members.failure() {
+                return Err(reason);
+            }
+            if cancel.is_cancelled() {
+                cancelled = true;
+                return Ok(1);
+            }
+            if started.elapsed() >= Duration::from_millis(sandbox.limits.timeout_ms) {
+                timed_out = true;
+                return Ok(1);
+            }
+            // The runner opens stderr first so startup errors can be observed
+            // even if it fails before opening the remaining channels.
+            let error_connected = stderr.connect(tree.pid)?;
+            if error_connected {
+                stderr.drain(&mut err, &live, true)?;
+            }
+            if let Some(code) = tree.exited()? {
+                if let Some(process) = resumed_payload {
+                    return confirmed_payload_exit(process, code);
+                }
+                return Ok(code);
+            }
+            let output_connected = stdout.connect(tree.pid)?;
+            if output_connected {
+                stdout.drain(&mut out, &live, false)?;
+            }
+            let ready_connected = runner_ready.connect(tree.pid)?;
+            let ack_connected = runner_ack.connect(tree.pid)?;
+            if ready_connected {
+                runner_ready.drain(&mut ready_capture, &None, false)?;
+                if ready_capture.truncated {
+                    return Err(WorkerError::new(
+                        "sandbox_unavailable",
+                        "Oversized runner stage reply",
+                    ));
+                }
+                if let Some(end) = ready_capture.bytes.iter().position(|byte| *byte == b'\n') {
+                    if !ack_connected || ready_capture.bytes.len() != end + 1 {
+                        return Err(WorkerError::new(
+                            "sandbox_unavailable",
+                            "Unexpected runner stage transport",
+                        ));
+                    }
+                    let ready: windows_tree_runner::Ready =
+                        serde_json::from_slice(&ready_capture.bytes[..end])?;
+                    let pull = |source: u64, access: u32| -> Result<OwnedHandle> {
+                        let source = usize::try_from(source)
+                            .ok()
+                            .filter(|h| *h != 0 && *h != usize::MAX)
+                            .ok_or_else(|| {
+                                WorkerError::new(
+                                    "sandbox_unavailable",
+                                    "Invalid runner stage handle",
+                                )
+                            })?;
+                        let mut handle = null_mut();
+                        if unsafe {
+                            DuplicateHandle(
+                                raw(&tree.process),
+                                source as HANDLE,
+                                GetCurrentProcess(),
+                                &mut handle,
+                                access,
+                                0,
+                                if access == 0 {
+                                    DUPLICATE_SAME_ACCESS
+                                } else {
+                                    0
+                                },
+                            )
+                        } == 0
+                        {
+                            return Err(failure("Pull retained runner stage handle"));
+                        }
+                        unsafe { own(handle) }
+                    };
+                    match (stage, ready) {
+                        (
+                            0,
+                            windows_tree_runner::Ready::Objects {
+                                version: 1,
+                                desktop,
+                                station_handle,
+                                desktop_handle,
+                            },
+                        ) => {
+                            let (_, nonce) = desktop.split_once('\\').ok_or_else(|| {
+                                WorkerError::new(
+                                    "sandbox_unavailable",
+                                    "Missing private station name",
+                                )
+                            })?;
+                            if nonce != desktop_nonce {
+                                return Err(WorkerError::new(
+                                    "sandbox_unavailable",
+                                    "Runner changed the host's private desktop nonce",
+                                ));
+                            }
+                            let mut resources = tree.desktop.lock().unwrap();
+                            *resources = Some(unsafe {
+                                windows_tree_desktop::HostResources::from_raw(
+                                    null_mut(),
+                                    null_mut(),
+                                )
+                            });
+                            let resource = resources.as_mut().unwrap();
+                            // Every successful USER duplication enters the trusted owner
+                            // before the next fallible operation, including partial handoffs.
+                            unsafe {
+                                resource.adopt_station(pull(station_handle, 0)?.into_raw_handle())
+                            };
+                            unsafe {
+                                resource.adopt_desktop(pull(desktop_handle, 0)?.into_raw_handle())
+                            };
+                            resource.verify_and_harden(
+                                &desktop,
+                                &tree._provision.manifest.host_sid,
+                                &expected_user,
+                                &tree._provision.manifest.appcontainer_sid,
+                                &tree._provision.manifest.writer_sid,
+                            )?;
+                            *tree.desktop_name.lock().unwrap() = desktop;
+                            enforce_ui_restrictions(raw(&tree.job))?;
+                            stage = 1;
+                        }
+                        (
+                            1,
+                            windows_tree_runner::Ready::Payload {
+                                version: 3,
+                                token_handle,
+                                namespace_handle,
+                                pid,
+                                process_handle,
+                                thread_handle,
+                            },
+                        ) => {
+                            // GetProcessMitigationPolicy requires PROCESS_QUERY_INFORMATION.
+                            let query_access = if sandbox.limits.processes == 2 {
+                                PROCESS_QUERY_INFORMATION
+                            } else {
+                                PROCESS_QUERY_LIMITED_INFORMATION
+                            };
+                            let process = pull(
+                                process_handle,
+                                SYNCHRONIZE | query_access | PROCESS_TERMINATE,
+                            )?;
+                            let process_raw = raw(&process);
+                            tree.auxiliary.lock().unwrap().push(process);
+                            let thread = pull(
+                                thread_handle,
+                                THREAD_QUERY_LIMITED_INFORMATION | THREAD_SUSPEND_RESUME,
+                            )?;
+                            let mut member = 0;
+                            if unsafe { GetProcessId(process_raw) } != pid
+                                || unsafe { GetProcessIdOfThread(raw(&thread)) } != pid
+                                || unsafe {
+                                    IsProcessInJob(process_raw, raw(&tree.job), &mut member)
+                                } == 0
+                                || member == 0
+                                || unsafe { SuspendThread(raw(&thread)) } != 1
+                                || unsafe { ResumeThread(raw(&thread)) } != 2
+                            {
+                                return Err(WorkerError::new(
+                                    "sandbox_unavailable",
+                                    "Payload identity, initial suspension or exact owned Job membership changed",
+                                ));
+                            }
+                            tree.members.register_known(process_raw)?;
+                            verify_job_limits(raw(&tree.job), &sandbox)?;
+                            if sandbox.limits.processes == 2
+                                && !windows_tree_runner::child_processes_blocked(process_raw)
+                                    .map_err(|error| {
+                                        WorkerError::new("sandbox_unavailable", error.to_string())
+                                    })?
+                            {
+                                return Err(WorkerError::new(
+                                    "sandbox_unavailable",
+                                    "The retained payload can create a child at the full process budget",
+                                ));
+                            }
+                            let payload_token = pull(token_handle, TOKEN_QUERY)?;
+                            let directory = pull(namespace_handle, READ_CONTROL | WRITE_DAC)?;
+                            let manifest = &tree._provision.manifest;
+                            let mut namespace = tree.namespace.lock().unwrap();
+                            namespace.insert(super::windows_tree_package_namespace::PackageNamespaceGuard::prepare(
+                                directory,
+                                manifest.session_id,
+                                &manifest.host_sid,
+                                &expected_user,
+                                &manifest.appcontainer_sid,
+                                &manifest.writer_sid,
+                                raw(&payload_token),
+                            )?).apply()?;
+                            if unsafe { ResumeThread(raw(&thread)) } != 1 {
+                                return Err(failure("Resume verified payload on host"));
+                            }
+                            resumed_payload = Some(process_raw);
+                            stage = 2;
+                        }
+                        _ => {
+                            return Err(WorkerError::new(
+                                "sandbox_unavailable",
+                                "Unsupported or reordered runner stage",
+                            ));
+                        }
+                    }
+                    if runner_ack.write(&[stage])? != 1 || runner_ack.handle.is_none() {
+                        return Err(WorkerError::new(
+                            "process_io",
+                            "Cannot acknowledge verified runner stage",
+                        ));
+                    }
+                    ready_capture = Capture::new(8192);
+                }
+            }
+            let connected = control.connect(tree.pid)?
+                & stdin.connect(tree.pid)?
+                & output_connected
+                & error_connected
+                & ready_connected
+                & ack_connected;
+            if connected {
+                if control.handle.is_some() {
+                    request_offset += control.write(&request[request_offset..])?;
+                    if control.handle.is_none() {
+                        return Err(WorkerError::new(
+                            "process_io",
+                            "Runner closed its control pipe before request delivery",
+                        ));
+                    }
+                    if request_offset == request.len() {
+                        control.handle.take();
+                    }
+                }
+                if stdin.handle.is_some() {
+                    if input_offset < input.len() {
+                        input_offset += stdin.write(&input[input_offset..])?;
+                    }
+                    if input_offset == input.len() {
+                        stdin.handle.take();
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    })();
+    tree.terminate();
+    let cleanup_started = Instant::now();
+    while !tree.drained() {
+        if cleanup_started.elapsed() > CLEANUP_REPORT_AFTER
+            && let Some(tx) = completion.lock().unwrap().take()
+        {
+            let _=tx.send(Err(WorkerError::new("cleanup_failed",format!("Job drainage remains unconfirmed; supervisor retains workspace lease and invocation lock: {}", tree.members.diagnostics()))));
+        }
+        tree.terminate();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    tree._provision.confirm_cleanup()?;
+    tree.cleaned.store(true, Ordering::Release);
+    active_trees().lock().unwrap().remove(&workspace.identity);
+    if stdout.connected {
+        stdout.drain_until_empty(&mut out, &live, false)?;
+    }
+    if stderr.connected {
+        stderr.drain_until_empty(&mut err, &live, true)?;
+    }
+    let exit_code = result?;
+    if stage < 2 && !timed_out && !cancelled {
+        // Before the authenticated payload handoff only the trusted runner can write stderr.
+        let detail = String::from_utf8_lossy(&err.bytes[..err.bytes.len().min(512)]);
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            format!(
+                "Runner exited with code {exit_code} before payload admission. {}",
+                detail.trim()
+            ),
+        ));
+    }
+    let output = ProcessOutput {
+        // Startup cancellation and timeout can precede the first payload
+        // instruction. No workload exit code exists in that case.
+        exit_code: if cancelled || timed_out {
+            resumed_payload.map(payload_exit).transpose()?
+        } else {
+            Some(exit_code)
+        },
+        stdout: String::from_utf8_lossy(&out.bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&err.bytes).into_owned(),
+        truncated: out.truncated || err.truncated,
+        timed_out,
+        cancelled,
+    };
+    // Release the native owner and lease after confirmed drain. The outer
+    // supervisor thread publishes this result only after the remaining pipe,
+    // thread and bootstrap handles have also left this function's scope.
+    drop(tree);
+    Ok(output)
+}
+
+struct CancelOnDrop(CancellationToken);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run(
+    sandbox: &Sandbox,
+    workspace: &Workspace,
+    writable: bool,
+    argv: &[String],
+    cwd: &str,
+    cancel: CancellationToken,
+    live: Option<Arc<LiveOutput>>,
+    stdin: Option<&str>,
+    lease: Option<Arc<WorkspaceLease>>,
+) -> Result<ProcessOutput> {
+    require_qualified_profile()?;
+    // Direct SDK callers need the same admission before even cwd inspection.
+    // The engine/builtin path already supplies this exact retained guard.
+    let lease = Some(lease.unwrap_or_else(|| {
+        Arc::new(crate::parallel::WorkspaceAccess::default())
+            .try_acquire(workspace, true, "windows-process-tree")
+            .expect("A new local workspace admission has no competing leases")
+    }));
+    sandbox.admit_windows_workspace(workspace, lease.as_ref().unwrap())?;
+    workspace.revalidate().await?;
+    if cwd != "." {
+        workspace.list(cwd, 20_000).await?;
+    }
+    let guard = CancelOnDrop(cancel.child_token());
+    let worker_cancel = guard.0.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let sandbox = sandbox.clone();
+    let workspace = workspace.clone();
+    let argv = argv.to_vec();
+    let cwd = cwd.to_owned();
+    let input = stdin.unwrap_or_default().as_bytes().to_vec();
+    // The OS thread outlives Tokio tasks/runtimes and owns all cleanup resources.
+    let completion = Arc::new(Mutex::new(Some(tx)));
+    std::thread::Builder::new()
+        .name("werk-windows-tree".into())
+        .spawn(move || {
+            let result = supervise(
+                sandbox,
+                workspace,
+                writable,
+                argv,
+                cwd,
+                worker_cancel,
+                live,
+                input,
+                lease,
+                completion.clone(),
+            );
+            if let Some(tx) = completion.lock().unwrap().take() {
+                let _ = tx.send(result);
+            }
+        })
+        .map_err(|e| {
+            WorkerError::new(
+                "sandbox_unavailable",
+                format!("Start trusted Windows supervisor: {e}"),
+            )
+        })?;
+    let result = rx.await.map_err(|_| {
+        WorkerError::new(
+            "cleanup_failed",
+            "Trusted Windows supervisor failed; completion not confirmed",
+        )
+    })?;
+    drop(guard);
+    result
+}
+
+impl Sandbox {
+    pub(crate) fn admit_windows_workspace(
+        &self,
+        workspace: &Workspace,
+        lease: &Arc<WorkspaceLease>,
+    ) -> Result<()> {
+        let Some(config) = &self.native.windows_process_tree else {
+            return Ok(());
+        };
+        require_qualified_profile()?;
+        let mut retained = lease.windows_tree.lock().unwrap();
+        if retained.is_none() {
+            let p = Arc::new(windows_provision::load(
+                &config.provisioning,
+                &workspace.path,
+            )?);
+            p.try_lock_invocation()?;
+            p.require_confirmed_cleanup()?;
+            *retained = Some(p);
+        }
+        // A trusted direct caller may retain and reuse a context. An existing
+        // guard must not admit another tool after its background tree started.
+        retained.as_ref().unwrap().require_confirmed_cleanup()
+    }
+}
+
+impl Sandbox {
+    /// Host-only observation of this process's owned Job; never exposed as a tool.
+    #[doc(hidden)]
+    pub fn windows_process_tree_snapshot(&self, workspace: &Workspace) -> Result<Value> {
+        Ok(self.pin_windows_process_tree(workspace)?.0)
+    }
+
+    /// Return non-inheritable query/synchronize handles in process_ids order.
+    /// Their object identities remain pinned after the Job membership check.
+    #[doc(hidden)]
+    pub fn pin_windows_process_tree(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<(Value, Vec<OwnedHandle>)> {
+        require_qualified_profile()?;
+        let tree = active_trees()
+            .lock()
+            .unwrap()
+            .get(&workspace.identity)
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| {
+                WorkerError::new(
+                    "unknown_job",
+                    "No active local process-tree Job for this workspace",
+                )
+            })?;
+        let info = limits(raw(&tree.job))?;
+        let mut storage =
+            vec![0usize; 2 + info.BasicLimitInformation.ActiveProcessLimit as usize + 32];
+        let list = storage
+            .as_mut_ptr()
+            .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        if unsafe {
+            QueryInformationJobObject(
+                raw(&tree.job),
+                JobObjectBasicProcessIdList,
+                list.cast(),
+                (storage.len() * size_of::<usize>()) as u32,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(failure("Snapshot exact owned Job members"));
+        }
+        let count = unsafe { (*list).NumberOfProcessIdsInList } as usize;
+        if unsafe { (*list).NumberOfAssignedProcesses } as usize != count {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "Incomplete Job membership observation",
+            ));
+        }
+        let ids = unsafe { std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count) };
+        let mut processes = Vec::new();
+        let mut pinned = Vec::new();
+        for id in ids {
+            let handle = unsafe {
+                own(OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                    0,
+                    *id as u32,
+                ))?
+            };
+            let mut member = 0;
+            if unsafe { IsProcessInJob(raw(&handle), raw(&tree.job), &mut member) } == 0
+                || member == 0
+            {
+                return Err(failure("Pin exact Job member"));
+            }
+            processes.push(*id as u32);
+            pinned.push(handle);
+        }
+        Ok((
+            json!({"active_processes":tree.active()?,"process_ids":processes,"membership_verified":true,"runner_pid":tree.pid,"desktop":tree.desktop_name.lock().unwrap().clone(),
+            "limits":{"ui_restrictions":ui_restrictions(raw(&tree.job))?,"processes":info.BasicLimitInformation.ActiveProcessLimit,"memory_bytes":info.JobMemoryLimit,"cpu_seconds":info.BasicLimitInformation.PerJobUserTimeLimit/10_000_000,
+            "kill_on_close":info.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0,"breakaway":info.BasicLimitInformation.LimitFlags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK|JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)!=0}}),
+            pinned,
+        ))
+    }
+}
+
+pub(super) async fn doctor(sandbox: &Sandbox) -> Result<Value> {
+    require_qualified_profile()?;
+    let config = sandbox.native.windows_process_tree.as_ref().unwrap();
+    let metadata = std::fs::metadata(&config.provisioning)?;
+    if metadata.len() > 65536 {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            "Provisioning manifest exceeds limit",
+        ));
+    }
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&config.provisioning)?)?;
+    let path = manifest["workspace"]
+        .as_str()
+        .ok_or_else(|| WorkerError::new("sandbox_unavailable", "Missing provisioned workspace"))?;
+    let workspace = Workspace::open(path).await?;
+    let descriptor = description(sandbox, &workspace, true)?;
+    let argv = vec![
+        system_directory()?
+            .join("cmd.exe")
+            .to_string_lossy()
+            .into_owned(),
+        "/d".into(),
+        "/c".into(),
+        "exit".into(),
+        "0".into(),
+    ];
+    let output = run(
+        sandbox,
+        &workspace,
+        true,
+        &argv,
+        ".",
+        CancellationToken::new(),
+        None,
+        None,
+        None,
+    )
+    .await?;
+    if output.exit_code != Some(0) || output.cancelled || output.timed_out {
+        let stderr: String = output.stderr.chars().take(2048).collect();
+        return Err(WorkerError::new(
+            "sandbox_probe_failed",
+            format!(
+                "Provisioned Windows runner startup/exit probe failed: exit {:?}, timed_out {}, cancelled {}, stderr {stderr:?}",
+                output.exit_code, output.timed_out, output.cancelled
+            ),
+        ));
+    }
+    Ok(descriptor)
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+
+    #[test]
+    fn retained_query_handle_can_read_child_policy() {
+        let current = unsafe { GetCurrentProcess() };
+        let mut retained = null_mut();
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    current,
+                    current,
+                    current,
+                    &mut retained,
+                    PROCESS_QUERY_INFORMATION,
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        let retained = unsafe { own(retained).unwrap() };
+        assert_eq!(
+            windows_tree_runner::child_processes_blocked(raw(&retained)).unwrap(),
+            windows_tree_runner::child_processes_blocked(current).unwrap()
+        );
+    }
+
+    #[test]
+    fn require_signaled_payload_with_its_own_exit_code() {
+        assert!(confirmed_payload_exit(unsafe { GetCurrentProcess() }, 0).is_err());
+        let mut child = std::process::Command::new(system_directory().unwrap().join("cmd.exe"))
+            .args(["/d", "/c", "exit", "37"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(37));
+        assert!(confirmed_payload_exit(child.as_raw_handle(), 0).is_err());
+        assert_eq!(
+            confirmed_payload_exit(child.as_raw_handle(), 37).unwrap(),
+            37
+        );
+    }
+}

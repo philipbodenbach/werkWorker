@@ -1,0 +1,58 @@
+{
+  "snapshot": {
+    "active_processes": 4,
+    "desktop": "Service-0x1-3eafb393$\\werk-tree-fec6d3ae-e080-4a95-ae7d-b149bea85b53",
+    "limits": {
+      "breakaway": false,
+      "cpu_seconds": 120,
+      "kill_on_close": true,
+      "memory_bytes": 2147483648,
+      "processes": 32,
+      "ui_restrictions": 255
+    },
+    "membership_verified": true,
+    "process_ids": [
+      79256,
+      70956,
+      74032,
+      27072
+    ],
+    "runner_pid": 79256
+  },
+  "immediate_cleanup": {
+    "handle_states": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "tool": "process.run",
+    "wait_timeout_ms": 0
+  },
+  "output": {
+    "cancelled": false,
+    "exit_code": 0,
+    "stderr": "   Compiling tree-offline-acceptance v0.0.0 (F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\ww-tree-test-lLh44W)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.82s\n     Running unittests src\\lib.rs (target\\debug\\deps\\tree_offline_acceptance-1ddf58034da7b6f5.exe)\n",
+    "stdout": "\nrunning 1 test\nOFFLINE_NATIVE_CARGO_OK\ntest native_behavior ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n",
+    "timed_out": false,
+    "truncated": false
+  },
+  "diagnostic_only": true,
+  "full_qualification": false,
+  "exit_code": 0,
+  "source_sha256": "cf80ddeb755877bf7394e9f789c7706e87af61287b4a1791a9255cb9fe7b2f6c",
+  "manifest": "F:\\werkWorker\\target\\windows-process-tree-20261117\\runtime-ns4\\provisioning.json",
+  "manifest_sha256": "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f",
+  "namespace_receipt": {
+    "session_id": 1,
+    "path": "\\Sessions\\1\\BaseNamedObjects\\Restricted",
+    "owner_sid": "S-1-5-32-544"
+  },
+  "account": "wwbox_8b9a88bc022a",
+  "account_sid": "S-1-5-21-4275439644-3620842777-1714106797-1011",
+  "artifact_assertions_passed": true,
+  "fixture_artifacts_removed_by_normal_harness_cleanup": true,
+  "cleanup_marker_absent": true,
+  "log_sha256": "ba19c71eba36306201907b848a7ca171ba35afbf348a4aaf1f2e99e62c6b8079",
+  "test_exe_sha256": "0e8870e6a009b76228bb5345bbfd4e46a76ea1a3bb0a4ec2eba8a90e64dcf7e0"
+}

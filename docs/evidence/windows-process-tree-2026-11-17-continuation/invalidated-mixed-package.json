@@ -1,0 +1,11 @@
+{
+  "valid_product_evidence": false,
+  "profile_qualified": false,
+  "reason": "Shared Cargo output mixed diagnostic and guarded-package artifacts; installed host admitted the unqualified backend despite guarded product source. Replaced by an isolated product build.",
+  "installed_ww_sha256": "c0951e66e529e1eff6aefedde1e9aa3fbc8213507c0a9edc6f0d9161301fc74b",
+  "diagnostic_profile_execution": "native-medium-installed-start-v3/installed-start-result.json; actual Cargo success, not delivered-profile qualification",
+  "renamed_archives": [
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\werkWorker-v0.3.3-windows-x86_64-debug-guarded-INVALID-PRODUCT-DIAGNOSTIC.zip",
+    "F:\\werkWorker\\target\\windows-process-tree-20261117\\guarded-debug-package\\werkWorker-v0.3.3-windows-x86_64-INVALID-PRODUCT-DIAGNOSTIC.zip"
+  ]
+}

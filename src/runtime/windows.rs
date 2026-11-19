@@ -270,7 +270,7 @@ fn profile_path(sid: &Sid) -> Result<PathBuf> {
     }
     Ok(result)
 }
-fn local_app_data() -> Result<PathBuf> {
+pub(super) fn local_app_data() -> Result<PathBuf> {
     // Statically importing Shell32 into an SDK consumer also loads its GUI
     // dependencies in a copied payload, incompatible with Win32k lockdown.
     // Resolve this trusted-host-only API from System32 explicitly instead.

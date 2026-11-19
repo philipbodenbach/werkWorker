@@ -20,8 +20,8 @@ use werk_worker::{
     profiles::AgentProfile,
     project::{Access, Project},
     providers::{
-        EnvironmentSecrets, ModelProvider, ReasoningProfile, ScriptedProvider, ScriptedTurn,
-        SecretResolver, Support, WerkConfig, WerkProvider,
+        EnvironmentSecrets, ModelProvider, ProviderTransport, ReasoningProfile, ScriptedProvider,
+        ScriptedTurn, SecretResolver, Support, WerkConfig, WerkProvider,
     },
     *,
 };
@@ -834,7 +834,12 @@ pub async fn show(
             };
             let outcome = crate::cli_start::connecting(
                 &form.settings.werk.base_url,
-                WerkProvider::connect(form.settings.werk.clone(), secret),
+                WerkProvider::connect_explicit(
+                    ProviderTransport::Werk,
+                    form.settings.werk.clone(),
+                    secret,
+                    (form.auth == 1).then_some(form.env_name.as_str()),
+                ),
             )
             .await;
             match outcome {
@@ -1046,7 +1051,13 @@ pub async fn show(
                                     config.options.remove("reasoning_tier");
                                 }
                                 form.error.clear();form.busy=true;
-                                pending.0=Some(tokio::spawn(async move {tokio::time::timeout(Duration::from_secs(20),WerkProvider::connect(config,secret)).await.map_err(|_|WorkerError::new("connection_timeout","Connection timed out"))?}));
+                                let credential_reference = (form.auth == 1).then(|| form.env_name.clone());
+                                pending.0=Some(tokio::spawn(async move {
+                                    tokio::time::timeout(
+                                        Duration::from_secs(20),
+                                        WerkProvider::connect_explicit(ProviderTransport::Werk,config,secret,credential_reference.as_deref()),
+                                    ).await.map_err(|_|WorkerError::new("connection_timeout","Connection timed out"))?
+                                }));
                             },_=>{}
                         }
                     },_=>{}

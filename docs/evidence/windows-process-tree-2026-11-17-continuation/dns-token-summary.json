@@ -1,0 +1,77 @@
+﻿{
+    "date":  "2026-11-17",
+    "scope":  "Isolated DNS-broker token controls; no system service, global ACL or firewall changes",
+    "account":  "Freshly provisioned generated account from fresh-provision-summary.json",
+    "apis":  [
+                 "DnsQuery_W",
+                 "DnsQueryEx version 1"
+             ],
+    "server":  "127.0.0.1:53; explicit per-query only; fresh random .ww-tree.test names; synthetic zero-TTL A response 192.0.2.123",
+    "identity":  "Host caller thread impersonates LogonUserW primary token; all logon SIDs disabled during restriction; credentials decrypted only in memory",
+    "denied_variants":  [
+                            "Full User+BU",
+                            "Full User+BU+IU",
+                            "Full User+BU+LOCAL",
+                            "Full User+BU+AU",
+                            "Full User+IU",
+                            "Full User+LOCAL",
+                            "Full User+AU"
+                        ],
+    "denied_result":  "Both APIs return error 5, no records, zero independent listener arrivals",
+    "leaking_controls":  [
+                             "Dedicated unrestricted",
+                             "Full User+RC",
+                             "Full User+Everyone",
+                             "Write User+Everyone"
+                         ],
+    "leaking_result":  "Both APIs return success, records, one independent listener arrival",
+    "host_controls":  "Before and after every matrix: both APIs succeed, return records and arrive once",
+    "limitation":  "Thread-token diagnostic only. Requires process.run payload startup, descendants, full native suite and fresh-install acceptance before qualification.",
+    "files":  [
+                  {
+                      "name":  "dns-token-control.cs",
+                      "sha256":  "c8f67717b7120f7510d8f5d873801dff51b53b70c06d3c77392a92525d75b22c",
+                      "length":  7112
+                  },
+                  {
+                      "name":  "dns-token-control.exe",
+                      "sha256":  "513d417d5447c6d14f033ad3656c1f1b4d94669a801f6bc0208131f333e2fc8f",
+                      "length":  11264
+                  },
+                  {
+                      "name":  "dns-token-control-ex-rc.jsonl",
+                      "sha256":  "a87e779f048392e88da60eb385d249c2083420d824c19ebc7bd1fe5a1dd2525e",
+                      "length":  4206
+                  },
+                  {
+                      "name":  "dns-token-groups-control.cs",
+                      "sha256":  "9476d287320effcc05095ffd8258f0b7c5968a8bee2f0881d1ac30ab17f16bc3",
+                      "length":  7712
+                  },
+                  {
+                      "name":  "dns-token-groups-control.exe",
+                      "sha256":  "98b25784a78c55d0d0b2ae25856b85038341521482921fcf7bb1cc3599df9164",
+                      "length":  11776
+                  },
+                  {
+                      "name":  "dns-token-groups-control.jsonl",
+                      "sha256":  "58a912903925cc17cc9d7192142c0fb56ec96c6d8d4e27186281d2c48b31204f",
+                      "length":  7382
+                  },
+                  {
+                      "name":  "dns-dedicated-token-groups-control.cs",
+                      "sha256":  "a293cc5a5a845efc41f499462f5da5721a85d8a0c9ff35b2feb859f9ab746c08",
+                      "length":  9392
+                  },
+                  {
+                      "name":  "dns-dedicated-token-groups-control.exe",
+                      "sha256":  "116fda0edcdcb156c0b31af56b4b8a526dcc649c8e77e9825876a28878016f4c",
+                      "length":  13312
+                  },
+                  {
+                      "name":  "dns-dedicated-token-groups-control.jsonl",
+                      "sha256":  "b0eb95ab7052c749358ba32e1b854962c7972f52487db125f7357403100cef99",
+                      "length":  8050
+                  }
+              ]
+}

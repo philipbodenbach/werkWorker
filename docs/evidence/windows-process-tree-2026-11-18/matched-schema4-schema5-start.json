@@ -1,0 +1,262 @@
+{
+    "subject":  "Matched native startup through the existing broker and Windows Job supervisor. The narrow loader provision omits a developer toolchain environment. The additional fresh schema-5 full provision uses the same five approved toolchain sources and environment template as schema 4.",
+    "comparisons":  {
+                        "schema4-list":  {
+                                             "raw":  "target/matched-startup-20261118-controls/schema4-list/observation.json",
+                                             "raw_sha256":  "edd9b614fd20118cd0b2f64a4cd45758840e1e6cc0f15e66137ede5cf56acfc4",
+                                             "sha256":  {
+                                                            "host":  "a83983b7a58583efc9e9e41a9ddc7d6c6001df79e645f1721e641440be482ac7",
+                                                            "runner":  "c1b5cb93341e70c7b41bb87867915eef0eee0d4799089fd50cba976cd9567169",
+                                                            "manifest":  "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f",
+                                                            "probe":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                                            "probe_source":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                                            "request":  "ca3206e8812688ae1730e13c43787768d378959251938bc06be40bde4de4196d",
+                                                            "validator":  "fe958210aad0571a0a4053eb4551d3466dd1e0024207f6aaeac5f214e0d3beb0",
+                                                            "controller":  "ca1f917c44211ffd03fe61ec865fd8cf23f73519e10d9c558bb321f730117e8a",
+                                                            "grants":  "3a15c27bd2f4e6f73e7b1e35653989cea969484789d6550535e8f0276a5102d2",
+                                                            "limits":  "3cf52532f4c18ebec804cbf7df5c9c27a737d3a78a2f01dd15e6006aef9db804"
+                                                        },
+                                             "argv":  [
+                                                          "matched-startup-20261118-a/probe.exe",
+                                                          "--list"
+                                                      ],
+                                             "host_integrity_rid":  8192,
+                                             "exit_code":  0,
+                                             "stdout":  "diagnose_native_process_tree_case: test\ndiagnose_thread_identity_host_network: test\nmissing_or_malformed_provision_cannot_fall_back_to_single_process: test\nnative_dns_control_uses_only_explicit_loopback_server: test\nprocess_tree_host_payload: test\nprocess_tree_payload: test\nprocess_tree_ui_observer: test\nrequired_native_process_tree_acceptance: test\n\n8 tests, 0 benchmarks",
+                                             "timed_out":  false,
+                                             "cancelled":  false,
+                                             "marker_after":  false,
+                                             "outer_job_active_after_cleanup":  0
+                                         },
+                        "schema5-list":  {
+                                             "raw":  "target/matched-startup-20261118-controls/schema5-list/observation.json",
+                                             "raw_sha256":  "d3e70cc2e39d7c1bfac5679b7412c304e00b859abe203ee74ef129ea155c5d50",
+                                             "sha256":  {
+                                                            "host":  "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+                                                            "runner":  "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+                                                            "manifest":  "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d",
+                                                            "probe":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                                            "probe_source":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                                            "request":  "ca3206e8812688ae1730e13c43787768d378959251938bc06be40bde4de4196d",
+                                                            "validator":  "fe958210aad0571a0a4053eb4551d3466dd1e0024207f6aaeac5f214e0d3beb0",
+                                                            "controller":  "c9b4f09c32aab26aa57e1134605fe2c7549a0334a600a50ff3ba65e0f3fbfd16",
+                                                            "grants":  "3a15c27bd2f4e6f73e7b1e35653989cea969484789d6550535e8f0276a5102d2",
+                                                            "limits":  "3cf52532f4c18ebec804cbf7df5c9c27a737d3a78a2f01dd15e6006aef9db804"
+                                                        },
+                                             "argv":  [
+                                                          "matched-startup-20261118-a/probe.exe",
+                                                          "--list"
+                                                      ],
+                                             "host_integrity_rid":  8192,
+                                             "exit_code":  -1073741502,
+                                             "stdout":  "",
+                                             "timed_out":  false,
+                                             "cancelled":  false,
+                                             "marker_after":  false,
+                                             "outer_job_active_after_cleanup":  0
+                                         },
+                        "schema4-bcrypt":  {
+                                               "raw":  "target/matched-startup-20261118-controls/schema4-bcrypt/observation.json",
+                                               "raw_sha256":  "db4871d863aa23b4f308966c23f27276de2f3f8f3a731a9842888b2f350eacc4",
+                                               "sha256":  {
+                                                              "host":  "a83983b7a58583efc9e9e41a9ddc7d6c6001df79e645f1721e641440be482ac7",
+                                                              "runner":  "c1b5cb93341e70c7b41bb87867915eef0eee0d4799089fd50cba976cd9567169",
+                                                              "manifest":  "0a18d501108d728cc6b340197086219b462ffe170fadde44d4556f62e85d531f",
+                                                              "probe":  "25570d8c269d1293681f92d0e5ae27a595829b8472429fe2094b4c4f651ae0b2",
+                                                              "probe_source":  "25570d8c269d1293681f92d0e5ae27a595829b8472429fe2094b4c4f651ae0b2",
+                                                              "request":  "ca3206e8812688ae1730e13c43787768d378959251938bc06be40bde4de4196d",
+                                                              "validator":  "fe958210aad0571a0a4053eb4551d3466dd1e0024207f6aaeac5f214e0d3beb0",
+                                                              "controller":  "ca1f917c44211ffd03fe61ec865fd8cf23f73519e10d9c558bb321f730117e8a",
+                                                              "grants":  "3a15c27bd2f4e6f73e7b1e35653989cea969484789d6550535e8f0276a5102d2",
+                                                              "limits":  "3cf52532f4c18ebec804cbf7df5c9c27a737d3a78a2f01dd15e6006aef9db804"
+                                                          },
+                                               "argv":  [
+                                                            "F:\\werkWorker\\target\\windows-process-tree-20261117\\workspace-ns4\\matched-bcrypt-20261118-a\\ww-bcrypt-7e37c2.exe"
+                                                        ],
+                                               "host_integrity_rid":  8192,
+                                               "exit_code":  0,
+                                               "stdout":  "ENTRY\r\nBEFORE_LOAD\r\nAFTER_LOAD_OK LAST_ERROR=0x00000000\r\nSYSTEM32_MODULE_PATH_CONFIRMED",
+                                               "timed_out":  false,
+                                               "cancelled":  false,
+                                               "marker_after":  false,
+                                               "outer_job_active_after_cleanup":  0
+                                           },
+                        "schema5-bcrypt":  {
+                                               "raw":  "target/matched-startup-20261118-controls/schema5-bcrypt/observation.json",
+                                               "raw_sha256":  "3c492d369e47644a7d611447fe0cb17162551c777663072d58b4a03eb1a0b7bc",
+                                               "sha256":  {
+                                                              "host":  "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+                                                              "runner":  "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+                                                              "manifest":  "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d",
+                                                              "probe":  "25570d8c269d1293681f92d0e5ae27a595829b8472429fe2094b4c4f651ae0b2",
+                                                              "probe_source":  "25570d8c269d1293681f92d0e5ae27a595829b8472429fe2094b4c4f651ae0b2",
+                                                              "request":  "ca3206e8812688ae1730e13c43787768d378959251938bc06be40bde4de4196d",
+                                                              "validator":  "fe958210aad0571a0a4053eb4551d3466dd1e0024207f6aaeac5f214e0d3beb0",
+                                                              "controller":  "c9b4f09c32aab26aa57e1134605fe2c7549a0334a600a50ff3ba65e0f3fbfd16",
+                                                              "grants":  "3a15c27bd2f4e6f73e7b1e35653989cea969484789d6550535e8f0276a5102d2",
+                                                              "limits":  "3cf52532f4c18ebec804cbf7df5c9c27a737d3a78a2f01dd15e6006aef9db804"
+                                                          },
+                                               "argv":  [
+                                                            "F:\\werkWorker\\target\\tree-ac-1118\\loader-focus-f28d33f633084a1eaefe89e36ff77ed2\\workspace\\matched-bcrypt-20261118-a\\ww-bcrypt-7e37c2.exe"
+                                                        ],
+                                               "host_integrity_rid":  8192,
+                                               "exit_code":  80,
+                                               "stdout":  "ENTRY\r\nBEFORE_LOAD\r\nAFTER_LOAD_FAILED LAST_ERROR=0x0000045a",
+                                               "timed_out":  false,
+                                               "cancelled":  false,
+                                               "marker_after":  false,
+                                               "outer_job_active_after_cleanup":  0
+                                           },
+                        "schema5-full-5ddc/test-list":  {
+                                                            "raw":  "target/matched-startup-20261118-controls/schema5-full-5ddc/test-list/observation.json",
+                                                            "raw_sha256":  "3c27fac22f31414282cd3a3eb3dbba2cbbcaa959ad8caa2f9141dcbf9dc40e92",
+                                                            "sha256":  {
+                                                                           "host":  "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+                                                                           "runner":  "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+                                                                           "manifest":  "604fa29fa245c4172398b0838ff1fec42d257ca74908c1c1465800a6a3d2884f",
+                                                                           "probe":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                                                           "probe_source":  "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+                                                                           "request":  "ca3206e8812688ae1730e13c43787768d378959251938bc06be40bde4de4196d",
+                                                                           "validator":  "fe958210aad0571a0a4053eb4551d3466dd1e0024207f6aaeac5f214e0d3beb0",
+                                                                           "controller":  "54ffdc142f03fd662869ba74877cf9e9b8374af9253aace2158743e7f77ac9bd",
+                                                                           "grants":  "3a15c27bd2f4e6f73e7b1e35653989cea969484789d6550535e8f0276a5102d2",
+                                                                           "limits":  "3cf52532f4c18ebec804cbf7df5c9c27a737d3a78a2f01dd15e6006aef9db804"
+                                                                       },
+                                                            "argv":  [
+                                                                         "matched-startup-20261118-a/probe.exe",
+                                                                         "--list"
+                                                                     ],
+                                                            "host_integrity_rid":  8192,
+                                                            "exit_code":  -1073741502,
+                                                            "stdout":  "",
+                                                            "timed_out":  false,
+                                                            "cancelled":  false,
+                                                            "marker_after":  false,
+                                                            "outer_job_active_after_cleanup":  0
+                                                        }
+                    },
+    "process_monitor":  {
+                            "publisher":  "Microsoft Corporation",
+                            "binary_version":  "4.13",
+                            "configuration_sha256":  "672fa40cfc7ce39082c0b71a9357411ec68c57e618b4002d2efeb282c34d882c",
+                            "closed_capture_sha256":  "4c0f911db54930ffef318d837e5835e91978df04cc247ece34d8d6441a389d78",
+                            "csv_sha256":  "8682da2320c0b8d57dcb10e5afa8762759c22bea4f78b2a2d7604775ce368a8e",
+                            "filtered_events_dropped":  true,
+                            "filter_roundtripped_before_recording":  true,
+                            "other_event_pids":  0,
+                            "traces":  [
+                                           {
+                                               "pid":  87912,
+                                               "captured_events":  387,
+                                               "seen_between_image_load_and_stdout":  [
+                                                                                          {
+                                                                                              "op":  "Load Image",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "Load Image",
+                                                                                              "target":  "sechost.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "sechost.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "CloseFile",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "IRP_MJ_CLOSE",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "ww-bcrypt-7e37c2.exe",
+                                                                                              "result":  "BUFFER OVERFLOW"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "ww-bcrypt-7e37c2.exe",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "WriteFile",
+                                                                                              "target":  "broker stdout pipe",
+                                                                                              "result":  "SUCCESS"
+                                                                                          }
+                                                                                      ]
+                                           },
+                                           {
+                                               "pid":  50444,
+                                               "captured_events":  346,
+                                               "seen_between_image_load_and_stdout":  [
+                                                                                          {
+                                                                                              "op":  "Load Image",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "Load Image",
+                                                                                              "target":  "sechost.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "sechost.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "CloseFile",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "IRP_MJ_CLOSE",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "ww-bcrypt-7e37c2.exe",
+                                                                                              "result":  "BUFFER OVERFLOW"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "ww-bcrypt-7e37c2.exe",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "QueryNameInformationFile",
+                                                                                              "target":  "bcrypt.dll",
+                                                                                              "result":  "SUCCESS"
+                                                                                          },
+                                                                                          {
+                                                                                              "op":  "WriteFile",
+                                                                                              "target":  "broker stdout pipe",
+                                                                                              "result":  "SUCCESS"
+                                                                                          }
+                                                                                      ]
+                                           }
+                                       ]
+                        }
+}

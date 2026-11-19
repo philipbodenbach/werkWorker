@@ -1,0 +1,100 @@
+{
+  "rust_test_list": {
+    "members": [
+      {
+        "name": "ww-windows-runner.exe",
+        "pid": 148320,
+        "pinned_ms": 969,
+        "wait": 0,
+        "exit_hex": "0x0"
+      },
+      {
+        "name": "ww-windows-runner.exe",
+        "pid": 52776,
+        "pinned_ms": 1656,
+        "wait": 0,
+        "exit_hex": "0xc0000142"
+      },
+      {
+        "name": "probe.exe",
+        "pid": 94760,
+        "pinned_ms": 1953,
+        "wait": 0,
+        "exit_hex": "0xc0000142"
+      }
+    ],
+    "marker_events": [
+      {
+        "marker": true,
+        "ms": 1000
+      },
+      {
+        "marker": false,
+        "ms": 2219
+      }
+    ],
+    "marker_after": false,
+    "elapsed_ms": 2390,
+    "sha256": {
+      "host": "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+      "runner": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "probe": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+      "manifest": "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d"
+    },
+    "host_integrity_rid": 8192,
+    "native_exit_code": -1073741502,
+    "native_timed_out": false,
+    "native_cancelled": false,
+    "original_evidence": "target\\tree-ac-1118\\loader-focus-f28d33f633084a1eaefe89e36ff77ed2\\host-observation\\observation.json",
+    "sha256_of_original_evidence": "4e763f4c0ce3ae6822f35088be7143c420e531ca45b013ede49605c104e20094"
+  },
+  "cmd_exit_23": {
+    "members": [
+      {
+        "name": "ww-windows-runner.exe",
+        "pid": 21924,
+        "pinned_ms": 1078,
+        "wait": 0,
+        "exit_hex": "0x0"
+      },
+      {
+        "name": "ww-windows-runner.exe",
+        "pid": 133220,
+        "pinned_ms": 1735,
+        "wait": 0,
+        "exit_hex": "0x17"
+      },
+      {
+        "name": "cmd.exe",
+        "pid": 70136,
+        "pinned_ms": 2156,
+        "wait": 0,
+        "exit_hex": "0x17"
+      }
+    ],
+    "marker_events": [
+      {
+        "marker": true,
+        "ms": 1047
+      },
+      {
+        "marker": false,
+        "ms": 2328
+      }
+    ],
+    "marker_after": false,
+    "elapsed_ms": 2500,
+    "sha256": {
+      "host": "fca36d0c0cc3b24b115bb973579dda000fce181140fd4357b367144b5cd23536",
+      "runner": "5ddc341d391c680f83dd84746c79d90c537ae3a01aec09ab5bd98b572673adb1",
+      "probe": "ccd79a7568ea9240ccd6fe124807b9d3e4dbc3a4cf92954299ac3029f4a91d02",
+      "manifest": "9fd20a98381c1c089c47560e3d65db1e3e888366f049544b74818f5556bc4c7d"
+    },
+    "host_integrity_rid": 8192,
+    "native_exit_code": 23,
+    "native_timed_out": false,
+    "native_cancelled": false,
+    "original_evidence": "target\\tree-ac-1118\\loader-focus-f28d33f633084a1eaefe89e36ff77ed2\\host-observation-cmd\\observation.json",
+    "sha256_of_original_evidence": "29cc49064e9b709ffeae24b5e95cc8c6eaedcb37ebff368811bcabf26ec883f6"
+  }
+}

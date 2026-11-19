@@ -37,7 +37,7 @@ async fn server_admission_estimate_prevents_multimodal_budget_mismatch() {
                 "max_output_tokens":r.body["max_completion_tokens"],"token_count_method":"estimate"}))
         },
         "/werk/v1/chat/count_tokens" => panic!("The shared admission plan must take priority over the text-only counter"),
-        "/v1/chat/completions" => {
+        "/werk/v1/chat/completions" => {
             assert!(15000 + r.body["max_completion_tokens"].as_u64().unwrap() <= 16384);
             werk(r)
         },
@@ -86,7 +86,7 @@ async fn server_admission_estimate_prevents_multimodal_budget_mismatch() {
             .lock()
             .unwrap()
             .iter()
-            .any(|r| r.path == "/v1/chat/completions")
+            .any(|r| r.path == "/werk/v1/chat/completions")
     );
     assert_eq!(
         server
@@ -109,7 +109,7 @@ async fn server_admission_estimate_prevents_multimodal_budget_mismatch() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r.path == "/v1/chat/completions")
+            .filter(|r| r.path == "/werk/v1/chat/completions")
             .count(),
         1
     );
@@ -156,7 +156,7 @@ async fn malformed_admission_is_rejected_before_inference() {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|r| r.path == "/v1/chat/completions")
+                .any(|r| r.path == "/werk/v1/chat/completions")
         );
     }
 }
@@ -188,7 +188,7 @@ async fn generation_limits_are_negotiated_without_probes_and_legacy_stays_unknow
         assert!(
             !requests
                 .iter()
-                .any(|r| r.path == "/v1/chat/completions" || r.path == "/v1/capabilities")
+                .any(|r| r.path == "/werk/v1/chat/completions" || r.path == "/v1/capabilities")
         );
     }
 }
@@ -426,7 +426,7 @@ async fn reasoning_effort_reaches_token_count_and_both_chat_transports() {
             let server = Server::start(|request| match request.path.as_str() {
                 "/werk/v1/capabilities" => control(json!({"capabilities":[{"id":"api.chat.token_count","status":"supported","detail":"fixture","operations":["count_tokens"]}]})),
                 "/werk/v1/chat/count_tokens" => control(json!({"model":"fixture-model","input_tokens":32})),
-                "/v1/chat/completions" if request.body["stream"] == true => Response {
+                "/werk/v1/chat/completions" if request.body["stream"] == true => Response {
                     status: 200,
                     headers: vec![("content-type".into(), "text/event-stream".into())],
                     body: b"data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec(),
@@ -570,7 +570,7 @@ async fn protocol_reasoning_defaults_are_model_scoped_fresh_and_never_frozen_as_
         let requests = server.requests.lock().unwrap();
         let sent = &requests
             .iter()
-            .find(|r| r.path == "/v1/chat/completions")
+            .find(|r| r.path == "/werk/v1/chat/completions")
             .unwrap()
             .body;
         // Echoing high would force thinking on, overriding the server's false.
@@ -584,7 +584,7 @@ async fn protocol_reasoning_defaults_are_model_scoped_fresh_and_never_frozen_as_
 #[tokio::test]
 async fn rejected_reasoning_keeps_server_explanation_without_credentials_or_retry() {
     let server = Server::start(|request| {
-        if request.path != "/v1/chat/completions" {
+        if request.path != "/werk/v1/chat/completions" {
             return werk(request);
         }
         let mut response = Response::json(json!({"error":{
@@ -641,7 +641,7 @@ async fn streaming_timeout_measures_inactivity_not_total_generation_time() {
     ] {
         let server = Server::with_body_delay(
             move |request| {
-                if request.path != "/v1/chat/completions" {
+                if request.path != "/werk/v1/chat/completions" {
                     return werk(request);
                 }
                 if !streaming {
@@ -759,7 +759,7 @@ async fn timed_out_inference_is_not_retried_and_shared_connection_blocks_followu
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|r| r.path == "/v1/chat/completions")
+                .filter(|r| r.path == "/werk/v1/chat/completions")
                 .count(),
             1
         );
@@ -819,7 +819,7 @@ async fn cancelling_before_response_headers_blocks_inference_and_token_counting(
         {
             let received = received.clone();
             move |request| {
-                if request.path == "/v1/chat/completions" {
+                if request.path == "/werk/v1/chat/completions" {
                     received.notify_one();
                 }
                 werk(request)
@@ -871,7 +871,7 @@ async fn cancelling_before_response_headers_blocks_inference_and_token_counting(
 async fn incomplete_stream_blocks_followups_but_reported_output_limit_does_not() {
     for finished in [false, true] {
         let server = Server::start(move |request| {
-            if request.path != "/v1/chat/completions" {
+            if request.path != "/werk/v1/chat/completions" {
                 return werk(request);
             }
             let mut body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_owned();
@@ -935,7 +935,9 @@ async fn explicit_http_rejection_keeps_bounded_retry_and_completed_connection_us
     let server = Server::start({
         let calls = calls.clone();
         move |request| {
-            if request.path == "/v1/chat/completions" && calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            if request.path == "/werk/v1/chat/completions"
+                && calls.fetch_add(1, Ordering::SeqCst) == 0
+            {
                 Response {
                     status: 503,
                     headers: vec![],
@@ -984,7 +986,7 @@ async fn explicit_http_rejection_keeps_bounded_retry_and_completed_connection_us
 async fn backend_error_messages_are_preserved_and_credentials_redacted() {
     for streaming in [false, true] {
         let server = Server::start(move |request| {
-            if request.path != "/v1/chat/completions" {
+            if request.path != "/werk/v1/chat/completions" {
                 return werk(request);
             }
             let error = json!({"error": {
@@ -1059,7 +1061,7 @@ async fn discovery_accepts_capabilities_without_operations() {
     let provider = WerkProvider::connect(config(&server.origin, false), None)
         .await
         .unwrap();
-    assert_eq!(provider.runtime_capabilities.len(), 3);
+    assert_eq!(provider.runtime_capabilities.len(), 5);
     for capability in &provider.runtime_capabilities[..2] {
         assert!(capability.operations.is_empty());
         assert!(!capability.status.executable(true));
@@ -1082,7 +1084,7 @@ async fn discovery_accepts_capabilities_without_operations() {
 #[tokio::test]
 async fn chat_connect_does_not_depend_on_the_full_task_catalogue() {
     let server = Server::start(|request| {
-        if request.path == "/v1/capabilities" || request.path.starts_with("/v1/parameters") {
+        if request.path == "/werk/v1/tasks" || request.path.starts_with("/v1/parameters") {
             return Response {
                 status: 503,
                 headers: vec![],
@@ -1106,7 +1108,7 @@ async fn chat_connect_does_not_depend_on_the_full_task_catalogue() {
             .lock()
             .unwrap()
             .iter()
-            .all(|r| { r.path != "/v1/capabilities" && !r.path.starts_with("/v1/parameters") }),
+            .all(|r| { r.path != "/werk/v1/tasks" && !r.path.starts_with("/v1/parameters") }),
         "Connecting must not start a global backend probe, even in the background"
     );
 }
@@ -1114,7 +1116,7 @@ async fn chat_connect_does_not_depend_on_the_full_task_catalogue() {
 #[tokio::test]
 async fn native_discovery_then_chat_and_correct_tool_pairs() {
     let server=Server::start(|request|{
-        if request.path=="/v1/chat/completions"&&!request.body["messages"].as_array().unwrap().iter().any(|m|m["role"]=="tool"){
+        if request.path=="/werk/v1/chat/completions"&&!request.body["messages"].as_array().unwrap().iter().any(|m|m["role"]=="tool"){
             Response::json(json!({"choices":[{"message":{"content":"Planning","tool_calls":[{"id":"c1","type":"function","function":{"name":"task.plan","arguments":"{\"steps\":[]}"}}]},"finish_reason":"tool_calls"}]}))
         }else{werk(request)}
     }).await;
@@ -1157,10 +1159,10 @@ async fn native_discovery_then_chat_and_correct_tool_pairs() {
             .iter()
             .any(|r| r.path == "/werk/v1/capabilities")
     );
-    assert!(requests[1..3].iter().any(|r| r.path == "/v1/models"));
+    assert!(requests[1..3].iter().any(|r| r.path == "/werk/v1/models"));
     let chats: Vec<_> = requests
         .iter()
-        .filter(|r| r.path == "/v1/chat/completions")
+        .filter(|r| r.path == "/werk/v1/chat/completions")
         .collect();
     assert_eq!(chats.len(), 2);
     let messages = chats[1].body["messages"].as_array().unwrap();
@@ -1210,7 +1212,7 @@ async fn envelope_version_header_request_id_redirect_auth_and_limits() {
 }
 #[tokio::test]
 async fn streaming_wire_usage_and_native_allowlist_are_separate_from_grants() {
-    let server=Server::start(|request|{if request.path=="/v1/chat/completions"{Response{status:200,headers:vec![("content-type".into(),"text/event-stream".into())],body:b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n".to_vec()}}else{werk(request)}}).await;
+    let server=Server::start(|request|{if request.path=="/werk/v1/chat/completions"{Response{status:200,headers:vec![("content-type".into(),"text/event-stream".into())],body:b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n".to_vec()}}else{werk(request)}}).await;
     let provider = WerkProvider::connect(config(&server.origin, true), None)
         .await
         .unwrap();
@@ -1383,7 +1385,7 @@ async fn server_context_discovery_uses_per_request_minimum_and_requires_evidence
             .lock()
             .unwrap()
             .iter()
-            .any(|r| r.path == "/v1/chat/completions")
+            .any(|r| r.path == "/werk/v1/chat/completions")
     );
 }
 
@@ -1437,7 +1439,7 @@ async fn protocol_native_count_keeps_large_current_file_work_in_context() {
                 assert_eq!(r.body["messages"][1]["content"], expected);
                 control(json!({"model":"fixture-model","input_tokens":1500}))
             },
-            "/v1/chat/completions" => {
+            "/werk/v1/chat/completions" => {
                 assert_eq!(r.body["messages"][1]["content"], expected);
                 werk(r)
             },
@@ -1594,7 +1596,7 @@ async fn smaller_server_context_is_learned_and_rebuilt_without_identical_retry()
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let server = Server::start(move |r| {
-        if r.path == "/v1/chat/completions" && counter.fetch_add(1,Ordering::SeqCst) == 0 {
+        if r.path == "/werk/v1/chat/completions" && counter.fetch_add(1,Ordering::SeqCst) == 0 {
             let mut response = Response::json(json!({"error":{"code":"context_length_exceeded","context_length":4096,"message":"private backend message"}}));
             response.status=400; response
         } else {werk(r)}
@@ -1637,7 +1639,7 @@ async fn smaller_server_context_is_learned_and_rebuilt_without_identical_retry()
     let requests = server.requests.lock().unwrap().clone();
     let chats = requests
         .iter()
-        .filter(|r| r.path == "/v1/chat/completions")
+        .filter(|r| r.path == "/werk/v1/chat/completions")
         .collect::<Vec<_>>();
     assert_eq!(chats.len(), 2);
     assert_eq!(chats[0].body["max_completion_tokens"], 2048);
@@ -1682,7 +1684,7 @@ async fn image_payload_is_multimodal_and_unsupported_image_count_keeps_text_coun
             }
             return control(json!({"model":"fixture-model","input_tokens":42}));
         }
-        if r.path=="/v1/chat/completions" {
+        if r.path=="/werk/v1/chat/completions" {
             let content=&r.body["messages"][0]["content"];
             assert_eq!(content[0]["text"],"Describe this");
             assert!(content[1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/jpeg;base64,"));
@@ -1847,7 +1849,7 @@ async fn coding_image_budget_uses_native_text_without_repeating_unsupported_coun
         }
         let generations: Vec<_> = requests
             .iter()
-            .filter(|r| r.path == "/v1/chat/completions")
+            .filter(|r| r.path == "/werk/v1/chat/completions")
             .collect();
         assert_eq!(
             generations.len(),
@@ -1998,7 +2000,7 @@ async fn image_inspection_keeps_file_hash_missing_file_and_listing_until_edit() 
                 }
                 return control(json!({"model":"fixture-model","input_tokens":text_count(&r.body)}));
             }
-            if r.path != "/v1/chat/completions" { return werk(r); }
+            if r.path != "/werk/v1/chat/completions" { return werk(r); }
             let n = step.fetch_add(1, Ordering::SeqCst);
             if n == 4 {
                 let results: Vec<ToolResult> = r.body["messages"].as_array().unwrap().iter()
@@ -2187,7 +2189,7 @@ async fn image_coding_compaction_fixture(prior_turn: bool) {
             let tokens = text_count(&r.body);
             return control(json!({"model":"fixture-model","input_tokens":tokens}));
         }
-        if r.path == "/v1/chat/completions" {
+        if r.path == "/werk/v1/chat/completions" {
             if r.body["messages"].as_array().unwrap().iter().any(|m| m["content"] == "Earlier separate task")
                 && !r.body["messages"].as_array().unwrap().iter().any(|m| m["content"].is_array()) {
                 return Response::json(json!({"choices":[{"message":{"role":"assistant","content":"Earlier task completed."},"finish_reason":"stop"}]}));
@@ -2324,7 +2326,7 @@ async fn image_coding_compaction_fixture(prior_turn: bool) {
     let generations: Vec<_> = requests
         .iter()
         .filter(|r| {
-            r.path == "/v1/chat/completions"
+            r.path == "/werk/v1/chat/completions"
                 && r.body["messages"]
                     .as_array()
                     .unwrap()
@@ -2496,14 +2498,14 @@ async fn configured_protocol_capacity_survives_missing_observability_and_refresh
             .lock()
             .unwrap()
             .iter()
-            .any(|r| r.path == "/v1/chat/completions")
+            .any(|r| r.path == "/werk/v1/chat/completions")
     );
 }
 
 #[tokio::test]
 async fn rejected_browser_image_reports_the_actual_projector_diagnostic() {
     let server=Server::start(|request| {
-        if request.path=="/v1/chat/completions" {
+        if request.path=="/werk/v1/chat/completions" {
             assert!(request.body["messages"].as_array().unwrap().iter().any(|m|m["content"].is_array()));
             return Response {status:400,headers:vec![],body:json!({"error":{"code":"invalid_request","message":"Missing vision projector; run werk setup tool-model"}}).to_string().into_bytes()};
         }

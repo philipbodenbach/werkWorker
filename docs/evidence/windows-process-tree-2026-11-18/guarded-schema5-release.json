@@ -1,0 +1,47 @@
+{
+  "archive_sha256": "f65849bbfe91dbd1b9c4c6f21f847a46cf89fc7e5e98ce8eca64ba7802bf28a0",
+  "suite_setup_exit": 0,
+  "mandatory_suite_exit": 1,
+  "installed_setup_exit": 0,
+  "installed_start_exit": 1,
+  "qualified": false,
+  "branch": "feat/windows-child-process",
+  "basis": "5a9ddff with local schema-5 source, constructor-time child policy and inherited critical-error mode",
+  "build_archive_installed_sha256": {
+    "ww.exe": "e9d8720e86d4b9a4f73232b302a1d6a0537739094abab1d8084926d2d60025da",
+    "werk-worker.exe": "254bce30455e78980ef314b8eea5f71ad31542fc9adcf48089c559bb99201cbe",
+    "ww-windows-runner.exe": "8c032037d71da270d559ff489f6b8021ccfd2c1a54e4df99efab2830caff323b",
+    "ww-windows-provision.exe": "f61f1532b5566a5c020cfe9a055f4dd37cc53d4b2aedaa57977bb8c22b241c40"
+  },
+  "mandatory_suite_cargo_exit": 101,
+  "suite_test_counts": {
+    "passed": 2,
+    "failed": 1,
+    "ignored": 5
+  },
+  "installed_cli_exit": 0,
+  "qualified_invocations": 0,
+  "installed_process_run": {
+    "status": "failed",
+    "data": {
+      "executed": false,
+      "message": "The Windows process-tree profile is disabled pending complete native isolation, process-limit, lifecycle and installed offline Cargo qualification."
+    },
+    "error_code": "sandbox_unqualified",
+    "artifacts": [],
+    "truncated": false
+  },
+  "windows_artifacts": [],
+  "medium_host_integrity_rid": [
+    8192,
+    8192
+  ],
+  "original_evidence_sha256": {
+    "target/tree-schema5-1118-branch-run02/qualification-result.json": "c297cbbc13e5eb4a8cf469cf6f4f06070ec973560d62e51a8b11ca130d132a50",
+    "target/tree-schema5-1118-branch-run02/suite/mandatory-suite-result.json": "788f776fec3c48113b629da8c7fd7b8416b67f1867a7574046f568f428f3b9eb",
+    "target/tree-schema5-1118-branch-run02/suite/mandatory-suite.log": "2102675a82a4b95a20e1317b18c0d330260cea0c8c074cc154933206a3d2f6d9",
+    "target/tree-schema5-1118-branch-run02/installed-start/installed-start-result.json": "af48bc20a4be7ec20575365c6541f7048bbaf438e844ff66f96376f31bb28cbd",
+    "target/tree-schema5-1118-branch-run02/installed-start/installed-start.log": "edce79ec3db922ba0a172db7603484e299931dca62b47fd2a0524832fe474c73",
+    "target/tree-schema5-1118-branch-run02/package/verified.json": "62cd449e5d97b4e07e9800ca1b0db24fb038d0dfcfdfe4199f0d7996dd91a917"
+  }
+}

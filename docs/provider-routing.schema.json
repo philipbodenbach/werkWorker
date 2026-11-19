@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WerkWorker host inference routing policy v1",
+  "description": "Host-only policy. Validation of canonical origin, UTF-8 lengths, per-origin transport identity, unique candidate names and availability is performed by WerkWorker before selection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "candidates"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "prefer_loopback": {
+      "type": "boolean",
+      "default": false
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "tool_calling",
+          "streaming",
+          "images",
+          "structured_output",
+          "parallel_tools",
+          "reasoning"
+        ]
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "transport",
+        "config",
+        "max_disclosure"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/id"
+        },
+        "transport": {
+          "enum": [
+            "werk_protocol",
+            "openai_compatible"
+          ]
+        },
+        "config": {
+          "$ref": "#/$defs/connection"
+        },
+        "secret_env": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_disclosure": {
+          "enum": [
+            "metadata_only",
+            "workspace_context"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "transport": {
+            "const": "openai_compatible"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "config": {
+            "properties": {
+              "deployment": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": [
+        "base_url",
+        "model",
+        "capabilities",
+        "stream",
+        "timeout_ms",
+        "max_body_bytes",
+        "options"
+      ],
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Bare HTTPS origin, or HTTP on a literal loopback IP. URLs with embedded credentials, paths, fragments or queries are rejected."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Nonblank model identifier, up to 512 UTF-8 bytes, with no control characters."
+        },
+        "deployment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capabilities": {
+          "$ref": "#/$defs/modelCapabilities"
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "deadline_drain_timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000,
+          "default": 600000
+        },
+        "max_body_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reasoning_tier": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                }
+              ]
+            },
+            "reasoning_effort": {
+              "type": [
+                "null",
+                "number",
+                "string"
+              ]
+            },
+            "temperature": {},
+            "top_p": {},
+            "seed": {},
+            "stop": {}
+          }
+        }
+      }
+    },
+    "modelCapabilities": {
+      "type": "object",
+      "required": [
+        "tool_calling",
+        "streaming",
+        "images",
+        "structured_output",
+        "parallel_tools",
+        "reasoning"
+      ],
+      "properties": {
+        "tool_calling": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "streaming": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "images": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "structured_output": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "parallel_tools": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "reasoning": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "context_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

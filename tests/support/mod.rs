@@ -50,6 +50,21 @@ impl Server {
         header_delay: Option<std::time::Duration>,
         delay: Option<(usize, std::time::Duration)>,
     ) -> Self {
+        Self::listen(
+            move |request| protocol_response(request, handler(request)),
+            header_delay,
+            delay,
+        )
+        .await
+    }
+    pub async fn raw(handler: impl Fn(&Request) -> Response + Send + Sync + 'static) -> Self {
+        Self::listen(handler, None, None).await
+    }
+    async fn listen(
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+        header_delay: Option<std::time::Duration>,
+        delay: Option<(usize, std::time::Duration)>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("local HTTP test listener");
@@ -62,6 +77,8 @@ impl Server {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     break;
                 };
+                // Each timed SSE write must reach the client at its scheduled interval.
+                socket.set_nodelay(true).unwrap();
                 let handler = handler.clone();
                 let records = records.clone();
                 tokio::spawn(async move {
@@ -107,29 +124,50 @@ impl Server {
                     };
                     records.lock().unwrap().push(request.clone());
                     let response = handler(&request);
+                    let timed_body = delay.filter(|_| request.path == "/werk/v1/chat/completions");
+                    // The server streams an unknown-length SSE body. HTTP chunk boundaries
+                    // keep timed writes observable even when the TCP stack coalesces bytes.
+                    let chunked = timed_body.is_some()
+                        && response.headers.iter().any(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-type")
+                                && value.starts_with("text/event-stream")
+                        });
+                    let framing = if chunked {
+                        "Transfer-Encoding: chunked".to_owned()
+                    } else {
+                        format!("Content-Length: {}", response.body.len())
+                    };
                     let mut header = format!(
-                        "HTTP/1.1 {} Test\r\nContent-Length: {}\r\nConnection: close\r\n",
-                        response.status,
-                        response.body.len()
+                        "HTTP/1.1 {} Test\r\n{framing}\r\nConnection: close\r\n",
+                        response.status
                     );
                     for (k, v) in response.headers {
                         header.push_str(&format!("{k}: {v}\r\n"));
                     }
                     header.push_str("\r\n");
-                    if request.path == "/v1/chat/completions"
+                    if request.path == "/werk/v1/chat/completions"
                         && let Some(pause) = header_delay
                     {
                         tokio::time::sleep(pause).await;
                     }
                     let _ = socket.write_all(header.as_bytes()).await;
-                    if let Some((size, pause)) =
-                        delay.filter(|_| request.path == "/v1/chat/completions")
-                    {
+                    if let Some((size, pause)) = timed_body {
                         for chunk in response.body.chunks(size) {
                             tokio::time::sleep(pause).await;
-                            if socket.write_all(chunk).await.is_err() {
+                            let result = if chunked {
+                                let mut frame = format!("{:x}\r\n", chunk.len()).into_bytes();
+                                frame.extend_from_slice(chunk);
+                                frame.extend_from_slice(b"\r\n");
+                                socket.write_all(&frame).await
+                            } else {
+                                socket.write_all(chunk).await
+                            };
+                            if result.is_err() {
                                 break;
                             }
+                        }
+                        if chunked {
+                            let _ = socket.write_all(b"0\r\n\r\n").await;
                         }
                     } else {
                         let _ = socket.write_all(&response.body).await;
@@ -145,7 +183,60 @@ impl Server {
         }
     }
 }
-pub fn control(data: Value) -> Response {
+// Test scenarios supply the original completion payload or SSE bytes. Encode the
+// Werk HTTP representation here so all deadlines, error cases and tools use it.
+fn protocol_response(request: &Request, mut response: Response) -> Response {
+    if !matches!(
+        request.path.as_str(),
+        "/werk/v1/chat/completions" | "/werk/v1/models"
+    ) {
+        return response;
+    }
+    response.headers.extend([
+        ("x-werk-protocol-version".into(), "1.0".into()),
+        ("x-werk-request-id".into(), "req_fixture".into()),
+    ]);
+    if response.status == 200 && request.body["stream"] == true {
+        response
+            .headers
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
+        response
+            .headers
+            .push(("content-type".into(), "text/event-stream".into()));
+        return response;
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(&response.body) {
+        let mut envelope = json!({"protocol":{"major":1,"minor":0},"request_id":"req_fixture"});
+        if response.status < 300 {
+            envelope["data"] = value;
+        } else {
+            let err = &value["error"];
+            let mut details = err.get("details").cloned().unwrap_or_else(|| json!({}));
+            details["inference_code"] = err["code"].clone();
+            for name in [
+                "context_length",
+                "prompt_tokens",
+                "max_tokens",
+                "token_count_method",
+            ] {
+                if let Some(v) = err.get(name) {
+                    details[name] = v.clone();
+                }
+            }
+            envelope["error"] = json!({"code":"invalid_request","message":err["message"].as_str().unwrap_or("Rejected"),
+                "retryable":matches!(response.status,429 | 500..=599),"details":details});
+        }
+        response.body = envelope.to_string().into_bytes();
+    }
+    response
+}
+pub fn control(mut data: Value) -> Response {
+    if let Some(caps) = data.get_mut("capabilities").and_then(Value::as_array_mut) {
+        caps.extend([
+            json!({"id":"api.models.list","status":"supported","detail":"catalog","operations":["list"]}),
+            json!({"id":"api.chat.completions","status":"supported","detail":"chat","operations":["complete","stream"]}),
+        ]);
+    }
     let mut r = Response::json(
         json!({"protocol":{"major":1,"minor":0},"request_id":"req_test","data":data}),
     );
@@ -161,21 +252,21 @@ pub fn werk(request: &Request) -> Response {
             json!({"service":"werk1112","service_version":"fixture","protocol":{"major":1,"minor":0},"active_backend":"fixture","limits":{"max_request_bytes":1048576}}),
         ),
         "/werk/v1/capabilities" => control(
-            json!({"capabilities":[{"id":"runtime.state.prefix_cache","status":"externally_managed","detail":"automatic backend reuse only","operations":["automatic_reuse"]},{"id":"runtime.pd.prefill","status":"metadata_only","detail":"not executable","operations":["prefill"]}]}),
+            json!({"capabilities":[{"id":"runtime.state.prefix_cache","status":"externally_managed","detail":"automatic backend reuse only","operations":["automatic_reuse"]},{"id":"runtime.pd.prefill","status":"metadata_only","detail":"not executable","operations":["prefill"]},{"id":"api.tools","status":"supported","detail":"Werk native media tools","operations":["list","tasks","call"]}]}),
         ),
-        "/v1/capabilities" => Response::json(
+        "/werk/v1/tasks" => control(
             json!({"object":"werk.capabilities","models":[{"id":"fixture-model","available_tasks":["text_generation","image_generation"],"task_statuses":{"image_generation":{"status":"available"}}}]}),
         ),
-        "/v1/models" => Response::json(
+        "/werk/v1/models" => Response::json(
             json!({"object":"list","data":[{"id":"fixture-model","object":"model"}]}),
         ),
         "/v1/parameters?task=text-generation" => {
             Response::json(json!({"task":"text-generation","parameters":[]}))
         }
-        "/v1/tools" => Response::json(
+        "/werk/v1/tools" => control(
             json!({"object":"werk.tools","tools":[{"type":"function","function":{"name":"image_generation","description":"Image task","parameters":{"type":"object","properties":{"model":{"type":"string"},"prompt":{"type":"string"}},"required":["model","prompt"],"additionalProperties":false}}}]}),
         ),
-        "/v1/chat/completions" => Response::json(
+        "/werk/v1/chat/completions" => Response::json(
             json!({"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1}}),
         ),
         _ => Response {

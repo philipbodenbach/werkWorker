@@ -15,6 +15,7 @@ async fn native_scripted_coding_cycle_uses_real_files_process_and_verification()
         native: NativeSandboxConfig {
             macos_path_based_workspace: cfg!(target_os = "macos"),
             macos_system_task_access: cfg!(target_os = "macos"),
+            ..Default::default()
         },
         // Darwin reserves large virtual mappings. This is a finite AS bound,
         // not evidence of a practical resident-memory quota.

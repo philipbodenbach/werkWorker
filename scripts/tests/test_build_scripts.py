@@ -3,8 +3,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -132,19 +134,58 @@ if os.environ.get('REFERENCE_FAIL'):
         self.assertEqual(Path(str(self.archive) + '.sha256').read_text().split(), [digest, self.archive.name])
 
 
-@unittest.skipUnless(shutil.which('pwsh'), 'PowerShell parser is unavailable')
+POWERSHELL = shutil.which('pwsh') or (shutil.which('powershell.exe') if os.name == 'nt' else None)
+
+
+@unittest.skipUnless(POWERSHELL, 'PowerShell parser is unavailable')
 class WindowsBuildSyntaxTests(unittest.TestCase):
     def test_windows_build_and_package_scripts_parse(self):
-        for name in ('build-windows.ps1', 'package-release.ps1'):
+        for name in ('build-windows.ps1', 'package-release.ps1', 'install.ps1'):
             with self.subTest(script=name):
                 env = dict(os.environ, WORKER_PS_SCRIPT=str(ROOT / 'scripts' / name))
-                result = subprocess.run(['pwsh', '-NoProfile', '-Command',
+                result = subprocess.run([POWERSHELL, '-NoProfile', '-Command',
                     '$parseErrors = $null; $parseTokens = $null; '
                     '[System.Management.Automation.Language.Parser]::ParseFile('
                     '$env:WORKER_PS_SCRIPT, [ref]$parseTokens, [ref]$parseErrors) | Out-Null; '
                     'if ($parseErrors.Count) { $parseErrors | Out-String | Write-Error; exit 1 }'],
                     env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class InstallerSmokeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='worker-smoke-script-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.version = runpy.run_path(str(ROOT / 'scripts/smoke-install.py'))['package_version']
+
+    def test_version_is_taken_only_from_the_package_section(self):
+        manifest = self.root / 'Cargo.toml'
+        manifest.write_text('[workspace.package]\nversion = "9.9.9"\n'
+                            '[package]\nname = "fixture"\nversion = "1.2.3"\n'
+                            '[dependencies]\nversion = "8.8.8"\n')
+        self.assertEqual(self.version(manifest), '1.2.3')
+        for content in ('[package]\nname = "fixture"\n[dependencies]\nversion = "1.2.3"\n',
+                        '[package]\nversion = "1.2.3"\nversion = "2.3.4"\n',
+                        '[package]\nversion = "1.2.3-preview"\n'):
+            manifest.write_text(content)
+            with self.assertRaises(ValueError):
+                self.version(manifest)
+
+    def test_retained_installation_refuses_existing_directory(self):
+        archive = self.root / 'not-opened.zip'
+        archive.write_bytes(b'not used because the destination already exists')
+        destination = self.root / 'existing'
+        destination.mkdir()
+        marker = destination / 'session.sqlite'
+        marker.write_bytes(b'preserve existing data')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/smoke-install.py'),
+                                 str(archive), '--retain', str(destination)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('FileExistsError', result.stderr)
+        self.assertEqual(marker.read_bytes(), b'preserve existing data')
+        self.assertEqual(list(destination.iterdir()), [marker])
 
 
 if __name__ == '__main__':

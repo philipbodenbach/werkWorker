@@ -1,0 +1,272 @@
+{
+  "observed_at_utc": "2026-11-18T15:59:55+00:00",
+  "base_commit": "0d61dcb50889c9eb40a7b1803ea800ce8a6ab67f",
+  "scope": "Local broker and existing single-process LPAC regression tests with the process-tree release guard present. Package qualification is a separate acceptance result.",
+  "broker_source_sha256": {
+    "src/runtime/windows_process_tree.rs": "03ab83326fac1b3e8a4cb588b0930986b6ed9653e55859321ce8769a31af6b30",
+    "src/runtime/windows_provision.rs": "47db29f32edd28793b882076fecb9d70eb74f22cf672bcc271bad47b00771235",
+    "src/runtime/windows_tree_runner.rs": "283aecc9d9fc1b8c65ec4c83c4aee2718f48116f0db44a2f67b6a9a1d1aa67e9"
+  },
+  "ordinary_host_driver": "scripts/validate-windows-process-tree.py execute()",
+  "environment": {
+    "CARGO_NET_OFFLINE": "true",
+    "REQUIRE_SANDBOX": "1"
+  },
+  "native_regressions": {
+    "broker_tests": {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "F:\\werkWorker\\Cargo.toml",
+        "--locked",
+        "--offline",
+        "--lib",
+        "runtime::windows_tree_runner::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "ignored_subprocess_fixtures": 1,
+      "ordinary_host": {
+        "execution_integrity_rid": 8192,
+        "elevated": false,
+        "verified_before_resume": true
+      },
+      "outer_test_host_job_active_after_cleanup": 0,
+      "cases": [
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::bootstrap_rejects_an_identity_different_from_its_primary_token",
+          "ok"
+        ],
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::native_same_account_restricted_process_creation",
+          "ok"
+        ],
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::native_saturated_payload_child_policy",
+          "ok"
+        ],
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::native_sealed_runner_denies_payload_injection",
+          "ok"
+        ],
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::native_token_restricts_privileges_and_default_objects",
+          "ok"
+        ],
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::receiver_checks_approved_payload_environment_before_bootstrap",
+          "ok"
+        ],
+        [
+          "runtime::windows_tree_runner::restricted_token_tests::sealed_runner_fixture",
+          "ignored"
+        ]
+      ],
+      "log": {
+        "path": "target/sovereign-native-broker/ordinary-final-02/broker_tests/broker_tests.log",
+        "sha256": "350d055e17a014a74c5365d26fdb46fc09d83e63a579c709f98adae246631d90"
+      },
+      "driver_result": {
+        "path": "target/sovereign-native-broker/ordinary-final-02/broker_tests/result.json",
+        "sha256": "f8cfe4eaad802bf169735eb98d28ee273f3cb07c0f628d8d5f9a131aa89c267b"
+      }
+    },
+    "windows_sandbox": {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "F:\\werkWorker\\Cargo.toml",
+        "--locked",
+        "--offline",
+        "--test",
+        "windows_sandbox",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0,
+      "ignored_subprocess_fixtures": 4,
+      "ordinary_host": {
+        "execution_integrity_rid": 8192,
+        "elevated": false,
+        "verified_before_resume": true
+      },
+      "outer_test_host_job_active_after_cleanup": 0,
+      "cases": [
+        [
+          "child_file_ownership_does_not_allow_permission_escalation",
+          "ok"
+        ],
+        [
+          "detached_payload",
+          "ignored"
+        ],
+        [
+          "explicit_stdin_unicode_arguments_and_output_bounds",
+          "ok"
+        ],
+        [
+          "host_death_kills_the_job_and_existing_host_jobs_can_nest",
+          "ok"
+        ],
+        [
+          "host_environment_payload",
+          "ignored"
+        ],
+        [
+          "job_memory_and_cpu_limits_are_enforced_by_windows",
+          "ok"
+        ],
+        [
+          "managed_host_payload",
+          "ignored"
+        ],
+        [
+          "native_access_network_and_readonly_have_positive_controls",
+          "ok"
+        ],
+        [
+          "provisioning_is_explicit_and_never_changes_an_existing_workspace",
+          "ok"
+        ],
+        [
+          "sandbox_payload",
+          "ignored"
+        ],
+        [
+          "timeout_cancel_and_child_process_denial_are_enforced",
+          "ok"
+        ]
+      ],
+      "log": {
+        "path": "target/sovereign-native-broker/ordinary-final-02/windows_sandbox/windows_sandbox.log",
+        "sha256": "11cef33a8c786a092fae09bc0cd8b8e839d4473db2b90a51b6354e0684fab480"
+      },
+      "driver_result": {
+        "path": "target/sovereign-native-broker/ordinary-final-02/windows_sandbox/result.json",
+        "sha256": "844d5408c1fa86da00ba4a604b23b0ee1bbeb33af109028833735d12bd9f95bd"
+      }
+    }
+  },
+  "historical_comparisons": [
+    {
+      "source": "matched-offline-cargo.json",
+      "class": "Schema 4 and schema 5 diagnostic jobs",
+      "observed": "Identical Rust --list probe and staged toolchain sources. Schema 4 returned 0 and emitted the expected test output and x64 PE. Schema 5 exited 0xc0000142 on both the static probe and Cargo before either could emit output.",
+      "sha256": "9f274ee7e89f1275222a1328805079b0efb3e333e7d3a094db0eef677e67507f"
+    },
+    {
+      "source": "bcrypt-write-check.json",
+      "class": "Actual device opens and matched token diagnostics",
+      "observed": "The loader requests write data on the cryptographic device. The second access check with the private writer alone denies this operation. The corresponding read-only open succeeds.",
+      "sha256": "580f1d9d54a8db27582514a6bf9ff6c5a740f35f7d247bdd3528ccd2483400e8"
+    },
+    {
+      "source": "appcontainer-write-boundary-9d2ee11.json",
+      "class": "Native AccessCheck on duplicated root and natural-child tokens using memory-only security descriptors",
+      "observed": "35 probes per token. Effective broad Low-integrity file and registry grants permit writes including entries marked inherited. This modeled DACL/MIC check did not open real targets or exercise ACL propagation.",
+      "sha256": "5f3467f9a03e2d11ad8f1b7ce68ddd4ee40de2a5df0a2979564b829d51bd912e"
+    },
+    {
+      "source": "appcontainer-dns-control.log",
+      "class": "Standalone one-generation AppContainer witness",
+      "observed": "Fresh host nonce arrived once before and once after. Sandbox query was attempted, access denied, zero arrivals. Child and named semaphore checks passed. The three-generation acceptance workload remains separate.",
+      "sha256": "993fa2f266a48684c3feffd4dd898c98ff63b9a3ff83a20df645bb74be275b0d"
+    },
+    {
+      "source": "../../windows-process-tree-validation.md",
+      "class": "Earlier dedicated-account diagnostics",
+      "observed": "On the earlier runnable tree, the DNS nonce reached the controlled server and a live conhost raised the measured job count to three at limit two. Current same-account child-policy readback is only a component test.",
+      "sha256": "9110ae7123b1dba581774a0aba9fd9e26f2c877ce7d9778bc7549ea95de0b09b"
+    },
+    {
+      "source": "dns-startup-failure-cleanup.json",
+      "class": "Historical pre-entry failure and fresh repeat",
+      "observed": "Fresh repeat confirms three retained members, total three, zero active, restored original owner/DACL and cleared marker. The older 111dd run still has its marker and writer ACE. Its cleanup was not confirmed.",
+      "sha256": "c9eaa09a8c89909c82fb478a08fc98636a861abee8549be9467b634e416fe3d7"
+    }
+  ],
+  "qualification": {
+    "guard": "sandbox_unqualified",
+    "established_by_this_run": [
+      "runner control-request validation",
+      "same-account runner native regressions",
+      "existing single-process LPAC regressions"
+    ],
+    "requires_installed_product_observation": [
+      "Cargo compiler, linker and test execution with fresh artifact",
+      "all three attempted DNS queries with zero arrivals and both successful host controls",
+      "maximum of two simultaneous live job members in both console cases"
+    ]
+  },
+  "process_approval_fixture_regression": {
+    "scope": "Local process.run approval and remembered grants on the single-process Windows LPAC backend.",
+    "finding": "The previous tests used a normal temp directory and Unix-only executables. Windows checks the dedicated workspace ACL during preparation, before emitting ApprovalRequested. The corrected tests create and remove an explicit native workspace and execute the common probe for real approved reads, stdin and writes.",
+    "affected_tests": [
+      "explicit_process_approval_runs_in_the_real_workspace_sandbox",
+      "remembered_process_approval_binds_commands_and_survives_session_restart"
+    ],
+    "source_sha256": {
+      "tests/permissions.rs": "0ff1b9e13e97fbee4a6df58452187ebb99867190c93b7e7b7477e4330023e597",
+      "tests/fixtures/native_process_probe.rs": "2e3964eecac34f98e6f3fcfd3e70aa5b4e75a1e2976cbb6c8dc3527f1235de4c"
+    },
+    "results": {
+      "permissions-before": {
+        "command": [
+          "F:\\werkWorker\\target\\debug\\deps\\permissions-48529cf653e94251.exe",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit": 101,
+        "passed": 7,
+        "failed": 2,
+        "ignored": 0,
+        "medium_execution_verified_before_resume": true,
+        "log": {
+          "path": "target/sovereign-native-broker/permissions-before/permissions.log",
+          "sha256": "ac83a0a51793692b91970fada152cb4af628ea024980c9d3221ca271f8713a3b"
+        },
+        "driver_result": {
+          "path": "target/sovereign-native-broker/permissions-before/result.json",
+          "sha256": "bc8c7c28e35252f2f045ab179f6b4d237c92baaca0e6e2968398cd2e47663b8e"
+        }
+      },
+      "permissions-after": {
+        "command": [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "F:\\werkWorker\\Cargo.toml",
+          "--locked",
+          "--offline",
+          "--test",
+          "permissions",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "exit": 0,
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "medium_execution_verified_before_resume": true,
+        "log": {
+          "path": "target/sovereign-native-broker/permissions-after/permissions.log",
+          "sha256": "327c8891f1ed68579cf4cc883c112a2cceb47bac46ccd294dfc7638da39ed984"
+        },
+        "driver_result": {
+          "path": "target/sovereign-native-broker/permissions-after/result.json",
+          "sha256": "29da642ce0568f32a77f50a9399efe9480dcc0735c723716d7c6a5d567e064d7"
+        }
+      }
+    }
+  }
+}

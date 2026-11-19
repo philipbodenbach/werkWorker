@@ -18,8 +18,8 @@ use std::{io::IsTerminal, path::PathBuf, sync::Arc};
 use werk_worker::{
     profiles::AgentProfile,
     providers::{
-        EnvironmentSecrets, ModelProvider, ScriptedProvider, ScriptedTurn, SecretResolver,
-        WerkConfig, WerkProvider,
+        EnvironmentSecrets, ModelProvider, ProviderRouting, ProviderTransport, ScriptedProvider,
+        ScriptedTurn, SecretResolver, WerkConfig, WerkProvider,
     },
     runtime::{ArtifactStore, Sandbox},
     sessions::SqliteStore,
@@ -70,6 +70,12 @@ struct Cli {
     /// Explicit Werk transport/model configuration JSON; no credentials inside.
     #[arg(long)]
     werk_config: Option<PathBuf>,
+    /// Explicit third-party OpenAI-compatible configuration, with its own origin and credential.
+    #[arg(long, conflicts_with_all = ["werk_config", "setup", "script"])]
+    openai_compatible_config: Option<PathBuf>,
+    /// Host environment variable containing an ordered provider routing and disclosure policy.
+    #[arg(long, conflicts_with_all = ["werk_config", "openai_compatible_config", "setup", "script", "secret_env"])]
+    provider_routing_env: Option<String>,
     #[arg(long)]
     secret_env: Option<String>,
     /// Explicit deterministic offline responses, never a provider fallback.
@@ -201,6 +207,12 @@ async fn execute(mut cli: Cli) -> Result<()> {
         if !execute_once(cli.clone()).await? {
             return Ok(());
         }
+        if cli.provider_routing_env.is_some() {
+            return Err(WorkerError::new(
+                "provider_route_pinned",
+                "Restart with an explicitly selected connection to change a routed session's provider",
+            ));
+        }
         cli.setup = true;
         if let Some(Command::Tui {
             input,
@@ -223,6 +235,19 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         session: None,
         run_id: None,
     });
+    if matches!(
+        &command,
+        Command::Tui { demo: true, .. } | Command::Run { demo: true, .. }
+    ) && (cli.provider_routing_env.is_some()
+        || cli.werk_config.is_some()
+        || cli.openai_compatible_config.is_some()
+        || cli.setup)
+    {
+        return Err(WorkerError::new(
+            "conflicting_provider",
+            "Offline demo cannot use an inference connection",
+        ));
+    }
     match &command {
         Command::Tmp { action } => {
             cli_cleanup::temporary(action)?;
@@ -360,6 +385,8 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     };
     let use_setup = matches!(&command, Command::Tui { demo: false, .. })
         && cli.script.is_none()
+        && cli.openai_compatible_config.is_none()
+        && cli.provider_routing_env.is_none()
         && (cli.setup || cli.werk_config.is_none() || cli.secret_env.is_none());
     let provider: Arc<dyn ModelProvider> = if cli.setup || use_setup {
         let seed = if let Some(path) = &cli.werk_config {
@@ -385,15 +412,47 @@ async fn execute_once(cli: Cli) -> Result<bool> {
         setup_access = connected.access;
         reuse_project_access = connected.reuse_project_access;
         connected.provider
-    } else if let Some(path) = &cli.werk_config {
-        let config: WerkConfig = serde_json::from_slice(&tokio::fs::read(path).await?)?;
-        let secret = cli
-            .secret_env
-            .as_deref()
-            .map(|r| EnvironmentSecrets.resolve(r))
-            .transpose()?
-            .flatten();
-        let provider = WerkProvider::connect(config, secret).await?;
+    } else if cli.provider_routing_env.is_some()
+        || cli.werk_config.is_some()
+        || cli.openai_compatible_config.is_some()
+    {
+        let provider = if let Some(reference) = &cli.provider_routing_env {
+            let raw = EnvironmentSecrets.resolve(reference)?.ok_or_else(|| {
+                WorkerError::new(
+                    "invalid_provider_routing",
+                    "Routing policy environment variable is missing",
+                )
+            })?;
+            if raw.len() > 65536 {
+                return Err(WorkerError::new(
+                    "invalid_provider_routing",
+                    "Routing policy exceeds 64 KiB",
+                ));
+            }
+            serde_json::from_str::<ProviderRouting>(&raw)?
+                .connect(&EnvironmentSecrets)
+                .await?
+        } else {
+            let path = cli
+                .werk_config
+                .as_ref()
+                .or(cli.openai_compatible_config.as_ref())
+                .expect("explicit provider configuration");
+            let config: WerkConfig = serde_json::from_slice(&tokio::fs::read(path).await?)?;
+            let secret = cli
+                .secret_env
+                .as_deref()
+                .map(|r| EnvironmentSecrets.resolve(r))
+                .transpose()?
+                .flatten();
+            let transport = if cli.openai_compatible_config.is_some() {
+                ProviderTransport::OpenAiCompatible
+            } else {
+                ProviderTransport::Werk
+            };
+            WerkProvider::connect_explicit(transport, config, secret, cli.secret_env.as_deref())
+                .await?
+        };
         if matches!(command, Command::Diagnose) {
             println!(
                 "{}",
@@ -422,7 +481,7 @@ async fn execute_once(cli: Cli) -> Result<bool> {
     } else {
         return Err(WorkerError::new(
             "provider_required",
-            "Select --werk-config or --script; run --demo is explicitly offline",
+            "Select --werk-config, --openai-compatible-config or --script; run --demo is explicitly offline",
         ));
     };
     let policy = if let Some(path) = cli.grants {

@@ -27,7 +27,32 @@ def package_version(path):
     return versions[0]
 
 
-def smoke(root, archive, directory):
+WINDOWS_BINARIES = ('werk-worker.exe', 'ww.exe', 'ww-windows-provision.exe', 'ww-windows-runner.exe')
+
+
+def sha256_stream(stream):
+    digest = hashlib.sha256()
+    for block in iter(lambda: stream.read(1024 * 1024), b''):
+        digest.update(block)
+    return digest.hexdigest()
+
+
+def verify_windows_install(archive, install, build_bin=None):
+    binaries = {}
+    with zipfile.ZipFile(archive) as package:
+        for name in WINDOWS_BINARIES:
+            with package.open(name) as entry, (install / name).open('rb') as installed:
+                hashes = {'archive': sha256_stream(entry), 'installed': sha256_stream(installed)}
+            if build_bin is not None:
+                with (build_bin / name).open('rb') as built:
+                    hashes['build'] = sha256_stream(built)
+            if len(set(hashes.values())) != 1:
+                raise ValueError(f'Windows binary identity mismatch for {name}: {hashes}')
+            binaries[name] = hashes
+    return binaries
+
+
+def smoke(root, archive, directory, windows_build_bin=None):
     version = package_version(root / 'Cargo.toml')
     install = directory / 'bin'
     env = dict(os.environ, WERK_WORKER_VERSION=version,
@@ -46,6 +71,8 @@ def smoke(root, archive, directory):
     workspace.mkdir()
     report = {'archive': str(archive), 'install_dir': str(install), 'version': version,
               'commands': [], 'helpers': []}
+    if os.name == 'nt':
+        report['binaries'] = verify_windows_install(archive, install, windows_build_bin)
     for name in ['werk-worker', 'ww']:
         binary = install / (name + ('.exe' if os.name == 'nt' else ''))
         output = subprocess.check_output([str(binary), '--help'], text=True, encoding='utf-8',
@@ -61,22 +88,19 @@ def smoke(root, archive, directory):
                        cwd=workspace, check=True, stdout=subprocess.DEVNULL)
         report['commands'].append(name)
     if os.name == 'nt':
-        with zipfile.ZipFile(archive) as package:
-            for name in ('werk-worker.exe', 'ww.exe', 'ww-windows-provision.exe',
-                         'ww-windows-runner.exe'):
-                expected = hashlib.sha256(package.read(name)).hexdigest()
-                actual = hashlib.sha256((install / name).read_bytes()).hexdigest()
-                assert actual == expected, f'Installed binary differs from archive: {name}'
-            for name, expected_exit in [('ww-windows-provision.exe', 2),
-                                        ('ww-windows-runner.exe', 125)]:
-                # No request/pipe arguments: verifies loading and refusal without
-                # creating an account, changing ACLs or requesting elevation.
-                result = subprocess.run([str(install / name)], cwd=workspace,
-                                        text=True, encoding='utf-8', errors='replace',
-                                        capture_output=True, timeout=30)
-                assert result.returncode == expected_exit, (name, result)
-                report['helpers'].append({'name': name, 'exit_code': result.returncode,
-                                          'sha256': hashlib.sha256((install / name).read_bytes()).hexdigest()})
+        for name, expected_exit in [('ww-windows-provision.exe', 2), ('ww-windows-runner.exe', 125)]:
+            # Request-free startup must refuse before provisioning or launching a payload.
+            result = subprocess.run([str(install / name)], cwd=workspace, text=True, encoding='utf-8',
+                                    errors='replace', capture_output=True, timeout=30)
+            if result.returncode != expected_exit:
+                raise RuntimeError(f'{name} returned {result.returncode}, expected {expected_exit}')
+            report['helpers'].append({'name': name, 'exit_code': result.returncode,
+                                      'sha256': report['binaries'][name]['installed']})
+        for name, hashes in report['binaries'].items():
+            with (install / name).open('rb') as current:
+                hashes['after_smoke'] = sha256_stream(current)
+            if hashes['after_smoke'] != hashes['archive']:
+                raise ValueError(f'Installed binary changed during smoke: {name}')
     (directory / 'smoke-result.json').write_text(json.dumps(report, indent=2) + '\n')
     print('Installed CLI commands, embedded skills and offline sessions passed outside the checkout.')
     if os.name == 'nt':
@@ -88,17 +112,21 @@ def main():
     parser.add_argument('archive', type=Path)
     parser.add_argument('--retain', type=Path,
                         help='Create and retain this fresh directory for explicit provisioning/start checks')
+    parser.add_argument('--windows-build-bin', type=Path,
+                        help='Also match all four installed Windows EXEs to this product build directory')
     args = parser.parse_args()
+    if args.windows_build_bin is not None and os.name != 'nt':
+        parser.error('--windows-build-bin requires a native Windows installation')
     root = Path(__file__).resolve().parent.parent
     archive = args.archive.resolve(strict=True)
     if args.retain is not None:
         directory = args.retain.absolute()
         directory.mkdir()  # Existing installations are never reused by a smoke.
-        smoke(root, archive, directory)
+        smoke(root, archive, directory, args.windows_build_bin)
         print(f'Retained fresh installation and result: {directory}')
     else:
         with tempfile.TemporaryDirectory(prefix='werkWorker-install-smoke-') as tmp:
-            smoke(root, archive, Path(tmp))
+            smoke(root, archive, Path(tmp), args.windows_build_bin)
 
 
 if __name__ == '__main__':

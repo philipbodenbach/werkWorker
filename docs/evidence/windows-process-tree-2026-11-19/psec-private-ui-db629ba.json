@@ -1,0 +1,121 @@
+{
+  "scope": "Fixed native diagnostic, one suspended PSEC root, no descendants or boundary-challenging operations. Fresh private USER objects, own immediate Job and own token.",
+  "worker_head": "db629ba4726d825d92caf58e14a28bb6a1e04678",
+  "windows": "11 25H2 x64 26200.9974",
+  "start_utc": "2026-11-19T11:58:01.330597+00:00",
+  "end_utc": "2026-11-19T11:58:04.109215+00:00",
+  "mxc_reference": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+  "mxc_schema_sha256": "736cacef37a6c97a0cb97c7132da462a3b51811fca8f1e4076cac51085dfa516",
+  "policy_decoded": {
+    "version": [
+      1,
+      1
+    ],
+    "capabilities": null,
+    "win32k_deny": false,
+    "ui_mask": 1023,
+    "read_only": [
+      "<stage>\\runtime",
+      "System32"
+    ],
+    "read_write": [
+      "<stage>\\work",
+      "<stage>\\scratch"
+    ],
+    "deny": [
+      "C:\\",
+      "F:\\"
+    ],
+    "network": {
+      "proxy": null,
+      "allowed_peer": null,
+      "egress": "deny",
+      "explicit_egress_exceptions": 0,
+      "ingress": "deny",
+      "host_loopback": "deny"
+    }
+  },
+  "normal_host": {
+    "same_user_as_provisioner": true,
+    "user_sid_sha256": "b4a93751db3f3f37e12cf4f858c5a11821574cfa23172f0c6b0f45af8d06fb24",
+    "normal_integrity": 8192,
+    "session": 1,
+    "verified_before_resume": true,
+    "attempt_exit": 0,
+    "outer_job_cleanup": {
+      "active_before_cleanup": 1,
+      "active_after_cleanup": 0,
+      "confirmed": true,
+      "elapsed_ms": 0
+    }
+  },
+  "commands": [
+    ".\\build.ps1",
+    "python.exe .\\launch-private.py"
+  ],
+  "production_reference": "src/runtime/windows_tree_desktop.rs, limited masks and protected DACL + low no-write-up label. This experiment uses a separate elevated provisioning role and Builtin Administrators ownership with normal host user as limited identity; the product dedicated-account/Writer-SID bootstrap was not selected.",
+  "baseline": {
+    "window_station": "WinSta0",
+    "desktop": "Default",
+    "receipt_sha256": "5c09cc829b5cc54137f0e887a094d763238b310f8a77c1f61b0ed0a3603affff"
+  },
+  "result": {
+    "pid": 34200,
+    "lpDesktop": "ww-ui-662d3b4b4d141d94a53bca39ced7abd5\\desk-662d3b4b4d141d94a53bca39ced7abd5",
+    "separate_private_objects": true,
+    "verified_DACL_and_integrity_on_both": true,
+    "limited_station_rights": "0x2037b",
+    "limited_desktop_rights": "0x20087",
+    "owner": "Builtin Administrators",
+    "full_access": [
+      "SYSTEM",
+      "Builtin Administrators"
+    ],
+    "limited_access": [
+      "normal user",
+      "individual package SID observed on suspended root"
+    ],
+    "external_and_immediate_mask": 255,
+    "active_limit_configured": 2,
+    "simultaneous_payloads": 1,
+    "memory_bytes": 536870912,
+    "cpu_100ns": 300000000,
+    "job_limit_flags": "0x220c",
+    "Win32kDenied_checked_before_resume_and_in_payload": false,
+    "payload_appcontainer": true,
+    "payload_elevated": false,
+    "actual_station": "ww-ui-662d3b4b4d141d94a53bca39ced7abd5",
+    "actual_desktop": "desk-662d3b4b4d141d94a53bca39ced7abd5",
+    "payload_exit": 0,
+    "retained_wait": 0,
+    "active_after_cleanup": 0,
+    "reopening_private_station_after_cleanup_error": 2
+  },
+  "unmeasured": [
+    "console admission at exhaustion",
+    "descendants",
+    "denied USER operations",
+    "file or Registry writes",
+    "DNS",
+    "installed product"
+  ],
+  "source_sha256": {
+    "ui-inspect.cpp": "75eaa32e1126080df755b19ef900d30dc5692f8066655f6f2a4174ae9bda4f9d",
+    "private-objects.inc": "22f0765e39b19c9aafb63f2e8f812437de235adc3ab948a028dcebc1d2061580",
+    "compile.cmd": "9b1608c8745c0b919de27e9bd988b2427dd9ac4091f8af3a978682ea7686f279",
+    "build.ps1": "4b558f000e4c7babdaf938149010e2896fd0f80c7f669b3bcb06e09b65fa8ac5",
+    "stage.ps1": "4eea9a47dab42ac7cb1e5c2a08df05b6b9f30e66a6a1388c242f063bb6ffd181",
+    "launch-private.py": "12d8a1ce5b0211f27b9cbee804ab0e3347c5cd29629f6646e1fb4dc8decb0148",
+    "encoder.rs": "c37aed4847afbbd645c7b739f803ac35879b07f83edb7cc6dd67a22852c32cee",
+    "encoder.exe": "ec6c69942a0c70e3a630dbc81f6f406a8237a8b74278b6c0c21c06acf6ee7359",
+    "ui-inspect.exe": "276cb07196ca714b221ea116b7bf8d0d937c40c43798fe1f4432c34e4a53e7d4",
+    "candidate.bin": "54880aa61fa678830bf219313473d071fd8a9553faebe824de8af29422098e20"
+  },
+  "raw_sha256": {
+    "launch.json": "5573554e694062fe9ae40bf98f87cfbacf97368ba23fa5fdc1d89ebc5b3c0f3f",
+    "native.log": "9f84be5776666c4eb5cb9a9d8f4463af21d65253e55811849d8e6fea8f2d5cfb",
+    "provision.log": "83939893fa092f96edb06c35f6fcbdbd9254aadd11c42430bce94e325da1a477",
+    "result.json": "96dc7ec29209619806474be021451f48cfc673dfc9e4363c04b6def7468e320d"
+  },
+  "Cargo_receipt": "none; diagnostic-only"
+}

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import runpy
 import stat
 import subprocess
 import tarfile
@@ -128,6 +129,33 @@ class WindowsInstallTests(unittest.TestCase):
             for binary in self.binaries:
                 self.assertEqual((self.install_dir / binary).read_bytes(), package.read(binary))
         self.assertEqual((self.install_dir / 'session.sqlite').read_bytes(), b'unchanged')
+
+    def test_smoke_matches_product_build_before_running_installed_commands(self):
+        self.archive_files()
+        build = self.root / 'product build'
+        build.mkdir()
+        with zipfile.ZipFile(self.archive) as package:
+            for name in self.binaries:
+                (build / name).write_bytes(package.read(name))
+        smoke = runpy.run_path(str(ROOT / 'scripts/smoke-install.py'))
+        verify = smoke['verify_windows_install']
+        self.assertEqual(self.install().returncode, 0)
+        matches = verify(self.archive, self.install_dir, build)
+        self.assertEqual(set(matches), set(self.binaries))
+        for name, hashes in matches.items():
+            expected = hashlib.sha256((build / name).read_bytes()).hexdigest()
+            self.assertEqual(hashes, dict(archive=expected, installed=expected, build=expected))
+
+        (build / 'ww-windows-runner.exe').write_bytes(b'different runner build')
+        fresh = self.root / 'smoke'
+        fresh.mkdir()
+        # The fixture contains text in place of EXEs. Reaching a CLI command here
+        # would fail with a loader error instead of identifying the differing build.
+        with self.assertRaisesRegex(ValueError, 'identity mismatch for ww-windows-runner.exe'):
+            smoke['smoke'](ROOT, self.archive, fresh, build)
+        (self.install_dir / 'ww.exe').write_bytes(b'different installed CLI')
+        with self.assertRaisesRegex(ValueError, 'identity mismatch for ww.exe'):
+            verify(self.archive, self.install_dir)
 
     def test_missing_helper_rejects_before_replacing_existing_commands(self):
         self.install_dir.mkdir()

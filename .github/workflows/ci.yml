@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows11_acceptance:
+        description: Run process-tree acceptance on the dedicated Windows 11 x64 PSEC runner
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -185,13 +190,20 @@ jobs:
 
   windows_process_tree:
     name: windows-process-tree
-    runs-on: windows-2022
+    # A PR cannot opt a privileged, interactive Windows host into executing its checkout.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.windows11_acceptance && 'werkworker-windows11-psec-x64' || 'windows-2022' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Establish hosted-runner eligibility before installing the toolchain
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.windows11_acceptance }}
+        shell: pwsh
+        run: ./scripts/test-windows-process-tree.ps1 -EvidenceRoot "$env:RUNNER_TEMP/windows-tree-eligibility" -PreflightOnly -RequirePsec
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -200,6 +212,7 @@ jobs:
         shell: pwsh
         run: ./scripts/setup-msvc.ps1
       - uses: Swatinem/rust-cache@v2
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.windows11_acceptance }}
         with:
           shared-key: windows-process-tree-x86_64-pc-windows-msvc
       - name: Cache the locked dependencies for offline acceptance
@@ -218,7 +231,7 @@ jobs:
               $_.Address.ToString() -ne '0.0.0.0'
             } | Select-Object -First 1 -ExpandProperty Address
           if (-not $Address) { throw 'No assigned non-loopback address for the controlled TCP witness.' }
-          ./scripts/test-windows-process-tree.ps1 -EvidenceRoot "$env:RUNNER_TEMP/windows-process-tree" -BindAddress $Address.ToString()
+          ./scripts/test-windows-process-tree.ps1 -EvidenceRoot "$env:RUNNER_TEMP/windows-process-tree" -BindAddress $Address.ToString() -RequirePsec
       - name: Preserve native tree results
         if: always()
         uses: actions/upload-artifact@v6
@@ -230,7 +243,10 @@ jobs:
             ${{ runner.temp }}/windows-process-tree/installed-start/*.log
             ${{ runner.temp }}/windows-process-tree/installed-start/*-result.json
             ${{ runner.temp }}/windows-process-tree/installation/smoke-result.json
+            ${{ runner.temp }}/windows-process-tree/preflight/preflight-result.json
             ${{ runner.temp }}/windows-process-tree/qualification-result.json
+            ${{ runner.temp }}/windows-tree-eligibility/qualification-result.json
+            ${{ runner.temp }}/windows-tree-eligibility/preflight/preflight-result.json
             ${{ runner.temp }}/windows-process-tree/built-package/*.zip
             ${{ runner.temp }}/windows-process-tree/built-package/*.zip.sha256
           if-no-files-found: warn

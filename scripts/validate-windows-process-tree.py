@@ -221,6 +221,16 @@ class WindowsHostExecution:
                 "elevation_type": read_uint(18), "session_id": read_uint(12),
                 "token_type": read_uint(8), "appcontainer": bool(read_uint(29))}
 
+    def current_token_metadata(self):
+        token = self.w.HANDLE()
+        self.require(self.security.OpenProcessToken(self.kernel.GetCurrentProcess(), 8,
+                                                    self.ctypes.byref(token)),
+                     "Inspect the current host token")
+        try:
+            return self.token_metadata(token)
+        finally:
+            self.close(token)
+
     @staticmethod
     def verify_medium(metadata, expected, primary=True):
         if (metadata["user_sid"] != expected["user_sid"]
@@ -863,17 +873,10 @@ def ordinary_command(arguments):
     if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
         raise RuntimeError("Ordinary command must be an explicit argument vector")
     executor = WindowsHostExecution()
-    current = executor.w.HANDLE()
-    executor.require(executor.security.OpenProcessToken(executor.kernel.GetCurrentProcess(), 8,
-                                                         executor.ctypes.byref(current)),
-                     "Verify the resumed ordinary Python host token")
-    try:
-        metadata = executor.token_metadata(current)
-        executor.verify_medium(metadata, request["expected_host"])
-        if metadata["authentication_id"] != request["expected_host"]["authentication_id"]:
-            raise RuntimeError("Resumed ordinary host does not match its linked-logon request")
-    finally:
-        executor.close(current)
+    metadata = executor.current_token_metadata()
+    executor.verify_medium(metadata, request["expected_host"])
+    if metadata["authentication_id"] != request["expected_host"]["authentication_id"]:
+        raise RuntimeError("Resumed ordinary host does not match its linked-logon request")
     result = {"nonce": args.nonce, "command": command, "cwd": request["cwd"],
               "native_host_token": metadata}
     bridge_exit = 0
@@ -896,8 +899,111 @@ def ordinary_command(arguments):
     return bridge_exit
 
 
+def inspect_native_host():
+    """Fixed preflight child. Query the runtime in the actual ordinary logon."""
+    import ctypes
+    import sys
+    import sysconfig
+    import winreg
+    from ctypes import wintypes
+
+    executor = WindowsHostExecution()
+    token = executor.current_token_metadata()
+    executor.verify_medium(token, token)
+    process_machine, native_machine = wintypes.USHORT(), wintypes.USHORT()
+    machine = executor.kernel.IsWow64Process2
+    machine.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT),
+                        ctypes.POINTER(wintypes.USHORT)]
+    machine.restype = wintypes.BOOL
+    executor.require(machine(executor.kernel.GetCurrentProcess(), ctypes.byref(process_machine),
+                             ctypes.byref(native_machine)), "Query native Windows architecture")
+    version = sys.getwindowsversion()
+    key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as windows:
+        revision = winreg.QueryValueEx(windows, "UBR")[0]
+    result = {"token": token, "windows_build": version.build, "ubr": revision,
+              "workstation": version.product_type == 1, "platform": sysconfig.get_platform(),
+              "process_machine": process_machine.value, "native_machine": native_machine.value}
+    # ABI from Microsoft MXC 51805f40, common/secenv.rs. The version call
+    # writes a one-byte BOOLEAN and the feature call writes a UINT64.
+    psec = {"supports_required_policy": False}
+    try:
+        system = ctypes.create_unicode_buffer(32768)
+        length = executor.kernel.GetSystemWindowsDirectoryW(system, len(system))
+        if not 0 < length < len(system):
+            raise RuntimeError("Cannot resolve the system Windows directory")
+        dll = Path(system.value) / "System32" / "processmodel.dll"
+        api = ctypes.WinDLL(str(dll), winmode=0x800)  # LOAD_LIBRARY_SEARCH_SYSTEM32
+        for name in ("CreateProcessSecurityEnvironment", "CloseProcessSecurityEnvironment"):
+            getattr(api, name)
+        query = api.QueryProcessSecurityEnvironmentSupport
+        query.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
+        query.restype = ctypes.c_int32
+        supported = api.IsProcessSecurityEnvironmentVersionSupported
+        supported.argtypes = [wintypes.DWORD, ctypes.POINTER(ctypes.c_ubyte),
+                              ctypes.POINTER(wintypes.DWORD)]
+        supported.restype = ctypes.c_int32
+        flags, available, minor = ctypes.c_uint64(), ctypes.c_ubyte(), wintypes.DWORD()
+        features_hr = query(ctypes.byref(flags))
+        version_hr = supported(1, ctypes.byref(available), ctypes.byref(minor))
+        psec.update({"module": str(dll), "module_sha256": digest(dll),
+                     "features_hresult": features_hr, "version_hresult": version_hr,
+                     "v1_minor": minor.value if version_hr == 0 and available.value else None,
+                     "flags": flags.value if features_hr == 0 else None})
+        psec["supports_required_policy"] = (psec["v1_minor"] is not None and psec["v1_minor"] >= 1
+                                            and features_hr == 0 and flags.value & 0x9 == 0x9)
+    except (OSError, AttributeError, RuntimeError) as error:
+        psec["error"] = str(error)
+    print(json.dumps(dict(result, psec=psec)))
+    return 0
+
+
+def is_psec_qualification_host(host):
+    # IMAGE_FILE_MACHINE_AMD64, with no emulation in the calling process.
+    return (host["workstation"] and host["windows_build"] >= 22000
+            and host["native_machine"] == 0x8664 and host["process_machine"] == 0
+            and host["psec"]["supports_required_policy"])
+
+
+def preflight(arguments):
+    import sys
+    parser = argparse.ArgumentParser(description="Check the ordinary Windows acceptance host")
+    parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--require-psec", action="store_true",
+                        help="Require Windows 11 x64 and PSEC 1.1 filesystem deny and ingress")
+    args = parser.parse_args(arguments)
+    evidence = args.evidence.resolve()
+    evidence.mkdir(parents=True, exist_ok=False)
+    log = evidence / "host.log"
+    command = [sys.executable, "-I", str(Path(__file__).resolve()), "--inspect-native-host"]
+    receipt = execute(command, evidence, os.environ.copy(), log)
+    result = {"launch": receipt, "require_psec": args.require_psec}
+    try:
+        if receipt["exit_code"] != 0:
+            raise RuntimeError(receipt["native_host_token"].get("error")
+                               or f"Host probe exited {receipt['exit_code']}; see {log}")
+        host = json.loads(log.read_text(encoding="utf-8"))
+        result["host"] = host
+        expected = receipt["native_host_token"]["execution"]
+        WindowsHostExecution.verify_medium(host["token"], expected)
+        if host["token"]["authentication_id"] != expected["authentication_id"]:
+            raise RuntimeError("Preflight child logon differs from the verified host logon")
+        if args.require_psec and not is_psec_qualification_host(host):
+            raise RuntimeError("Windows 11 x64 and PSEC 1.1 filesystem deny and ingress are required")
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        result.update(status="INFRASTRUCTURE_BLOCKED", error=str(error))
+    else:
+        result["status"] = "READY"
+    write_json(evidence / "preflight-result.json", result)
+    return 0 if result["status"] == "READY" else 125
+
+
 def main():
     import sys
+    if sys.argv[1:] == ["--inspect-native-host"]:
+        return inspect_native_host()
+    if sys.argv[1:2] == ["preflight"]:
+        return preflight(sys.argv[2:])
     if sys.argv[1:2] == ["--ordinary-command"]:
         return ordinary_command(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)

@@ -1,8 +1,42 @@
 # Native Windows PSEC evaluation for PR #24
 
+## Prüfung am 19. November 2026
+
+**WerkWorker `86b9694` ist auf Windows 11 25H2 (26200.9974, x64) NOT QUALIFIED.** Der vollständige native Budgetlauf steht aus. Für den Start des Originalprogramms ist der ursächliche Einfluss der Win32k-Sperre belegt. Die angeforderte Toolchain und eine Pflichtoperation im isolierten Payload sind mit der geprüften strikten Startpolicy weiterhin inkompatibel. Der Produktpfad gibt `sandbox_unqualified` zurück. [Prüfbeleg mit Befehlen, Hashes und CI-Ergebnissen](evidence/windows-process-tree-2026-11-19/native-qualification-86b9694.json)
+
+| Neue native Prüfung | Ergebnis | Reichweite |
+| --- | --- | --- |
+| Gewöhnlicher Job mit Limit zwei | Der Beobachter hielt die Prozesshandles fest und zählte nacheinander 1, 2, 1 und 0 lebende Prozesse. Beide waren vor dem ersten Fortsetzen zugeordnet. Der erste endete mit Exit 0, der zweite nach Abbruch mit 91. Beide Handles signalisierten, der Job meldete 0 aktive Mitglieder. | Zwei vom Host gestartete Prozesse. Die vorgeschriebenen Konsolenfälle bleiben offen. [Job-Protokoll](evidence/windows-process-tree-2026-11-19/job-ordinary-86b9694.log) |
+| Strikter PSEC-Job mit einem Platz | Der nicht erhöhte AppContainer-Prozess prüfte die wirksame Win32k-Sperre, meldete `READY` und endete mit Exit 0. Die Zählung ergab 1 lebendes Mitglied. Anschließend signalisierte das Prozesshandle und der Job war leer. | Feste C++-Probe, explizite Zuordnung im suspendierten Zustand. Ein gesonderter Start mit erhöhtem Token endete vor `READY` mit Exit 2. Auch für diesen Fehlerpfad sind ein signalisiertes Roothandle und 0 aktive Mitglieder belegt. [PSEC-Protokoll](evidence/windows-process-tree-2026-11-19/job-strict-86b9694.log) |
+| Synthetischer DNS-Empfänger | Unter einem vor dem Start geprüften, nicht erhöhten Medium-Token desselben Benutzers trafen zwei verschiedene Hostnamen an `127.0.0.1:53` jeweils einmal ein. Der Zähler des zweiten Namens stand vor seiner Abfrage auf 0. | Eigenständiger Hosttest. Zwischen den Anfragen wurde kein Sandbox-Baum gestartet. Die Anzahl der Sandbox-Anfragen ist ungemessen. |
+| Cleanup und Wiederverwendung | Der Receipt-Test blockierte konkurrierenden Zugriff und den Neustart nach Verlust des Besitzers. Die explizite Cleanup-Bestätigung gab den Pfad frei. Der separate LPAC-Einzelprozess-Test beendete den Testhost nach dem Bereitschaftssignal. Nach 750 ms fehlte die verzögerte Ausgabe, die der positive Kontrolllauf erzeugt hatte. | Der tatsächliche Hosttod wurde im bestehenden Einzelprozessprofil geprüft. Für den installierten Baum fehlen weiterhin die durchgehende Handleprüfung und der Nachweis des Zeitpunkts der Workspace-Freigabe. |
+
+### Startursache und mögliche Reparatur
+
+Die unveränderte Original-EXE auf F: hat 31.062.016 Bytes und SHA-256 `3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0`. Der im Auftrag genannte Hash `56e73274…` gehört zur damaligen `inputs.json`. Alle 102 Dateien des historischen Hashmanifests wurden auf F: erneut geprüft. Das ZIP enthält 97 dieser Dateien. Die fünf weiteren, darunter die ETW-Rohspuren, sind separat auf F: erhalten. Das ursprüngliche Checkout auf C: wurde gelöscht.
+
+Die erneute PE-Prüfung mit `DUMPBIN /IMPORTS` und `/HEADERS` ergab 26 gewöhnliche Importdeskriptoren, ein leeres Delay-Importverzeichnis und 31 direkte USER32-Funktionen. Der archivierte A/B-Vergleich bei `843acba` verwendete dieselbe EXE und zwei dekodierte PSEC-Policies, die sich ausschließlich in `disallow_win32k_system_calls` unterscheiden. Der Launcher las das Bit vor dem Fortsetzen zurück. Mit Sperre endete die Probe nach 31 ms mit `0xC0000142` und leerer Ausgabe. Ohne Sperre lieferte sie nach 47 ms die acht Testnamen und Exit 0. Der angeforderte UI-Maskenwert war in beiden Fällen `0x3ff`. Der externe Job meldete 0. Die interne PSEC-UI-Maske, der Desktop des Kindes und LPAC blieben unbestimmt. [A/B-Befund und symbolisierte Originalspur](evidence/windows-process-tree-2026-11-18/psec-win32k-startup-843acba.json)
+
+Die Spur des Originalprozesses zeigt den blockierten Aufruf `win32u!NtGdiInit2` während der von `USER32!_UserClientDllInitialize` angestoßenen GDI-Initialisierung. Die Rückgabe jeder einzelnen DLL-Initialisierungsroutine wurde nicht aufgezeichnet. Im Payload muss `GetUserObjectInformationW` die eigene Window Station und den eigenen Desktop erfolgreich identifizieren. Unabhängig davon endet die vorgesehene `cargo.exe` unter der strikten Policy bereits bei `--version` mit `0xC0000142`. Das Auslagern des Host-Beobachters allein löst keines dieser beiden Probleme. Für eine kompatible Reparatur müssen beide Operationen unter wirksamer Isolation funktionieren.
+
+### Ausstehende Abnahme und CI
+
+- Für `AllocConsole` und den Start eines Konsolen-Kindprozesses fehlt am aktuellen Produktstand der harte Grenznachweis mit allen lebenden Job-Mitgliedern. Die zwei historischen Konsolen-Kindstarts vom 14. November zeigten jeweils drei lebende Mitglieder bei Limit zwei, einschließlich `conhost.exe`.
+- Offen sind der allgemeine Datei- und Registry-Schreibschutz für breit oder geerbt berechtigte Hostobjekte, die DNS-Sperre über drei Generationen, direkte und vermittelte Netzwerkzugriffe, weitergegebene Handles und die Autorität der Nachkommen. Die vorhandenen privaten Schreibkontrollen und Zugriffsprüfungen in Speicherdeskriptoren reichen dafür nicht aus. Der Wiederherstellungsstatus von `111dd` bleibt ungeklärt.
+- Die Produktzulassung verweigert jeden Baumstart. Es gibt keinen unterstützten, begrenzten Übergang für einen installierten Kandidaten. Die lokale Pflichtsuite und die installierte CLI wurden deshalb nicht erneut gestartet. Für diesen Stand gibt es weder einen ausgeführten `process.run`-Cargo-Test noch ein daraus entstandenes Windows-Testartefakt. Werk Protocol, Providerwahl und deren Rechtepfad wurden nicht geändert. Eine neue Ende-zu-Ende-Inferenz wurde nicht ausgeführt.
+- Die reguläre Windows-CI von PR #24 bestand. In der eigenen Prozessbaum-CI waren Paket- und Installationssetup erfolgreich. Der Runner konnte für beide Abnahmestarts kein verknüpftes Medium-Token bereitstellen. Beide Launcher endeten mit 125 vor der Zielausführung. Das Artefakt weist null qualifizierte Aufrufe aus. Die Windows-Prüfungen von werk1112 PR #49 bestanden auf PR und Push. [Worker Windows](https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/job/135480958175) · [Worker Prozessbaum](https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/job/135480958464) · [werk1112 Windows](https://github.com/philipbodenbach/werk1112/actions/runs/44348426938/job/134957095405)
+
+## Historische Bewertung vom 18. November
+
 **Outcome B. Keep `sandbox_unqualified` on Windows 11 build 26200.9974.** The native API accepted the policy and the fixed write probe completed. The original Rust probe timed out, the required Registry write boundary remains unproven, and a prior measurement of this native launch contract recorded three live Job members at limit two. [Machine-readable evidence](evidence/windows-process-tree-2026-11-18/psec-candidate-87a999a.json)
 
-## Observations on the test host
+### Win32k startup follow-up
+
+On the same Windows build, a controlled run at Worker revision `843acba` isolated the startup failure. With Win32k lockdown active, the original Rust `--list` probe exited with `0xC0000142` after 31 ms and emitted no output. Disabling that single field in a diagnostic PSEC policy produced all eight reference test names and exit 0 in 47 ms. The launcher read the mitigation bit from each suspended process. Both Jobs drained.
+
+Windows traced the blocked `NtGdiInit2` call during USER32/GDI initialization in the original Rust process. The mandatory payload itself must query its private desktop and window station. The approved Cargo binary also failed with `0xC0000142` under lockdown on `cargo --version`. Moving only the host UI observer into a separate executable cannot make that Cargo binary start. Production admission remains `sandbox_unqualified`. [Controlled startup, loader trace and qualification results](evidence/windows-process-tree-2026-11-18/psec-win32k-startup-843acba.json)
+
+### Observations on the test host
 
 | Control | Result |
 | --- | --- |
@@ -15,7 +49,7 @@
 
 The Low fixtures from the preceding assessment were synthetic security descriptors. The current checks exercised those discretionary permissions in memory. The only new persistent writes verified here were the two authorized files. Actual mutation or virtualization of a host Registry key, and the outcome of a live file open outside the allowed directories under this exact policy, remain unmeasured. [Prior fixtures](evidence/windows-process-tree-2026-11-18/appcontainer-write-boundary-9d2ee11.json) · [Original Rust control](evidence/windows-process-tree-2026-11-18/matched-schema4-schema5-start.json)
 
-## Native enforcement contract
+### Native enforcement contract
 
 The audited Microsoft MXC revision is `51805f40beaf19631df63ae25d0c11876d05a4ce`. The diagnostic explicitly used `CreateProcessSecurityEnvironment`, attached `PROC_THREAD_ATTRIBUTE_SECURITY_ENVIRONMENT` at `CreateProcessW`, and observed successful creation of the environment and suspended roots. It used the existing policy encoder. Its 12 generated schema files matched the Microsoft revision after line-ending normalization. The launch ran directly against the OS without SDK backend selection or fallback. [Microsoft support table](https://github.com/microsoft/mxc/blob/51805f40beaf19631df63ae25d0c11876d05a4ce/docs/backends/process-container/os-version-support.md) · [Native API flags](https://learn.microsoft.com/en-us/windows/win32/api/processmodel/ne-processmodel-process_security_environment_support_flags)
 
@@ -27,7 +61,7 @@ The audited Microsoft MXC revision is `51805f40beaf19631df63ae25d0c11876d05a4ce`
 
 **Hard Job limit.** The November 14 native test on this OS build used the same API sequence. In the atomic-assignment arm, the suspended PSEC root was outside the requested Job and was reaped before resume. In two separate console-child runs the root was explicitly assigned before first resume. A census of each concrete Job found the root, its child and `conhost.exe` simultaneously alive at limit two. Both observations concern console-child startup. The six historical Jobs were cleaned up. That run recorded the OS build without a hash of its OS DLL. [Historical Job census](evidence/windows-process-tree-2026-11-14/psec-native.log)
 
-## Integration decision
+### Integration decision
 
 This host-Job design requires a Windows enforcement point that bounds persistent Registry writes for the entire process tree, or a private Registry with demonstrated isolation from host state. It also needs a hard admission limit that includes system-created console helpers. A new protocol field alone cannot supply either property. [Microsoft OS feature guide](https://github.com/microsoft/mxc/blob/51805f40beaf19631df63ae25d0c11876d05a4ce/docs/development/guides/process-container-adding-os-features.md#L25-L74)
 

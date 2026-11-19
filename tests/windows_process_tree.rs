@@ -1873,8 +1873,16 @@ async fn process_tree_host_payload() {
 #[test]
 fn native_dns_control_uses_only_explicit_loopback_server() {
     let server = tree_dns::Server::new();
-    let name = format!("host-{}.ww-tree.test.", uuid::Uuid::new_v4().simple());
-    server.positive_control(&name);
+    let nonce = uuid::Uuid::new_v4().simple();
+    let before = format!("before-{nonce}.ww-tree.test.");
+    let after = format!("after-{nonce}.ww-tree.test.");
+    server.positive_control(&before);
+    assert_eq!(
+        server.arrivals(&after),
+        0,
+        "DNS witness mixed distinct names"
+    );
+    server.positive_control(&after);
     println!("NATIVE_DNS_SYNTHETIC_HOST_CONTROL_OK");
 }
 

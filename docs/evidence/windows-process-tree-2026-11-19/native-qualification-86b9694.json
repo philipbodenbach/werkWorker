@@ -1,0 +1,776 @@
+{
+  "decision": "NOT QUALIFIED",
+  "guard": "sandbox_unqualified",
+  "host": "Windows 11 25H2 26200.9974 x64",
+  "worker": {
+    "branch": "feat/windows-child-process",
+    "head": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+    "parent": "843acba230f7362d4752c10269c34926489dd6cb",
+    "existing_local_startup_receipt": "../windows-process-tree-2026-11-18/psec-win32k-startup-843acba.json",
+    "local_test_diff_sha256_git_binary": "b077bd42b395cad676b2cf75bb206ee39b51b53395eb4a7885e2d5ce2956ee21"
+  },
+  "werk1112": {
+    "branch": "feat/expand-werkProtocol",
+    "head": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+    "worktree_clean": true,
+    "new_real_two_exe_inference_runs": 0
+  },
+  "reverified_evidence": {
+    "head": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+    "parent": "843acba230f7362d4752c10269c34926489dd6cb",
+    "utc_verified": "2026-11-19T10:43:09.990970+00:00",
+    "manifest_entries_verified_on_disk": 102,
+    "manifest_entries_also_present_in_zip": 97,
+    "manifest_entries_retained_outside_zip": [
+      "loader-win32k-mwmn406g/event-stacks.log",
+      "loader-win32k-mwmn406g/image-evidence/probe.etl",
+      "loader-win32k-mwmn406g/image-evidence/stacks.log",
+      "loader-win32k-mwmn406g/probe.etl",
+      "stock-tool-mwmn6i0m/stock-version.cpp"
+    ],
+    "zip_matches_retained_directory_for_all_members": true,
+    "all_zip_entries_crc_pass": true,
+    "files": {
+      "target/win32k-evidence-843acba-mwmneg4d/PR24-USER32-Evidenz.zip": {
+        "bytes": 752820,
+        "sha256": "21dd5ed2117fc2f8ab61038ad8a6d7788fecc7f283001ac5366c7d2f9aa830e2"
+      },
+      "target/win32k-evidence-843acba-mwmneg4d/SHA256.json": {
+        "bytes": 12973,
+        "sha256": "f126ce4e38ce447b39f8485dd0f7a6a636baa4d8d87f453af9acd6a0c584ded5"
+      },
+      "target/win32k-evidence-843acba-mwmneg4d/evidence.json": {
+        "bytes": 36842,
+        "sha256": "f556b9a731947883db9e565484d3efffa3498e27874054bc2c9efc16c9aa77f4"
+      },
+      "target/win32k-evidence-843acba-mwmneg4d/checkout-probe-4a1d423a2f/evidence/result.json": {
+        "bytes": 3798,
+        "sha256": "af98a41a882a072f59762f067d36fe5575b514433f4202a98ca464095bc22836"
+      },
+      "target/win32k-evidence-843acba-mwmneg4d/checkout-probe-4a1d423a2f/evidence/inputs.json": {
+        "bytes": 5291,
+        "sha256": "56e732742f81084716a63cc4063d5d88461ede335d4a6b8ee1c65a43fdd335aa"
+      },
+      "target/native-list-diff-dc8721b4/focused.log": {
+        "bytes": 8004,
+        "sha256": "30bd2554106c653c1ab60a363094caa996d36666552c9ef13781b72c186ddd2c"
+      },
+      "target/psec-volume-843acba-mwmi4phlb/F/observed.log": {
+        "bytes": 2230,
+        "sha256": "fcc47b3eb8774be423a3067635ab115870ac66588883b60fb8751b63cb7b4b82"
+      },
+      "target/psec-volume-843acba-mwmi4phlb/image-init/observed.log": {
+        "bytes": 2989,
+        "sha256": "1d6d4c963ea9323f0bf99c88df30f63b43c448aa565de07552a80da43bf01d50"
+      },
+      "target/native-psec-list-9416c0b059e6/runtime/probe.exe": {
+        "bytes": 31062016,
+        "sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0"
+      }
+    },
+    "c_checkout_still_present": false,
+    "original_probe": {
+      "bytes": 31062016,
+      "sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0"
+    },
+    "mxc": {
+      "commit": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+      "pinned_files": {
+        "external/windows-sdk/ProcessSecurityEnvironment.fbs": {
+          "captured_sha256": "736cacef37a6c97a0cb97c7132da462a3b51811fca8f1e4076cac51085dfa516",
+          "retained_source_verified_today": true
+        },
+        "src/mxc-sdk/src/backends/process_container/common/base_container_helpers.rs": {
+          "captured_sha256": "ed1f77ab66ce6975ab4692f622681c385660532189cfbf8885781413af836c3c",
+          "retained_source_verified_today": true
+        },
+        "docs/backends/process-container/filesystem.md": {
+          "captured_sha256": "de3675188325a7b7b1de120ccc8acad9fc93407589d9f60f428f58aa12786698",
+          "retained_source_verified_today": true
+        },
+        "docs/backends/process-container/os-version-support.md": {
+          "captured_sha256": "90d8bc85c885d60f751699d48a1cbac79a838daa8d17396c3c7dc1165ffba6d3",
+          "retained_source_verified_today": true
+        }
+      }
+    },
+    "policy_comparison": {
+      "only_changed_decoded_field": "disallow_win32k_system_calls",
+      "A": {
+        "bytes": 488,
+        "sha256": "6e83a680554411ff625d94066d497d8e5b47cdba22da96787ddcb3da70966d61"
+      },
+      "B": {
+        "bytes": 488,
+        "sha256": "0a968fabc53144cdd5e2f238dbe5782aa63595065c542fb50c299db060d58bc4"
+      }
+    },
+    "pe_reinspection": {
+      "tool": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\dumpbin.exe",
+      "tool_sha256": "730e0281b8b15751f5354cae3488524a3a9548f54122ef2e2daa31a85b0b2b4b",
+      "commands": [
+        [
+          "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\dumpbin.exe",
+          "/NOLOGO",
+          "/IMPORTS",
+          "target/native-psec-list-9416c0b059e6/runtime/probe.exe"
+        ],
+        [
+          "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\dumpbin.exe",
+          "/NOLOGO",
+          "/HEADERS",
+          "target/native-psec-list-9416c0b059e6/runtime/probe.exe"
+        ]
+      ],
+      "normal_import_descriptors": 26,
+      "delay_import_size": 0,
+      "direct_user32_functions": [
+        "RegisterClipboardFormatW",
+        "CreateDesktopW",
+        "SetClipboardData",
+        "CountClipboardFormats",
+        "EmptyClipboard",
+        "GetClipboardData",
+        "GetWindowLongPtrW",
+        "DefWindowProcW",
+        "SendMessageTimeoutW",
+        "UnregisterClassW",
+        "DestroyWindow",
+        "DispatchMessageW",
+        "TranslateMessage",
+        "PeekMessageW",
+        "SwitchDesktop",
+        "SetWindowLongPtrW",
+        "CreateWindowExW",
+        "RegisterClassW",
+        "CloseWindowStation",
+        "SetThreadDesktop",
+        "OpenDesktopW",
+        "SetProcessWindowStation",
+        "OpenWindowStationW",
+        "GetThreadDesktop",
+        "GetProcessWindowStation",
+        "OpenClipboard",
+        "CloseClipboard",
+        "CloseDesktop",
+        "GetUserObjectInformationW",
+        "GetWindowThreadProcessId",
+        "OpenInputDesktop"
+      ],
+      "raw_imports": {
+        "bytes": 23001,
+        "sha256": "a776dad8db7223768bd7f579421b193910e99bcf74e994530a3c33ed7ac49024"
+      },
+      "raw_headers": {
+        "bytes": 5379,
+        "sha256": "e387494e2e38e48cc2e11171e3f6efe90a0cc6c16c44bbd78ded021ebcad40e5"
+      }
+    }
+  },
+  "previous_psec_startup": {
+    "worker_head": "843acba230f7362d4752c10269c34926489dd6cb",
+    "original_probe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+    "psec_comparison": {
+      "only_decoded_policy_difference": {
+        "disallow_win32k_system_calls": [
+          true,
+          false
+        ]
+      },
+      "policy_sha256": {
+        "A": "6e83a680554411ff625d94066d497d8e5b47cdba22da96787ddcb3da70966d61",
+        "B": "0a968fabc53144cdd5e2f238dbe5782aa63595065c542fb50c299db060d58bc4"
+      },
+      "arms": {
+        "A": {
+          "pid": 38228,
+          "readback_win32k_deny": true,
+          "status_hex": "0xC0000142",
+          "elapsed_ms": 31,
+          "output_equals_historical_ordinary": false,
+          "owned_job_member_before_resume": true,
+          "cleanup_root": {
+            "wait": "0",
+            "win32": "0"
+          },
+          "cleanup": {
+            "active": "0",
+            "confirmed": "1"
+          },
+          "status_decimal": 3221225794,
+          "listing_text_lf": ""
+        },
+        "B": {
+          "pid": 60456,
+          "readback_win32k_deny": false,
+          "status_hex": "0x00000000",
+          "elapsed_ms": 47,
+          "output_equals_historical_ordinary": true,
+          "owned_job_member_before_resume": true,
+          "cleanup_root": {
+            "wait": "0",
+            "win32": "0"
+          },
+          "cleanup": {
+            "active": "0",
+            "confirmed": "1"
+          },
+          "status_decimal": 0,
+          "listing_text_lf": "diagnose_native_process_tree_case: test\ndiagnose_thread_identity_host_network: test\nmissing_or_malformed_provision_cannot_fall_back_to_single_process: test\nnative_dns_control_uses_only_explicit_loopback_server: test\nprocess_tree_host_payload: test\nprocess_tree_payload: test\nprocess_tree_ui_observer: test\nrequired_native_process_tree_acceptance: test\n\n8 tests, 0 benchmarks\n"
+        }
+      },
+      "reference_test_count": 8,
+      "interpretation": "Only the not-for-release diagnostic arm with lockdown disabled produced the complete reference listing."
+    },
+    "original_process_trace": {
+      "pid": 145020,
+      "tid": 91860,
+      "image_load_events": 28,
+      "security_mitigation_event": 10,
+      "fatal_loader_event": 7,
+      "user_frames_leaf_to_loader": [
+        "win32u.dll!NtGdiInit2+0x14",
+        "gdi32full.dll!DllMain+0x35",
+        "gdi32full.dll!dllmain_dispatch+0x8e",
+        "gdi32full.dll!GdiDllInitialize+0x48",
+        "user32.dll!_UserClientDllInitialize+0x99d",
+        "ntdll.dll!LdrpCallInitRoutineInternal+0x22"
+      ],
+      "scope": "Windows blocked NtGdiInit2 during GDI initialization called by USER32!_UserClientDllInitialize in the original process. A loader-fatal event on the same initial thread and a process exit with STATUS_DLL_INIT_FAILED followed. No per-initializer return value was directly captured."
+    },
+    "imports": {
+      "normal_descriptors": 26,
+      "delay_descriptors": 0,
+      "ordinary_direct_user32_functions": 31,
+      "required_payload_operation": "The isolated payload reads its own desktop and window station names with GetUserObjectInformationW."
+    },
+    "stock_cargo_version_only": {
+      "normal": {
+        "wait": 0,
+        "exit": "0x0",
+        "ms": 31,
+        "output": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+        "cleanup": true,
+        "psec_win32k_readback": false,
+        "owned_job_before_resume": true
+      },
+      "strict_psec": {
+        "wait": 0,
+        "exit": "0xc0000142",
+        "ms": 31,
+        "output": "",
+        "cleanup": true,
+        "psec_win32k_readback": true,
+        "owned_job_before_resume": true
+      },
+      "offline_cargo_test_executed": false
+    },
+    "observed_at": "2026-11-18"
+  },
+  "ab_coverage_limits": {
+    "scoped_diagnostic_before_resume": true,
+    "ui_mask_requested": 1023,
+    "external_job_ui_mask_observed": 0,
+    "internal_ui_mask": "unknown",
+    "child_window_station_and_desktop": "unknown",
+    "lpac": "unknown, GetTokenInformation returned Win32 87",
+    "fresh_package_sid_each_arm": true,
+    "reference_listing_bytes": 375,
+    "reference_listing_sha256": "995320dafc6dc336b30e3852f30e09b0ffa8601ad4c23571b20baac6f2feacb7",
+    "stock_cargo_sha256": "c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9",
+    "listing_representation": "375 bytes of LF-normalized reference listing in the archived JSON, shared stdout/stderr pipe"
+  },
+  "fresh_host_dns": {
+    "utc_start": "2026-11-19T10:40:34.418392+00:00",
+    "worker_head": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+    "source_sha256": {
+      "tests/windows_process_tree.rs": "ba40413a67ef23cd1e0cb9dfe7383f87f02eb6f8417304feeb2b1d5c750abf08",
+      "tests/fixtures/windows_tree_dns.rs": "458163a207cbcc044a97518e73ca19ce79f0617bde523d973f98135c1363fd17",
+      "Cargo.lock": "9e4ade8442ee9233d028f0aed30f7068437359e74fe9c9dff51b3d0df4dfe013",
+      "scripts/validate-windows-process-tree.py": "f53d8573ca9125a4be5b96d1ceed89a403eafd942e022933bd386bf5e387a1d6"
+    },
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "windows_process_tree",
+      "--message-format=json",
+      "--",
+      "native_dns_control_uses_only_explicit_loopback_server",
+      "--exact",
+      "--nocapture"
+    ],
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.1\nLLVM version: 22.1.8",
+    "bridge": {
+      "mode": "linked_medium_bridge",
+      "launcher": {
+        "elevated": true,
+        "integrity_rid": 12288,
+        "appcontainer": false,
+        "token_type": 1
+      },
+      "execution": {
+        "elevated": false,
+        "integrity_rid": 8192,
+        "appcontainer": false,
+        "token_type": 1
+      },
+      "verified_before_resume": true,
+      "outer_job_cleanup": {
+        "active_before_cleanup": 1,
+        "active_after_cleanup": 0,
+        "confirmed": true,
+        "elapsed_ms": 0
+      },
+      "launch_error": null
+    },
+    "test_executable": {
+      "file": "windows_process_tree-3d8efc4e0b5f0ef7.exe",
+      "sha256": "d96c8f63bd2c6326ab6bd71064341ff215d52df41a57e484590d998dfc183d1b"
+    },
+    "exit": 0,
+    "utc_end": "2026-11-19T10:40:47.676817+00:00",
+    "test_output": [
+      "running 1 test",
+      "SYNTHETIC_DNS_HOST_CONTROL server=127.0.0.1:53 name=before-085b5112017b4f79ac9abedb3e760bbe.ww-tree.test. arrivals=1",
+      "SYNTHETIC_DNS_HOST_CONTROL server=127.0.0.1:53 name=after-085b5112017b4f79ac9abedb3e760bbe.ww-tree.test. arrivals=1",
+      "NATIVE_DNS_SYNTHETIC_HOST_CONTROL_OK",
+      "test native_dns_control_uses_only_explicit_loopback_server ... ok",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.09s"
+    ],
+    "raw_log_sha256": "ba5b58a7a529f084087324b5963b7df5226ea3fd71efd787163ca24c5c7966e8",
+    "arrivals": {
+      "before": 1,
+      "after": 1
+    },
+    "scope": "Host controls only. No sandbox payload was launched."
+  },
+  "fresh_job": {
+    "source_commit": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+    "classifier_worktree_equals_head": true,
+    "changed_from_parent": "17\t1\tscripts/tests/windows_psec_budget.cpp",
+    "reviewed_source_sha256": "21b105812a740a22c40e0ca20545fda60876ade755b80bdf9836a46df015b96e",
+    "compiler": "MSVC 19.51.36248.0, linker 14.51.36248.0, /W4 /WX",
+    "fixture_desktop": "Native x64 PowerShell 5.1.26100.9818",
+    "commands_in_fixture": [
+      "PowerShell: .\\prepare.ps1",
+      "PowerShell: .\\build-encoder.ps1",
+      "PowerShell: cmd.exe /d /c .\\compile.cmd",
+      "PowerShell: python.exe .\\medium-controls.py strict",
+      "PowerShell: python.exe .\\medium-controls.py ordinary"
+    ],
+    "source_and_binary_sha256": {
+      "source/positive.cpp": "c072bfe4c59b5ab93fe4679325be163750cc9ea4fb03094548299e2d1bbe516c",
+      "source/reviewed.cpp": "21b105812a740a22c40e0ca20545fda60876ade755b80bdf9836a46df015b96e",
+      "source/reviewed-prefix.inc": "13d0add539904b2af87e96b14e38edccf22d37b6dcf5b362e5180e32b64eb277",
+      "source/encoder/src/main.rs": "bbcde173a4d83b8d6776c5d06fb8a8008a036f39b07e16d1e20bcbc6f78a9c34",
+      "runtime/positive.exe": "f6c024748c572a21b435f233bd5b2d2c1e494e563302123382780c34dc7a3d2c",
+      "encoder-target/debug/werkworker-psec-policy-encoder.exe": "4b454e2afba530dd8e90e5f09282dddaabec83632dcab391c33308ed21391163",
+      "receipts/ww-positive-eed7191e8ead445db725c9aac9ff1dca/positive-spec.bin": "745262f52fbaa3801bf890b83821a2c6f16744a05b279a22c695f72b25a9361e"
+    },
+    "launcher_verification": [
+      {
+        "case": "ordinary",
+        "verified_before_resume": true,
+        "same_user": true,
+        "execution_integrity": 8192,
+        "execution_elevated": false,
+        "launcher_elevated": true,
+        "exit_code": 0,
+        "utc_start": "2026-11-19T10:42:17.024004+00:00",
+        "utc_end": "2026-11-19T10:42:19.082068+00:00",
+        "receipt": "receipts\\medium-ordinary\\launch.json"
+      },
+      {
+        "case": "strict",
+        "verified_before_resume": true,
+        "same_user": true,
+        "execution_integrity": 8192,
+        "execution_elevated": false,
+        "launcher_elevated": true,
+        "exit_code": 0,
+        "utc_start": "2026-11-19T10:42:06.291175+00:00",
+        "utc_end": "2026-11-19T10:42:08.849689+00:00",
+        "receipt": "receipts\\medium-strict\\launch.json"
+      }
+    ],
+    "ordinary": {
+      "classification": "within_limit_observed",
+      "scope": "Two peer processes explicitly assigned before resume. Pinned native process handles passed directly to the unchanged reviewed predicate.",
+      "flags_readback": "0x220c",
+      "active_limit": 2,
+      "retained_live_active_limit": [
+        [
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          2,
+          2,
+          2,
+          2
+        ],
+        [
+          2,
+          1,
+          1,
+          2
+        ],
+        [
+          2,
+          0,
+          0,
+          2
+        ]
+      ],
+      "children": {
+        "154628": "normal exit 0",
+        "148016": "Job cancellation exit 91"
+      },
+      "both_handles_signaled": true,
+      "active_after_cleanup": 0,
+      "raw_sha256": "d4600d1ed9b5a800860fdd3802ecabf6769abdd38aee10517a83f70004ceebdf",
+      "transcript": "job-ordinary-86b9694.log"
+    },
+    "strict": {
+      "classification": "within_limit_observed",
+      "scope": "Original detached single-root control. Unchanged start, observe, token, payload and cleanup routines; explicit assignment while suspended.",
+      "policy": "PSEC 1.1, Win32k denied, UI 0x3ff, network defaults and host loopback deny, terminate on close",
+      "win32k_denial_verified_by_fixed_payload_before_ready": true,
+      "flags_readback": "0x220c",
+      "root_pid": 79680,
+      "creation_flag": "DETACHED_PROCESS (0x8) in addition to suspended extended-startup creation",
+      "root_explicitly_assigned_and_verified_before_resume": true,
+      "job_handle_inherited": false,
+      "readiness": true,
+      "retained_live_active_limit": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "exit": 0,
+      "process_signaled": true,
+      "active_after_cleanup": 0,
+      "raw_sha256": "ff683a24284bd8bcb89edfed2962d09f29b52a24ba1c6fadabe988f1095b8074",
+      "transcript": "job-strict-86b9694.log"
+    },
+    "failed_startup_cleanup": [
+      {
+        "source": "receipts/ww-positive-37175ea6aa3f4e9195f5492b6796f5cf/run.log",
+        "sha256": "cad6cd622affaedf554dcff7e6dadbc8e938d9eef26889d478938f529f6eb3a7",
+        "lines": [
+          "PSEC_STARTUP pid=89440 wait=0 code=0x00000002 captured_bytes=254",
+          "ASSERTION_FAILED condition=ExpectedUnprivilegedContainer",
+          "POSITIVE_INCOMPLETE operation=ExpectedUnprivilegedContainer",
+          "CLEANUP_ROOT wait=0 win32=0",
+          "CLEANUP active=0 confirmed=1"
+        ]
+      }
+    ],
+    "other_setup_attempts": [
+      "Sandbox account strict PSEC creation returned 0x80070002, no root created (receipts/positive-psec.log).",
+      "Direct execution under the approved account created a suspended Job member; the unprivileged-token assertion stopped the single-root payload before READY. The instrumented same-volume run recorded AppContainer=1 elevated=1, exit=2 and cleanup confirmed (receipts/ww-positive-37175ea6aa3f4e9195f5492b6796f5cf/run.log)."
+    ],
+    "exact_console_cases_and_atomic_assignment": "Not run by this fixed-control driver. No current-head verdict.",
+    "runtime_api_support_verification": {
+      "current_single_root": "CreateProcessSecurityEnvironment succeeded and the suspended root was a Job member before resume. Win32k deny was checked by the fixed payload before READY.",
+      "version_and_features": "PSEC 1.1, flags 0xF including PSE_SUPPORT_FS_DENY as measured in retained provider query. No fresh flags query in the fixed single-root control."
+    },
+    "raw_recording_note": "Git-visible transcripts normalize the encoding and line endings and redact the private path and package SID. raw_sha256 covers the original bytes.",
+    "tools_sha256": {
+      "cl.exe": "dc8426b8760d92cf757df3d10b9f0244a95b454ff43194a58161568a0ec70d53",
+      "link.exe": "e8c524347b8bc87fba790d254c8a3b902bf1a4b63807093b816d992940af3791",
+      "validate-windows-process-tree.py": "f53d8573ca9125a4be5b96d1ceed89a403eafd942e022933bd386bf5e387a1d6",
+      "cargo.exe": "c37545ec61d48d31bdefce53280ecab61c4ea54eaace372fac6a0316c6e165d9",
+      "rustc.exe": "ca9988af88b1463f6857fdfe909299fee50a63260b3e5f7dbcb5b4d3318b27bc",
+      "python.exe": "32ce1d2650ea8b9d394f5b8f94677d27888dccdc3713365bf903a8c465c9d776",
+      "powershell.exe": "d8f182560210d43baaf767d482ad1dc1207372522e91413b9d5e515a875e552d",
+      "processmodel.dll": "ed703d26d7f3c124d11291220744be460d2574ddc163ad5b74ee2a3367fda462"
+    }
+  },
+  "fresh_receipt_cleanup": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--lib",
+      "--no-default-features",
+      "runtime::windows_provision::tests::crash_receipt_survives_owner_drop_and_requires_confirmed_cleanup",
+      "--",
+      "--exact",
+      "--test-threads=1"
+    ],
+    "exit": 0,
+    "verified": [
+      "a concurrently attempted second receipt returns cleanup_required",
+      "a confirmed receipt is removed",
+      "dropping the owner leaves a receipt which rejects a new invocation with cleanup_required"
+    ],
+    "harness_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.01s",
+    "scope": "Native host library unit on a disposable filesystem fixture. No sandbox payload, process tree, installed CLI, privileged provisioning, or real host death is exercised.",
+    "calling_shell_integrity_rid": 8192,
+    "test_token": "not separately inspected",
+    "binary": {
+      "path": "cargo/debug/deps/werk_worker-cbb21ff94fea54bf.exe",
+      "sha256": "123c18c63daaae275182fdea7a6cd442be45aba8685f58e7ac6a716835f16395"
+    },
+    "log": {
+      "path": "cargo-test.log",
+      "sha256": "0814abd57b8f32330ac606b57137e4ee8c0350ab97e62c372e5bfdab431456d0"
+    },
+    "full_receipt_sha256": "6a0180e926a8611ff7c38aa194d5b6adacaf21564e589c1b461e5af3ab3ab1a3"
+  },
+  "qualification": {
+    "hard_process_limit_console_cases": "Not established at the reviewed head for either required console case. November 14 recorded three live members including conhost at limit two in both recorded console-child arms.",
+    "persistent_writes": "Authorized file and private-hive operations observed previously. Broad direct and inherited discretionary grants were measured in memory. No general enforcement proof or live verdict for protected host files/keys at this head.",
+    "network": "Two fresh host controls. No three-generation receiver measurement for a strict sandbox, nor a full direct/mediated IPv4/IPv6 TCP/UDP matrix.",
+    "process_authority": "Inherited handles, service-mediated authority, descendants, transfer/impersonation and the private USER-object boundary remain unqualified.",
+    "lifecycle": "Bounded controls and receipt unit covered here. Full tree signaling, abrupt broker/host death and lease-release ordering for the installed tree remain open.",
+    "admission": "Existing product guard unconditionally refuses. No supported bounded candidate-admission transition identified.",
+    "installed_local": "Package qualification not repeated while hard prerequisites fail. No current installed process.run Cargo exit, test output or artifact.",
+    "historical_111dd_restoration": "unconfirmed",
+    "protocol_and_providers": "No changes in either implementation. No renewed two-executable JSON/SSE inference, cancellation, or provider-routing acceptance at these heads."
+  },
+  "remote_ci": {
+    "as_of": "2026-11-19 10:38:43 UTC",
+    "jobs": [
+      {
+        "repository": "philipbodenbach/werkWorker",
+        "branch": "feat/windows-child-process",
+        "head": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+        "pr_merge": "989dfc3828bd8dd77d1464c683ec9a292959cebf",
+        "pr_merge_tree_matches_head": true,
+        "jobs": [
+          {
+            "name": "native (windows-2022, windows, x86_64-pc-windows-msvc, windows-x86_64.zip)",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/job/135480958175",
+            "checkout_sha": "989dfc3828bd8dd77d1464c683ec9a292959cebf",
+            "completed_at": "2026-11-19T10:02:32Z"
+          },
+          {
+            "name": "linux-real-sandbox",
+            "conclusion": "failure",
+            "url": "https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/job/135480958446",
+            "checkout_sha": "989dfc3828bd8dd77d1464c683ec9a292959cebf",
+            "completed_at": "2026-11-19T10:03:46Z"
+          },
+          {
+            "name": "windows-process-tree",
+            "conclusion": "failure",
+            "url": "https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/job/135480958464",
+            "checkout_sha": "989dfc3828bd8dd77d1464c683ec9a292959cebf",
+            "completed_at": "2026-11-19T10:12:28Z"
+          },
+          {
+            "name": "native (macos-14, macos, aarch64-apple-darwin, macos-aarch64.tar.gz)",
+            "conclusion": "failure",
+            "url": "https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/job/135480958553",
+            "checkout_sha": "989dfc3828bd8dd77d1464c683ec9a292959cebf",
+            "completed_at": "2026-11-19T10:01:12Z"
+          }
+        ]
+      },
+      {
+        "repository": "philipbodenbach/werk1112",
+        "branch": "feat/expand-werkProtocol",
+        "head": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+        "pr_merge": "355dd8a8a32644ee74adbed6b892796c6f9b2df0",
+        "pr_merge_tree_matches_head": true,
+        "jobs": [
+          {
+            "name": "conditional-parser",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348426936/job/134957095051",
+            "checkout_sha": "355dd8a8a32644ee74adbed6b892796c6f9b2df0",
+            "completed_at": "2026-11-18T16:34:43Z"
+          },
+          {
+            "name": "drift",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348426936/job/134957095726",
+            "checkout_sha": "355dd8a8a32644ee74adbed6b892796c6f9b2df0",
+            "completed_at": "2026-11-18T16:34:51Z"
+          },
+          {
+            "name": "test (macos-latest)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348426938/job/134957094554",
+            "completed_at": "2026-11-18T16:47:36Z"
+          },
+          {
+            "name": "test (windows-latest)",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348426938/job/134957095405",
+            "checkout_sha": "355dd8a8a32644ee74adbed6b892796c6f9b2df0",
+            "completed_at": "2026-11-18T16:39:46Z"
+          },
+          {
+            "name": "test (ubuntu-latest)",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348426938/job/134957095446",
+            "checkout_sha": "355dd8a8a32644ee74adbed6b892796c6f9b2df0",
+            "completed_at": "2026-11-18T16:35:54Z"
+          },
+          {
+            "name": "test (windows-latest)",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348407498/job/134957027521",
+            "checkout_sha": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+            "completed_at": "2026-11-18T16:37:55Z"
+          },
+          {
+            "name": "test (macos-latest)",
+            "conclusion": "cancelled",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348407498/job/134957027853",
+            "completed_at": "2026-11-18T16:47:30Z"
+          },
+          {
+            "name": "test (ubuntu-latest)",
+            "conclusion": "success",
+            "url": "https://github.com/philipbodenbach/werk1112/actions/runs/44348407498/job/134957028058",
+            "checkout_sha": "8618ee4e04caa95db3729fd7739f7d0396dccc3a",
+            "completed_at": "2026-11-18T16:35:55Z"
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "worker_default_windows": "passed",
+      "worker_windows_process_tree": "qualification_blocked_at_host_launch",
+      "werk1112_windows_pull_request": "passed",
+      "werk1112_windows_push": "passed",
+      "werk1112_macos": "hosted runner not acquired on either observability run"
+    },
+    "worker_acceptance_artifact": {
+      "created_at": "2026-11-19T10:12:24Z",
+      "digest": "sha256:3ae829cb61a55db753261bc8ef22587b2a027d03b24f29359c90c9bcd52b71e9",
+      "expired": false,
+      "id": 14517997709,
+      "name": "windows-process-tree-results",
+      "size_in_bytes": 18624263,
+      "url": "https://github.com/philipbodenbach/werkWorker/actions/runs/44501148850/artifacts/14517997709",
+      "download_sha256": "3ae829cb61a55db753261bc8ef22587b2a027d03b24f29359c90c9bcd52b71e9",
+      "download_matches_api_digest": true,
+      "package": {
+        "name": "werkWorker-v0.3.3-windows-x86_64.zip",
+        "calculated_sha256": "af7a7178c04de96878731b484c7a864e1035059073a410c4ab853c55af14bc6d",
+        "checksum_file": "af7a7178c04de96878731b484c7a864e1035059073a410c4ab853c55af14bc6d  werkWorker-v0.3.3-windows-x86_64.zip",
+        "digest_matches_qualification": true,
+        "digest_matches_sidecar": true
+      },
+      "result_records": {
+        "qualification-result.json": {
+          "sha256": "97d439ae5fe7d0130ca5fc2dd3d081388459591b0c8cca17132d208ba4a68526",
+          "archive_sha256": "af7a7178c04de96878731b484c7a864e1035059073a410c4ab853c55af14bc6d",
+          "suite_setup_exit": 0,
+          "mandatory_suite_exit": 1,
+          "installed_setup_exit": 0,
+          "installed_start_exit": 1,
+          "qualified": false
+        },
+        "suite/mandatory-suite-result.json": {
+          "sha256": "f4dd591fa9f9d6571b4741159e0339f94065136a6826568bfc27dcb1a86ecee5",
+          "exit_code": 125,
+          "qualification_suite": true,
+          "witness_connections": 0,
+          "passed": false,
+          "native_host_token_mode": "launch_refused",
+          "launch_failure": "Administrative shell lacked a usable linked Medium-integrity token.",
+          "log_sha256_verified": true,
+          "log_sha256": "d15a3d9564d2562ffe338ea7177052a79dfc5aef6ae7b2cf59eee23b6423eb34",
+          "missing_acceptance_evidence_count": 20
+        },
+        "installation/smoke-result.json": {
+          "sha256": "343bc442747d734a97844d73f7c621c1910863d1307602fec0875206b3ed44c3"
+        },
+        "installed-start/installed-start-result.json": {
+          "sha256": "323a98aebaa42991090c8ecda6b770a06d992e98a7c25d38b2646618d08331bf",
+          "exit_code": 125,
+          "qualified_invocation_count": 0,
+          "passed": false,
+          "native_host_token_mode": "launch_refused",
+          "launch_failure": "Administrative shell lacked a usable linked Medium-integrity token.",
+          "log_sha256_verified": true,
+          "log_sha256": "d15a3d9564d2562ffe338ea7177052a79dfc5aef6ae7b2cf59eee23b6423eb34",
+          "binary_sha256": "b2f1c026e7706bbc8b13a634a96942311e6b0554e8cef3bfc6a62a5eddb0430f",
+          "manifest_sha256": "e7fb325d4dbfe113aaddc0bc1d84d96d90bf21a2e9563dbe20cf8cfac0414317",
+          "invocation_count": 0
+        }
+      }
+    },
+    "receipt_sha256": "a1d862ed707f90c55901ec32f45b46768d44c2b229916d37e55326572ec85dee"
+  },
+  "raw_local_directories": {
+    "worker": "target/pr24-native-audit-86b9694-20261119",
+    "job_in_backend_checkout": "target/affirmative-job-census-20261119T103502Z-00a68eb6",
+    "receipt_unit_in_backend_checkout": "target/pr24-receipt-86b9694",
+    "ci": "target/ci-pr24-86b9694-pr49-8618ee4-20261119"
+  },
+  "fresh_single_process_host_death": {
+    "observed_utc": "2026-11-19T10:46:34.910779+00:00",
+    "worker_head": "86b96946201592bcc5f9f1ba00c288f29ad8894c",
+    "build_command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--no-default-features",
+      "--test",
+      "windows_sandbox",
+      "--no-run"
+    ],
+    "build_profile": {
+      "CARGO_TARGET_DIR": "F:\\WIndowsBuilderWerk\\werk1112\\target\\pr24-receipt-86b9694\\cargo",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "build_log_sha256": "809c3ea63534a6f914a5161e491423f061a62d4d4dcdd91097b3fe11a8c8c29b",
+    "binary_sha256": "0b562f39919de4a24b741ad7bf5e402db211faae428bef6e15da65d2d6d3b86e",
+    "test_source_sha256": "3130b9a99021ebe7e9daed253f3031f3550dfa1b99a86e3e9276593e44d761ca",
+    "acceptance_helper_sha256": "f53d8573ca9125a4be5b96d1ceed89a403eafd942e022933bd386bf5e387a1d6",
+    "cmd": [
+      "F:\\WIndowsBuilderWerk\\werk1112\\target\\pr24-receipt-86b9694\\cargo\\debug\\deps\\windows_sandbox-13947fd535ee9f09.exe",
+      "--exact",
+      "host_death_kills_the_job_and_existing_host_jobs_can_nest",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "cwd": "F:\\WIndowsBuilderWerk\\werk1112\\target\\pr24-host-death-86b9694",
+    "exit_code": 0,
+    "host": {
+      "mode": "linked_medium_bridge",
+      "elevated": false,
+      "integrity_rid": 8192,
+      "appcontainer": false,
+      "verified_before_resume": true,
+      "bridge_job": {
+        "kill_on_close": true,
+        "ui_restrictions": 0,
+        "resource_limit_flags": 0,
+        "membership_verified": true,
+        "cleanup": {
+          "active_before_cleanup": 1,
+          "active_after_cleanup": 0,
+          "confirmed": true,
+          "elapsed_ms": 0
+        }
+      },
+      "error": null
+    },
+    "harness_summary": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 2.12s"
+    ],
+    "passed": true,
+    "log_sha256": "55118d528c686f4932d1640706bceebe2a2f6a134977b9fb05317325d55f18ec",
+    "scope": "Default native single-process LPAC/Job Object. The nested control must reach its delayed write. The crash arm waits for the ready file, kills and waits for its own fixture host, waits 750 ms, and asserts absence of the delayed write. These assertions do not query every member or workspace recovery of a provisioned process tree.",
+    "reached_host_kill_and_wait_and_absence_assertion": true
+  }
+}

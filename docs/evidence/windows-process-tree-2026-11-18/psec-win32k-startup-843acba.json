@@ -1,0 +1,132 @@
+{
+  "decision": "NOT QUALIFIED",
+  "production_guard": "sandbox_unqualified",
+  "worker_head": "843acba230f7362d4752c10269c34926489dd6cb",
+  "mxc_commit": "51805f40beaf19631df63ae25d0c11876d05a4ce",
+  "os": "Windows 11 25H2 26200.9974 x64",
+  "original_probe_sha256": "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0",
+  "argv": [
+    "probe.exe",
+    "--list"
+  ],
+  "psec_comparison": {
+    "only_decoded_policy_difference": {
+      "disallow_win32k_system_calls": [
+        true,
+        false
+      ]
+    },
+    "policy_sha256": {
+      "A": "6e83a680554411ff625d94066d497d8e5b47cdba22da96787ddcb3da70966d61",
+      "B": "0a968fabc53144cdd5e2f238dbe5782aa63595065c542fb50c299db060d58bc4"
+    },
+    "arms": {
+      "A": {
+        "pid": 38228,
+        "readback_win32k_deny": true,
+        "status_hex": "0xC0000142",
+        "elapsed_ms": 31,
+        "output_equals_historical_ordinary": false,
+        "owned_job_member_before_resume": true,
+        "cleanup_root": {
+          "wait": "0",
+          "win32": "0"
+        },
+        "cleanup": {
+          "active": "0",
+          "confirmed": "1"
+        }
+      },
+      "B": {
+        "pid": 60456,
+        "readback_win32k_deny": false,
+        "status_hex": "0x00000000",
+        "elapsed_ms": 47,
+        "output_equals_historical_ordinary": true,
+        "owned_job_member_before_resume": true,
+        "cleanup_root": {
+          "wait": "0",
+          "win32": "0"
+        },
+        "cleanup": {
+          "active": "0",
+          "confirmed": "1"
+        }
+      }
+    },
+    "reference_test_count": 8,
+    "interpretation": "Only the not-for-release diagnostic arm with lockdown disabled produced the complete reference listing."
+  },
+  "original_process_trace": {
+    "pid": 145020,
+    "tid": 91860,
+    "image_load_events": 28,
+    "security_mitigation_event": 10,
+    "fatal_loader_event": 7,
+    "user_frames_leaf_to_loader": [
+      "win32u.dll!NtGdiInit2+0x14",
+      "gdi32full.dll!DllMain+0x35",
+      "gdi32full.dll!dllmain_dispatch+0x8e",
+      "gdi32full.dll!GdiDllInitialize+0x48",
+      "user32.dll!_UserClientDllInitialize+0x99d",
+      "ntdll.dll!LdrpCallInitRoutineInternal+0x22"
+    ],
+    "scope": "Windows blocked NtGdiInit2 during GDI initialization called by USER32!_UserClientDllInitialize in the original process. A loader-fatal event on the same initial thread and a process exit with STATUS_DLL_INIT_FAILED followed. No per-initializer return value was directly captured."
+  },
+  "imports": {
+    "normal_descriptors": 26,
+    "delay_descriptors": 0,
+    "ordinary_direct_user32_functions": 31,
+    "required_payload_operation": "The isolated payload reads its own desktop and window station names with GetUserObjectInformationW."
+  },
+  "stock_cargo_version_only": {
+    "normal": {
+      "wait": 0,
+      "exit": "0x0",
+      "ms": 31,
+      "output": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "cleanup": true,
+      "psec_win32k_readback": false,
+      "owned_job_before_resume": true
+    },
+    "strict_psec": {
+      "wait": 0,
+      "exit": "0xc0000142",
+      "ms": 31,
+      "output": "",
+      "cleanup": true,
+      "psec_win32k_readback": true,
+      "owned_job_before_resume": true
+    },
+    "offline_cargo_test_executed": false
+  },
+  "job_classifier": {
+    "tests": "Five synthetic live-handle and stale-accounting cases passed. Diagnostic compiled with MSVC /W4 /WX.",
+    "patch_sha256": "31ee1c005f7423da2fc6748a85351e72c942e17f761642325245e9d451495c13"
+  },
+  "independent_qualification_gates": {
+    "host_write_boundary": "Not exercised as live prohibited host writes. In-memory FILE_WRITE_DATA and KEY_SET_VALUE granted for broad direct/inherited descriptors; read-only controls denied. Actual boundary remains unresolved.",
+    "hard_process_cap": {
+      "historical_observation": "confirmed simultaneous excess for the two recorded November 14 console-child cases in the fixture-owned Job",
+      "november18_exact_candidate_console_bound": "unresolved",
+      "installed_gate": "not reached",
+      "additional_live_budget_tests": 0,
+      "qualification_credit": false
+    },
+    "installed_candidate_admission": "require_qualified_profile unconditionally returns sandbox_unqualified. Both runtime paths and the existing installed acceptance require admission. No supported bounded candidate admission transition was found.",
+    "fresh_installed_suite": false,
+    "historical_111dd_restoration": "unconfirmed"
+  },
+  "raw_evidence": {
+    "local_bundle": "target/win32k-evidence-843acba-mwmneg4d/PR24-USER32-Evidenz.zip",
+    "bundle_sha256": "21dd5ed2117fc2f8ab61038ad8a6d7788fecc7f283001ac5366c7d2f9aa830e2",
+    "checksums_in_bundle": {
+      "win32k-list-ab-20261118/run.log": "86e7549e8111a7917e3d91631ca192914f56f3c55ccc2b8f410f9096dee04910",
+      "win32k-list-ab-20261118/result.json": "383d17eff891e6b9c971bcdecabfcdb7bdf26a6971b183f902299e367d814731",
+      "loader-win32k-mwmn406g/image-evidence/events.json": "683892d869fc3b6635070597eeaf00420f9b88b9499b56b5d9ae33476d0e6532",
+      "loader-win32k-mwmn406g/image-evidence/matched-symbols.json": "a1505ab5c30caf0b1c274662650623c612fdb8f84ff0dfa2e6aa823c6ee6269b",
+      "stock-tool-mwmn6i0m/result.json": "5ad0927d3e845268d43e07320c0c6444c7f3e953820ec5b5ffa59e97c61322cf",
+      "win32k-job-classifier-ab49777c82/receipt.json": "baef03810dd9e1ffe492ae0dd26ac10e4c3a3917766e486401c4018e88866d7d"
+    }
+  }
+}

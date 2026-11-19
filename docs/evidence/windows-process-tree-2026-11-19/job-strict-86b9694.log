@@ -1,0 +1,15 @@
+PSEC_CREATE hresult=0x00000000 terminate_on_close=1 handle=1
+ROOT_CREATE pid=79680 flags=0x8 budget=1 success=1 error=0
+ROOT_JOB psec=1 atomic_assignment=0 query_success=1 member=1 suspended=1
+ROOT_CONTAINMENT atomic_job=0 member=1 suspended=1 stdio_handle_list=1 job_inherited=0
+PSEC_STARTUP pid=79680 wait=258 code=0x00000103 captured_bytes=153
+JOB configured=1 active=1 flags=0x220c
+OWNED_PROCESS pid=79680 member=1 access=0x101000 image=<test-temp>\runtime\positive.exe
+TOKEN pid=79680 appcontainer=1 elevated=0 package=<private-package-SID>
+JOB_CENSUS retained=1 live=1 active=1 limit=1
+PSEC_NORMAL_EXIT pid=79680 wait=0 exit_code=0
+CLEANUP_ROOT wait=0 win32=0
+CLEANUP active=0 confirmed=1
+TOKEN pid=79680 appcontainer=1 elevated=0 package=<private-package-SID>
+READY pid=79680
+POSITIVE_RESULT passed=1

@@ -429,6 +429,35 @@ impl Capture {
     }
 }
 
+fn payload_exit(process: HANDLE) -> Result<i32> {
+    match unsafe { WaitForSingleObject(process, 0) } {
+        WAIT_OBJECT_0 => {}
+        WAIT_TIMEOUT => {
+            return Err(WorkerError::new(
+                "sandbox_unavailable",
+                "The retained payload has not exited",
+            ));
+        }
+        _ => return Err(failure("Wait for retained payload")),
+    }
+    let mut code = 0;
+    if unsafe { GetExitCodeProcess(process, &mut code) } == 0 {
+        return Err(failure("Read retained payload exit code"));
+    }
+    Ok(code as i32)
+}
+
+fn confirmed_payload_exit(process: HANDLE, runner_exit: i32) -> Result<i32> {
+    let code = payload_exit(process)?;
+    if code != runner_exit {
+        return Err(WorkerError::new(
+            "sandbox_unavailable",
+            format!("Runner exit {runner_exit} disagrees with payload exit {code}"),
+        ));
+    }
+    Ok(code)
+}
+
 struct Tree {
     job: OwnedHandle,
     members: windows_tree_members::MemberTracker,
@@ -480,6 +509,12 @@ impl Tree {
     fn terminate(&self) {
         unsafe {
             TerminateJobObject(raw(&self.job), 1);
+            // A failed suspended handoff can precede confirmed Job membership.
+            // Reap the processes returned by our trusted launchers by handle.
+            TerminateProcess(raw(&self.process), 1);
+            for process in self.auxiliary.lock().unwrap().iter() {
+                TerminateProcess(raw(process), 1);
+            }
         }
     }
     fn restore_namespace(&self) -> Result<()> {
@@ -521,12 +556,6 @@ impl Drop for Tree {
         // Runs on the trusted supervisor thread, including unwind/startup error.
         // Unknown cleanup never releases the lease or cross-host invocation lock.
         self.terminate();
-        unsafe {
-            TerminateProcess(raw(&self.process), 1);
-            for process in self.auxiliary.lock().unwrap().iter() {
-                TerminateProcess(raw(process), 1);
-            }
-        }
         let started = Instant::now();
         while !self.drained() {
             if started.elapsed() > CLEANUP_REPORT_AFTER
@@ -1231,6 +1260,8 @@ fn supervise(
     let mut request_offset = 0;
     let mut ready_capture = Capture::new(8192);
     let mut stage = 0u8;
+    // Kept alive in tree.auxiliary throughout supervision and cleanup.
+    let mut resumed_payload = None;
     let mut input_offset = 0;
     let mut out = Capture::new(sandbox.limits.output_bytes);
     let mut err = Capture::new(sandbox.limits.output_bytes);
@@ -1254,6 +1285,9 @@ fn supervise(
                 stderr.drain(&mut err, &live, true)?;
             }
             if let Some(code) = tree.exited()? {
+                if let Some(process) = resumed_payload {
+                    return confirmed_payload_exit(process, code);
+                }
                 return Ok(code);
             }
             let output_connected = stdout.connect(tree.pid)?;
@@ -1362,7 +1396,7 @@ fn supervise(
                         (
                             1,
                             windows_tree_runner::Ready::Payload {
-                                version: 2,
+                                version: 3,
                                 token_handle,
                                 namespace_handle,
                                 pid,
@@ -1370,9 +1404,15 @@ fn supervise(
                                 thread_handle,
                             },
                         ) => {
+                            // GetProcessMitigationPolicy requires PROCESS_QUERY_INFORMATION.
+                            let query_access = if sandbox.limits.processes == 2 {
+                                PROCESS_QUERY_INFORMATION
+                            } else {
+                                PROCESS_QUERY_LIMITED_INFORMATION
+                            };
                             let process = pull(
                                 process_handle,
-                                SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                                SYNCHRONIZE | query_access | PROCESS_TERMINATE,
                             )?;
                             let process_raw = raw(&process);
                             tree.auxiliary.lock().unwrap().push(process);
@@ -1397,6 +1437,17 @@ fn supervise(
                             }
                             tree.members.register_known(process_raw)?;
                             verify_job_limits(raw(&tree.job), &sandbox)?;
+                            if sandbox.limits.processes == 2
+                                && !windows_tree_runner::child_processes_blocked(process_raw)
+                                    .map_err(|error| {
+                                        WorkerError::new("sandbox_unavailable", error.to_string())
+                                    })?
+                            {
+                                return Err(WorkerError::new(
+                                    "sandbox_unavailable",
+                                    "The retained payload can create a child at the full process budget",
+                                ));
+                            }
                             let payload_token = pull(token_handle, TOKEN_QUERY)?;
                             let directory = pull(namespace_handle, READ_CONTROL | WRITE_DAC)?;
                             let manifest = &tree._provision.manifest;
@@ -1410,6 +1461,10 @@ fn supervise(
                                 &manifest.writer_sid,
                                 raw(&payload_token),
                             )?).apply()?;
+                            if unsafe { ResumeThread(raw(&thread)) } != 1 {
+                                return Err(failure("Resume verified payload on host"));
+                            }
+                            resumed_payload = Some(process_raw);
                             stage = 2;
                         }
                         _ => {
@@ -1492,7 +1547,13 @@ fn supervise(
         ));
     }
     let output = ProcessOutput {
-        exit_code: Some(exit_code),
+        // Startup cancellation and timeout can precede the first payload
+        // instruction. No workload exit code exists in that case.
+        exit_code: if cancelled || timed_out {
+            resumed_payload.map(payload_exit).transpose()?
+        } else {
+            Some(exit_code)
+        },
         stdout: String::from_utf8_lossy(&out.bytes).into_owned(),
         stderr: String::from_utf8_lossy(&err.bytes).into_owned(),
         truncated: out.truncated || err.truncated,
@@ -1612,6 +1673,16 @@ impl Sandbox {
     /// Host-only observation of this process's owned Job; never exposed as a tool.
     #[doc(hidden)]
     pub fn windows_process_tree_snapshot(&self, workspace: &Workspace) -> Result<Value> {
+        Ok(self.pin_windows_process_tree(workspace)?.0)
+    }
+
+    /// Return non-inheritable query/synchronize handles in process_ids order.
+    /// Their object identities remain pinned after the Job membership check.
+    #[doc(hidden)]
+    pub fn pin_windows_process_tree(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<(Value, Vec<OwnedHandle>)> {
         require_qualified_profile()?;
         let tree = active_trees()
             .lock()
@@ -1669,11 +1740,12 @@ impl Sandbox {
             processes.push(*id as u32);
             pinned.push(handle);
         }
-        Ok(
+        Ok((
             json!({"active_processes":tree.active()?,"process_ids":processes,"membership_verified":true,"runner_pid":tree.pid,"desktop":tree.desktop_name.lock().unwrap().clone(),
             "limits":{"ui_restrictions":ui_restrictions(raw(&tree.job))?,"processes":info.BasicLimitInformation.ActiveProcessLimit,"memory_bytes":info.JobMemoryLimit,"cpu_seconds":info.BasicLimitInformation.PerJobUserTimeLimit/10_000_000,
             "kill_on_close":info.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0,"breakaway":info.BasicLimitInformation.LimitFlags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK|JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)!=0}}),
-        )
+            pinned,
+        ))
     }
 }
 
@@ -1726,4 +1798,51 @@ pub(super) async fn doctor(sandbox: &Sandbox) -> Result<Value> {
         ));
     }
     Ok(descriptor)
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+
+    #[test]
+    fn retained_query_handle_can_read_child_policy() {
+        let current = unsafe { GetCurrentProcess() };
+        let mut retained = null_mut();
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    current,
+                    current,
+                    current,
+                    &mut retained,
+                    PROCESS_QUERY_INFORMATION,
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        let retained = unsafe { own(retained).unwrap() };
+        assert_eq!(
+            windows_tree_runner::child_processes_blocked(raw(&retained)).unwrap(),
+            windows_tree_runner::child_processes_blocked(current).unwrap()
+        );
+    }
+
+    #[test]
+    fn require_signaled_payload_with_its_own_exit_code() {
+        assert!(confirmed_payload_exit(unsafe { GetCurrentProcess() }, 0).is_err());
+        let mut child = std::process::Command::new(system_directory().unwrap().join("cmd.exe"))
+            .args(["/d", "/c", "exit", "37"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(37));
+        assert!(confirmed_payload_exit(child.as_raw_handle(), 0).is_err());
+        assert_eq!(
+            confirmed_payload_exit(child.as_raw_handle(), 37).unwrap(),
+            37
+        );
+    }
 }

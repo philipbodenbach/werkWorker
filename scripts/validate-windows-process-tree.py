@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -615,6 +616,8 @@ class Witness:
         self.endpoint = "%s:%d" % self.server.getsockname()
         self.closed = threading.Event()
         self.connections = 0
+        self.control_nonce = os.urandom(16).hex()
+        self.controls = []
         self.thread = threading.Thread(target=self.serve, daemon=True)
         self.thread.start()
 
@@ -627,7 +630,27 @@ class Witness:
             except OSError:
                 return
             self.connections += 1
-            client.close()
+            with client:
+                client.settimeout(1)
+                try:
+                    with client.makefile("rb") as stream:
+                        line = stream.readline(64)
+                    for phase in ("before", "after", "finish"):
+                        if line == f"{phase}:{self.control_nonce}\n".encode("ascii"):
+                            self.controls.append(phase)
+                            client.sendall(b"1")
+                            break
+                except OSError:
+                    # Every accepted connection remains counted, even with no
+                    # data, a reset, or an incomplete control frame.
+                    pass
+
+    def finish(self):
+        # The host waits for an acknowledgement on the same accept loop after
+        # the suite exits. Connections already queued cannot disappear at close.
+        with socket.create_connection(self.server.getsockname(), timeout=5) as client:
+            client.sendall(f"finish:{self.control_nonce}\n".encode("ascii"))
+            return client.recv(1) == b"1"
 
     def close(self):
         self.closed.set()
@@ -645,6 +668,7 @@ def suite(args, environment):
             "WW_WINDOWS_PROCESS_TREE_PROVISION": str(args.manifest),
             "WW_WINDOWS_PROCESS_TREE_CARGO": str(args.manifest.parent / "toolchains/0/bin/cargo.exe"),
             "WW_WINDOWS_PROCESS_TREE_EXTERNAL_ENDPOINT": witness.endpoint,
+            "WW_WINDOWS_PROCESS_TREE_WITNESS_NONCE": witness.control_nonce,
         })
         command = ["cargo", "test", "--locked", "--offline", "--manifest-path",
                    str(args.source / "Cargo.toml"), "--target-dir", str(args.evidence / "suite-build"),
@@ -655,8 +679,13 @@ def suite(args, environment):
         command += ["--nocapture", "--test-threads=1"]
         label = "diagnostic-" + args.diagnostic if args.diagnostic else "mandatory-suite"
         result = execute(command, args.source, environment, args.evidence / (label + ".log"))
+        try:
+            result["witness_finished"] = witness.finish()
+        except OSError as error:
+            result.update(witness_finished=False, witness_error=str(error))
         result.update({"qualification_suite": not bool(args.diagnostic),
                        "external_witness": witness.endpoint,
+                       "witness_host_controls": list(witness.controls),
                        "witness_connections": witness.connections})
         required = [
             *("NATIVE_TREE_LIFECYCLE_OK " + case for case in
@@ -667,6 +696,8 @@ def suite(args, environment):
             "NATIVE_TREE_THREAD_IDENTITY_NETWORK_MATRIX_OK",
             "NATIVE_TREE_HOST_LOGON_SID_BOUNDARY_OK",
             "NATIVE_TREE_FILE_REGISTRY_NETWORK_IPC_HANDLES_OK",
+            "NATIVE_TREE_REGISTRY_HOST_READBACK [17, 17, 17]",
+            "test ordinary_registry_control_changes_only_the_named_generation ... ok",
             "NATIVE_TREE_INBOUND_LOOPBACK_OK", "NATIVE_TREE_RESOURCE_OK memory",
             "NATIVE_TREE_RESOURCE_OK cpu", "NATIVE_TREE_BOUNDED_OUTPUT_AND_DRAIN_OK",
             "NATIVE_TREE_OFFLINE_CARGO_OK", "NATIVE_TREE_CRASH_WORKSPACE_BARRIER_OK",
@@ -674,7 +705,11 @@ def suite(args, environment):
         ] if not args.diagnostic else ["NATIVE_TREE_DIAGNOSTIC_ONLY_PASSED " + args.diagnostic]
         output = Path(result["log"]).read_text(encoding="utf-8", errors="replace")
         result["missing_acceptance_evidence"] = [item for item in required if item not in output]
+        expected_controls = ["before", "after", "finish"] if args.diagnostic in (None, "boundaries") else ["finish"]
         result["passed"] = (result["exit_code"] == 0
+                            and result["witness_finished"]
+                            and result["witness_host_controls"] == expected_controls
+                            and result["witness_connections"] == len(expected_controls)
                             and not result["missing_acceptance_evidence"]
                             and "NOT RUN:" not in output)
         write_json(args.evidence / (label + "-result.json"), result)
@@ -739,13 +774,64 @@ def is_x64_test_executable(path):
         return True
 
 
+ORIGINAL_PROBE_SHA256 = "3741d2c99cb07ab5b07a450baa2d72f5bfce37826507d598f8bf29d48705caa0"
+ORIGINAL_PROBE_LIST = """diagnose_native_process_tree_case: test
+diagnose_thread_identity_host_network: test
+missing_or_malformed_provision_cannot_fall_back_to_single_process: test
+native_dns_control_uses_only_explicit_loopback_server: test
+process_tree_host_payload: test
+process_tree_payload: test
+process_tree_ui_observer: test
+required_native_process_tree_acceptance: test
+
+8 tests, 0 benchmarks"""
+
+
+def workload_verdict(calls, turn, completed, output_matches):
+    """Correlate the scripted request with one persisted, executed invocation."""
+    request = turn["deltas"][0]
+    requested_arguments = json.loads(request["arguments"])
+    matches = [item for item in calls if item["call"].get("id") == request["id"]]
+    if not matches:
+        return "NOT_RUN"
+    if len(matches) != 1 or matches[0]["call"].get("arguments") != requested_arguments:
+        return "FAIL"
+    item = matches[0]
+    tool_result = item.get("result")
+    data = tool_result.get("data") if isinstance(tool_result, dict) else None
+    if isinstance(data, dict) and data.get("executed") is False:
+        return "NOT_RUN"
+    if not completed(item) or not output_matches(data["stdout"]):
+        return "FAIL"
+    return "PASS"
+
+
 def installed_start(args, environment):
     if args.installed_bin is None:
         raise ValueError("--installed-bin is required for installed-start")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     import secrets
+    store = args.evidence / "installed-start.sqlite"
+    if store.exists():
+        raise ValueError("Installed acceptance requires a fresh session store")
+    original = args.rust_probe or args.source / "target/native-psec-list-9416c0b059e6/runtime/probe.exe"
+    if not original.is_file() or digest(original) != ORIGINAL_PROBE_SHA256:
+        write_json(args.evidence / "installed-start-result.json", {
+            "passed": False, "status": "NOT_RUN", "stage": "original_probe_input",
+            "path": str(original), "required_sha256": ORIGINAL_PROBE_SHA256,
+            "error": "Missing or different original Rust probe",
+        })
+        return 1
     crate = Path(manifest["workspace"]) / ("installed-offline-cargo-" + secrets.token_hex(8))
     crate.mkdir()  # Every attempt gets a new crate with no prior outputs.
+    probe = crate / "probe.exe"
+    with original.open("rb") as source, probe.open("xb") as target:
+        shutil.copyfileobj(source, target)
+    if digest(probe) != ORIGINAL_PROBE_SHA256:
+        raise ValueError("Staged probe differs from the required image")
+    # process.run verifies text inputs of at most 1 MiB. The host independently
+    # hashes the 31 MiB executable before and after the two tool invocations.
+    (crate / "probe.sha256").write_text(ORIGINAL_PROBE_SHA256 + "  probe.exe\n", encoding="ascii")
     (crate / "src").mkdir()
     (crate / ".cargo").mkdir()
     linker = Path(manifest["toolchain_roots"][1]) / "link.exe"
@@ -762,20 +848,25 @@ def installed_start(args, environment):
         'println!("INSTALLED_NATIVE_TREE_OK");\n}\n', encoding="utf-8")
     cargo = Path(manifest["toolchain_roots"][0]) / "bin/cargo.exe"
     script = args.evidence / "installed-start-script.json"
-    criteria = ["The provisioned offline Cargo test exits zero",
+    criteria = ["The original Rust probe lists all eight expected tests",
+                "The provisioned offline Cargo test exits zero",
                 "The native test prints INSTALLED_NATIVE_TREE_OK and creates its Windows artifact"]
     def plan(status):
         return tool_turn("task.plan", {"steps": [{
             "id": "installed-cargo", "description": "Verify the freshly installed native profile with offline Cargo",
             "status": status, "acceptance_criteria": criteria,
             "verification_method": "Run the native test through process.run with the selected installed profile"}]})
+    def process_turn(argv, paths, checks):
+        return tool_turn("process.run", {"argv": argv, "cwd": crate.name,
+                         "verification": {"kind": "behavior", "criteria": checks, "paths": paths}})
+    probe_turn = process_turn([str(probe), "--list"], [crate.name + "/probe.sha256"], criteria[:1])
+    cargo_turn = process_turn([str(cargo), "test", "--offline", "--", "--nocapture", "--test-threads=2"],
+                              [crate.name + "/Cargo.toml", crate.name + "/src/lib.rs"], criteria[1:])
     write_json(script, [plan("in_progress"),
+                        tool_turn("files.read", {"path": crate.name + "/probe.sha256"}),
                         tool_turn("files.read", {"path": crate.name + "/Cargo.toml"}),
                         tool_turn("files.read", {"path": crate.name + "/src/lib.rs"}),
-                        tool_turn("process.run", {"argv": [str(cargo), "test", "--offline", "--", "--nocapture", "--test-threads=2"],
-                                                 "cwd": crate.name,
-                                                 "verification": {"kind": "behavior", "criteria": criteria,
-                                                                  "paths": [crate.name + "/Cargo.toml", crate.name + "/src/lib.rs"]}}),
+                        probe_turn, cargo_turn,
                         plan("completed"),
                         {"deltas": [{"type": "text", "text": "Installed native probe finished."},
                                     {"type": "finish", "reason": "stop"}, {"type": "done"}], "error": None}])
@@ -788,7 +879,6 @@ def installed_start(args, environment):
     write_json(limits, {"timeout_ms": 120000, "output_bytes": 262144,
                         "memory_bytes": 4294967296, "cpu_seconds": 120,
                         "processes": 32, "browser_processes": 512})
-    store = args.evidence / "installed-start.sqlite"
     binary = args.installed_bin / "ww.exe"
     command = [str(binary), "--native-sandbox-config", str(native), "--workspace", manifest["workspace"],
                "--grants", str(grants), "--script", str(script), "--harness", "minimal",
@@ -829,22 +919,31 @@ def installed_start(args, environment):
                 and data.get("executed") is True
                 and type(data.get("exit_code")) is int and data["exit_code"] == 0
                 and isinstance(stdout, str)
-                and "INSTALLED_NATIVE_TREE_OK" in stdout.splitlines()
-                and "test installed_native_test ... ok" in stdout.splitlines()
-                and "test result: ok. 1 passed; 0 failed;" in stdout
                 and sandbox.get("backend") == "windows-account-job-tree"
                 and sandbox.get("account_sid") == manifest["user_sid"]
                 and sandbox.get("appcontainer_sid") == manifest["appcontainer_sid"]
                 and sandbox.get("appcontainer_capabilities") == []
                 and sandbox.get("writer_sid") == manifest["writer_sid"]
                 and sandbox.get("provisioning_sha256") == result["manifest_sha256"])
-    successful = [item for item in calls if successful_call(item)]
-    result["qualified_invocation_count"] = len(successful)
+    result["workloads"] = {
+        "original_rust_probe": workload_verdict(calls, probe_turn, successful_call,
+            lambda stdout: stdout.splitlines() == ORIGINAL_PROBE_LIST.splitlines()),
+        "offline_cargo": workload_verdict(calls, cargo_turn, successful_call, lambda stdout: (
+            "INSTALLED_NATIVE_TREE_OK" in stdout.splitlines()
+            and "test installed_native_test ... ok" in stdout.splitlines()
+            and "test result: ok. 1 passed; 0 failed;" in stdout)),
+    }
+    result["probe_input"] = {"path": str(original), "sha256": ORIGINAL_PROBE_SHA256,
+                             "staged_path": str(probe),
+                             "after_sha256": digest(probe) if probe.is_file() else None}
+    result["qualified_invocation_count"] = sum(status == "PASS" for status in result["workloads"].values())
     artifact = crate / "installed-profile-artifact.txt"
     executables = (crate / "target/debug/deps").glob("installed_offline_tree-*.exe")
     result["windows_artifacts"] = [{"path": str(path), "sha256": digest(path)}
                                    for path in executables if is_x64_test_executable(path)]
-    result["passed"] = (result["exit_code"] == 0 and "store_error" not in result and len(successful) == 1
+    result["passed"] = (result["exit_code"] == 0 and "store_error" not in result and len(calls) == 2
+                         and result["qualified_invocation_count"] == 2
+                         and result["probe_input"]["after_sha256"] == ORIGINAL_PROBE_SHA256
                          and artifact.is_file() and artifact.read_bytes() == b"INSTALLED_NATIVE_TREE_OK\n"
                          and len(result["windows_artifacts"]) == 1
                          and not (args.manifest.parent / "incomplete-run.json").exists())
@@ -998,12 +1097,70 @@ def preflight(arguments):
     return 0 if result["status"] == "READY" else 125
 
 
+def prepared_manifests(manifests, token, installed_runner):
+    """Check both inputs before either workspace is used by a workload."""
+    WindowsHostExecution.verify_medium(token, token)
+    runner_sha256 = digest(installed_runner)
+    result = []
+    storage = []
+    for path in manifests:
+        path = path.resolve(strict=True)
+        data = path.read_bytes()
+        manifest = json.loads(data)
+        if (manifest["host_sid"] != token["user_sid"]
+                or type(manifest["session_id"]) is not int
+                or manifest["session_id"] != token["session_id"]):
+            raise ValueError(f"Prepared host SID or Windows session mismatch: {path}")
+        workspace = Path(manifest["workspace"])
+        runner = Path(manifest["runner"])
+        if not workspace.is_absolute() or not runner.is_absolute():
+            raise ValueError(f"Prepared paths must be absolute: {path}")
+        workspace = workspace.resolve(strict=True)
+        if not workspace.is_dir() or any(workspace.iterdir()):
+            raise ValueError(f"Expected a fresh empty workspace: {workspace}")
+        if (path.name != "provisioning.json" or (path.parent / "incomplete-run.json").exists()
+                or not runner.samefile(path.parent / "ww-windows-runner.exe")
+                or digest(runner) != runner_sha256 or manifest["runner_sha256"] != runner_sha256):
+            raise ValueError(f"Prepared runtime incomplete or runner differs from package: {path}")
+        for location in (path.parent, workspace):
+            if any(other.is_relative_to(location) or location.is_relative_to(other)
+                   for other in storage):
+                raise ValueError(f"Provisioned runtimes and workspaces must be separate: {location}")
+            storage.append(location)
+        if any(item["user_sid"] == manifest["user_sid"] for item in result):
+            raise ValueError("Both preparations use the same sandbox account")
+        result.append({"manifest": str(path), "manifest_sha256": hashlib.sha256(data).hexdigest(),
+                       "runner_sha256": runner_sha256, "workspace": str(workspace),
+                       "user_sid": manifest["user_sid"]})
+    return result
+
+
+def check_prepared(arguments):
+    parser = argparse.ArgumentParser(description="Verify the separately prepared suite and installed runtimes")
+    parser.add_argument("--manifests", nargs=2, type=Path, required=True)
+    parser.add_argument("--installed-runner", type=Path, required=True)
+    parser.add_argument("--receipt", type=Path, required=True)
+    args = parser.parse_args(arguments)
+    result = {"status": "NOT_RUN"}
+    try:
+        token = WindowsHostExecution().current_token_metadata()
+        result["host_token"] = token
+        result["provisions"] = prepared_manifests(args.manifests, token, args.installed_runner)
+        result["status"] = "PASS"
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+        result.update(status="FAIL", error=str(error))
+    write_json(args.receipt, result)
+    return 0 if result["status"] == "PASS" else 1
+
+
 def main():
     import sys
     if sys.argv[1:] == ["--inspect-native-host"]:
         return inspect_native_host()
     if sys.argv[1:2] == ["preflight"]:
         return preflight(sys.argv[2:])
+    if sys.argv[1:2] == ["check-prepared"]:
+        return check_prepared(sys.argv[2:])
     if sys.argv[1:2] == ["--ordinary-command"]:
         return ordinary_command(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1012,6 +1169,7 @@ def main():
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--installed-bin", type=Path)
+    parser.add_argument("--rust-probe", type=Path, help="Original acceptance probe, verified by SHA-256")
     parser.add_argument("--bind-address", help="Explicit assigned non-loopback IPv4 address for the controlled witness")
     parser.add_argument("--diagnostic", choices=["boundaries", "inbound", "resources", "output", "cargo", "console", "ui", "dns", "network-token"])
     args = parser.parse_args()

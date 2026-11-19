@@ -151,7 +151,10 @@ bits were not applied or qualified by these tests. The runner then derives the r
 seals its own objects and creates the payload suspended with an explicit private
 station/desktop and exactly three inherited stdio handles. A second authenticated
 handoff lets the host retain the payload, verify its initial suspension and
-membership in the exact owned Job, and recheck effective limits before resume.
+membership in the exact owned Job, and recheck effective limits. In version 3 of
+this handoff the host resumes the verified main thread. The runner waits for
+the payload to exit. The host accepts a normal completion only when the retained
+payload handle is signaled and its own exit code matches the runner's.
 The trusted supervisor retains both USER resources and the workspace lease until
 the complete process-handle ledger matches the Job lifetime process count,
 every recorded process is signaled, the Job is empty and USER closure succeeds.
@@ -302,17 +305,13 @@ PowerShell, build and test from a native NTFS source checkout:
 
 ```powershell
 cargo build --locked --offline --target x86_64-pc-windows-msvc --bins
-$env:WW_WINDOWS_PROCESS_TREE_PROVISION = 'C:\werkWorker\coding-runtime\provisioning.json'
-$env:WW_WINDOWS_PROCESS_TREE_CARGO = 'C:\werkWorker\coding-runtime\toolchains\0\bin\cargo.exe'
-$env:WW_WINDOWS_PROCESS_TREE_EXTERNAL_ENDPOINT = '<controlled-reachable-nonloopback-ip>:<tcp-port>'
-$env:REQUIRE_WINDOWS_PROCESS_TREE = '1'
-cargo test --locked --offline --test windows_process_tree -- --nocapture --test-threads=1
+python scripts/validate-windows-process-tree.py suite --source . --manifest C:\werkWorker\coding-runtime\provisioning.json --evidence C:\werkWorker\fresh-suite-evidence --bind-address <assigned-nonloopback-ip>
 ```
 
-The external endpoint must be a listener you control and that the ordinary host
-can reach. The suite verifies that positive control before testing denial from
-the sandbox. It also creates its own local socket/IPC controls; it does not
-change host DNS configuration.
+The validator binds its TCP witness to the chosen local interface. The host
+sends distinct controls before and after the boundary case. Each must receive
+an acknowledgement. After the suite exits, the validator obtains a final
+acknowledgement and checks that the listener accepted exactly those connections.
 
 The delivered guard also makes the required process-tree gate fail until the
 backend is corrected and qualified. Previously recorded candidate runs use
@@ -333,6 +332,32 @@ require signaled handles without a cleanup grace period. Abrupt host termination
 is a separate case with a bounded observation deadline and a required persistent
 cleanup marker. See [the recorded validation status](windows-process-tree-validation.md)
 for completed checks and any outstanding qualification blocker.
+
+A separate preparation can be used when the administrator and acceptance host
+run in different processes. In the normal user's session, first run
+`scripts/test-windows-process-tree.ps1 -EvidenceRoot <new-dir> -PreflightOnly -RequirePsec`.
+Use the verified host SID from `preflight/preflight-result.json` for both setup
+requests. Have the administrator provision two fresh runtimes and empty
+workspaces using the setup contract above in the same Windows session. Use the
+runner from the candidate archive and an administrator-controlled copy of
+the provisioning executable and reviewed requests. Record the archive SHA-256.
+Then run this command in the ordinary user's x64 MSVC environment with the
+locked Cargo dependencies cached:
+
+```powershell
+./scripts/test-windows-process-tree.ps1 -EvidenceRoot $newEvidence -BindAddress $assignedIPv4 `
+    -Archive $candidateZip -ArchiveSha256 $reviewedDigest -RustProbe $originalProbe `
+    -SuiteManifest $suiteProvision -InstalledManifest $installedProvision
+```
+
+This mode installs the archive into a new directory. It verifies both
+manifests against the running Medium user's SID and session, matches the
+provisioned runners to the installed package, and checks that workspaces are
+empty and distinct before running the suite. Setup exit codes remain null
+because provisioning took place separately. The evidence includes the verified
+manifest and executable hashes. `GATES_PASSED` describes the two test commands
+for this combination of source checkout and archive. Technical qualification
+also requires evidence that both used the intended candidate executor and policy.
 
 The checked-in `scripts/test-windows-process-tree.ps1 -EvidenceRoot <new-dir>
 -BindAddress <assigned-nonloopback-ip>` automates package build, fresh install,

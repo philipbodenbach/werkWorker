@@ -416,7 +416,7 @@ impl Drop for Attributes {
         }
     }
 }
-fn child_processes_blocked(process: HANDLE) -> io::Result<bool> {
+pub(super) fn child_processes_blocked(process: HANDLE) -> io::Result<bool> {
     use windows_sys::Win32::System::SystemServices::PROCESS_MITIGATION_CHILD_PROCESS_POLICY;
     let mut policy = PROCESS_MITIGATION_CHILD_PROCESS_POLICY::default();
     if unsafe {
@@ -1166,7 +1166,7 @@ fn execute(
         reply,
         ack,
         &Ready::Payload {
-            version: 2,
+            version: 3,
             pid: info.dwProcessId,
             process_handle: raw(&payload.process) as usize as u64,
             thread_handle: raw(&payload.thread) as usize as u64,
@@ -1175,9 +1175,7 @@ fn execute(
         },
         2,
     )?;
-    if unsafe { ResumeThread(raw(&payload.thread)) } != 1 {
-        return Err(native_error("Resume verified native payload"));
-    }
+    // Version 3 acknowledgement means the host resumed this exact thread.
     drop(input);
     drop(output);
     if unsafe { WaitForSingleObject(raw(&payload.process), INFINITE) } != WAIT_OBJECT_0 {

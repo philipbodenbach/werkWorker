@@ -1,5 +1,36 @@
 # Native Windows PSEC evaluation for PR #24
 
+## Lokaler Prüfstand auf `ac5b28c`
+
+**WerkWorker ist weiterhin nicht qualifiziert. Beide zuvor blockierten Diagnoseaufrufe wurden ausgeführt.** Die administrative Provisionierung der privaten USER-Objekte gelang. Die vorgesehene Cargo-EXE scheiterte anschließend unter dem normalen Hostbenutzer auf den vorbereiteten Desktops in beiden Tokenarmen. Der zuvor abgelehnte native Test der Kindprozesssperre bestand. Für den lokalen Patch steht die installierte Produktabnahme weiterhin aus. Der Messhost war Windows 11 x64, Build 26200.9974, mit PSEC 1.1 und Medium-Benutzer in Sitzung 1. [Beleg der erneuten Prüfung](evidence/windows-process-tree-2026-11-19/execution-blockers-recheck-ac5b28c.json)
+
+| Dieselbe `cargo.exe --version`, Win32k erlaubt, Limit zwei mit einem belegten Platz | Kontrollarm | Arm mit privater Writer-SID |
+| --- | --- | --- |
+| Ursprünglicher PSEC-Eingang, Kontrollarm mit gewöhnlichem Primärtoken | Version 1.98.1, Exit 0 | `0xC0000142`, leere Ausgabe |
+| Frische private Workspace- und Temp-Verzeichnisse, individuelle Schreib-ACEs und Low-Label vor Resume zurückgelesen | Version 1.98.1, Exit 0 | `0xC0000142`, leere Ausgabe |
+| Beide Primärtoken vorab mit denselben Filterflags erzeugt, Kontrollarm ohne einschränkende SID | `0xC0000142` | `0xC0000142` |
+| Überzählige Privilegien erst am suspendierten PSEC-Root entfernt, Kontrollarm mit ursprünglichem Primärtoken | Version 1.98.1, Exit 0 | `0xC0000142`, leere Ausgabe |
+
+Im letzten Paar hatten beide Roots nur das erlaubte Traversierungsprivileg. Die Administratorgruppe war abwesend oder nur für die Verweigerung von Zugriffen verwendbar. Bei gleicher Bereinigung der Rootprivilegien schlug auch der Kontrollarm fehl, wenn er einen zuvor gefilterten Primärtoken mit leerer Liste einschränkender SIDs erhielt. Damit ist der Fehler auf diesem Startpfad eingegrenzt. Die fehlgeschlagene DLL-Initialisierung selbst ist nicht lokalisiert. Der historische Rust-Trace belegt deren Ursache für Cargo unter diesem Token nicht. Alle fortgesetzten Cargo-Roots dieser Vergleiche signalisierten, ihre Jobs wurden leer. [Maschinenlesbarer Laufbeleg mit Rohlog-Pfaden](evidence/windows-process-tree-2026-11-19/broker-work-ac5b28c.json)
+
+Im Erstversuch lieferte `CreateWindowStationW` im gewöhnlichen Hostprozess Win32 5, der anschließende UAC-Aufruf wurde abgebrochen. Bei der Wiederholung meldete der separate administrative Provisionierer `READY` und endete mit Exit 0. Der normale Hostprozess band für jeden suspendierten Cargo-Root eine eigene private Window Station und einen Desktop und prüfte die ACLs. Bei gleichen Tokenfilterflags, gemessenem Win32k-Bit 0 und Job-UI-Maske `0xff` endeten Kontrollarm und Writer-Arm jeweils mit `0xC0000142` und leerer Ausgabe. Beide Prozesshandles signalisierten, beide Jobs waren leer und alle vier privaten Arbeitsverzeichnisse wurden entfernt. Die private Platzierung behebt den Startfehler in diesem Vergleich nicht. Die betroffene DLL bleibt unbekannt. [Ergebnisse, Rohlogs und Reproduktion](evidence/windows-process-tree-2026-11-19/execution-blockers-recheck-ac5b28c.json)
+
+| Messung vor dem ersten Cargo-Befehl | Gewöhnliche Windows-Kontrolle | PSEC mit erlaubtem Win32k |
+| --- | --- | --- |
+| Kindprozesssperre als Startattribut, explizite Zuordnung zum äußeren Job | Kindprozessflags `0x1`, Mitglied | Kindprozessflags `0x0`, Mitglied |
+| Äußerer Job mit Limit zwei und zusätzlicher Job mit Limit eins als Startattribut | Mitglied beider Jobs | Mitglied keines der beiden Jobs |
+| Erst äußeren, dann inneren Job über das gehaltene Prozesshandle zuweisen, danach am äußeren Job die Produkt-UI-Maske setzen | Mitglied beider Jobs, innere Grenze eins, äußere Maske `0xff` | Mitglied beider Jobs, innere Grenze eins, äußere Maske `0xff` |
+
+Die explizite Zuordnung repariert die fehlende Mitgliedschaft am suspendierten Root. Die Jobs waren anschließend leer und alle Prozesshandles signalisiert. Die UI-Rücklesung betrifft das Jobobjekt. In diesen drei Messungen wurde kein Prozess fortgesetzt. Eine Aussage über die tatsächlichen Konsolenhosts, die UI der Nachkommen oder das belegte Budget im laufenden Baum erfordert die entsprechenden Laufzeitfälle. Die separaten Rohprotokolle, Hashes und Exitcodes sind im [lokalen Prüfbeleg](evidence/windows-process-tree-2026-11-19/broker-work-ac5b28c.json) verzeichnet. [Microsoft zu verschachtelten Jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs)
+
+Mit einem durch `CreateRestrictedToken` erzeugten primären Token und `CreateProcessAsUserW` las der normale Host am suspendierten Cargo-Prozess unter PSEC die private Writer-SID als einzige einschränkende SID zurück. Der Prozess hatte Low-Integrität und war ein AppContainer. Beim PSEC-Kontrolllauf ohne Writer war die Liste leer. Welche Hostdateien oder Registrierungsschlüssel sich tatsächlich schreiben lassen, war kein Gegenstand dieser Tokenmessung.
+
+Der Account-Broker übernimmt im Patch das erste Fortsetzen des geprüften Payloadthreads. Er gleicht den gemeldeten Exitcode mit dem signalisierten Roothandle ab. Der Paketvalidator korreliert die beiden getrennten `process.run`-Aufrufe für die Originalprobe und die Offline-Cargo-Arbeitslast mit ihren tatsächlichen Resultaten und dem erzeugten Windows-Artefakt. Der native Pflichtlauf verlangt außerdem drei vom Host zurückgelesene Registry-Marker und getrennte Workspace-Schreibbelege je Generation. Die unabhängigen Empfängerkontrollen und das Halten der beobachteten Prozesshandles sind Teil des Abnahmewegs. Die installierten Pflichtfälle sind für diesen Patch `NOT_RUN`.
+
+Erlaubtes Win32k hält die zugehörige Kernelangriffsfläche offen. Private Desktop- und Job-UI-Regeln begrenzen Zugriffe auf Benutzerobjekte. Für die technische Qualifikation und eine etwaige Veröffentlichung dieses Profils stehen getrennte Entscheidungen aus. [Microsoft zur Win32k-Mitigation](https://learn.microsoft.com/en-us/defender-endpoint/exploit-protection-reference#disable-win32k-system-calls)
+
+Der im ersten Versuch abgelehnte Test `native_saturated_payload_child_policy` lief bei der Wiederholung unverändert durch. Cargo meldete einen bestandenen Test und Exit 0. Der Test startet pro Job genau ein abgetrenntes `cmd.exe /d /c exit 23`, liest die effektive Kindprozesssperre bei konfiguriertem Limit zwei und acht und prüft jeweils Jobmitgliedschaft, Exit 23 und einen leeren Job. Die ursprünglichen Pflichtfälle `AllocConsole` und Konsolen-Kindstart bei ausgeschöpftem Budget einschließlich `conhost.exe` bleiben `NOT_RUN`. [Testbeleg](evidence/windows-process-tree-2026-11-19/execution-blockers-recheck-ac5b28c.json)
+
 ## Entwicklungskandidat bei `db629ba`
 
 **Nicht qualifiziert.** Der feste PSEC-Start mit erlaubtem Win32k ist für die vorgesehene Cargo-Version kompatibel. Ein zweiter Versuch korrigiert die Platzierung einer festen Probe auf dem privaten Desktop. Beides sind direkte Windows-Diagnoseläufe. Die installierte CLI verwendet weiterhin den gesperrten Account-/Job-Pfad. [Entscheidung, Prüfmatrix und Reproduktionsdateien](evidence/windows-process-tree-2026-11-19/candidate-assessment-db629ba.json)

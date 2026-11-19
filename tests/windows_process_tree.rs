@@ -69,7 +69,54 @@ fn registry_open(root: HKEY, path: &str, access: REG_SAM_FLAGS) -> bool {
     status == ERROR_SUCCESS
 }
 struct RegistryFixture(String);
+fn registry_update_refused(status: WIN32_ERROR) -> bool {
+    matches!(
+        status,
+        ERROR_ACCESS_DENIED | ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND
+    )
+}
 impl RegistryFixture {
+    fn set_marker(root: HKEY, path: &str, generation: usize, value: u8) -> WIN32_ERROR {
+        let (_, suffix) = path.rsplit_once("Software\\WerkWorkerTreeTest-").unwrap();
+        assert!(uuid::Uuid::parse_str(suffix).is_ok() && generation < 3);
+        let mut key = std::ptr::null_mut();
+        let opened =
+            unsafe { RegOpenKeyExW(root, wide(path).as_ptr(), 0, KEY_SET_VALUE, &mut key) };
+        if opened != ERROR_SUCCESS {
+            return opened;
+        }
+        let status = unsafe {
+            RegSetValueExW(
+                key,
+                wide(&format!("generation-{generation}")).as_ptr(),
+                0,
+                REG_BINARY,
+                &value,
+                1,
+            )
+        };
+        assert_eq!(unsafe { RegCloseKey(key) }, ERROR_SUCCESS);
+        status
+    }
+
+    fn read_marker(&self, generation: usize) -> u8 {
+        let mut value = 0u8;
+        let mut size = 1;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                wide(&self.0).as_ptr(),
+                wide(&format!("generation-{generation}")).as_ptr(),
+                RRF_RT_REG_BINARY,
+                std::ptr::null_mut(),
+                (&mut value as *mut u8).cast(),
+                &mut size,
+            )
+        };
+        assert_eq!((status, size), (ERROR_SUCCESS, 1));
+        value
+    }
+
     fn new() -> Self {
         let path = format!("Software\\WerkWorkerTreeTest-{}", uuid::Uuid::new_v4());
         let mut key = std::ptr::null_mut();
@@ -106,6 +153,29 @@ impl Drop for RegistryFixture {
             }
         }
     }
+}
+
+#[test]
+fn ordinary_registry_control_changes_only_the_named_generation() {
+    let fixture = RegistryFixture::new();
+    for generation in 0..3 {
+        assert_eq!(
+            RegistryFixture::set_marker(HKEY_CURRENT_USER, &fixture.0, generation, 17),
+            ERROR_SUCCESS
+        );
+    }
+    assert_eq!(
+        RegistryFixture::set_marker(HKEY_CURRENT_USER, &fixture.0, 1, 93),
+        ERROR_SUCCESS
+    );
+    assert_eq!(
+        (
+            fixture.read_marker(0),
+            fixture.read_marker(1),
+            fixture.read_marker(2)
+        ),
+        (17, 93, 17)
+    );
 }
 
 fn payload_args() -> [&'static str; 4] {
@@ -383,14 +453,15 @@ impl Fixture {
         expected: std::ops::RangeInclusive<usize>,
         check_generation_receipts: bool,
     ) -> Pinned {
-        let snapshot = self
+        let (snapshot, members) = self
             .sandbox
-            .windows_process_tree_snapshot(&self.workspace)
+            .pin_windows_process_tree(&self.workspace)
             .unwrap();
         let ids: Vec<u32> = serde_json::from_value(snapshot["process_ids"].clone()).unwrap();
         let mut pinned = Pinned(Vec::with_capacity(ids.len()));
         let mut observations = Vec::with_capacity(ids.len());
-        for pid in &ids {
+        assert_eq!(members.len(), ids.len());
+        for (pid, member) in ids.iter().zip(&members) {
             let handle = unsafe {
                 OpenProcess(
                     PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
@@ -403,9 +474,20 @@ impl Fixture {
                 observations.push(json!({"pid":pid,"open_error":error}));
                 continue;
             }
-            pinned
-                .0
-                .push(unsafe { OwnedHandle::from_raw_handle(handle) });
+            let owned = unsafe { OwnedHandle::from_raw_handle(handle) };
+            // Only a handle to the exact previously verified member may be
+            // retained for test cleanup, even when a PID races with exit.
+            assert_ne!(
+                unsafe { CompareObjectHandles(handle, member.as_raw_handle()) },
+                0
+            );
+            pinned.0.push(owned);
+        }
+        // All members are pinned before the first wait. A process still alive
+        // when checked was therefore also alive at the beginning of this pass.
+        for member in &pinned.0 {
+            let handle = member.as_raw_handle();
+            let pid = unsafe { GetProcessId(handle) };
             let wait = unsafe { WaitForSingleObject(handle, 0) };
             let wait_error = (wait == WAIT_FAILED).then(|| unsafe { GetLastError() });
             let mut observed = json!({"pid":pid,"wait_timeout_ms":0,"wait_result":wait});
@@ -2493,6 +2575,19 @@ fn assert_payload_host_logon_boundary(plan: &Value, generation: usize) {
     write_json(format!("logon-boundary-{generation}.json"), observation);
 }
 
+fn confirm_external_witness(address: SocketAddr, phase: &str) {
+    let nonce = std::env::var("WW_WINDOWS_PROCESS_TREE_WITNESS_NONCE")
+        .expect("Use the native acceptance validator's controlled TCP receiver");
+    let timeout = Duration::from_secs(3);
+    let mut stream = TcpStream::connect_timeout(&address, timeout).unwrap();
+    stream.set_write_timeout(Some(timeout)).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    writeln!(stream, "{phase}:{nonce}").unwrap();
+    let mut ack = [0u8];
+    stream.read_exact(&mut ack).unwrap();
+    assert_eq!(ack, *b"1", "Missing external witness acknowledgement");
+}
+
 async fn boundary_checks(fixture: &Fixture) {
     use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
     let directory = fixture.case("boundaries");
@@ -2520,7 +2615,8 @@ async fn boundary_checks(fixture: &Fixture) {
     let external: SocketAddr = std::env::var("WW_WINDOWS_PROCESS_TREE_EXTERNAL_ENDPOINT").expect("Supply an explicitly controlled reachable non-loopback TCP endpoint for external-network qualification").parse().unwrap();
     assert!(!external.ip().is_loopback() && !external.ip().is_unspecified());
     let endpoints = [v4.local_addr().unwrap(), v6.local_addr().unwrap(), external];
-    for endpoint in endpoints {
+    confirm_external_witness(external, "before");
+    for endpoint in [v4.local_addr().unwrap(), v6.local_addr().unwrap()] {
         TcpStream::connect_timeout(&endpoint, Duration::from_secs(3)).unwrap();
     }
     let registry = RegistryFixture::new();
@@ -2531,6 +2627,13 @@ async fn boundary_checks(fixture: &Fixture) {
     );
     for access in [KEY_READ, KEY_WRITE] {
         assert!(registry_open(HKEY_USERS, &registry_path, access));
+    }
+    for generation in 0..3 {
+        assert_eq!(
+            RegistryFixture::set_marker(HKEY_USERS, &registry_path, generation, 17),
+            ERROR_SUCCESS
+        );
+        assert_eq!(registry.read_marker(generation), 17);
     }
     let host_file = fs::File::open(&secret).unwrap();
     assert_ne!(
@@ -2596,6 +2699,11 @@ async fn boundary_checks(fixture: &Fixture) {
     provider.completion.pin(&pinned);
     fs::write(directory.path().join("boundary-gate"), b"finish").unwrap();
     let output = finish(&run, &provider).await;
+    let registry_after: Vec<_> = (0..3)
+        .map(|generation| registry.read_marker(generation))
+        .collect();
+    println!("NATIVE_TREE_REGISTRY_HOST_READBACK {registry_after:?}");
+    assert_eq!(registry_after, [17, 17, 17]);
     assert_eq!(output["exit_code"], 0, "{output}");
     for generation in 0..3 {
         assert!(
@@ -2648,6 +2756,19 @@ async fn boundary_checks(fixture: &Fixture) {
     .unwrap();
     for generation in 0..3 {
         assert_eq!(
+            fs::read(directory.path().join(format!("created-{generation}.txt"))).unwrap(),
+            b"workspace write"
+        );
+        let registry_write = read_json(
+            directory
+                .path()
+                .join(format!("registry-write-{generation}.json")),
+        );
+        assert_eq!(registry_write["generation"], generation);
+        assert!(registry_update_refused(
+            serde_json::from_value(registry_write["status"].clone()).unwrap()
+        ));
+        assert_eq!(
             fs::read(
                 private_temp
                     .path()
@@ -2657,7 +2778,8 @@ async fn boundary_checks(fixture: &Fixture) {
             b"private temp read/write"
         );
     }
-    for endpoint in endpoints {
+    confirm_external_witness(external, "after");
+    for endpoint in [v4.local_addr().unwrap(), v6.local_addr().unwrap()] {
         TcpStream::connect_timeout(&endpoint, Duration::from_secs(3)).unwrap();
     }
     let _control = ClientOptions::new().open(&pipe_name).unwrap();
@@ -3263,7 +3385,7 @@ fn process_tree_payload() {
         };
         assert_eq!(fs::read("allowed.txt").unwrap(), b"allowed workspace");
         assert_payload_host_logon_boundary(&plan, generation);
-        fs::write("created.txt", b"workspace write").unwrap();
+        fs::write(format!("created-{generation}.txt"), b"workspace write").unwrap();
         let private = Path::new(plan["private_temp"].as_str().unwrap())
             .join(format!("private-{generation}.txt"));
         fs::write(&private, b"private temp read/write").unwrap();
@@ -3303,9 +3425,19 @@ fn process_tree_payload() {
                 .open(plan["pipe"].as_str().unwrap())
                 .is_err()
         );
+        let registry_path = plan["registry"].as_str().unwrap();
+        let write_status = RegistryFixture::set_marker(HKEY_USERS, registry_path, generation, 93);
+        write_json(
+            format!("registry-write-{generation}.json"),
+            json!({"generation": generation, "status": write_status}),
+        );
+        assert!(
+            registry_update_refused(write_status),
+            "Unexpected host registry fixture write status {write_status}"
+        );
         for access in [KEY_READ, KEY_WRITE] {
             assert!(
-                !registry_open(HKEY_USERS, plan["registry"].as_str().unwrap(), access),
+                !registry_open(HKEY_USERS, registry_path, access),
                 "Host registry key escaped the dedicated account boundary"
             );
         }

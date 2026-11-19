@@ -43,3 +43,63 @@ class HostPreflightTests(unittest.TestCase):
                         {"psec": {"supports_required_policy": False}}):
             with self.subTest(changes=changes):
                 self.assertFalse(VALIDATOR.is_psec_qualification_host(dict(client, **changes)))
+
+
+class PreparedInputsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.installed = self.root / "runner"
+        self.installed.write_bytes(b"package fixture")
+        self.token = dict(user_sid="S-1-test-host", session_id=4, token_type=1,
+                          elevated=False, integrity_rid=0x2000, appcontainer=False)
+        self.manifests = []
+        for name in ("suite", "cli"):
+            runtime = self.root / name
+            runtime.mkdir()
+            workspace = self.root / (name + "-workspace")
+            workspace.mkdir()
+            runner = runtime / "ww-windows-runner.exe"
+            runner.write_bytes(self.installed.read_bytes())
+            path = runtime / "provisioning.json"
+            path.write_text(json.dumps(dict(host_sid=self.token["user_sid"], session_id=4,
+                runner=str(runner), runner_sha256=VALIDATOR.digest(runner), workspace=str(workspace),
+                user_sid=name)))
+            self.manifests.append(path)
+
+    def receipts(self):
+        return VALIDATOR.prepared_manifests(self.manifests, self.token, self.installed)
+
+    def test_separate_inputs_match_installed_runner(self):
+        for receipt, path in zip(self.receipts(), self.manifests, strict=True):
+            self.assertEqual(receipt["manifest_sha256"], VALIDATOR.digest(path))
+            self.assertEqual(receipt["runner_sha256"], VALIDATOR.digest(self.installed))
+
+    def test_second_input_refused_before_either_workload(self):
+        path = self.manifests[1]
+        original = json.loads(path.read_bytes())
+        first = json.loads(self.manifests[0].read_bytes())
+        for changes in ({"session_id": 3}, {"session_id": None}, {"host_sid": "admin"},
+                        {"runner_sha256": "0" * 64}, {"workspace": first["workspace"]},
+                        {"user_sid": first["user_sid"]}):
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps(dict(original, **changes)))
+                with self.assertRaises(ValueError):
+                    self.receipts()
+
+    def test_stale_workspace_and_runner_replacement(self):
+        manifest = json.loads(self.manifests[0].read_bytes())
+        stale = Path(manifest["workspace"]) / "previous-output"
+        stale.touch()
+        with self.assertRaisesRegex(ValueError, "empty workspace"):
+            self.receipts()
+        stale.unlink()
+        Path(manifest["runner"]).write_bytes(b"different build")
+        with self.assertRaisesRegex(ValueError, "differs from package"):
+            self.receipts()
+
+    def test_admin_is_refused_even_with_matching_sid(self):
+        self.token["elevated"] = True
+        with self.assertRaisesRegex(RuntimeError, "non-elevated"):
+            self.receipts()

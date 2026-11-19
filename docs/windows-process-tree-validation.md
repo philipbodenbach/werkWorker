@@ -803,11 +803,7 @@ in the release result file. The mandatory feature command remains:
 
 ```powershell
 $env:CARGO_NET_OFFLINE = 'true'
-$env:WW_WINDOWS_PROCESS_TREE_PROVISION = "$lab\runtime-d\provisioning.json"
-$env:WW_WINDOWS_PROCESS_TREE_CARGO = "$lab\runtime-d\toolchains\0\bin\cargo.exe"
-$env:WW_WINDOWS_PROCESS_TREE_EXTERNAL_ENDPOINT = '<controlled reachable non-loopback listener>'
-$env:REQUIRE_WINDOWS_PROCESS_TREE = '1'
-cargo test --locked --offline --test windows_process_tree -- --nocapture --test-threads=1
+python scripts/validate-windows-process-tree.py suite --source . --manifest "$lab\runtime-d\provisioning.json" --evidence "$lab\fresh-suite-evidence" --bind-address <assigned-nonloopback-ip>
 ```
 
 Selected diagnostics use `WW_TREE_DIAGNOSTIC_CASE` and the explicitly ignored

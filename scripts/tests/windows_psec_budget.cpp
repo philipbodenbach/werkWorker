@@ -36,6 +36,22 @@ static void check(bool value, const char* condition) {
         throw std::runtime_error(condition);
     }
 }
+static bool live_budget_exceeded(const std::vector<Handle>& retained, DWORD active, DWORD budget) {
+    // All handles are pinned before this pass. Processes still alive at their
+    // individual checks were therefore alive together at the start of the pass.
+    size_t live = 0;
+    for (const auto& handle : retained) {
+        const DWORD wait = WaitForSingleObject(handle.value, 0);
+        require(wait != WAIT_FAILED, "WaitRetainedProcess");
+        check(wait == WAIT_OBJECT_0 || wait == WAIT_TIMEOUT, "UnexpectedProcessWait");
+        if (wait == WAIT_TIMEOUT) ++live;
+    }
+    std::printf("JOB_CENSUS retained=%zu live=%zu active=%lu limit=%lu\n", retained.size(), live, active, budget);
+    // Accounting and PID lists are separate snapshots. A rejected, terminated
+    // process may remain in the active count while its handles are open.
+    check(active <= budget || live > budget, "AccountingExcessWithoutLiveWitness");
+    return live > budget;
+}
 static std::wstring image_path() {
     wchar_t path[32768]{};
     require(GetModuleFileNameW(nullptr, path, 32768) != 0, "OwnImagePath");
@@ -310,7 +326,7 @@ struct Invocation {
             token_receipt(handle.value, pid);
             observed.emplace_back(std::move(handle));
         }
-        return counts.ActiveProcesses > budget;
+        return live_budget_exceeded(observed, counts.ActiveProcesses, budget);
     }
 };
 
